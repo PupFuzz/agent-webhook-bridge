@@ -507,49 +507,55 @@ final class GitHubReadClient
      * ⛔ AND THE WALK MUST BE CONSISTENT. Pages are separate requests, so a run created or deleted
      * between them shifts rows across a page boundary: a created run pushes a row already seen onto
      * the next page (a duplicate fills the count while the new, unfinished run is never seen), and
-     * a deleted one pulls an unseen row back onto a page already read. So runs are keyed by `id`,
-     * and the walk throws unless every page reported the SAME `total_count` and the distinct ids
-     * seen equal it. One page cannot shift against itself, so a single-page list needs neither.
+     * a deleted one pulls an unseen row back onto a page already read. Three checks, all of which
+     * must hold or the walk throws:
+     *  - runs are keyed by `id`, and every page must report the SAME `total_count`;
+     *  - the distinct ids seen must equal that `total_count` (on a single page too, where it catches
+     *    a body whose count disagrees with its own rows);
+     *  - after a walk of more than one page, page 1 is READ AGAIN and must carry the same
+     *    `total_count` and the same set of ids. A run created and another deleted between pages
+     *    keep the count and the distinct-id total intact, but GitHub lists runs newest first, so
+     *    the created run lands on page 1 and changes its id set. A single-page list is not read
+     *    again: one response cannot shift against itself.
+     * What is NOT checked: that GitHub lists a new run at the top (taken from its newest-first
+     * ordering, not measured), and any change after the re-read — a run created then is a run the
+     * read did not see, the same as one created just after it.
      *
-     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>
+     * Each row carries the run's `run_attempt` (null when the body names none), so a caller can
+     * tell a delivery for an earlier attempt of a re-run from one for the attempt now listed.
+     *
+     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      */
     public function workflowRunsForHead(string $repo, string $headSha): array
     {
         $runs = [];
         $total = null;
+        $firstPageIds = [];
         for ($page = 1; $page <= self::RUNS_PAGE_LIMIT; $page++) {
-            $body = $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs", [
-                'head_sha' => $headSha,
-                'per_page' => self::RUNS_PAGE_SIZE,
-                'page' => $page,
-                'exclude_pull_requests' => 'true',
-            ])->throw()->json();
-
-            $list = is_array($body) ? ($body['workflow_runs'] ?? null) : null;
-            if (! is_array($list) || ! array_is_list($list) || ! is_int($body['total_count'] ?? null)) {
-                throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} returned a 200 whose body is not a run list with a total_count; ".self::UNREADABLE_BODY_CAUSE);
+            [$pageTotal, $list] = $this->workflowRunsPage($repo, $headSha, $page);
+            if ($total !== null && $pageTotal !== $total) {
+                throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} changed while it was being read (total_count {$total}, then {$pageTotal} on page {$page}) — a run was created or deleted between pages, so the pages do not add up to one list");
             }
-            if ($total !== null && $body['total_count'] !== $total) {
-                throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} changed while it was being read (total_count {$total}, then {$body['total_count']} on page {$page}) — a run was created or deleted between pages, so the pages do not add up to one list");
-            }
-            $total = $body['total_count'];
+            $total = $pageTotal;
             foreach ($list as $run) {
-                if (! is_array($run) || ! is_int($run['id'] ?? null) || ! is_string($run['status'] ?? null)) {
-                    throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} carries a run with no readable integer `id` or `status`, so whether every run is terminal is unknown; ".self::UNREADABLE_BODY_CAUSE);
-                }
-                $runs[$run['id']] = [
-                    'id' => $run['id'],
-                    'workflow' => is_string($run['name'] ?? null) ? $run['name'] : '',
-                    'status' => $run['status'],
-                    'conclusion' => is_string($run['conclusion'] ?? null) ? $run['conclusion'] : null,
-                    'html_url' => is_string($run['html_url'] ?? null) ? $run['html_url'] : '',
-                    'event' => is_string($run['event'] ?? null) ? $run['event'] : '',
-                ];
+                $runs[$run['id']] = $run;
+            }
+            if ($page === 1) {
+                $firstPageIds = array_column($list, 'id');
             }
 
             if (count($list) < self::RUNS_PAGE_SIZE || count($runs) >= $total) {
                 if (count($runs) !== $total) {
                     throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} reported total_count {$total} and its pages carried ".count($runs).' distinct run(s) — the pages do not add up to one list, so whether every run is terminal is unknown');
+                }
+                if ($page > 1) {
+                    [$againTotal, $again] = $this->workflowRunsPage($repo, $headSha, 1);
+                    $againIds = array_column($again, 'id');
+                    sort($againIds);
+                    sort($firstPageIds);
+                    if ($againTotal !== $total || $againIds !== $firstPageIds) {
+                        throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} changed while it was being read (page 1, read again after the last page, no longer lists the same runs) — a run was created or deleted during the walk, so the pages do not add up to one list");
+                    }
                 }
 
                 return array_values($runs);
@@ -557,6 +563,43 @@ final class GitHubReadClient
         }
 
         throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} did not end within ".self::RUNS_PAGE_LIMIT.' pages of '.self::RUNS_PAGE_SIZE.' — the list was not read to its end, so whether every run is terminal is unknown');
+    }
+
+    /**
+     * One page of {@see self::workflowRunsForHead()}'s walk: its `total_count` and its runs.
+     *
+     * @return array{0: int, 1: list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>}
+     */
+    private function workflowRunsPage(string $repo, string $headSha, int $page): array
+    {
+        $body = $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs", [
+            'head_sha' => $headSha,
+            'per_page' => self::RUNS_PAGE_SIZE,
+            'page' => $page,
+            'exclude_pull_requests' => 'true',
+        ])->throw()->json();
+
+        $list = is_array($body) ? ($body['workflow_runs'] ?? null) : null;
+        if (! is_array($list) || ! array_is_list($list) || ! is_int($body['total_count'] ?? null)) {
+            throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} returned a 200 whose body is not a run list with a total_count; ".self::UNREADABLE_BODY_CAUSE);
+        }
+        $runs = [];
+        foreach ($list as $run) {
+            if (! is_array($run) || ! is_int($run['id'] ?? null) || ! is_string($run['status'] ?? null)) {
+                throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} carries a run with no readable integer `id` or `status`, so whether every run is terminal is unknown; ".self::UNREADABLE_BODY_CAUSE);
+            }
+            $runs[] = [
+                'id' => $run['id'],
+                'workflow' => is_string($run['name'] ?? null) ? $run['name'] : '',
+                'status' => $run['status'],
+                'conclusion' => is_string($run['conclusion'] ?? null) ? $run['conclusion'] : null,
+                'html_url' => is_string($run['html_url'] ?? null) ? $run['html_url'] : '',
+                'event' => is_string($run['event'] ?? null) ? $run['event'] : '',
+                'run_attempt' => is_int($run['run_attempt'] ?? null) ? $run['run_attempt'] : null,
+            ];
+        }
+
+        return [$body['total_count'], $runs];
     }
 
     /**

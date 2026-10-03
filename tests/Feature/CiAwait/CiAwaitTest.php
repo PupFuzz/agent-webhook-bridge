@@ -310,7 +310,7 @@ class CiAwaitTest extends TestCase
     {
         $this->seedAwait('seat-a');
         $page1 = array_fill(0, 100, ['CI', 'completed', 'success']);
-        $this->fakeGitHub([[$this->runs($page1, total: 101), $this->runs([['Late', 'in_progress', null]], total: 101, firstId: 101)]]);
+        $this->fakeGitHub([[$this->runs($page1, total: 101), $this->runs([['Late', 'in_progress', null]], total: 101, firstId: 101), $this->runs($page1, total: 101)]]);
 
         $this->postRunCompleted(self::SHA)->assertOk();
 
@@ -322,10 +322,11 @@ class CiAwaitTest extends TestCase
     {
         $this->seedAwait('seat-a');
         $page1 = array_fill(0, 100, ['CI', 'completed', 'success']);
-        $this->fakeGitHub([[$this->runs($page1, total: 101), $this->runs([['Late', 'completed', 'cancelled']], total: 101, firstId: 101)]]);
+        $this->fakeGitHub([[$this->runs($page1, total: 101), $this->runs([['Late', 'completed', 'cancelled']], total: 101, firstId: 101), $this->runs($page1, total: 101)]]);
 
         $this->postRunCompleted(self::SHA)->assertOk();
 
+        $this->assertSentRunsReads(3);
         $lines = $this->inbox();
         $this->assertCount(1, $lines);
         $this->assertCount(101, $lines[0]['payload']['runs']);
@@ -395,6 +396,29 @@ class CiAwaitTest extends TestCase
         $this->assertStringContainsString('100 distinct run(s)', (string) CiAwait::query()->sole()->last_error);
     }
 
+    /**
+     * Round 2, MAJOR. One run created AND one deleted between pages keep `total_count` (101) and
+     * the distinct-id total (101) intact, so only reading page 1 again sees the new run.
+     */
+    public function test_a_run_created_and_another_deleted_between_pages_is_a_failed_read_not_a_settle(): void
+    {
+        $this->seedAwait('seat-a');
+        $page1 = array_fill(0, 100, ['CI', 'completed', 'success']);
+        // After the first page: queued run 500 is created at the top and run 50 is deleted, so the
+        // list is 500, 1..49, 51..101 — page 2 is run 101, and run 500 is on no page the walk read.
+        $after = [['New', 'queued', null, 1, 500]];
+        foreach (array_merge(range(1, 49), range(51, 100)) as $id) {
+            $after[] = ['CI', 'completed', 'success', 1, $id];
+        }
+        $this->fakeGitHub([[$this->runs($page1, total: 101), $this->runs([['CI', 'completed', 'success']], total: 101, firstId: 101), $this->runs($after, total: 101)]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSame([], $this->inbox(), 'queued run 500 was never seen on the walk, so the head is not settled');
+        $this->assertStringContainsString('page 1, read again after the last page', (string) CiAwait::query()->sole()->last_error);
+        $this->assertSentRunsReads(3);
+    }
+
     // ---- the delivered run (round 1, MINOR 2) --------------------------------------------
 
     public function test_the_delivered_run_counts_as_completed_where_the_list_still_says_in_progress(): void
@@ -419,6 +443,61 @@ class CiAwaitTest extends TestCase
         $lines = $this->inbox();
         $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
         $this->assertCount(2, $lines[0]['payload']['runs']);
+    }
+
+    /** Round 2, item 1: a delivery for attempt 1 must not finish attempt 2 of the same run. */
+    public function test_a_delivery_for_an_earlier_attempt_does_not_complete_a_re_run(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success'], ['E2E', 'in_progress', null, 2]])]]);
+
+        $this->postRunCompleted(self::SHA, runId: 2, conclusion: 'failure', attempt: 1)->assertOk();
+
+        $this->assertSame([], $this->inbox(), 'the list shows attempt 2 still running; the delivery is for attempt 1');
+        $this->assertSame(1, CiAwait::query()->count());
+    }
+
+    public function test_a_delivery_for_a_later_attempt_than_the_list_shows_is_overlaid(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success'], ['E2E', 'in_progress', null, 1]])]]);
+
+        $this->postRunCompleted(self::SHA, runId: 2, conclusion: 'success', attempt: 2)->assertOk();
+
+        $this->assertSame(['ci_settled'], array_column($this->inbox(), 'kind'));
+    }
+
+    /**
+     * Round 2, item 2. Seat B registers while a delivery's read of the head is in flight; seat A's
+     * fresh answered read puts B inside the cooldown, so B makes no read of its own — and the
+     * in-flight read, which finds every run terminal, must settle B as well as A.
+     */
+    public function test_a_seat_that_registered_during_an_all_terminal_read_is_settled_by_it(): void
+    {
+        config(['bridge.ci_await.read_cooldown' => 60]);
+        $this->seedAwait('seat-a');
+        CiAwait::query()->update(['last_read_at' => Carbon::now()->subSeconds(10)]);
+        $service = $this->app->make(CiAwaitService::class);
+        $bAnswer = null;
+        Http::fake([
+            self::RUNS_URL => function () use (&$bAnswer) {
+                if ($bAnswer === null) {
+                    $bAnswer = $this->callTool('seat-b', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA])->body()['result'];
+                }
+
+                return Http::response($this->runs([['CI', 'completed', 'success']]));
+            },
+            '127.0.0.1:*' => Http::response('ok', 200),
+        ]);
+
+        $service->onWorkflowRunCompleted(self::REPO, self::SHA);
+
+        $this->assertNotNull($bAnswer, 'seat B never registered during the read, so this measured nothing');
+        $this->assertSame('waiting', $bAnswer['state']);
+        $this->assertArrayHasKey('read_skipped', $bAnswer, 'seat B read for itself, so the race was not reproduced');
+        $this->assertSentRunsReads(1);
+        $this->assertSame(0, CiAwait::query()->count(), 'an await is left that nothing will read again');
+        $this->assertChannelPushes(['seat-a' => ['ci_settled'], 'seat-b' => ['ci_settled']]);
     }
 
     // ---- what the tool may say after the store (round 1, MINOR 3) ------------------------
@@ -487,7 +566,7 @@ class CiAwaitTest extends TestCase
         $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
 
         $this->assertSame('waiting', $out->body()['result']['state']);
-        $this->assertTrue($out->body()['result']['read_skipped']);
+        $this->assertSame('cooldown', $out->body()['result']['read_skipped']);
         $this->assertSame(2, CiAwait::query()->count());
         Http::assertNothingSent();
     }
@@ -525,6 +604,52 @@ class CiAwaitTest extends TestCase
         $this->runSweep();
         $this->assertSentRunsReads(2);
         $this->assertSame(['ci_settled'], array_column($this->inbox(), 'kind'));
+    }
+
+    /** Round 2, item 5: a secondary limit is a 403 whose Remaining is not 0 but which says Retry-After. */
+    public function test_a_403_carrying_retry_after_is_a_rate_limit_with_its_reset(): void
+    {
+        $this->seedAwait('seat-a');
+        Http::fake([
+            self::RUNS_URL => Http::response(['message' => 'You have exceeded a secondary rate limit'], 403, ['X-RateLimit-Remaining' => '4000', 'Retry-After' => '120']),
+            '127.0.0.1:*' => Http::response('ok', 200),
+        ]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $await = CiAwait::query()->sole();
+        $this->assertSame('GitHub answered HTTP 403 to the workflow-run read (rate limited until 2026-10-03T10:02:00.000Z)', $await->last_error);
+        $this->assertSame('2026-10-03T10:02:00+00:00', $await->retry_not_before?->toIso8601String());
+    }
+
+    public function test_a_delivery_does_not_read_a_head_before_its_rate_limit_resets(): void
+    {
+        $this->seedAwait('seat-a');
+        CiAwait::query()->update(['last_error' => 'GitHub answered HTTP 429 to the workflow-run read (rate limited until 2026-10-03T10:10:00.000Z)', 'retry_not_before' => Carbon::now()->addSeconds(600)]);
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSentRunsReads(0);
+        $this->assertSame([], $this->inbox());
+        $this->assertSame(1, CiAwait::query()->count());
+    }
+
+    public function test_a_registration_on_a_rate_limited_head_answers_waiting_with_the_reason_and_makes_no_read(): void
+    {
+        $this->seedAwait('seat-b');
+        CiAwait::query()->update(['last_error' => 'GitHub answered HTTP 429 to the workflow-run read (rate limited until 2026-10-03T10:10:00.000Z)', 'retry_not_before' => Carbon::now()->addSeconds(600)]);
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $result = $out->body()['result'];
+        $this->assertSame('waiting', $result['state']);
+        $this->assertSame('rate_limited', $result['read_skipped'] ?? null);
+        $this->assertSame('2026-10-03T10:10:00.000Z', $result['retry_not_before'] ?? null);
+        $this->assertSentRunsReads(0);
+        $mine = CiAwait::query()->where('agent', 'seat-a')->sole();
+        $this->assertNotNull($mine->retry_not_before, 'the new await must carry the reset, or the sweep could not retry it as part of the head');
     }
 
     // ---- case (round 1, MINOR 5) and pr bound (MINOR 6) ----------------------------------
@@ -712,15 +837,18 @@ class CiAwaitTest extends TestCase
     }
 
     /**
-     * @param  list<array{0: string, 1: string, 2: ?string}>  $runs
+     * Runs `[name, status, conclusion, run_attempt = 1, id = $firstId + index]`.
+     *
+     * @param  list<array{0: string, 1: string, 2: ?string, 3?: int, 4?: int}>  $runs
      * @return array<string, mixed>
      */
     private function runs(array $runs, ?int $total = null, int $firstId = 1): array
     {
         $list = [];
-        foreach (array_values($runs) as $i => [$name, $status, $conclusion]) {
-            $id = $firstId + $i;
-            $list[] = ['id' => $id, 'name' => $name, 'head_sha' => self::SHA, 'status' => $status, 'conclusion' => $conclusion, 'event' => 'pull_request', 'html_url' => "https://github.com/octo/widgets/actions/runs/{$id}"];
+        foreach (array_values($runs) as $i => $run) {
+            [$name, $status, $conclusion] = $run;
+            $id = $run[4] ?? $firstId + $i;
+            $list[] = ['id' => $id, 'name' => $name, 'head_sha' => self::SHA, 'status' => $status, 'conclusion' => $conclusion, 'event' => 'pull_request', 'run_attempt' => $run[3] ?? 1, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$id}"];
         }
 
         return ['total_count' => $total ?? count($list), 'workflow_runs' => $list];
@@ -730,16 +858,16 @@ class CiAwaitTest extends TestCase
      * A delivery for run `$runId` — by default run 1, which every list fixture here carries, so the
      * overlay of the delivered run changes nothing unless a test means it to.
      */
-    private function postRunCompleted(string $sha, int $runId = 1, string $conclusion = 'success'): TestResponse
+    private function postRunCompleted(string $sha, int $runId = 1, string $conclusion = 'success', int $attempt = 1): TestResponse
     {
-        return $this->postWorkflowRun('completed', $sha, $runId, $conclusion);
+        return $this->postWorkflowRun('completed', $sha, $runId, $conclusion, $attempt);
     }
 
-    private function postWorkflowRun(string $action, string $sha, int $runId = 1, string $conclusion = 'success'): TestResponse
+    private function postWorkflowRun(string $action, string $sha, int $runId = 1, string $conclusion = 'success', int $attempt = 1): TestResponse
     {
         $body = (string) json_encode([
             'action' => $action,
-            'workflow_run' => ['id' => $runId, 'name' => 'CI', 'head_sha' => $sha, 'status' => $action, 'conclusion' => $action === 'completed' ? $conclusion : null, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}"],
+            'workflow_run' => ['id' => $runId, 'name' => 'CI', 'head_sha' => $sha, 'status' => $action, 'conclusion' => $action === 'completed' ? $conclusion : null, 'run_attempt' => $attempt, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}"],
             'repository' => ['full_name' => self::REPO],
             'sender' => ['id' => 4242],
         ]);

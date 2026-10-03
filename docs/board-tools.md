@@ -1543,11 +1543,15 @@ register nor cancel another's.
    One await per seat per head. A database failure here is the only answer that says nothing was
    stored (`install_fault.ci_await_store_unavailable`); anything that fails after it answers
    `state: unmeasured` with the await kept.
-4. **Reads the head's runs once**, so CI that already finished settles now — unless a read of the
-   same head ANSWERED within `BRIDGE_CI_AWAIT_READ_COOLDOWN` seconds (default 60; `0` always reads),
-   in which case it answers `waiting` with `read_skipped: true` and sends no request. A read that
-   answered "all terminal" would have settled every await on the head, so a recent answered read on
-   a stored await means CI was still running then.
+4. **Reads the head's runs once**, so CI that already finished settles now — unless:
+   - a read of the same head ANSWERED within `BRIDGE_CI_AWAIT_READ_COOLDOWN` seconds (default 60;
+     `0` always reads): it answers `waiting` with `read_skipped: "cooldown"` and sends no request. A
+     read that answers "all terminal" settles every await on the head — including one stored while
+     that read was in flight, which it loads again before it finishes — so a recent answered read
+     on a stored await means CI was still running then;
+   - the head is **rate limited** until a known instant (see *Read failures*): it answers `waiting`
+     with `read_skipped: "rate_limited"` and `retry_not_before`, sends no request, and never answers
+     `settled`.
 
 The answer:
 
@@ -1562,7 +1566,8 @@ The answer:
   "runs_total": 3,           // null when the read failed
   "runs_completed": 1,
   "read_error": "…",         // only on state: unmeasured
-  "read_skipped": true,      // only when the read cooldown skipped the read
+  "read_skipped": "cooldown", // only when no read was made: "cooldown" or "rate_limited"
+  "retry_not_before": "…",   // only with read_skipped: "rate_limited" — when the head is read again
   "warning": "…"             // only when this bridge holds no stored workflow_run delivery from the repo
 }
 ```
@@ -1584,12 +1589,18 @@ least one await, the bridge makes **one** read — `GET /repos/{repo}/actions/ru
 walked page by page to the end of the list — after the delivery has been answered. The run that
 delivery reports is counted as completed, with its conclusion, even when the list still shows it
 running or does not show it yet: the list API can lag the webhook, and a last run lost that way
-would strand the wait until it expired. When every run on the list has `status: completed`, every
+would strand the wait until it expired. ⚠ **Except a later attempt:** a re-run keeps the run's id
+and raises its `run_attempt`, so when the list shows a LATER attempt than the delivery reports (a
+late delivery, or one an operator redelivered by hand from the webhook's settings), or either
+attempt is unknown, the list's row stands. When every run on the list has `status: completed`, every
 seat awaiting that head gets **one** `ci_settled` and its await is deleted. ⛔ **A list that moved
 while it was read is not an answer:** pages are separate requests, and a run created or deleted
 between them shifts rows across a page boundary (a duplicate can fill the count while a new,
 unfinished run is never seen). Runs are keyed by id, and the read fails unless every page reported
-the same `total_count` and the distinct runs equal it. ⭐ **No await, no read:** a run completing on a head nobody awaits costs one
+the same `total_count` and the distinct runs equal it. One run created AND another deleted between
+pages keep both of those intact, so after a walk of more than one page the bridge **reads page 1
+again** and fails the read unless it lists the same runs: GitHub lists runs newest first, so a run
+created during the walk lands there. ⭐ **No await, no read:** a run completing on a head nobody awaits costs one
 indexed query and no GitHub request, so a green push to `dev` wakes nobody. ⭐ **Once per await,
 under concurrency:** two deliveries for a head's last two runs can both read "all terminal"; each
 emit first deletes its await row in a transaction and only the one whose delete removed it emits.
@@ -1600,12 +1611,15 @@ finished*. It carries each run's conclusion as data, and **it does not say green
 needs the base branch's required contexts and the latest run per workflow, which is `ci-read`'s
 definition, and the bridge does not restate it. On `ci_settled`, run `ci-read` **once** on the head.
 
-**Read failures.** A read that fails — a 403 or 429 rate limit, a 5xx, no answer, no GitHub read
+**Read failures.** A read that fails — a rate limit (a 429, or a 403 with `X-RateLimit-Remaining: 0`
+or with `Retry-After`, GitHub's secondary limit), a 5xx, no answer, no GitHub read
 token, a 200 whose body is not a run list, a list that does not end within the read's page bound, or
 a list that changed between pages — **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
 logged naming it, and the head is read again on its next completed run and by the `ci-await-sweep`
 job. A rate-limited read that names when its quota returns (`X-RateLimit-Reset`, else `Retry-After`)
-is not retried by the sweep before then; the error says until when. If no read ever answers, the
+records that instant on every await on the head, and **no read of that head is made before it** — not
+by a delivery, a registration or the sweep; the error says until when, and a registration in that
+window answers `read_skipped: "rate_limited"`. If no read ever answers, the
 await ends in `ci_await_expired` carrying the last error.
 
 **Expiry.** An await lives `BRIDGE_CI_AWAIT_TTL` seconds (default 21600, 6 h; 60 to 604800 accepted —
@@ -1637,16 +1651,19 @@ whose channel was down. `subject_id` is `ci:<repo>@<head_sha>`. The payloads and
   Re-registering reads the head again (outside the read cooldown).
 - ⚠ **A list that keeps moving.** On a head whose runs are created or deleted during every read, each
   read fails as inconsistent and the await waits for the next delivery or the sweep. No case of it is
-  measured; GitHub's `total_count` is taken to count exactly what the list pages carry, from its REST
-  documentation, and a single page is never checked against itself beyond that count.
+  measured. Taken from GitHub's REST documentation, not checked: that `total_count` counts exactly
+  what the pages carry, and that a new run is listed first (newest first), which is what the page-1
+  re-read relies on. A single-page list is checked only against its own `total_count`, and a run
+  created after the page-1 re-read is one the read did not see, like one created just after it.
 - ⚠ **The per-seat cap is soft under concurrency** (step 2 above).
-- ⚠ **The sweep's retry waits only for a rate limit that names its reset.** A rate limit without
-  either header is retried at the next pass.
+- ⚠ **Only a rate limit that names its reset is waited out.** One without either header is read
+  again at the next delivery or sweep pass.
 - ⚠ **Installs with several bridges.** An await lives on the bridge the seat called; only that
   bridge's deliveries settle it.
 
-**Cost:** one read of the head at registration (none inside the read cooldown), and one per completed
-run on an awaited head — each one request per 100 runs. Nothing for heads nobody awaits.
+**Cost:** one read of the head at registration (none inside the read cooldown or a rate limit), and
+one per completed run on an awaited head — each one request per 100 runs, plus one more for the page-1
+re-read when the list spans more than one page. Nothing for heads nobody awaits.
 
 ## Errors
 

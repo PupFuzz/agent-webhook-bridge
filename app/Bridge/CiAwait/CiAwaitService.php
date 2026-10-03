@@ -53,7 +53,13 @@ use UnexpectedValueException;
  * ⭐ THE DELIVERED RUN IS OVERLAID. The list API can lag the webhook: the run whose completion was
  * just delivered may still read `in_progress` (or be absent) in the list read for that delivery. A
  * last run lost that way would strand the wake until the TTL, so the read for a delivery treats the
- * delivered run, keyed by id, as completed with the delivery's conclusion.
+ * delivered run, keyed by id, as completed with the delivery's conclusion — unless the list already
+ * shows a LATER attempt of it (`run_attempt`): a re-run keeps the run's id, and a delivery for an
+ * earlier attempt (a late one, or one an operator redelivered by hand) must not finish the new one.
+ *
+ * ⚠ A RATE-LIMITED HEAD IS NOT READ BEFORE ITS RESET. A read that GitHub refused as rate limited and
+ * that named when the quota returns records it as `retry_not_before`; until then no read of that
+ * head is made — not by a delivery, a registration or the sweep — and nothing is settled.
  *
  * ⚠ `repo` IS STORED LOWER-CASE and every lookup lower-cases its input, so SQLite (case-sensitive
  * `=`) and MariaDB (case-insensitive collation) find the same rows; `repo_name` keeps the configured
@@ -149,22 +155,27 @@ final class CiAwaitService
      * claim, the inbox write — is reported as `unmeasured`, never as "nothing was stored".
      *
      * A head whose read ANSWERED within `$cooldownSeconds` is not read again: the answer is
-     * `waiting` from the stored state, with `read_skipped: true`. (A read that answered "all
-     * terminal" deleted the head's awaits, so a fresh answered read on a stored await means CI was
-     * still running then.)
+     * `waiting` from the stored state, with `read_skipped: 'cooldown'`. That is sound because a
+     * read that answers "all terminal" claims every await on the head, including one stored while
+     * it was reading ({@see evaluate()}), so a fresh answered read on a stored await means CI was
+     * still running then. A head that is rate limited until a known instant is not read either:
+     * `waiting`, `read_skipped: 'rate_limited'`, with `retry_not_before`.
      *
-     * @return array{state: string, pr: ?int, expires_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string, read_skipped: bool}
+     * @return array{state: string, pr: ?int, expires_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string, read_skipped: ?string, retry_not_before: ?string}
      */
     public function evaluateRegistration(string $agent, string $repoName, string $headSha, ?int $pr, int $cooldownSeconds): array
     {
         $key = self::key($repoName);
-        $read = ['runs' => null, 'error' => null, 'all_terminal' => false];
-        $skipped = false;
+        $read = ['runs' => null, 'error' => null, 'all_terminal' => false, 'rate_limited_until' => null];
+        $skipped = null;
         try {
-            $skipped = $cooldownSeconds > 0 && CiAwait::query()->where('repo', $key)->where('head_sha', $headSha)
+            $cooling = $cooldownSeconds > 0 && CiAwait::query()->where('repo', $key)->where('head_sha', $headSha)
                 ->whereNull('last_error')->where('last_read_at', '>=', Carbon::now()->subSeconds($cooldownSeconds))->exists();
-            if (! $skipped) {
+            if ($cooling) {
+                $skipped = 'cooldown';
+            } else {
                 $read = $this->evaluate($key, $headSha, null);
+                $skipped = $read['rate_limited_until'] === null ? null : 'rate_limited';
             }
             $mine = CiAwait::query()->where('agent', $agent)->where('repo', $key)->where('head_sha', $headSha)->first();
         } catch (Throwable $e) {
@@ -173,7 +184,7 @@ final class CiAwaitService
             ] + RedactedErrorText::logContext($e));
 
             return ['state' => 'unmeasured', 'pr' => $pr, 'expires_at' => null, 'runs_total' => null, 'runs_completed' => null,
-                'read_error' => 'the await is stored, but evaluating it failed: '.RedactedErrorText::of($e), 'read_skipped' => false];
+                'read_error' => 'the await is stored, but evaluating it failed: '.RedactedErrorText::of($e), 'read_skipped' => null, 'retry_not_before' => null];
         }
 
         $state = match (true) {
@@ -190,6 +201,7 @@ final class CiAwaitService
             'runs_completed' => $read['runs'] === null ? null : count(array_filter($read['runs'], static fn (array $r): bool => $r['status'] === 'completed')),
             'read_error' => $read['error'],
             'read_skipped' => $skipped,
+            'retry_not_before' => $read['rate_limited_until'] === null ? null : self::instant($read['rate_limited_until']),
         ];
     }
 
@@ -208,7 +220,7 @@ final class CiAwaitService
      * (null when the payload named no readable run id). Never throws: it runs after the response,
      * where nothing would report a throw.
      *
-     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string}  $deliveredRun
+     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
      */
     public function onWorkflowRunCompleted(string $repo, string $headSha, ?array $deliveredRun = null): void
     {
@@ -267,21 +279,41 @@ final class CiAwaitService
      *
      * ⚠ The awaits are loaded BEFORE the read, deliberately: the read is slow, and a concurrent
      * evaluation of the same head may claim them meanwhile — {@see claimAndEmit()} is what makes
-     * that safe, not the order.
+     * that safe, not the order. ⛔ And an "all terminal" read claims those, THEN loads the head
+     * again and claims what it finds: a seat that registered during the read was answered from the
+     * read cooldown without a read of its own ({@see evaluateRegistration()}), so this read is the
+     * one that must settle it. Claiming first and re-loading second closes the window — a
+     * registration whose cooldown check still saw a pre-loaded row stored its await before that
+     * row was claimed, so the re-load finds it.
      *
-     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string}  $deliveredRun
-     * @return array{runs: ?list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>, error: ?string, all_terminal: bool}
+     * ⚠ A head any of whose awaits carries a `retry_not_before` still in the future is not read:
+     * the answer carries `rate_limited_until`, and every await on the head is given that instant
+     * and the limiting error, so the sweep retries the head as a whole after the reset.
+     *
+     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
+     * @return array{runs: ?list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, rate_limited_until: ?Carbon}
      */
     private function evaluate(string $key, string $headSha, ?array $deliveredRun): array
     {
         $awaits = CiAwait::query()->where('repo', $key)->where('head_sha', $headSha)->orderBy('id')->get();
         if ($awaits->isEmpty()) {
-            return ['runs' => null, 'error' => null, 'all_terminal' => false];
+            return ['runs' => null, 'error' => null, 'all_terminal' => false, 'rate_limited_until' => null];
         }
 
         $repoName = $awaits->first()->repo_name;
         $measuredAt = Carbon::now();
         $ids = $awaits->pluck('id')->all();
+
+        $limiting = $awaits->filter(static fn (CiAwait $a): bool => $a->retry_not_before !== null && $a->retry_not_before->isAfter($measuredAt))
+            ->sortByDesc(static fn (CiAwait $a): int => $a->retry_not_before->getTimestamp())->first();
+        if ($limiting !== null) {
+            CiAwait::query()->whereKey($ids)->update(['retry_not_before' => $limiting->retry_not_before, 'last_error' => $limiting->last_error]);
+            Log::info('bridge ci_await: the head is rate limited, so it was not read — the sweep reads it after the reset', [
+                'repo' => $repoName, 'head_sha' => $headSha, 'retry_not_before' => self::instant($limiting->retry_not_before),
+            ]);
+
+            return ['runs' => null, 'error' => null, 'all_terminal' => false, 'rate_limited_until' => Carbon::instance($limiting->retry_not_before)];
+        }
         try {
             $runs = $this->readRuns($repoName, $headSha);
         } catch (CiRunsReadException $e) {
@@ -292,7 +324,7 @@ final class CiAwaitService
                 'repo' => $repoName, 'head_sha' => $headSha, 'awaits' => count($ids), 'error' => $error,
             ]);
 
-            return ['runs' => null, 'error' => $error, 'all_terminal' => false];
+            return ['runs' => null, 'error' => $error, 'all_terminal' => false, 'rate_limited_until' => null];
         }
         CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null, 'retry_not_before' => null]);
 
@@ -306,24 +338,32 @@ final class CiAwaitService
             foreach ($awaits as $await) {
                 $this->claimAndEmit($await, self::SETTLED, self::settledPayload($await, $runs, $measuredAt), self::settledSummary($await, count($runs)));
             }
+            foreach (CiAwait::query()->where('repo', $key)->where('head_sha', $headSha)->orderBy('id')->get() as $await) {
+                $this->claimAndEmit($await, self::SETTLED, self::settledPayload($await, $runs, $measuredAt), self::settledSummary($await, count($runs)));
+            }
         }
 
-        return ['runs' => $runs, 'error' => null, 'all_terminal' => $allTerminal];
+        return ['runs' => $runs, 'error' => null, 'all_terminal' => $allTerminal, 'rate_limited_until' => null];
     }
 
     /**
      * The list as it stands once the delivered run is known to be completed: its row is marked
      * completed (taking the delivery's conclusion where the list has none), or appended when the
-     * list does not carry it yet.
+     * list does not carry it yet. A listed row whose `run_attempt` is LATER than the delivered one,
+     * or where either attempt is unknown, is left as listed: the delivery may be for an earlier
+     * attempt of a run that has since been re-run.
      *
-     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>  $runs
-     * @param  array{id: int, workflow: string, conclusion: ?string, html_url: string}  $delivered
-     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>
+     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
+     * @param  array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $delivered
+     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      */
     private static function overlay(array $runs, array $delivered): array
     {
         foreach ($runs as $i => $run) {
             if ($run['id'] === $delivered['id']) {
+                if ($run['run_attempt'] === null || $delivered['run_attempt'] === null || $run['run_attempt'] > $delivered['run_attempt']) {
+                    return $runs;
+                }
                 $runs[$i]['status'] = 'completed';
                 $runs[$i]['conclusion'] = $delivered['conclusion'] ?? $run['conclusion'];
 
@@ -378,7 +418,7 @@ final class CiAwaitService
     }
 
     /**
-     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>
+     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      *
      * @throws CiRunsReadException naming why no complete run list was read
      */
@@ -393,7 +433,9 @@ final class CiAwaitService
             return (new GitHubReadClient((string) $token->token, self::TIMEOUT_SECONDS))->workflowRunsForHead($repoName, $headSha);
         } catch (RequestException $e) {
             $status = $e->response->status();
-            $limited = $status === 429 || ($status === 403 && $e->response->header('X-RateLimit-Remaining') === '0');
+            // A primary limit says X-RateLimit-Remaining: 0; a secondary limit is a 403 that may
+            // leave Remaining above zero but carries Retry-After.
+            $limited = $status === 429 || ($status === 403 && ($e->response->header('X-RateLimit-Remaining') === '0' || $e->response->header('Retry-After') !== ''));
             $resetAt = $limited ? self::rateLimitReset($e) : null;
 
             throw new CiRunsReadException(
@@ -461,7 +503,7 @@ final class CiAwaitService
     }
 
     /**
-     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>  $runs
+     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
      * @return array<string, mixed>
      */
     private static function settledPayload(CiAwait $await, array $runs, Carbon $measuredAt): array

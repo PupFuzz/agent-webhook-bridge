@@ -662,7 +662,9 @@ const TOOL_DEFINITIONS = [
       'red. If the runs never all finish (or the bridge never gets to see them) before the wait ' +
       'expires (6 h by default), you get ONE ci_await_expired event instead, with the last read ' +
       'error if a read failed. The wait is YOURS — no argument names a seat. Calling it again for ' +
-      'the same head refreshes the wait and reads the runs again. It reads the runs once now: if ' +
+      'the same head refreshes the wait and reads the runs again (not within the read cooldown). ' +
+      'It reads the runs once now (not within the read cooldown, nor while GitHub rate-limits ' +
+      'the head; read_skipped then says which, and state stays waiting): if ' +
       'they have already all finished, ci_settled is sent immediately (state: settled). A head ' +
       'with no runs yet keeps waiting. A repo this bridge receives no GitHub events for is ' +
       'REFUSED (reason repo_not_received) — poll with ci-read there. A workflow that only starts ' +

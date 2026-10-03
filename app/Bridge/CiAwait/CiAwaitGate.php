@@ -9,9 +9,11 @@ use Illuminate\Contracts\Foundation\Application;
  * DL-452). Install-wide rather than per agent: the seat awaiting a head need not be one of the
  * agents subscribed to its repo, so this runs once per delivery, beside the dispatch loop.
  *
- * ⭐ AFTER THE RESPONSE. The detector may make one paginated GitHub read, and GitHub never
- * redelivers a webhook (DL-183), so nothing it does is worth delaying or failing the
- * delivery's answer — {@see CiAwaitService::onWorkflowRunCompleted()} never throws.
+ * ⭐ AFTER THE RESPONSE. The detector may make one paginated GitHub read, and GitHub does not
+ * retry a failed delivery on its own (DL-183), so nothing it does is worth delaying or failing the
+ * delivery's answer — {@see CiAwaitService::onWorkflowRunCompleted()} never throws. (An operator
+ * CAN redeliver one by hand from the webhook's settings; that is why the delivered run carries
+ * its `run_attempt`.)
  */
 final class CiAwaitGate
 {
@@ -41,6 +43,7 @@ final class CiAwaitGate
             'workflow' => is_string($run['name'] ?? null) ? $run['name'] : '',
             'conclusion' => is_string($run['conclusion'] ?? null) ? $run['conclusion'] : null,
             'html_url' => is_string($run['html_url'] ?? null) ? $run['html_url'] : '',
+            'run_attempt' => is_int($run['run_attempt'] ?? null) ? $run['run_attempt'] : null,
         ] : null;
 
         $this->app->terminating(fn () => $this->awaits->onWorkflowRunCompleted($scopeId, $headSha, $delivered));

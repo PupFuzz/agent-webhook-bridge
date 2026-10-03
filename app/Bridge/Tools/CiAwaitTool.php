@@ -112,8 +112,11 @@ final class CiAwaitTool implements Tool
         if ($result['read_error'] !== null) {
             $response['read_error'] = $result['read_error'];
         }
-        if ($result['read_skipped']) {
-            $response['read_skipped'] = true;
+        if ($result['read_skipped'] !== null) {
+            $response['read_skipped'] = $result['read_skipped'];
+        }
+        if ($result['retry_not_before'] !== null) {
+            $response['retry_not_before'] = $result['retry_not_before'];
         }
         if ($deliveryKnown === false && $result['state'] !== 'settled') {
             $response['warning'] = "this bridge holds no stored workflow_run delivery from {$configured}: if that repo's webhook does not send Workflow runs here, nothing settles this await and it ends in ci_await_expired. (None stored is not proof — retention prunes old deliveries.)";
