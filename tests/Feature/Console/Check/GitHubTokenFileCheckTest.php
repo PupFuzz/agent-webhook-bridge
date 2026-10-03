@@ -124,8 +124,7 @@ class GitHubTokenFileCheckTest extends TestCase
     private function boot(?string $tokenFile, bool $promote, bool $writeback = true, array $labelRepos = [], ?string $scopes = null): void
     {
         $this->bootGoldenInstall('github-token-file', function (GoldenInstall $i) use ($tokenFile, $promote, $writeback, $labelRepos, $scopes) {
-            $i->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
-                ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+            $i->boot()->agent('prod-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
             config(['bridge.protocol_invalid_label.repos' => $labelRepos]);
             if ($writeback) {
                 $mapping = ['board_id' => 8, 'stages' => ['merged' => 52, 'merged_to_main' => 53]];
