@@ -1133,7 +1133,7 @@ When a PR **merges** (`merged` / `merged_to_main`) and the writeback cannot move
 | `post_unconfirmed` | GitHub **accepted** the POST and its answer does not carry the comment (its body does not start with the marker). A 2xx is the server's claim, not the outcome: this endpoint answers with the comment it created, so the post confirms itself out of that same answer, and an answer the bridge cannot read lands here too — unconfirmed, never posted |
 | `unexpected` | anything outside those steps |
 
-Within one delivery each PR and outcome is attempted once, whatever the result, so a bundled DL's cards and several subscribed agents repeat neither the requests nor the warning. `bridge:check` does **not** test the token for write permission. A comment that did post logs `pr_correlation_comment: posted`.
+Within one delivery each PR and outcome is attempted once, whatever the result, so a bundled DL's cards and several subscribed agents repeat neither the requests nor the warning. `bridge:check` does **not** test the token for write permission on a repo: it reads a classic token's scopes, and nothing more (§ *`bridge:check` asks whether the token file can serve these legs*). A comment that did post logs `pr_correlation_comment: posted`.
 
 ⛔ **No later event reliably re-attempts it.** A pull request **merges once**, so a comment refused on a merge has no later event of that outcome. And both routes that look like a retry are closed, exactly as for the label below: a redelivery is recognised as the same delivery, and `bridge:replay` skips processed rows without `--force`. What closes the gap is a RECORD — every comment the bridge rendered and could not land, where the cause can still clear, is remembered and finished by `bridge:github-owed` (§ *A refused GitHub write is remembered* below, card#10365 / DL-422).
 
@@ -1236,14 +1236,17 @@ The `github.token_file` leg is the one place `bridge:check` asks about the place
 | No switched-on leg needs the file | nothing (the leg is `silent` in the inventory) |
 | The file is absent, empty, not a regular file, or group/world-readable | **`fail`** — the legs are named INERT, with the path and the remedy |
 | The file is there and THIS process cannot read it, or a directory above it is not traversable | **`unvalidated`** — the receiver runs as its own user and may read it fine |
-| `writeback.json` is present and did not load, and no file resolves | **`unvalidated`** — whether a `writeback.json` leg needs the file was not determined |
+| `writeback.json` is present and did not load | **`unvalidated`** — whether a `writeback.json` leg needs the file (and, where one resolves, whether it can serve that leg) was not determined. A leg switched on outside `writeback.json` is still judged |
 | GitHub answers `401` to the token | **`fail`** |
 | GitHub answers anything else, or cannot be reached | **`unvalidated`** |
 | A classic token without `repo` or `public_repo`, and a leg that writes is on | **`fail`** |
 | A classic token with `public_repo` and not `repo` | **`warn`** — writes to a private repo are refused |
-| A classic token with `repo` | **`ok`** |
-| Not a classic token (no `X-OAuth-Scopes` on GitHub's answer) | **`unvalidated`**, worded *write scope UNMEASURED* — no read this bridge makes reports a fine-grained or installation token's own permissions |
-| The owed-writes record above holds writes dropped as `token_unresolved` | **`warn`**, with the count and the `bridge:github-owed` remedy (the record keeps a write for its own expiry window only) |
+| A classic token with `repo` | **`ok`**, worded *scope only; repo access and SSO authorisation not measured* — the scope is all this read reports |
+| Not a classic token (no `X-OAuth-Scopes` on GitHub's answer, or an empty one on a token without a `ghp_` / `gho_` prefix) | **`unvalidated`**, worded *write scope UNMEASURED* — no read this bridge makes reports a fine-grained or installation token's own permissions. A pre-2021 classic token has no prefix, so its empty header reads unmeasured too |
+| GitHub's answer would pass, and the receiver's user may not read the file: the file is owned by root, or by another user than the owed-writes record above (which only the receiver's user writes), or this run is root with no such record to compare, or this run cannot traverse the state dir that record lives in | **`unvalidated`** — the file is owner-only, so this run's own read says nothing about the receiver's user. The line names both owners where it has them, and says to run `sudo -u <pool user> php artisan bridge:check` |
+| GitHub's answer would pass and the file shares its owner with the owed-writes record | **`ok`**, naming that record as the evidence |
+| GitHub's answer would pass and there is no owed-writes record to compare (the usual case on a healthy install) | **`ok`**, saying the receiver's PHP-FPM pool user was not measured and to run `sudo -u <pool user> php artisan bridge:check` to measure it |
+| The owed-writes record above holds writes dropped as `token_unresolved` | **`warn`**, with the count and the `bridge:github-owed` remedy (the record keeps a write for its own expiry window only). A state dir this run cannot traverse is **`unvalidated`**, never counted as nothing owed |
 
 The token is put to one read, `GET /rate_limit`, which GitHub does not count against the rate limit. ⛔ **Why `fail` and not `warn`:** the correlation comment is on for every mapped repo and has no switch, and it is the only surface that says why a merge did not move its card, so an install without a usable file has a broken enablement, not a degraded mode — and a `warn` here is how the drops went unnoticed for weeks on a peer install. Where the leg could not tell, it says `unvalidated` and the exit code does not move. `CLAUDE_DECISIONS.md` DL-453 records the ruling.
 

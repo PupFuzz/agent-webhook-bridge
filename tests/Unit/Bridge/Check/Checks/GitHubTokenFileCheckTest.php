@@ -5,7 +5,9 @@ namespace Tests\Unit\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\GitHubTokenFileCheck;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\SystemProcessIdentity;
 use App\Bridge\Writeback\GitHubWriteDebt;
 use App\Bridge\Writeback\ProtocolInvalidLabeler;
 use App\Bridge\Writeback\WritebackConfig;
@@ -186,6 +188,41 @@ class GitHubTokenFileCheckTest extends TestCase
         $this->assertStringContainsString('writeback.json did not load', $findings[0]->message);
     }
 
+    public function test_a_resolved_token_with_writeback_json_unread_and_no_leg_on_is_unvalidated_not_silent(): void
+    {
+        // Review r1 MINOR: "no leg that uses it is switched on" is unknowable when writeback.json,
+        // which switches legs on, did not load.
+        $this->tokenFile('ghp_x');
+        Http::fake();
+        $ctx = new CheckContext;
+        $ctx->writebackUnread = true;
+
+        $findings = $this->findingsOf(new GitHubTokenFileCheck, $ctx);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('a token file resolves (token file ('.$this->dir.'/github/token))', $findings[0]->message);
+        $this->assertStringContainsString('writeback.json did not load', $findings[0]->message);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_resolved_token_with_writeback_json_unread_is_still_tried_for_a_leg_switched_on_elsewhere(): void
+    {
+        $this->tokenFile('ghp_x');
+        $this->runAs((int) (new SystemProcessIdentity)->euid());
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+        config(['bridge.protocol_invalid_label.repos' => ['owner/other']]);
+        $ctx = new CheckContext;
+        $ctx->writebackUnread = true;
+
+        $findings = $this->findingsOf(new GitHubTokenFileCheck, $ctx);
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity, 'the witness: the label leg needs no writeback.json and is judged');
+        $this->assertSame(Severity::Unvalidated, $findings[1]->severity);
+        $this->assertStringContainsString('writeback.json did not load', $findings[1]->message);
+    }
+
     // ---- the file resolves: the one GitHub read ----
 
     public function test_a_token_github_refuses_fails(): void
@@ -263,6 +300,41 @@ class GitHubTokenFileCheckTest extends TestCase
         $this->assertStringContainsString('neither `repo` nor `public_repo` (no scope at all)', $finding->message);
     }
 
+    public function test_an_oauth_app_token_naming_no_scope_fails_as_classic(): void
+    {
+        $this->tokenFile('gho_oauth');
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => ''])]);
+
+        $this->assertSame(Severity::Fail, $this->onlyFinding($this->runCheck())->severity);
+    }
+
+    public function test_an_empty_scopes_header_on_a_token_that_is_not_classic_is_unmeasured_never_failed(): void
+    {
+        // Review r1 MINOR: an empty X-OAuth-Scopes is "no scope" only for a classic token; on a
+        // fine-grained one (which writeback.md recommends) it would false-FAIL a working install.
+        $this->tokenFile('github_pat_SECRETPART');
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => ''])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString('write scope UNMEASURED', $finding->message);
+        $this->assertStringContainsString('names no scope', $finding->message);
+        $this->assertStringNotContainsString('SECRETPART', $finding->message);
+        $this->assertStringNotContainsString('github_pat_', $finding->message);
+    }
+
+    public function test_the_repo_ok_names_what_a_scope_read_does_not_measure(): void
+    {
+        $this->tokenFile('ghp_x');
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Ok, $finding->severity);
+        $this->assertStringContainsString('scope only; repo access and SSO authorisation not measured', $finding->message);
+    }
+
     public function test_a_scope_verdict_names_only_the_legs_that_write(): void
     {
         // promote-on-release only READS, so a token without write scope does not make it inert;
@@ -294,6 +366,138 @@ class GitHubTokenFileCheckTest extends TestCase
 
         $this->assertSame([], $findings);
         Http::assertNothingSent();
+    }
+
+    // ---- the file resolves: can the RECEIVER's user read it? ----
+
+    public function test_a_token_file_owned_by_another_user_than_the_receivers_own_record_is_never_ok(): void
+    {
+        // The review's MAJOR (PR #854 r1): a 0600 file placed by the operator's login user reads fine
+        // here and is unreadable to the receiver. The owed-writes record is the receiver's (only its
+        // user may write it, StateWriterRefusal), so its owner is the receiver's user.
+        $token = $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        $me = $this->realEuid();
+        $this->runAs($me, [$me => 'operator', $me + 1 => 'www-data'], [GitHubWriteDebt::path() => $me + 1]);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString("{$token} is owned by operator", $finding->message);
+        $this->assertStringContainsString(GitHubWriteDebt::path().' — a file only the receiver\'s user writes — is owned by www-data', $finding->message);
+        $this->assertStringContainsString('sudo -u <pool user> php artisan bridge:check', $finding->message);
+    }
+
+    public function test_a_token_file_owned_by_the_owner_of_the_receivers_own_record_is_ok_and_says_how_it_knows(): void
+    {
+        $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        $me = $this->realEuid();
+        $this->runAs($me, [$me => 'www-data']);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Ok, $finding->severity, $finding->message);
+        $this->assertStringContainsString('owned by www-data, the owner of '.GitHubWriteDebt::path(), $finding->message);
+        $this->assertStringNotContainsString('which this run does not measure', $finding->message);
+    }
+
+    public function test_with_no_receiver_owned_file_to_compare_the_ok_discloses_the_pool_user_it_did_not_measure(): void
+    {
+        $this->tokenFile('ghp_x');
+        $this->runAs($this->realEuid());
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Ok, $finding->severity, $finding->message);
+        $this->assertStringContainsString('The receiver reads it as its PHP-FPM pool user, which this run does not measure: run sudo -u <pool user> php artisan bridge:check', $finding->message);
+    }
+
+    public function test_a_root_run_with_no_receiver_owned_file_to_compare_is_never_ok(): void
+    {
+        $this->tokenFile('ghp_x');
+        $this->runAs(0, [], [], tokenOwner: 1000);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString('this run is root, which reads any file', $finding->message);
+        $this->assertStringContainsString('sudo -u <pool user> php artisan bridge:check', $finding->message);
+    }
+
+    public function test_a_root_owned_token_file_is_never_ok_because_the_receiver_never_runs_as_root(): void
+    {
+        // The sudo-placed file: root reads it, and a 0600 file root owns is closed to every other user.
+        $token = $this->tokenFile('ghp_x');
+        $this->runAs(0, [0 => 'root'], [], tokenOwner: 0);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString("{$token} is owned by root", $finding->message);
+    }
+
+    public function test_a_root_run_is_ok_where_the_token_file_and_the_receivers_record_share_an_owner(): void
+    {
+        // What establishes the read here is the shared owner, not root's own read of the file.
+        $token = $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        $this->runAs(0, [1000 => 'www-data'], [GitHubWriteDebt::path() => 1000], tokenOwner: 1000);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Ok, $finding->severity, $finding->message);
+        $this->assertStringContainsString("{$token} is owned by www-data, the owner of", $finding->message);
+    }
+
+    public function test_a_state_dir_this_run_cannot_traverse_means_it_is_not_the_receivers_user(): void
+    {
+        // The review's scenario as it most often lands: the operator's login user owns the token,
+        // the receiver owns a 0700 state dir the operator cannot enter. And the owed-record count
+        // must not read that blindness as "nothing owed".
+        if ($this->realEuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+        $this->tokenFile('ghp_x');
+        File::ensureDirectoryExists($this->dir.'/locked/state');
+        config(['bridge.state_dir' => $this->dir.'/locked/state']);
+        chmod($this->dir.'/locked/state', 0o000);
+        $this->runAs($this->realEuid());
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        try {
+            $findings = $this->runCheck();
+        } finally {
+            chmod($this->dir.'/locked/state', 0o700);
+        }
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity, $findings[0]->message);
+        $this->assertStringContainsString('this run cannot see into '.$this->dir.'/locked/state', $findings[0]->message);
+        $this->assertSame(Severity::Unvalidated, $findings[1]->severity, $findings[1]->message);
+        $this->assertStringContainsString('the record of GitHub writes this install owes', $findings[1]->message);
+        $this->assertStringContainsString('is not visible to this user', $findings[1]->message);
+    }
+
+    public function test_an_owner_mismatch_is_named_on_an_unmeasured_scope_line_too(): void
+    {
+        $this->tokenFile('github_pat_fine_grained');
+        $this->owedForAnotherReason();
+        $me = $this->realEuid();
+        $this->runAs($me, [$me => 'operator', $me + 1 => 'www-data'], [GitHubWriteDebt::path() => $me + 1]);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response(['resources' => []])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringContainsString('write scope UNMEASURED', $finding->message);
+        $this->assertStringContainsString('is owned by www-data', $finding->message);
     }
 
     // ---- what a missing file already cost ----
@@ -349,6 +553,62 @@ class GitHubTokenFileCheckTest extends TestCase
         $this->assertCount(1, $findings);
 
         return $findings[0];
+    }
+
+    /** A record of owed writes that holds no token-file drop, so the leg's drop count stays silent. */
+    private function owedForAnotherReason(): void
+    {
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 9, ['comment_id' => '9'], ProtocolInvalidLabeler::REASON_ADD_FAILED, null, true);
+        $this->assertFileExists(GitHubWriteDebt::path());
+    }
+
+    private function realEuid(): int
+    {
+        $euid = (new SystemProcessIdentity)->euid();
+        if ($euid === null) {
+            $this->markTestSkipped('no posix extension: this suite cannot name its own uid');
+        }
+
+        return $euid;
+    }
+
+    /**
+     * Run the rest of the test as $euid. An EXISTING file's owner is its real one unless overridden
+     * per path; $tokenOwner overrides the token file's.
+     *
+     * @param  array<int, string>  $names
+     * @param  array<string, int>  $owners
+     */
+    private function runAs(int $euid, array $names = [], array $owners = [], ?int $tokenOwner = null): void
+    {
+        if ($tokenOwner !== null) {
+            $owners[$this->dir.'/github/token'] = $tokenOwner;
+        }
+        $this->app->instance(ProcessIdentity::class, new class($euid, $names, $owners) implements ProcessIdentity
+        {
+            /**
+             * @param  array<int, string>  $names
+             * @param  array<string, int>  $owners
+             */
+            public function __construct(private int $euid, private array $names, private array $owners) {}
+
+            public function euid(): ?int
+            {
+                return $this->euid;
+            }
+
+            public function ownerOf(string $path): ?int
+            {
+                $real = (new SystemProcessIdentity)->ownerOf($path);
+
+                return $real === null ? null : ($this->owners[$path] ?? $real);
+            }
+
+            public function accountName(int $uid): ?string
+            {
+                return $this->names[$uid] ?? null;
+            }
+        });
     }
 
     private function tokenFile(string $contents, int $mode = 0o600): string

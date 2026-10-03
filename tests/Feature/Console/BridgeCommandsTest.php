@@ -759,13 +759,14 @@ class BridgeCommandsTest extends TestCase
             'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
         ] + $this->fakePreload());
 
-        // The reconcile leg still WARNS (DL-186). The run now exits 1 because the same stale
-        // file is the token the receiver's GitHub legs use, and `github.token_file` FAILs a
+        // The reconcile leg still WARNS (DL-186) — asserted on its severity-marked line, so a
+        // reconcile line that turned FAIL would red here. The run now exits 1 because the same
+        // stale file is the token the receiver's GitHub legs use, and `github.token_file` FAILs a
         // token GitHub answers 401 (card#11201 / DL-453).
-        $this->artisan('bridge:check')
-            ->expectsOutputToContain('token from token file')
-            ->expectsOutputToContain('GitHub REFUSES the token in token file')
-            ->assertExitCode(1);
+        $this->assertSame(1, Artisan::call('bridge:check'));
+        $out = Artisan::output();
+        $this->assertMatchesRegularExpression('/^WARN: reconcile: owner\/repo: token from token file \(/m', $out);
+        $this->assertMatchesRegularExpression('/^FAIL: github token file: GitHub REFUSES the token in token file/m', $out);
     }
 
     public function test_check_classifies_the_reconcile_token_probe_status_into_a_hint(): void
@@ -785,9 +786,8 @@ class BridgeCommandsTest extends TestCase
         ] + $this->fakePreload());
 
         // Exit 1 from `github.token_file`, not from this leg: see the test above (card#11201).
-        $this->artisan('bridge:check')
-            ->expectsOutputToContain('HTTP 401 (token expired/revoked)')
-            ->assertExitCode(1);
+        $this->assertSame(1, Artisan::call('bridge:check'));
+        $this->assertMatchesRegularExpression('/^WARN: reconcile: owner\/repo: token from .* HTTP 401 \(token expired\/revoked\)/m', Artisan::output());
     }
 
     public function test_check_classifies_a_403_probe_as_a_scope_hint(): void

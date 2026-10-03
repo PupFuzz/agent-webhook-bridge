@@ -90,8 +90,9 @@ class PathVisibilityAdoptionTest extends TestCase
         // has the answer and must not re-measure to render it.
         'app/Bridge/Check/Checks/ChannelTokenPathCheck.php' => 1,
         // the placed GitHub token file (card#11201) — its absent arm FAILs, so an unseeable
-        // secret dir must not convict the legs that read it.
-        'app/Bridge/Check/Checks/GitHubTokenFileCheck.php' => 1,
+        // secret dir must not convict the legs that read it; and the owed-writes count, so an
+        // unseeable state dir is not read as nothing owed (PR #854 r1).
+        'app/Bridge/Check/Checks/GitHubTokenFileCheck.php' => 2,
     ];
 
     public function test_the_guard_adoption_sites_are_exactly_these(): void
