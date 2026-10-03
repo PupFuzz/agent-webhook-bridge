@@ -4,7 +4,9 @@ namespace Tests\Support;
 
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\EmitsWritebackReactions;
+use App\Bridge\Writeback\BoardMoverScope;
 use App\Bridge\Writeback\WritebackAlertNotifier;
+use App\Bridge\Writeback\WriteOp;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\NodeFinder;
@@ -45,16 +47,34 @@ use ReflectionParameter;
  * declare `alert_channel`. The check knows the arm by that `reason` literal only; an arm that
  * cannot reach a channel for any other reason is not detected.
  *
+ * ⭐ EVERY SITE ALSO SPELLS `handler` AND `op` (card#11223), in the context it logs — the second
+ * argument of a `Log::` call, the `$logContext` argument of a helper. `handler` is always
+ * {@see BoardMoverScope::handler()}, never a typed name: a shared site logs for whichever handler
+ * called it, so only the runtime scope knows. `op` is a string literal the catalog's `ops` declares
+ * where the site's write is the same on every path, or {@see BoardMoverScope::op()} where it
+ * depends on the caller. `undeclared` is the scope's value when nobody declared one, so it is never
+ * a literal. The check sees the keys, not the values they take at run time: that the scope is set
+ * where a handler runs is `BoardMoverScopeTest`'s to show.
+ *
  * ⛔ EVERY LEVEL, NOT ONLY WARNINGS, AND THAT IS WHAT MAKES THE POPULATION DERIVABLE. "A warning or
  * a refusal" cannot be decided from source at `Log::info`: a refusal written at info level
  * (`refusing to re-lane`) and a success row (`moved`) share a level, and telling them apart would
  * take a hand-typed list — the drift this whole check exists to remove.
+ *
+ * @phpstan-type Site array{site: string, where: string, via: string, id: ?string, problem: ?string, handler_problem: ?string, op: ?string, op_problem: ?string}
  */
 final class BoardMoverCatalogCheck
 {
     public const CATALOG = 'docs/board-mover-catalog.json';
 
     public const CONTEXT_KEY = 'catalog_id';
+
+    public const HANDLER_KEY = 'handler';
+
+    public const OP_KEY = 'op';
+
+    /** A site's `op` when it is read from the scope at run time rather than written as a literal. */
+    public const OP_RUNTIME = '<runtime>';
 
     /** The catalog surfaces a site can be checked against. */
     public const SURFACE_LOG = 'log';
@@ -110,10 +130,10 @@ final class BoardMoverCatalogCheck
 
     /**
      * The notifier methods a caller hands a catalog id to — every public method of
-     * {@see WritebackAlertNotifier} with a `$catalogId` parameter — each mapped to the position of
-     * its `$reason` parameter, or null when it has none.
+     * {@see WritebackAlertNotifier} with a `$catalogId` parameter — each mapped to the positions of
+     * its `$reason` and `$logContext` parameters, each null when it has none.
      *
-     * @return array<string, ?int>
+     * @return array<string, array{reason: ?int, context: ?int}>
      */
     public static function notifierMethods(): array
     {
@@ -122,7 +142,8 @@ final class BoardMoverCatalogCheck
             $names = array_map(fn (ReflectionParameter $p) => $p->getName(), $method->getParameters());
             if (in_array('catalogId', $names, true)) {
                 $reason = array_search('reason', $names, true);
-                $methods[$method->getName()] = is_int($reason) ? $reason : null;
+                $context = array_search('logContext', $names, true);
+                $methods[$method->getName()] = ['reason' => is_int($reason) ? $reason : null, 'context' => is_int($context) ? $context : null];
             }
         }
         ksort($methods);
@@ -133,7 +154,7 @@ final class BoardMoverCatalogCheck
     /**
      * Every site in the population, from the real tree.
      *
-     * @return list<array{site: string, where: string, via: string, id: ?string, problem: ?string}>
+     * @return list<Site>
      */
     public static function treeSites(): array
     {
@@ -154,11 +175,13 @@ final class BoardMoverCatalogCheck
     /**
      * The sites in one source file. `site` is the enclosing `ShortClass::method`; a closure's call
      * belongs to the method that contains it. `id` is the literal catalog id, or null with
-     * `problem` naming why there is none.
+     * `problem` naming why there is none. `handler_problem` is null when the context spells
+     * `handler` as the scope read, else why it does not; `op` is the literal, or
+     * {@see self::OP_RUNTIME} for the scope read, or null with `op_problem` saying why.
      *
      * @param  callable(string): bool  $inPopulation
-     * @param  array<string, ?int>  $notifierMethods  helper name => position of its `$reason` parameter
-     * @return list<array{site: string, where: string, via: string, id: ?string, problem: ?string}>
+     * @param  array<string, array{reason: ?int, context: ?int}>  $notifierMethods  helper name => positions of its `$reason` and `$logContext` parameters
+     * @return list<Site>
      */
     public static function sitesIn(string $source, string $file, callable $inPopulation, string $notifierClass, array $notifierMethods): array
     {
@@ -184,15 +207,21 @@ final class BoardMoverCatalogCheck
                             continue;
                         }
                         [$id, $problem] = self::logCallId($call);
-                        $sites[] = ['site' => $site, 'where' => $where, 'via' => self::SURFACE_LOG, 'id' => $id, 'problem' => $problem];
+                        $sites[] = ['site' => $site, 'where' => $where, 'via' => self::SURFACE_LOG, 'id' => $id, 'problem' => $problem]
+                            + self::runtimeKeys($call->getArgs()[1] ?? null, 'the call passes no context array');
 
                         continue;
                     }
                     if (($call instanceof Expr\MethodCall || $call instanceof Expr\NullsafeMethodCall) && $call->name instanceof Node\Identifier
                         && array_key_exists($call->name->toString(), $notifierMethods)) {
-                        [$id, $problem] = self::notifierCallId($call);
-                        $via = self::isUnconfiguredArm($call, $notifierMethods[$call->name->toString()]) ? self::VIA_UNCONFIGURED : self::SURFACE_ALERT;
-                        $sites[] = ['site' => $site, 'where' => $where, 'via' => $via, 'id' => $id, 'problem' => $problem];
+                        $positions = $notifierMethods[$call->name->toString()];
+                        [$id, $problem] = self::notifierCallId($call, $positions['context']);
+                        $via = self::isUnconfiguredArm($call, $positions['reason']) ? self::VIA_UNCONFIGURED : self::SURFACE_ALERT;
+                        $sites[] = ['site' => $site, 'where' => $where, 'via' => $via, 'id' => $id, 'problem' => $problem]
+                            + self::runtimeKeys(
+                                self::argAt($call, $positions['context'], 'logContext'),
+                                $positions['context'] === null ? 'the helper takes no `$logContext`, so its row cannot carry the key' : 'the call passes no `$logContext`',
+                            );
                     }
                 }
             }
@@ -204,7 +233,7 @@ final class BoardMoverCatalogCheck
     /**
      * Every disagreement between the sites and the catalog, one line each. Empty is clean.
      *
-     * @param  list<array{site: string, where: string, via: string, id: ?string, problem: ?string}>  $sites
+     * @param  list<Site>  $sites
      * @param  array<string, mixed>  $catalog  the decoded catalog document
      * @return list<string>
      */
@@ -216,6 +245,25 @@ final class BoardMoverCatalogCheck
         }
         if (($catalog['context_key'] ?? null) !== self::CONTEXT_KEY) {
             $out[] = 'CATALOG_SCHEMA: `context_key` is not `'.self::CONTEXT_KEY.'`';
+        }
+        if (($catalog['handler_key'] ?? null) !== self::HANDLER_KEY) {
+            $out[] = 'CATALOG_SCHEMA: `handler_key` is not `'.self::HANDLER_KEY.'`';
+        }
+        if (($catalog['op_key'] ?? null) !== self::OP_KEY) {
+            $out[] = 'CATALOG_SCHEMA: `op_key` is not `'.self::OP_KEY.'`';
+        }
+        $ops = is_array($catalog['ops'] ?? null) ? $catalog['ops'] : [];
+        $declared = array_map(fn (WriteOp $op) => $op->value, WriteOp::cases());
+        foreach (array_diff($declared, array_keys($ops)) as $missing) {
+            $out[] = "OPS_MISMATCH: `{$missing}` is a WriteOp case the catalog's `ops` does not declare";
+        }
+        foreach (array_diff(array_keys($ops), $declared) as $extra) {
+            $out[] = "OPS_MISMATCH: `{$extra}` is declared in the catalog's `ops` and is no WriteOp case";
+        }
+        foreach ($ops as $op => $about) {
+            if (! is_string($about) || trim($about) === '') {
+                $out[] = "OPS_MISMATCH: `{$op}` has no description";
+            }
         }
         $kinds = is_array($catalog['kinds'] ?? null) ? $catalog['kinds'] : [];
         $entries = is_array($catalog['entries'] ?? null) ? $catalog['entries'] : [];
@@ -248,9 +296,19 @@ final class BoardMoverCatalogCheck
             }
         }
 
-        /** @var array<string, list<array{site: string, where: string, via: string, id: ?string, problem: ?string}>> $usedAt */
+        /** @var array<string, list<Site>> $usedAt */
         $usedAt = [];
         foreach ($sites as $site) {
+            if ($site['handler_problem'] !== null) {
+                $out[] = "SITE_WITHOUT_HANDLER: {$site['site']} ({$site['where']}) — {$site['handler_problem']}";
+            }
+            if ($site['op'] === null) {
+                $out[] = "SITE_WITHOUT_OP: {$site['site']} ({$site['where']}) — {$site['op_problem']}";
+            } elseif ($site['op'] === WriteOp::Undeclared->value) {
+                $out[] = "OP_LITERAL_UNDECLARED: {$site['site']} ({$site['where']}) — `undeclared` is the scope's value when no write-kind was declared; a site writes the op it is about, or reads the scope";
+            } elseif ($site['op'] !== self::OP_RUNTIME && ! array_key_exists($site['op'], $ops)) {
+                $out[] = "OP_NOT_IN_CATALOG: `{$site['op']}` at {$site['site']} ({$site['where']}) is not an op the catalog declares";
+            }
             if ($site['id'] === null) {
                 $out[] = "SITE_WITHOUT_ID: {$site['site']} ({$site['where']}) — {$site['problem']}";
 
@@ -368,14 +426,14 @@ final class BoardMoverCatalogCheck
     /**
      * @return array{0: ?string, 1: ?string}
      */
-    private static function notifierCallId(Expr\MethodCall|Expr\NullsafeMethodCall $call): array
+    private static function notifierCallId(Expr\MethodCall|Expr\NullsafeMethodCall $call, ?int $contextPosition): array
     {
         $args = $call->getArgs();
         $first = $args[0] ?? null;
         if ($first === null || $first->name !== null || ! $first->value instanceof Node\Scalar\String_) {
             return [null, 'the first argument to the notifier is not a string-literal catalog id'];
         }
-        $logContext = $args[2] ?? null;
+        $logContext = self::argAt($call, $contextPosition, 'logContext');
         if ($logContext !== null && self::contextValue($logContext->value) !== null) {
             return [null, 'the log context also carries `'.self::CONTEXT_KEY.'` — the helper adds it; declare it once'];
         }
@@ -383,36 +441,80 @@ final class BoardMoverCatalogCheck
         return [$first->value->value, null];
     }
 
+    /**
+     * Whether the context spells `handler` as the scope read, and what it spells `op` as.
+     *
+     * @return array{handler_problem: ?string, op: ?string, op_problem: ?string}
+     */
+    private static function runtimeKeys(?Node\Arg $context, string $absent): array
+    {
+        if ($context === null) {
+            return ['handler_problem' => $absent, 'op' => null, 'op_problem' => $absent];
+        }
+        $handler = self::contextValue($context->value, self::HANDLER_KEY);
+        $handlerProblem = match (true) {
+            $handler === null => 'no `'.self::HANDLER_KEY.'` key in a literal context array',
+            ! self::isScopeRead($handler, 'handler') => '`'.self::HANDLER_KEY.'` is not `BoardMoverScope::handler()` — a typed name is wrong at every shared site, so the scope is the only source',
+            default => null,
+        };
+
+        $op = self::contextValue($context->value, self::OP_KEY);
+        if ($op === null) {
+            return ['handler_problem' => $handlerProblem, 'op' => null, 'op_problem' => 'no `'.self::OP_KEY.'` key in a literal context array'];
+        }
+        if ($op instanceof Node\Scalar\String_) {
+            return ['handler_problem' => $handlerProblem, 'op' => $op->value, 'op_problem' => null];
+        }
+        if (self::isScopeRead($op, 'op')) {
+            return ['handler_problem' => $handlerProblem, 'op' => self::OP_RUNTIME, 'op_problem' => null];
+        }
+
+        return ['handler_problem' => $handlerProblem, 'op' => null, 'op_problem' => '`'.self::OP_KEY.'` is neither a string literal nor `BoardMoverScope::op()`'];
+    }
+
+    private static function isScopeRead(Expr $expr, string $method): bool
+    {
+        return $expr instanceof Expr\StaticCall
+            && $expr->class instanceof Node\Name && $expr->class->toString() === BoardMoverScope::class
+            && $expr->name instanceof Node\Identifier && $expr->name->toString() === $method
+            && $expr->getArgs() === [];
+    }
+
+    /** The argument a call passes for the parameter at $position, by name or by position. */
+    private static function argAt(Expr\MethodCall|Expr\NullsafeMethodCall $call, ?int $position, string $name): ?Node\Arg
+    {
+        if ($position === null) {
+            return null;
+        }
+        foreach ($call->getArgs() as $arg) {
+            if ($arg->name?->toString() === $name) {
+                return $arg;
+            }
+        }
+        $positional = $call->getArgs()[$position] ?? null;
+
+        return $positional?->name === null ? $positional : null;
+    }
+
     /** Whether the helper call's `$reason` — named, or at its declared position — is the no-`writeback.json` literal. */
     private static function isUnconfiguredArm(Expr\MethodCall|Expr\NullsafeMethodCall $call, ?int $reasonPosition): bool
     {
-        if ($reasonPosition === null) {
-            return false;
-        }
-        $args = $call->getArgs();
-        $reason = null;
-        foreach ($args as $arg) {
-            if ($arg->name?->toString() === 'reason') {
-                $reason = $arg;
-            }
-        }
-        $positional = $args[$reasonPosition] ?? null;
-        $reason ??= $positional?->name === null ? $positional : null;
+        $reason = self::argAt($call, $reasonPosition, 'reason');
 
         return $reason !== null && $reason->value instanceof Node\Scalar\String_ && $reason->value->value === self::UNCONFIGURED_REASON;
     }
 
-    /** The value under the context key in a literal array, or in either operand of a `+` union. */
-    private static function contextValue(Expr $expr): ?Expr
+    /** The value under $key (the catalog id's by default) in a literal array, or in either operand of a `+` union. */
+    private static function contextValue(Expr $expr, string $key = self::CONTEXT_KEY): ?Expr
     {
         if ($expr instanceof Expr\BinaryOp\Plus) {
-            return self::contextValue($expr->left) ?? self::contextValue($expr->right);
+            return self::contextValue($expr->left, $key) ?? self::contextValue($expr->right, $key);
         }
         if (! $expr instanceof Expr\Array_) {
             return null;
         }
         foreach ($expr->items as $item) {
-            if ($item->key instanceof Node\Scalar\String_ && $item->key->value === self::CONTEXT_KEY) {
+            if ($item->key instanceof Node\Scalar\String_ && $item->key->value === $key) {
                 return $item->value;
             }
         }

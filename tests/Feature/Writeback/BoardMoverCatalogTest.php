@@ -5,6 +5,7 @@ namespace Tests\Feature\Writeback;
 use App\Bridge\Handlers\ChannelPushHandler;
 use App\Bridge\Handlers\KanbanMoveCardHandler;
 use App\Bridge\Writeback\WritebackAlertNotifier;
+use App\Bridge\Writeback\WriteOp;
 use Illuminate\Support\Facades\Log;
 use ReflectionClass;
 use ReflectionMethod;
@@ -26,8 +27,11 @@ class BoardMoverCatalogTest extends TestCase
 {
     private const FIXTURE_NOTIFIER = 'Fixture\In\Notifier';
 
-    /** The fixture helper's `$reason` is its fourth parameter. */
-    private const FIXTURE_NOTIFIER_METHODS = ['warnAndNotify' => 3];
+    /** The fixture helper's `$logContext` is its third parameter and its `$reason` its fourth. */
+    private const FIXTURE_NOTIFIER_METHODS = ['warnAndNotify' => ['reason' => 3, 'context' => 2]];
+
+    /** The two runtime keys every fixture site spells unless it is the one rule a leg breaks. */
+    private const KEYS = "'handler' => BoardMoverScope::handler(), 'op' => 'move'";
 
     public function test_every_board_mover_log_site_carries_an_id_the_catalog_declares_and_back(): void
     {
@@ -54,15 +58,21 @@ class BoardMoverCatalogTest extends TestCase
         );
         $this->assertTrue(BoardMoverCatalogCheck::inPopulation(KanbanMoveCardHandler::class));
 
-        // Each helper's `$reason` position comes from its own signature, never from a hand-typed index.
+        // Each helper's `$reason` and `$logContext` positions come from its own signature, never
+        // from a hand-typed index — and every helper takes a log context, so its rows can carry
+        // `handler` and `op`.
         $methods = BoardMoverCatalogCheck::notifierMethods();
-        foreach (['warnAndNotify', 'warnAndNotifyCardIdWithheld'] as $helper) {
-            $position = array_search('reason', array_map(
+        $this->assertSame(['notifyOwedWriteGaveUp', 'warnAndNotify', 'warnAndNotifyCardIdWithheld'], array_keys($methods));
+        foreach (array_keys($methods) as $helper) {
+            $names = array_map(
                 fn (ReflectionParameter $p) => $p->getName(),
                 (new ReflectionMethod(WritebackAlertNotifier::class, $helper))->getParameters(),
-            ), true);
-            $this->assertIsInt($position);
-            $this->assertSame($position, $methods[$helper] ?? null, $helper);
+            );
+            foreach (['reason' => 'reason', 'context' => 'logContext'] as $slot => $parameter) {
+                $position = array_search($parameter, $names, true);
+                $this->assertIsInt($position, "{$helper} \${$parameter}");
+                $this->assertSame($position, $methods[$helper][$slot], "{$helper} \${$parameter}");
+            }
         }
     }
 
@@ -83,6 +93,7 @@ class BoardMoverCatalogTest extends TestCase
         <?php
         namespace Fixture\In;
 
+        use App\Bridge\Writeback\BoardMoverScope;
         use Illuminate\Support\Facades\Log;
 
         final class Notifier
@@ -145,7 +156,7 @@ class BoardMoverCatalogTest extends TestCase
     {
         $this->assertFindings(
             ['SITE_WITHOUT_ID: Handler::handle (Fixture.php:10) — no `catalog_id` key in a literal context array'],
-            "Log::warning('x', ['card_id' => 1]);",
+            "Log::warning('x', [".self::KEYS.", 'card_id' => 1]);",
             [],
         );
     }
@@ -154,7 +165,7 @@ class BoardMoverCatalogTest extends TestCase
     {
         $this->assertFindings(
             ['ID_NOT_IN_CATALOG: `h.unknown` at Handler::handle (Fixture.php:10) is not a catalog entry'],
-            "Log::warning('x', ['catalog_id' => 'h.unknown']);",
+            "Log::warning('x', ['catalog_id' => 'h.unknown', ".self::KEYS.']);',
             [],
         );
     }
@@ -169,12 +180,12 @@ class BoardMoverCatalogTest extends TestCase
         $this->assertFindings([], '', [self::entry('h.gone') + ['retired_since' => '0.90.0']]);
         $this->assertFindings(
             ['RETIRED_ID_IN_USE: `h.gone` at Handler::handle (Fixture.php:10) is retired since 0.90.0'],
-            "Log::warning('x', ['catalog_id' => 'h.gone']);",
+            "Log::warning('x', ['catalog_id' => 'h.gone', ".self::KEYS.']);',
             [self::entry('h.gone') + ['retired_since' => '0.90.0']],
         );
         $this->assertFindings(
             ['ENTRY_SITE_MISMATCH: `h.moved` declares Handler::elsewhere but is emitted at Handler::handle (Fixture.php:10)'],
-            "Log::warning('x', ['catalog_id' => 'h.moved']);",
+            "Log::warning('x', ['catalog_id' => 'h.moved', ".self::KEYS.']);',
             [['site' => 'Handler::elsewhere'] + self::entry('h.moved')],
         );
     }
@@ -183,14 +194,86 @@ class BoardMoverCatalogTest extends TestCase
     {
         $this->assertFindings(
             ['DUPLICATE_ENTRY_ID: `h.dup` is declared more than once'],
-            "Log::warning('x', ['catalog_id' => 'h.dup']);",
+            "Log::warning('x', ['catalog_id' => 'h.dup', ".self::KEYS.']);',
             [self::entry('h.dup'), self::entry('h.dup')],
         );
         $this->assertFindings(
             ['ID_USED_AT_MULTIPLE_SITES: `h.dup` is emitted at Handler::handle (Fixture.php:10), Handler::handle (Fixture.php:11)'],
-            "Log::warning('x', ['catalog_id' => 'h.dup']);\n        Log::info('y', ['catalog_id' => 'h.dup']);",
+            "Log::warning('x', ['catalog_id' => 'h.dup', ".self::KEYS."]);\n        Log::info('y', ['catalog_id' => 'h.dup', ".self::KEYS.']);',
             [self::entry('h.dup')],
         );
+    }
+
+    public function test_red_leg_5_a_site_that_does_not_spell_handler_or_op(): void
+    {
+        $this->assertFindings(
+            ['SITE_WITHOUT_HANDLER: Handler::handle (Fixture.php:10) — no `handler` key in a literal context array'],
+            "Log::warning('x', ['catalog_id' => 'h.a', 'op' => 'move']);",
+            [self::entry('h.a')],
+        );
+        $this->assertFindings(
+            ['SITE_WITHOUT_HANDLER: Handler::handle (Fixture.php:10) — `handler` is not `BoardMoverScope::handler()` — a typed name is wrong at every shared site, so the scope is the only source'],
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => 'kanban_move_card', 'op' => 'move']);",
+            [self::entry('h.a')],
+        );
+        $this->assertFindings(
+            ['SITE_WITHOUT_OP: Handler::handle (Fixture.php:10) — no `op` key in a literal context array'],
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler()]);",
+            [self::entry('h.a')],
+        );
+        $this->assertFindings(
+            ['SITE_WITHOUT_OP: Handler::handle (Fixture.php:10) — `op` is neither a string literal nor `BoardMoverScope::op()`'],
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'op' => \$op]);",
+            [self::entry('h.a')],
+        );
+        // A helper row is held to the same rule through its `$logContext`, wherever the caller passes it.
+        $this->assertFindings(
+            [
+                'SITE_WITHOUT_HANDLER: Handler::handle (Fixture.php:10) — no `handler` key in a literal context array',
+                'SITE_WITHOUT_OP: Handler::handle (Fixture.php:10) — no `op` key in a literal context array',
+            ],
+            "\$this->alerts->warnAndNotify('h.a', 'x', ['card_id' => 1]);",
+            [['surface' => ['log', 'alert_channel']] + self::entry('h.a')],
+        );
+        $this->assertFindings([], "\$this->alerts->warnAndNotify('h.a', 'x', logContext: [".self::KEYS.']);', [['surface' => ['log', 'alert_channel']] + self::entry('h.a')]);
+        $this->assertFindings(
+            [
+                'SITE_WITHOUT_HANDLER: Handler::handle (Fixture.php:10) — the call passes no `$logContext`',
+                'SITE_WITHOUT_OP: Handler::handle (Fixture.php:10) — the call passes no `$logContext`',
+            ],
+            "\$this->alerts->warnAndNotify('h.a', 'x');",
+            [['surface' => ['log', 'alert_channel']] + self::entry('h.a')],
+        );
+        // The scope read for `op`, and either key in the other operand of a `+` union, are the site spelling them.
+        $this->assertFindings([], "Log::warning('x', ['catalog_id' => 'h.a'] + ['handler' => BoardMoverScope::handler(), 'op' => BoardMoverScope::op()]);", [self::entry('h.a')]);
+    }
+
+    public function test_red_leg_6_an_op_the_catalog_does_not_declare(): void
+    {
+        $this->assertFindings(
+            ['OP_NOT_IN_CATALOG: `archive` at Handler::handle (Fixture.php:10) is not an op the catalog declares'],
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'op' => 'archive']);",
+            [self::entry('h.a')],
+        );
+        $this->assertFindings(
+            ["OP_LITERAL_UNDECLARED: Handler::handle (Fixture.php:10) — `undeclared` is the scope's value when no write-kind was declared; a site writes the op it is about, or reads the scope"],
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'op' => 'undeclared']);",
+            [self::entry('h.a')],
+        );
+
+        // The catalog's vocabulary and the code's are one set, held both ways.
+        $head = self::catalogHead();
+        $ops = $head['ops'];
+        $this->assertIsArray($ops);
+        unset($ops['stamp']);
+        $ops['archive'] = 'described';
+        $ops['move'] = '';
+        $catalog = ['ops' => $ops, 'kinds' => ['declined' => 'x'], 'entries' => [['retired_since' => '0.80.0'] + self::entry('h.anchor')]] + $head;
+        $this->assertSame([
+            "OPS_MISMATCH: `stamp` is a WriteOp case the catalog's `ops` does not declare",
+            "OPS_MISMATCH: `archive` is declared in the catalog's `ops` and is no WriteOp case",
+            'OPS_MISMATCH: `move` has no description',
+        ], BoardMoverCatalogCheck::findings([], $catalog));
     }
 
     public function test_the_surface_and_schema_are_checked_against_the_site(): void
@@ -198,28 +281,31 @@ class BoardMoverCatalogTest extends TestCase
         $this->assertSame([
             'CATALOG_SCHEMA: `schema` is not 1',
             'CATALOG_SCHEMA: `context_key` is not `catalog_id`',
+            'CATALOG_SCHEMA: `handler_key` is not `handler`',
+            'CATALOG_SCHEMA: `op_key` is not `op`',
+            ...array_map(fn (WriteOp $op) => "OPS_MISMATCH: `{$op->value}` is a WriteOp case the catalog's `ops` does not declare", WriteOp::cases()),
             'CATALOG_EMPTY: the catalog declares no entries — nothing was checked',
         ], BoardMoverCatalogCheck::findings([], ['context_key' => 'reason', 'entries' => []]));
 
         $this->assertFindings(
             ['SURFACE_MISMATCH: `h.paired` is emitted through the paired log+alert helper, so its surface must include `alert_channel`'],
-            "\$this->alerts->warnAndNotify('h.paired', 'x', []);",
+            "\$this->alerts->warnAndNotify('h.paired', 'x', [".self::KEYS.']);',
             [self::entry('h.paired')],
         );
         $this->assertFindings(
             ['SURFACE_MISMATCH: `h.unconfigured` is emitted through the paired helper on the no-`writeback.json` arm, where no `alert_channel` can load (docs/writeback.md § Branch-#3 degradation), so its surface must not include `alert_channel`'],
-            "\$this->alerts->warnAndNotify('h.unconfigured', 'x', [], 'writeback_not_configured');",
+            "\$this->alerts->warnAndNotify('h.unconfigured', 'x', [".self::KEYS."], 'writeback_not_configured');",
             [['surface' => ['log', 'alert_channel']] + self::entry('h.unconfigured')],
         );
-        $this->assertFindings([], "\$this->alerts->warnAndNotify('h.unconfigured', 'x', [], 'writeback_not_configured');", [self::entry('h.unconfigured')]);
+        $this->assertFindings([], "\$this->alerts->warnAndNotify('h.unconfigured', 'x', [".self::KEYS."], 'writeback_not_configured');", [self::entry('h.unconfigured')]);
         $this->assertFindings(
             ['ID_NOT_IN_CATALOG: `h.nullsafe` at Handler::handle (Fixture.php:10) is not a catalog entry'],
-            "\$this->alerts?->warnAndNotify('h.nullsafe', 'x', []);",
+            "\$this->alerts?->warnAndNotify('h.nullsafe', 'x', [".self::KEYS.']);',
             [],
         );
         $this->assertFindings(
             ['SURFACE_MISMATCH: `h.plain` is a plain log call, so its surface must not include `alert_channel`'],
-            "Log::info('x', ['catalog_id' => 'h.plain']);",
+            "Log::info('x', ['catalog_id' => 'h.plain', ".self::KEYS.']);',
             [['surface' => ['log', 'alert_channel']] + self::entry('h.plain')],
         );
         $this->assertFindings(
@@ -228,7 +314,7 @@ class BoardMoverCatalogTest extends TestCase
                 "ENTRY_SCHEMA: `h.bad` has a `kind` the catalog's `kinds` does not declare",
                 'ENTRY_SCHEMA: `h.bad` `since` must be a release version X.Y.Z',
             ],
-            "Log::info('x', ['catalog_id' => 'h.bad']);",
+            "Log::info('x', ['catalog_id' => 'h.bad', ".self::KEYS.']);',
             [['kind' => 'nope', 'since' => 'next', 'pattern' => 'x'] + self::entry('h.bad')],
         );
 
@@ -239,10 +325,10 @@ class BoardMoverCatalogTest extends TestCase
 
         $surfaceLine = 'ENTRY_SCHEMA: `h.surface` `surface` must be a list containing `log` and otherwise only `alert_channel`';
         foreach ([
-            'not a list' => ['log', "Log::info('x', ['catalog_id' => 'h.surface']);"],
-            'no log' => [['alert_channel'], "\$this->alerts->warnAndNotify('h.surface', 'x', []);"],
-            'a foreign surface' => [['log', 'email'], "Log::info('x', ['catalog_id' => 'h.surface']);"],
-            'a repeated surface' => [['log', 'log'], "Log::info('x', ['catalog_id' => 'h.surface']);"],
+            'not a list' => ['log', "Log::info('x', ['catalog_id' => 'h.surface', ".self::KEYS.']);'],
+            'no log' => [['alert_channel'], "\$this->alerts->warnAndNotify('h.surface', 'x', [".self::KEYS.']);'],
+            'a foreign surface' => [['log', 'email'], "Log::info('x', ['catalog_id' => 'h.surface', ".self::KEYS.']);'],
+            'a repeated surface' => [['log', 'log'], "Log::info('x', ['catalog_id' => 'h.surface', ".self::KEYS.']);'],
         ] as $case => [$surface, $body]) {
             $this->assertFindings([$surfaceLine], $body, [['surface' => $surface] + self::entry('h.surface')], $case);
         }
@@ -266,19 +352,33 @@ class BoardMoverCatalogTest extends TestCase
      */
     private function assertFindings(array $expected, string $body, array $entries, string $message = ''): void
     {
-        $source = "<?php\nnamespace Fixture\\In;\n\nuse Illuminate\\Support\\Facades\\Log;\n\nfinal class Handler\n{\n    public function handle(): void\n    {\n        {$body}\n    }\n}\n";
+        $source = "<?php\nnamespace Fixture\\In;\nuse App\\Bridge\\Writeback\\BoardMoverScope;\nuse Illuminate\\Support\\Facades\\Log;\n\nfinal class Handler\n{\n    public function handle(): void\n    {\n        {$body}\n    }\n}\n";
         $sites = BoardMoverCatalogCheck::sitesIn($source, 'Fixture.php', self::fixturePopulation(...), self::FIXTURE_NOTIFIER, self::FIXTURE_NOTIFIER_METHODS);
         // A retired anchor keeps a no-entry fixture from tripping CATALOG_EMPTY; retired and emitted
         // nowhere, it produces no finding of its own.
-        $catalog = [
-            'schema' => 1,
-            'context_key' => 'catalog_id',
+        $catalog = self::catalogHead() + [
             'kinds' => ['declined' => 'x'],
             'entries' => $entries === [] ? [['retired_since' => '0.80.0'] + self::entry('h.anchor')] : $entries,
         ];
         $findings = BoardMoverCatalogCheck::findings($sites, $catalog);
 
         $this->assertSame($expected, $findings, $message);
+    }
+
+    /**
+     * The catalog's top-level declarations, as the real file must carry them.
+     *
+     * @return array<string, mixed>
+     */
+    private static function catalogHead(): array
+    {
+        return [
+            'schema' => 1,
+            'context_key' => 'catalog_id',
+            'handler_key' => 'handler',
+            'op_key' => 'op',
+            'ops' => array_fill_keys(array_map(fn (WriteOp $op) => $op->value, WriteOp::cases()), 'described'),
+        ];
     }
 
     /** @return array<string, mixed> */
