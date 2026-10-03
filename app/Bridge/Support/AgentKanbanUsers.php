@@ -31,12 +31,14 @@ final class AgentKanbanUsers
     /**
      * @param  array<string, RosterKanbanUser>  $verdicts  agent name → the roster's answer (readable only)
      * @param  array<string, string>  $seats  agent name → its seat
+     * @param  array<string, int>  $peers  agent name → its `identity.peer_kanban_user_id`
      */
     private function __construct(
         public readonly CoordConfigFile $file,
         public readonly string $host,
         private readonly array $verdicts,
         private readonly array $seats,
+        private readonly array $peers = [],
     ) {}
 
     /**
@@ -49,15 +51,19 @@ final class AgentKanbanUsers
 
         $verdicts = [];
         $seats = [];
+        $peers = [];
         foreach ($configs as $config) {
             $seat = $config->identity->seatName($config->agentName);
             $seats[$config->agentName] = $seat;
+            if ($config->identity->peerKanbanUserId !== null) {
+                $peers[$config->agentName] = $config->identity->peerKanbanUserId;
+            }
             if ($file->readable() && $host !== '') {
                 $verdicts[$config->agentName] = RosterKanbanUser::lookUp($file->config(), $seat, $host);
             }
         }
 
-        return new self($file, $host, $verdicts, $seats);
+        return new self($file, $host, $verdicts, $seats, $peers);
     }
 
     /** Whether the roster could be asked at all: the file read, and a host to key ids by. */
@@ -125,9 +131,11 @@ final class AgentKanbanUsers
     }
 
     /**
-     * Every agent the roster gives an id: agent name → kanban user id. An agent whose seat is
-     * absent, or carries no usable id for this host, is simply not in the map — it has no kanban
-     * user, exactly as an agent declaring none had before.
+     * Every agent's kanban user id FOR ATTRIBUTION AND ECHO/SIGNAL MATCHING: agent name → id. A
+     * roster seat's id is the roster's; an agent that is NO seat of this roster contributes its
+     * `identity.peer_kanban_user_id`, if it declares one — never a seat, whose id is the roster's
+     * alone. An agent with neither is not in the map: it has no kanban user. ⛔ Take, start and
+     * correction authority never read this map; they read {@see verdictFor}, the roster alone.
      *
      * @return array<string, int>
      *
@@ -143,6 +151,8 @@ final class AgentKanbanUsers
         foreach ($this->verdicts as $agent => $verdict) {
             if ($verdict->userId !== null) {
                 $ids[$agent] = $verdict->userId;
+            } elseif ($verdict->why === RosterKanbanUser::ABSENT && isset($this->peers[$agent])) {
+                $ids[$agent] = $this->peers[$agent];
             }
         }
 

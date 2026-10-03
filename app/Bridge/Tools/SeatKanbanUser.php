@@ -76,9 +76,11 @@ use Illuminate\Support\Facades\Log;
  * seat: nothing downstream of this method can tell two seats sharing an id apart, so
  * `board_take_card` would answer seat `a` `taken: true, already_held: true` for a card seat `b`
  * is working — the loser believing it holds claimed work, which is the one state that tool
- * exists to make visible. ⭐ TWO BRIDGE AGENTS ON ONE SEAT are not that fault — they resolve to
- * the same seat, and the id still names exactly one (`bridge:check` warns on the layout, and
- * `AgentRegistry` attributes that seat's events to neither agent by name).
+ * exists to make visible. ⭐ TWO BRIDGE AGENTS ON ONE SEAT are not that fault while at most one of
+ * them can take cards — the id names the seat, and only one agent claims as it (`bridge:check`
+ * warns on the layout, and `AgentRegistry` attributes that seat's events to neither agent by
+ * name). ⛔ Two BOARD-TOOLS agents on one seat ARE: either could claim, and the id cannot say
+ * which did, so both are refused as `install_fault.shared_kanban_user`.
  *
  * ⚠ AND THE REFUSAL'S GUARANTEE IS INSTALL-LOCAL — a bound on the check, not a hole in it. The
  * seats compared are the ones THIS bridge's agents serve ({@see AgentKanbanUsers::otherSeatsWithId}),
@@ -247,6 +249,24 @@ final class SeatKanbanUser
             return [$callingAgentName, null, $seatName, $roster];
         }
 
+        // ONE seat, but more than one agent here that can take cards as it — a copied
+        // `identity.coord_seat`, typically. The id then names the seat and not WHICH agent holds
+        // the card: the same unanswerable claim as one id on two seats, refused the same way.
+        $takers = [];
+        foreach ($configs as $config) {
+            if ($config->boardTools?->enabled === true && $config->identity->seatName($config->agentName) === $seatName) {
+                $takers[] = $config->agentName;
+            }
+        }
+        if (count($takers) > 1) {
+            sort($takers);
+            Log::warning('board tools: more than one board-tools agent serves the calling seat, so its kanban user id does not identify the caller', [
+                'agent' => $callingAgentName, 'tool' => $tool, 'seat' => $seatName, 'agents' => $takers, 'reason' => self::SHARED_KANBAN_USER_ID,
+            ]);
+
+            throw new ToolRefusalException("{$tool}: this bridge has more than one agent with board tools serving coord roster seat '{$seatName}' (".implode(', ', $takers)."), so the seat's kanban user {$kanbanUserId} does not say WHICH of them holds a card — a claim recorded under it would tell the others they hold work they never took. NOTHING WAS WRITTEN. This is an INSTALL fault: keep board_tools on one agent per seat (look for a copied identity.coord_seat), and report it to your operator.", installFault: true, reason: 'install_fault.shared_kanban_user');
+        }
+
         $sharing = $roster->otherSeatsWithId($kanbanUserId, $seatName);
         if ($sharing !== []) {
             Log::warning('board tools: the coord roster gives the calling seat\'s kanban user id to another seat too, so it does not identify the caller', [
@@ -279,7 +299,8 @@ final class SeatKanbanUser
         throw match ($file->fault) {
             CoordConfigFile::UNSET => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_unset'),
             CoordConfigFile::NOT_ABSOLUTE => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_not_absolute'),
-            CoordConfigFile::UNREADABLE => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_unreadable'),
+            CoordConfigFile::ABSENT, CoordConfigFile::UNREADABLE => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_unreadable'),
+            CoordConfigFile::NOT_A_FILE => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_not_a_file'),
             CoordConfigFile::MALFORMED => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_malformed'),
             default => new ToolRefusalException($message, installFault: true, reason: 'install_fault.no_kanban_user'),
         };

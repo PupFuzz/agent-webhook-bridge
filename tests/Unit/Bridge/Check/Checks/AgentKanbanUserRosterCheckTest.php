@@ -7,7 +7,9 @@ use App\Bridge\Check\Checks\AgentKanbanUserRosterCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedPathContents;
 use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CoordRosterFixture;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
@@ -113,16 +115,84 @@ class AgentKanbanUserRosterCheckTest extends TestCase
      * A file this process cannot read is UNMEASURED, never a pass and never a verdict about the
      * runtime's user — the receiver reads it as another OS user.
      */
-    public function test_a_roster_this_process_cannot_read_is_unvalidated_and_names_the_path(): void
+    /**
+     * No file at the path is the same answer for every reader, the receiver's pool user included
+     * — a measured fault, so it FAILS (round-1 ruling: it used to read as UNVALIDATED, exit 0).
+     */
+    public function test_an_absent_roster_fails(): void
     {
         config(['bridge.coord_config_path' => $this->dir.'/absent.json']);
 
         $findings = $this->findings(['a' => []]);
 
         $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString("there is no coord roster at {$this->dir}/absent.json", $findings[0]->message);
+    }
+
+    /**
+     * A symlink, a directory, or a file past the read bound is refused by EVERY reader the same
+     * way, so each FAILS — never the UNVALIDATED a permission refusal earns.
+     *
+     * @return array<string, array{\Closure(string): string, string}>
+     */
+    public static function notAFileShapes(): array
+    {
+        return [
+            'a symlink to a readable roster' => [static function (string $dir): string {
+                file_put_contents($dir.'/real.json', '{"roster":[]}');
+                symlink($dir.'/real.json', $dir.'/link.json');
+
+                return $dir.'/link.json';
+            }, 'it is a symlink'],
+            'a directory' => [static function (string $dir): string {
+                mkdir($dir.'/adir');
+
+                return $dir.'/adir';
+            }, 'not a regular file'],
+            'a file past the read bound' => [static function (string $dir): string {
+                file_put_contents($dir.'/big.json', str_repeat(' ', UntrustedPathContents::MAX_BYTES + 1));
+
+                return $dir.'/big.json';
+            }, 'byte bound'],
+        ];
+    }
+
+    /** @param \Closure(string): string $make */
+    #[DataProvider('notAFileShapes')]
+    public function test_a_path_that_is_not_a_file_the_bridge_will_read_fails(\Closure $make, string $why): void
+    {
+        config(['bridge.coord_config_path' => $make($this->dir)]);
+
+        $findings = $this->findings(['a' => []]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('is not a file the bridge will read', $findings[0]->message);
+        $this->assertStringContainsString($why, $findings[0]->message);
+    }
+
+    /**
+     * ONLY a permission refusal is uid-relative — the pool user may read what this run cannot —
+     * so it alone is UNVALIDATED, naming this run's uid and how to measure the pool user.
+     */
+    public function test_a_roster_this_process_is_refused_permission_to_read_is_unvalidated(): void
+    {
+        $this->skipAsRoot();
+        $path = CoordRosterFixture::configureRaw($this->dir, '{"roster":[]}');
+        chmod($path, 0o000);
+
+        try {
+            $findings = $this->findings(['a' => []]);
+        } finally {
+            chmod($path, 0o644);
+        }
+
+        $this->assertCount(1, $findings);
         $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
-        $this->assertStringContainsString($this->dir.'/absent.json', $findings[0]->message);
-        $this->assertStringContainsString('CANNOT VERIFY', $findings[0]->message);
+        $this->assertStringContainsString($path, $findings[0]->message);
+        $this->assertStringContainsString('(uid ', $findings[0]->message);
+        $this->assertStringContainsString('sudo -u <pool user> php artisan bridge:check', $findings[0]->message);
     }
 
     /** The runtime cannot key an id without a host and refuses, so the leg FAILS rather than pass. */
@@ -212,11 +282,89 @@ class AgentKanbanUserRosterCheckTest extends TestCase
     }
 
     /** An agent that is no seat, takes no cards and declares no coord_seat has nothing to report. */
-    public function test_an_agent_that_is_no_seat_and_takes_no_cards_is_silent(): void
+    /** A non-seat that subscribes to nothing kanban and takes no cards has no kanban id to lose. */
+    public function test_an_agent_that_is_no_seat_and_reads_no_kanban_id_is_silent(): void
+    {
+        $this->roster(['impl' => 7]);
+        $configs = $this->configs(['impl' => []]);
+        $configs[] = AgentConfig::fromArray('ci-bot', ['identity' => ['github_user_id' => 9], 'subscriptions' => [['provider' => 'github', 'scopes' => ['o/r']]]]);
+
+        $findings = $this->agentFindings($configs);
+
+        $this->assertCount(1, $findings, 'only impl\'s own ok line');
+        $this->assertStringContainsString('agent impl:', $findings[0]->message);
+    }
+
+    /**
+     * Round-1 ruling 2: an agent subscribed to kanban events that is no seat and declares no
+     * coord_seat has NO kanban user — its own writes are not suppressed as its echoes — and is
+     * WARNED, never passed over in silence. The control is the test above.
+     */
+    public function test_a_kanban_subscribed_agent_that_is_no_seat_warns(): void
     {
         $this->roster(['impl' => 7]);
 
-        $this->assertSame([], $this->agentFindings($this->configs(['ci-bot' => ['github_user_id' => 9]])));
+        $findings = $this->agentFindings($this->configs(['ci-bot' => ['github_user_id' => 9]]));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('subscribes to kanban events but is no seat of the coord roster', $findings[0]->message);
+        $this->assertStringContainsString('identity.peer_kanban_user_id', $findings[0]->message);
+    }
+
+    // ---- identity.peer_kanban_user_id: an id this roster does not own ----
+
+    public function test_a_peer_id_on_a_non_seat_is_reported_as_attribution_only(): void
+    {
+        $this->roster(['impl' => 7]);
+
+        $findings = $this->agentFindings($this->configs(['peer' => ['peer_kanban_user_id' => 42]]));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('attribution-only kanban user 42', $findings[0]->message);
+    }
+
+    /** On an agent that IS a seat the peer field would be a second copy of the roster's id. */
+    public function test_a_peer_id_on_a_roster_seat_fails(): void
+    {
+        $this->roster(['impl' => 7]);
+
+        $findings = $this->agentFindings($this->configs(['impl' => ['peer_kanban_user_id' => 7]]));
+
+        $fails = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Fail));
+        $this->assertCount(1, $fails);
+        $this->assertStringContainsString("declares identity.peer_kanban_user_id 7, but it IS coord roster seat 'impl'", $fails[0]->message);
+    }
+
+    // ---- a seat whose id does not identify one taker (round-1 rulings 4 and 8) ----
+
+    public function test_two_board_tools_agents_on_one_seat_both_fail(): void
+    {
+        $this->roster(['kanban' => 7]);
+
+        $findings = $this->agentFindings([
+            $this->boardToolsAgent('kanban', []),
+            $this->boardToolsAgent('kanban-copy', ['coord_seat' => 'kanban']),
+        ]);
+
+        $fails = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Fail));
+        $this->assertCount(2, $fails);
+        foreach ($fails as $fail) {
+            $this->assertStringContainsString('install_fault.shared_kanban_user', $fail->message);
+        }
+        $this->assertSame([], array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Warn), 'the FAIL replaces the shared-seat warn');
+    }
+
+    public function test_a_board_tools_agent_whose_roster_id_another_seat_has_fails(): void
+    {
+        $this->roster(['impl' => 7, 'twin' => 7]);
+
+        $findings = $this->agentFindings([$this->boardToolsAgent('impl', []), ...$this->configs(['twin' => []])]);
+
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString("to seat 'twin' as well", $findings[0]->message);
+        $this->assertStringContainsString('install_fault.shared_kanban_user', $findings[0]->message);
     }
 
     public function test_a_declared_coord_seat_the_roster_lacks_warns(): void
@@ -322,8 +470,8 @@ class AgentKanbanUserRosterCheckTest extends TestCase
 
         $fails = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Fail));
         $this->assertCount(1, $fails);
-        $this->assertStringContainsString('identity.kanban_user_id is 8, but the coord roster', $fails[0]->message);
-        $this->assertStringContainsString("seat 'impl' is kanban user 7", $fails[0]->message);
+        $this->assertStringContainsString("identity.kanban_user_id is 8, but the bridge reads seat 'impl's id in the coord roster", $fails[0]->message);
+        $this->assertStringContainsString("which is 7 on '".self::HOST."'", $fails[0]->message);
         $this->assertStringContainsString('the bridge acts as kanban user 7', $fails[0]->message);
     }
 
@@ -331,17 +479,45 @@ class AgentKanbanUserRosterCheckTest extends TestCase
      * The fourth migration row: the YAML carried an id the roster does not — the agent LOST its
      * kanban user on upgrade, which is a FAIL that says where to put the id.
      */
-    public function test_a_retired_yaml_id_the_roster_has_no_id_for_fails_as_lost(): void
+    public function test_a_retired_yaml_id_on_a_seat_the_roster_gives_no_id_fails_as_lost(): void
+    {
+        $this->roster(['impl' => null]);
+
+        $findings = $this->agentFindings($this->configs(['impl' => ['kanban_user_id' => 3]]));
+
+        $fails = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Fail));
+        $this->assertCount(1, $fails);
+        $this->assertStringContainsString('identity.kanban_user_id 3 is no longer read', $fails[0]->message);
+        $this->assertStringContainsString('has NO kanban user', $fails[0]->message);
+        $this->assertStringContainsString('"'.self::HOST.'": 3', $fails[0]->message);
+    }
+
+    /**
+     * Round-1 ruling 3: an agent that is NO seat must not be told to put itself into the roster —
+     * its message points at the peer field (or at coord_seat, if it is a seat after all).
+     */
+    public function test_a_retired_yaml_id_on_a_non_seat_points_at_the_peer_field(): void
     {
         $this->roster(['impl' => 7]);
 
         $findings = $this->agentFindings($this->configs(['prod-agent' => ['kanban_user_id' => 3]]));
 
-        $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertStringContainsString('identity.kanban_user_id 3 is no longer read', $findings[0]->message);
-        $this->assertStringContainsString('has NO kanban user', $findings[0]->message);
-        $this->assertStringContainsString('"'.self::HOST.'": 3', $findings[0]->message);
+        $fails = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Fail));
+        $this->assertCount(1, $fails);
+        $this->assertStringContainsString('is no seat of the coord roster', $fails[0]->message);
+        $this->assertStringContainsString('move the id to identity.peer_kanban_user_id: 3', $fails[0]->message);
+        $this->assertStringNotContainsString('"'.self::HOST.'": 3', $fails[0]->message, 'a non-seat is never told to write itself into the roster');
+    }
+
+    public function test_a_retired_yaml_id_equal_to_the_peer_id_warns_remove_it(): void
+    {
+        $this->roster(['impl' => 7]);
+
+        $findings = $this->agentFindings($this->configs(['peer' => ['kanban_user_id' => 3, 'peer_kanban_user_id' => 3]]));
+
+        $warns = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Warn));
+        $this->assertCount(1, $warns);
+        $this->assertStringContainsString('the bridge reads its identity.peer_kanban_user_id, which is the same 3', $warns[0]->message);
     }
 
     public function test_an_agent_without_the_retired_key_draws_no_migration_line(): void

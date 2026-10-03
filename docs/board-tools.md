@@ -987,13 +987,19 @@ refuses rather than risk overwriting a claim — an install fault, named as one.
 never read, not even when the roster cannot answer. Every state in which the roster cannot name
 your id is refused (422) **before any board request**, as a named install fault with its own
 `reason` (the codes table under [the start form](#the-start-form-start-true-card11150--dl-449)):
-the setting unset or relative, the file unreadable or not JSON, your seat absent from it, or no
-id for this host. **⛔ The id must also be YOUR SEAT'S ALONE, and this tool is where a shared
+the setting unset or relative, no file there or one the receiver may not read, a path that is not
+a file the bridge will read (a symlink, a directory, past the size bound), a file that is not
+JSON, your seat absent from it, or no id for this host. ⛔ `identity.peer_kanban_user_id` — the
+attribution-only id of an agent that is no seat of this roster — is NEVER take, start or
+correction authority. **⛔ The id must also be YOUR SEAT'S ALONE, and this tool is where a shared
 one stops.** If the roster gives your id to another seat this install serves, every call from
 either seat is refused (`install_fault.shared_kanban_user`) — because an id that names two
 seats does not say WHICH seat holds the card, and a claim recorded under it tells every other
 seat that *somebody* holds the work without saying who, which is the one question this tool
-exists to answer. Two bridge agents serving ONE seat are not that fault. ⚠ **Sharing a kanban
+exists to answer. Two bridge agents serving ONE seat are not that fault while only one of them
+has board tools; when MORE than one board-tools agent serves the same seat (a copied
+`identity.coord_seat`, typically) every take from each of them is refused the same way, because
+the id then cannot say which agent holds the card. ⚠ **Sharing a kanban
 user between seats is an install fault with no supported form** — unlike `github_user_id`, it
 cannot be declared deliberate. [`config-schema.md` § `identity:`](config-schema.md#identity-optional-mapping--the-agents-own-immutable-github-ids-and-its-coord-seat)
 owns the roster shape, the seat rule and the reasoning; it is not restated here. `bridge:check`'s
@@ -1110,11 +1116,12 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `install_fault.start_unmapped` / `install_fault.start_ambiguous` | start | no mapping on the board maps `started`, or mappings name different columns |
 | `install_fault.writeback_config_unreadable` | `board_take_card` | writeback.json will not parse (a start, or a takeover of an assignee) |
 | `install_fault.coord_config_unset` / `install_fault.coord_config_not_absolute` | `board_take_card` and `board_correct_card` | `BRIDGE_COORD_CONFIG_PATH` — where the bridge reads every seat's kanban user id (DL-450) — is not set, or is not an absolute path |
-| `install_fault.coord_config_unreadable` / `install_fault.coord_config_malformed` | `board_take_card` and `board_correct_card` | the coord roster at that path cannot be read by the receiver's OS user (absent, permissions, a symlink), or is not a JSON object; the message names the path |
+| `install_fault.coord_config_unreadable` / `install_fault.coord_config_malformed` | `board_take_card` and `board_correct_card` | there is no coord roster at that path, or the receiver's OS user may not read it, or it is not a JSON object; the message names the path |
+| `install_fault.coord_config_not_a_file` | `board_take_card` and `board_correct_card` | the path names something no reader will read: a symlink (point the setting at the file itself), a directory, FIFO, socket or device, or a file past the reader's size bound |
 | `install_fault.roster_seat_absent` | `board_take_card` | the roster has no seat named your agent's seat (`identity.coord_seat`, else the agent name) |
 | `install_fault.no_kanban_user` | `board_take_card` | your seat carries no kanban user id for this kanban host (or the install's kanban API base names no host), so a seat with no id is refused by name, never moved unassigned |
 | `install_fault.no_agent` | the ssh door (exit 1) | the forced command passed no `--agent` |
-| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
+| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
 
 A failure whose STATUS is the answer carries no code: the 502 `upstream board error` stays one
 body byte for byte for every cause (DL-387); the HTTP door's 401 (bearer) and 503 (install) answers

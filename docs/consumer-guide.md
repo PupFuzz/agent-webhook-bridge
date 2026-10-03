@@ -286,6 +286,7 @@ identity:
 |---|---|---|
 | (filename) | yes | The `<agent>.yml` filename is the agent name — used for echo suppression by `actor.name` and as the addressing token for ReactionTarget routing |
 | `coord_seat` | optional | The coord roster seat whose `kanban_user_id` is this agent's kanban identity; absent = the agent name. A seat the roster gives no id = no kanban identity. (`kanban_user_id` itself is retired from this block — DL-450.) |
+| `peer_kanban_user_id` | optional | Only for an agent that is NO seat of this roster (a cross-install peer): its kanban user id, used for attribution and echo/signal matching only, never take/correct authority. On a roster seat `bridge:check` fails it (DL-450) |
 | `github_user_id` | optional | Immutable numeric GitHub account id (`sender.id`); the GitHub **matching key**. absent = agent has no GitHub identity |
 | `github_login` | optional | Display-only label (GitHub usernames rename, so they are never a matching key — DL-002). A stale label fires a one-line drift warning |
 

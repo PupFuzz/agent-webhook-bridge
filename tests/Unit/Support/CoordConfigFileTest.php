@@ -3,6 +3,7 @@
 namespace Tests\Unit\Support;
 
 use App\Bridge\Support\CoordConfigFile;
+use App\Bridge\Support\UntrustedPathContents;
 use Illuminate\Support\Facades\File;
 use Tests\TestCase;
 
@@ -53,14 +54,41 @@ class CoordConfigFileTest extends TestCase
 
         $this->assertSame(CoordConfigFile::UNSET, CoordConfigFile::at(null)->fault);
         $this->assertSame(CoordConfigFile::NOT_ABSOLUTE, CoordConfigFile::at('relative/coordination.config.json')->fault);
-        $this->assertSame(CoordConfigFile::UNREADABLE, CoordConfigFile::at($this->dir.'/absent.json')->fault);
+        $this->assertSame(CoordConfigFile::ABSENT, CoordConfigFile::at($this->dir.'/absent.json')->fault);
         $this->assertSame(CoordConfigFile::MALFORMED, CoordConfigFile::at($this->dir.'/bad.json')->fault);
         $this->assertSame(CoordConfigFile::MALFORMED, CoordConfigFile::at($this->dir.'/scalar.json')->fault);
-        $this->assertSame(CoordConfigFile::UNREADABLE, CoordConfigFile::at($this->dir.'/link.json')->fault, 'a symlink is refused, as UntrustedPathContents refuses one');
+        $this->assertSame(CoordConfigFile::NOT_A_FILE, CoordConfigFile::at($this->dir.'/link.json')->fault, 'a symlink is refused by every reader, as UntrustedPathContents refuses one');
+        $this->assertSame(CoordConfigFile::NOT_A_FILE, CoordConfigFile::at($this->dir)->fault, 'a directory');
+        File::put($this->dir.'/big.json', str_repeat(' ', UntrustedPathContents::MAX_BYTES + 1));
+        $this->assertSame(CoordConfigFile::NOT_A_FILE, CoordConfigFile::at($this->dir.'/big.json')->fault, 'past the read bound');
+        posix_mkfifo($this->dir.'/fifo.json', 0o600);
+        $this->assertSame(CoordConfigFile::NOT_A_FILE, CoordConfigFile::at($this->dir.'/fifo.json')->fault, 'a FIFO, refused before any open');
         $this->assertNull(CoordConfigFile::at($this->dir.'/target.json')->fault);
 
         $this->assertStringContainsString('BRIDGE_COORD_CONFIG_PATH is not set', CoordConfigFile::at(null)->faultClause());
         $this->assertStringContainsString($this->dir.'/absent.json', CoordConfigFile::at($this->dir.'/absent.json')->faultClause());
+    }
+
+    /**
+     * The ONE uid-relative fault: a file this process is refused, or a path under a directory it
+     * may not traverse — where another OS user (the receiver's) may read it fine.
+     */
+    public function test_only_a_permission_refusal_is_unreadable(): void
+    {
+        $this->skipAsRoot();
+        File::put($this->dir.'/locked.json', '{"roster":[]}');
+        chmod($this->dir.'/locked.json', 0o000);
+        File::ensureDirectoryExists($this->dir.'/closed');
+        File::put($this->dir.'/closed/coordination.config.json', '{"roster":[]}');
+        chmod($this->dir.'/closed', 0o600);
+
+        try {
+            $this->assertSame(CoordConfigFile::UNREADABLE, CoordConfigFile::at($this->dir.'/locked.json')->fault);
+            $this->assertSame(CoordConfigFile::UNREADABLE, CoordConfigFile::at($this->dir.'/closed/coordination.config.json')->fault, 'an untraversable ancestor is not an absence');
+        } finally {
+            chmod($this->dir.'/locked.json', 0o644);
+            chmod($this->dir.'/closed', 0o755);
+        }
     }
 
     public function test_an_unchanged_file_is_answered_from_the_cache(): void
@@ -103,7 +131,7 @@ class CoordConfigFileTest extends TestCase
     public function test_a_file_created_after_an_absent_read_is_read(): void
     {
         $path = $this->dir.'/coordination.config.json';
-        $this->assertSame(CoordConfigFile::UNREADABLE, CoordConfigFile::at($path)->fault);
+        $this->assertSame(CoordConfigFile::ABSENT, CoordConfigFile::at($path)->fault);
 
         File::put($path, '{"v":3}');
 

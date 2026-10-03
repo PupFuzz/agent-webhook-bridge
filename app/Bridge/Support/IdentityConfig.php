@@ -20,6 +20,12 @@ use App\Bridge\Exceptions\ConfigException;
  * {@see $retiredKanbanUserId} for ONE reader — `bridge:check`'s roster leg, which
  * tells the operator to remove it — and `RetiredKanbanUserIdReaderTest` holds that
  * set of readers.
+ *
+ * ⭐ {@see $peerKanbanUserId} IS A DIFFERENT FACT, NOT A SECOND COPY: the kanban user of an agent
+ * that is NOT a seat of this roster — a cross-install peer, a `treat_as_echo` / `treat_as_signal`
+ * target — which this roster therefore does not own. It feeds attribution and echo/signal
+ * matching only, and never take/start/correct authority (those are roster-only); `bridge:check`
+ * FAILS an agent that IS a roster seat and declares it.
  */
 final class IdentityConfig
 {
@@ -32,12 +38,15 @@ final class IdentityConfig
      *                              (card#10869). Null ⇒ the agent name is the seat name. Read
      *                              through {@see seatName} by every kanban-id reader, and by
      *                              `board_take_card`'s legacy-tag holder test.
+     * @param  ?int  $peerKanbanUserId  `identity.peer_kanban_user_id` — the kanban user of an agent
+     *                                  that is not a seat of this roster (DL-450), attribution only
      */
     public function __construct(
         public readonly ?int $retiredKanbanUserId = null,
         public readonly ?int $githubUserId = null,
         public readonly ?string $githubLogin = null,
         public readonly ?string $coordSeat = null,
+        public readonly ?int $peerKanbanUserId = null,
     ) {}
 
     /**
@@ -50,7 +59,25 @@ final class IdentityConfig
             githubUserId: isset($data['github_user_id']) && is_numeric($data['github_user_id']) ? (int) $data['github_user_id'] : null,
             githubLogin: isset($data['github_login']) && is_scalar($data['github_login']) ? (string) $data['github_login'] : null,
             coordSeat: self::coordSeat($data['coord_seat'] ?? null),
+            peerKanbanUserId: self::peerKanbanUserId($data['peer_kanban_user_id'] ?? null),
         );
+    }
+
+    /**
+     * Absent ⇒ null; anything but a positive integer THROWS, the roster's own id rule (a string
+     * `"7"` is not coerced): a value that silently read as "no id" would drop the attribution the
+     * key exists to give, with nothing saying so.
+     */
+    private static function peerKanbanUserId(mixed $raw): ?int
+    {
+        if ($raw === null) {
+            return null;
+        }
+        if (! is_int($raw) || $raw < 1) {
+            throw new ConfigException('identity.peer_kanban_user_id must be a positive integer kanban user id');
+        }
+
+        return $raw;
     }
 
     /**

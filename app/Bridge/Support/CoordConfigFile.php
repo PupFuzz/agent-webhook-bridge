@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Support;
 
+use App\Bridge\Exceptions\PathResolvesToNoFileException;
 use App\Bridge\Exceptions\UnreadableFileException;
 
 /**
@@ -15,10 +16,13 @@ use App\Bridge\Exceptions\UnreadableFileException;
  * `bridge.coord_config_path` and nothing else. No ambient `$COORD_CONFIG`, which PHP-FPM does
  * not inherit; no home-relative default, which would answer about whichever OS user asked.
  *
- * THE FAULTS ARE DISTINCT BECAUSE THEIR REMEDIES ARE. Unset and not-absolute are `.env` edits;
- * unreadable is a path or a permission, and is UID-RELATIVE ({@see UnreadableFileException}) —
- * `bridge:check` reading it as the operator says nothing about the FPM pool user; malformed is
- * the file's own bytes, the same for every reader.
+ * THE FAULTS ARE DISTINCT BECAUSE THEIR REMEDIES — AND WHO THEY HOLD FOR — DIFFER. Unset and
+ * not-absolute are `.env` edits. ABSENT (no file, under ancestors this process can traverse),
+ * NOT_A_FILE (a symlink, a directory/FIFO/socket/device, or a file past the read bound) and
+ * MALFORMED (bytes that are not a JSON object) are the same for EVERY reader, the receiver's
+ * pool user included. Only UNREADABLE — a permission refusal, or a path this process could not
+ * resolve — is UID-RELATIVE ({@see UnreadableFileException}): `bridge:check` reading as the
+ * operator then says nothing about the FPM pool user.
  *
  * ⚠ A RELATIVE PATH IS REFUSED rather than resolved: it would resolve against the working
  * directory, which is the checkout under the CLI and `public/` under FPM, so the two would read
@@ -42,6 +46,10 @@ final class CoordConfigFile
     public const UNSET = 'unset';
 
     public const NOT_ABSOLUTE = 'not_absolute';
+
+    public const ABSENT = 'absent';
+
+    public const NOT_A_FILE = 'not_a_file';
 
     public const UNREADABLE = 'unreadable';
 
@@ -91,21 +99,48 @@ final class CoordConfigFile
             return self::$cache[$path][1];
         }
 
-        $read = self::read($path);
-        self::$cache[$path] = [$signature, $read];
+        $read = self::read($path, $stat);
+        if ($stat !== false) {
+            // A path with no `lstat` is never cached: its answer can turn on an ancestor's
+            // permissions, which no signature here would see change.
+            self::$cache[$path] = [$signature, $read];
+        }
 
         return $read;
     }
 
-    private static function read(string $path): self
+    /**
+     * @param  array<int|string, int>|false  $stat  the `lstat` the cache key was taken from
+     */
+    private static function read(string $path, array|false $stat): self
     {
+        if ($stat === false) {
+            // `lstat` answers false for a removed file AND for one under a directory this
+            // process may not traverse; only the first is the same for every reader.
+            return PathVisibility::ancestorIsTraversable($path)
+                ? new self($path, self::ABSENT, "there is no file at {$path}")
+                : new self($path, self::UNREADABLE, "a directory above {$path} is not traversable by this OS user, so whether the file exists was not measured");
+        }
+        $type = $stat['mode'] & 0o170000;
+        if ($type === 0o120000) {
+            return new self($path, self::NOT_A_FILE, 'it is a symlink, which is refused — point the setting at the file itself');
+        }
+        if ($type !== 0o100000) {
+            return new self($path, self::NOT_A_FILE, 'it is not a regular file (a directory, FIFO, socket or device)');
+        }
+        if ($stat['size'] > UntrustedPathContents::MAX_BYTES) {
+            return new self($path, self::NOT_A_FILE, "it is {$stat['size']} bytes, past the ".UntrustedPathContents::MAX_BYTES.'-byte bound the reader will read');
+        }
+
         try {
             $raw = UntrustedPathContents::read($path, 'coordination.config.json');
+        } catch (PathResolvesToNoFileException $e) {
+            return new self($path, self::NOT_A_FILE, $e->getMessage());
         } catch (UnreadableFileException $e) {
             return new self($path, self::UNREADABLE, $e->getMessage());
         }
         if ($raw === null) {
-            return new self($path, self::UNREADABLE, "there is no file at {$path} as far as this process can see (absent, or a directory above it is not traversable by this OS user)");
+            return new self($path, self::ABSENT, "there is no file at {$path} (it was removed while being read)");
         }
         $decoded = json_decode($raw, true);
         if (! is_array($decoded)) {
@@ -143,7 +178,9 @@ final class CoordConfigFile
         return match ($this->fault) {
             self::UNSET => self::SETTING.' is not set in this install\'s .env',
             self::NOT_ABSOLUTE => self::SETTING." is '{$this->path}', which is not an absolute path",
-            self::UNREADABLE => "the coord roster at {$this->path} could not be read: {$this->detail}",
+            self::ABSENT => "there is no coord roster at {$this->path}",
+            self::NOT_A_FILE => "the coord roster at {$this->path} is not a file the bridge will read: {$this->detail}",
+            self::UNREADABLE => "the coord roster at {$this->path} could not be read by this OS user: {$this->detail}",
             self::MALFORMED => "the coord roster at {$this->path} is not a JSON object ({$this->detail})",
             default => "the coord roster at {$this->path} was read",
         };

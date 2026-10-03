@@ -48,10 +48,13 @@ An agent's own ids are auto-seeded into its echo suppression — `identity.githu
 
 When several agents share **one** upstream account, declare it once in an optional `shared-identities.json` — see [§ Shared identity across agents](#shared-identity-across-agents).
 
-> **Cross-install peers need a local author-only YAML.** The registry is built from **this install's** config dir — there is no shared `agents.json` anymore. So if an agent names a peer that runs in a *separate* install — e.g. `treat_as_signal: [prod-agent]` or `treat_as_echo: [prod-agent]` where `prod-agent` is its own install — that peer must still have an `<peer>.yml` here so the registry knows the name and can attribute its events (its kanban id comes from the roster, for its seat). Make it **author-only** (no subscriptions), so it's never dispatched to locally:
+> **Cross-install peers need a local author-only YAML.** The registry is built from **this install's** config dir — there is no shared `agents.json` anymore. So if an agent names a peer that runs in a *separate* install — e.g. `treat_as_signal: [prod-agent]` or `treat_as_echo: [prod-agent]` where `prod-agent` is its own install — that peer must still have an `<peer>.yml` here so the registry knows the name and can attribute its events. Make it **author-only** (no subscriptions), so it's never dispatched to locally. Where its kanban id comes from depends on whether it is a seat of THIS install's coord roster:
+> - **It is a seat of this roster** — its kanban id is the roster's, for its seat (its name, or `identity.coord_seat`). Declare nothing else.
+> - **Its seat belongs to ANOTHER roster** — this roster does not own its id, so declare it as `identity.peer_kanban_user_id` (DL-450). That id is used to attribute the peer's events and to match it in `treat_as_echo` / `treat_as_signal`, and **never** as take, start or correction authority. `bridge:check` **fails** it on an agent that IS a seat of this roster, where it would be a second copy of the roster's id.
 > ```yaml
-> # prod-agent.yml in the dev install — peer the dev-agent references; not run here
-> identity: {}                     # its seat is its name; add coord_seat if not
+> # prod-agent.yml in the dev install — a peer from another coordination project; not run here
+> identity:
+>   peer_kanban_user_id: 3         # its kanban user; its seat is in ANOTHER roster
 > subscriptions: []
 > ```
 > This matters most for `treat_as_signal`, which is **fail-closed**: a name with no matching local `<name>.yml` throws at config load (`bridge:check` catches it). Under the old shared `agents.json`, peers were globally known; per-install registries make this explicit.

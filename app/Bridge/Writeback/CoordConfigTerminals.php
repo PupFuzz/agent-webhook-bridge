@@ -19,11 +19,13 @@ use App\Bridge\Support\UntrustedPathContents;
  * the bridge concludes a card into stage X while the reconcile treats stage Y as
  * terminal, so they fight every cycle. Only comparing the two CONFIGS catches that.
  *
- * WHY ONLY FROM THE CLI. This read lives in `bridge:check` — an operator-invoked CLI
- * with the operator's environment — and NEVER on the webhook request path, which runs
- * under PHP-FPM whose environment is NOT the operator's. Coupling the request path to
- * `$COORD_CONFIG` would bind it to a file that demonstrably is not there at runtime,
- * failing silently in the one process nobody watches. Keep this CLI-only.
+ * WHY ONLY FROM THE CLI. The terminal COMPARE lives in `bridge:check` — it has no runtime
+ * half — and the reason it stays there is the ambient `$COORD_CONFIG` its path may fall
+ * back to (`CoordConfigPath`): that variable exists in an operator's shell and NOT in the
+ * PHP-FPM environment the receiver runs under, so a request path resolving through it would
+ * be bound to a path that is not there at runtime. ⚠ THE FILE ITSELF IS NOT CLI-ONLY: since
+ * DL-450 the receiver reads it at runtime for the coord roster, through the required
+ * `BRIDGE_COORD_CONFIG_PATH` setting alone (`CoordConfigFile::configured()`).
  *
  * WHY A SECOND IMPLEMENTATION. The rule's home is Python
  * (`coord.kanban_common.terminals_for_board` + `_terminal_columns_by_board`); the

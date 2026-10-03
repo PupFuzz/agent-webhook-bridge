@@ -11,7 +11,7 @@ use Tests\TestCase;
  * These pins hold the reader set, so a new reader has to come here and say why.
  *
  * WHAT THEY SEE: non-comment lines in `app/` naming the parsed property, or reading the key out
- * of an array (`['kanban_user_id']`). WHAT THEY DO NOT: a reader reaching the YAML through
+ * of an array (`['kanban_user_id']`, any quote, any inner spacing). WHAT THEY DO NOT: a reader reaching the YAML through
  * `AgentConfig::$raw` with a key built at runtime, or one reading the file itself — neither shape
  * exists today, and a dynamic one is the evasion every source pin in this suite names. Each pin
  * was seen to red on a probe class in `app/` reading the property, and then the key.
@@ -36,7 +36,7 @@ class RetiredKanbanUserIdReaderTest extends TestCase
     {
         $this->assertSame(
             ['Bridge/Support/IdentityConfig.php', 'Bridge/Support/RosterKanbanUser.php'],
-            $this->filesWhereCode(static fn (string $line): bool => str_contains($line, "['kanban_user_id']")),
+            $this->filesWhereCode(static fn (string $line): bool => preg_match('/\[\s*[\'"]kanban_user_id[\'"]\s*\]/', $line) === 1),
         );
     }
 

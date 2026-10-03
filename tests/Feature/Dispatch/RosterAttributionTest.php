@@ -139,6 +139,27 @@ class RosterAttributionTest extends TestCase
         $this->assertNull($registry->byKanbanUserId(self::ME));
     }
 
+    /**
+     * Round-1 ruling 3: a cross-install peer — NO seat of this roster — keeps its attribution
+     * through `identity.peer_kanban_user_id`, so a `treat_as_echo` naming it still drops its
+     * writes. The roster stays the only source for a seat: a seat that declares the field is
+     * attributed by its roster id alone.
+     */
+    public function test_a_peer_named_in_treat_as_echo_is_still_suppressed_through_its_peer_id(): void
+    {
+        $this->writeAgent('me', self::YAML_ME, treatAsEcho: ['peer', 'remote']);
+        File::put($this->dir.'/remote.yml', "identity:\n  peer_kanban_user_id: 7100\nsubscriptions: []\n");
+        File::put($this->dir.'/peer.yml', "identity:\n  peer_kanban_user_id: 9999\nsubscriptions: []\n");
+
+        $this->kanbanEvent('7100');
+
+        $this->assertSame('echo: own write', $this->outcome());
+        $registry = AgentRegistry::fromAgentConfigs((new SubscriptionRegistry($this->dir))->agentConfigs());
+        $this->assertSame('remote', $registry->byKanbanUserId(7100)?->name);
+        $this->assertSame('peer', $registry->byKanbanUserId(self::PEER)?->name, 'a seat is attributed by its roster id');
+        $this->assertNull($registry->byKanbanUserId(9999), 'a seat\'s peer field is never read');
+    }
+
     /** @return array<string, array{\Closure(self): void}> */
     public static function unreadableRosters(): array
     {

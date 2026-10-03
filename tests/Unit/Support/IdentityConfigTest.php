@@ -2,6 +2,7 @@
 
 namespace Tests\Unit\Support;
 
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\IdentityConfig;
 use PHPUnit\Framework\TestCase;
 
@@ -38,5 +39,20 @@ class IdentityConfigTest extends TestCase
         $this->assertSame(['9001'], (new IdentityConfig(137, 9001))->selfGithubIds());
         $this->assertSame([], (new IdentityConfig(retiredKanbanUserId: 137))->selfGithubIds());
         $this->assertSame([], (new IdentityConfig)->selfGithubIds());   // github_login is NOT a self-echo id
+    }
+
+    public function test_a_peer_kanban_user_id_is_a_positive_integer_or_refused(): void
+    {
+        $this->assertSame(42, IdentityConfig::fromArray(['peer_kanban_user_id' => 42])->peerKanbanUserId);
+        $this->assertNull(IdentityConfig::fromArray([])->peerKanbanUserId);
+
+        foreach (['7', 0, -3, 7.0] as $bad) {
+            try {
+                IdentityConfig::fromArray(['peer_kanban_user_id' => $bad]);
+                $this->fail('accepted '.var_export($bad, true));
+            } catch (ConfigException $e) {
+                $this->assertStringContainsString('identity.peer_kanban_user_id must be a positive integer', $e->getMessage());
+            }
+        }
     }
 }

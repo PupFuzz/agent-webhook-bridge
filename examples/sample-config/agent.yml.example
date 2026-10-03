@@ -27,7 +27,9 @@
 # The agent's KANBAN user id is NOT set here (DL-450): it is read from the coord
 # roster at BRIDGE_COORD_CONFIG_PATH (.env), for this agent's seat —
 # `coord_seat` below, else this file's agent name. `kanban_user_id` is retired;
-# bridge:check tells you to remove it.
+# bridge:check tells you to remove it. An agent that is NO seat of this roster
+# (a cross-install peer) declares `peer_kanban_user_id` instead — attribution
+# only, never take authority (docs/multi-agent.md).
 identity:
   # coord_seat: builder           # only when the agent name is not its roster seat
   # github_user_id: 41000123

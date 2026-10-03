@@ -1783,10 +1783,13 @@ class BridgeCommandsTest extends TestCase
         $this->writeMoveLegInstall();
         config(['bridge.coord_config_path' => '/nonexistent/coordination.config.json']);
 
+        // The compare cannot verify; and since DL-450 (round 1) the roster leg FAILS on a file
+        // that is absent for every reader, the receiver's user included.
         $this->artisan('bridge:check')
             ->expectsOutputToContain('CANNOT VERIFY')
             ->doesntExpectOutputToContain('coord config agrees')
-            ->assertExitCode(0);
+            ->expectsOutputToContain('there is no coord roster at /nonexistent/coordination.config.json')
+            ->assertExitCode(1);
     }
 
     public function test_check_cannot_verify_when_coord_config_is_malformed(): void

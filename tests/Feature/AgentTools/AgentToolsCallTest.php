@@ -1559,6 +1559,41 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame([], self::searchQueries(), 'refused before any search — the structure read is what refuses it');
     }
 
+    // ---- the id-free legs never read the roster (round-1 ruling 5) ----
+    //
+    // The base TestCase is a CONFIGURED install, so a tool that quietly started depending on the
+    // roster would pass every other test here. These run the tools that need no kanban user id
+    // with BRIDGE_COORD_CONFIG_PATH UNSET — the state in which the roster cannot be read at all.
+
+    public function test_my_cards_answers_with_the_roster_setting_unset(): void
+    {
+        config(['bridge.coord_config_path' => null]);
+        $this->fakeMembershipBoard([], [10 => true]);
+
+        $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200);
+    }
+
+    public function test_comment_posts_with_the_roster_setting_unset(): void
+    {
+        config(['bridge.coord_config_path' => null]);
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()]));
+
+        $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'a note']])
+            ->assertStatus(200)->assertJsonPath('result.commented', true);
+    }
+
+    /** The minted arm of a correction never consults the assignee, so it needs no roster either. */
+    public function test_a_minted_correction_lands_with_the_roster_setting_unset(): void
+    {
+        config(['bridge.coord_config_path' => null]);
+        $live = [$this->ownCardRow()];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)->assertJsonPath('result.authorized_by', 'minted');
+    }
+
     public function test_my_cards_answers_an_empty_readable_board_with_empty_windows(): void
     {
         // A board with no card at all — a new board, or one whose every card is archived — is still

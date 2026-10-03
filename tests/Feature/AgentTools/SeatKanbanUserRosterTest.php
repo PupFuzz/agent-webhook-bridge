@@ -73,8 +73,14 @@ class SeatKanbanUserRosterTest extends TestCase
 
     private function writeAgent(string $name, string $identity, bool $boardTools = true): void
     {
+        // Each agent its own bearer file: one token shared by two agents authenticates neither.
+        $token = $name === 'me' ? $this->dir.'/me-tools-token' : $this->dir."/{$name}-tools-token";
+        if ($boardTools && $name !== 'me') {
+            File::put($token, "{$name}-bearer");
+            chmod($token, 0o600);
+        }
         File::put($this->dir."/{$name}.yml", "identity:\n  {$identity}\nsubscriptions: []\n"
-            .($boardTools ? "board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$this->dir}/me-tools-token\n"
+            .($boardTools ? "board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$token}\n"
             ."  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 47\n" : ''));
     }
 
@@ -180,6 +186,15 @@ class SeatKanbanUserRosterTest extends TestCase
                 'install_fault.coord_config_unreadable',
                 ['/nowhere/coordination.config.json'],
             ],
+            'path is a symlink to a readable roster' => [
+                static function (self $t): void {
+                    CoordRosterFixture::configure($t->dir.'/coord', ['me' => self::ROSTER_ID]);
+                    symlink($t->dir.'/coord/coordination.config.json', $t->dir.'/link.json');
+                    config(['bridge.coord_config_path' => $t->dir.'/link.json']);
+                },
+                'install_fault.coord_config_not_a_file',
+                ['/link.json', 'symlink'],
+            ],
             'file is not JSON' => [
                 static fn (self $t) => CoordRosterFixture::configureRaw($t->dir.'/coord', '{"roster": [ not json'),
                 'install_fault.coord_config_malformed',
@@ -233,6 +248,34 @@ class SeatKanbanUserRosterTest extends TestCase
 
         $this->take()->assertStatus(200);
         $this->assertSame([['assigned_user_id' => self::ROSTER_ID]], $this->patches);
+    }
+
+    /**
+     * Round-1 ruling 4: a SECOND board-tools agent on the same seat (a copied coord_seat) can
+     * claim as that seat too, so the id no longer names which agent holds a card — refused.
+     */
+    public function test_a_second_board_tools_agent_on_the_same_seat_refuses_the_take_as_shared(): void
+    {
+        $this->writeAgent('me-copy', 'coord_seat: me');
+        Http::fake();
+
+        $res = $this->take()->assertStatus(422)->assertJsonPath('reason', 'install_fault.shared_kanban_user');
+        $this->assertStringContainsString("serving coord roster seat 'me' (me, me-copy)", (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    /**
+     * Round-1 ruling 3: `identity.peer_kanban_user_id` is attribution only — an agent that is no
+     * seat of this roster cannot take as that id.
+     */
+    public function test_a_peer_id_is_never_take_authority(): void
+    {
+        $this->writeAgent('me', 'peer_kanban_user_id: '.self::ROSTER_ID);
+        CoordRosterFixture::configure($this->dir.'/coord', ['somebody-else' => 4]);
+        Http::fake();
+
+        $this->take()->assertStatus(422)->assertJsonPath('reason', 'install_fault.roster_seat_absent');
+        Http::assertNothingSent();
     }
 
     public function test_two_seats_resolving_to_one_id_refuse_the_take_as_shared(): void
