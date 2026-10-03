@@ -591,13 +591,47 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             && str_contains(urldecode($r->url()), 'source=owner/a'));
     }
 
-    /** @return array<string, array{0: string, 1: array<string, mixed>}> */
+    /**
+     * A classify-time DL correlation read says the write it correlates for, as the same read
+     * does inside a handler: a consumer selecting `op: move` sees a failed correlation for a
+     * move whether the classifier or the handler made it (card#11223). The draft overlay
+     * correlates for a block reason, which `KanbanBlockReasonHandler` declares as `write`.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    #[DataProvider('correlationSurfaces')]
+    public function test_a_classify_time_dl_correlation_read_says_the_write_it_correlates_for(string $eventType, array $payload, string $op): void
+    {
+        $this->useRefCorrelation(['owner/a' => ['board_id' => 8, 'stages' => ['started' => 51, 'opened' => 50], 'started_from_stages' => [49], 'draft_overlay' => true]]);
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['meta' => []])]);
+        Log::spy();
+
+        (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
+            $eventType, $payload + ['repository' => ['full_name' => 'owner/a']], new Actor('999'), 'github', 'owner/a', $this->agent,
+        ));
+
+        $seen = [];
+        Log::shouldHaveReceived('warning')->withArgs(function (string $m, array $c) use (&$seen): bool {
+            if (($c['catalog_id'] ?? null) === 'kanban_client.card_collection_unreadable') {
+                $seen[] = [$c['handler'], $c['op']];
+            }
+
+            return true;
+        });
+        $this->assertSame([[null, $op]], $seen);
+    }
+
+    /**
+     * The third element is the op that surface's correlation reads say.
+     *
+     * @return array<string, array{0: string, 1: array<string, mixed>, 2: string}>
+     */
     public static function correlationSurfaces(): array
     {
         return [
-            'pull request move' => ['pull_request.opened', ['pull_request' => ['title' => 'Fix DL-9 thing', 'head' => ['ref' => 'f']]]],
-            'branch-create push' => ['push', ['created' => true, 'ref' => 'refs/heads/feat/DL-9-thing']],
-            'draft overlay' => ['pull_request.converted_to_draft', ['pull_request' => ['title' => 'DL-9 wip', 'head' => ['ref' => 'f']]]],
+            'pull request move' => ['pull_request.opened', ['pull_request' => ['title' => 'Fix DL-9 thing', 'head' => ['ref' => 'f']]], 'move'],
+            'branch-create push' => ['push', ['created' => true, 'ref' => 'refs/heads/feat/DL-9-thing'], 'move'],
+            'draft overlay' => ['pull_request.converted_to_draft', ['pull_request' => ['title' => 'DL-9 wip', 'head' => ['ref' => 'f']]], 'write'],
         ];
     }
 

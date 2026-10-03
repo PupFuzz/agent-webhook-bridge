@@ -23,6 +23,7 @@ use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
+use App\Bridge\Writeback\WriteOp;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -375,7 +376,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             // exclude cards whose derived refs carry no source (operator-stamped
             // dl_number cards) while protecting nothing — so it is omitted.
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
-            $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
+            $cardIds = $this->correlateDl(WriteOp::Move, $mapping, $dl, $sourceRepo);
             if ($cardIds !== []) {
                 // A co-present card# is a CONFLICT only when it names a card the DL
                 // did NOT resolve to (DL-218 / card#4811 incident): a descriptive or
@@ -1012,6 +1013,18 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     }
 
     /**
+     * The DL correlation read, under the write it correlates for, so its shared `kanban_client.*`
+     * rows say the op the same read says inside that write's handler (card#11223). No handler
+     * runs yet, so `handler` stays null.
+     *
+     * @return list<int>
+     */
+    private function correlateDl(WriteOp $op, WritebackMapping $mapping, string $dl, ?string $sourceRepo): array
+    {
+        return BoardMoverScope::forOp($op, fn (): array => WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo));
+    }
+
+    /**
      * The card ids a PR correlates to, for the draft overlay — the SAME DL→card /
      * card#-fallback resolution the move path uses (FR-7 try-in-order, incl. the
      * DL-218 conflict rule via {@see self::cardTokenVerdict()}): a DL that resolves wins (all
@@ -1059,7 +1072,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $cardToken = $cardResolution['token'];
         if ($dl !== null) {
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
-            $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
+            $cardIds = $this->correlateDl(WriteOp::Write, $mapping, $dl, $sourceRepo);
             $verdict = $cardIds !== [] ? $this->cardTokenVerdict($cardResolution, $cardIds) : null;
             if ($verdict === CardTokenVerdict::DlWins || $verdict === CardTokenVerdict::NearMissRedundant) {
                 return ['ids' => $cardIds, 'uncorroborated' => false];
@@ -1134,7 +1147,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             // Repo-qualified (DL-167) only where ambiguity exists (DL-174) — same
             // shared-board conditional as the pull_request path above.
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
-            $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
+            $cardIds = $this->correlateDl(WriteOp::Move, $mapping, $dl, $sourceRepo);
             if ($cardIds !== []) {
                 // DL-218 conflict (same rule + harm as the move path): a branch like
                 // `card-4811-guard-DL-219` where DL-219 resolves elsewhere must not
