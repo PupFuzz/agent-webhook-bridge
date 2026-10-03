@@ -13,37 +13,48 @@ No consumer cron, no drain loop, no daemon. Drop a new `<agent>.yml` in the conf
 
 ## Agent registry (built from the YAMLs)
 
-The agent registry maps **immutable numeric ids** — kanban `user_id` and GitHub `sender.id` — to friendly agent names so intents read "edited by prod-agent" rather than a raw integer. There is no `agents.json`: the registry is built by scanning each `<agent>.yml`'s `identity:` block (the filename is the agent's name). Matching is provider-aware: a kanban event consults `kanban_user_id`, a GitHub event consults `github_user_id`, so the same integer on different axes never cross-matches.
+The agent registry maps **immutable numeric ids** — kanban `user_id` and GitHub `sender.id` — to friendly agent names so intents read "edited by prod-agent" rather than a raw integer. There is no `agents.json`: the registry is built by scanning each `<agent>.yml` (the filename is the agent's name). Matching is provider-aware: a kanban event consults the agent's **kanban user id from the coord roster**, a GitHub event consults `identity.github_user_id`, so the same integer on different axes never cross-matches.
+
+⭐ **The kanban id is not in the YAML** (card#11172 / DL-450). It is read at runtime from the coord roster at `BRIDGE_COORD_CONFIG_PATH` — `roster[].kanban_user_id[<kanban host>]` for the agent's seat, which is `identity.coord_seat`, else the agent name. [`config-schema.md` § `identity:`](config-schema.md#identity-optional-mapping--the-agents-own-immutable-github-ids-and-its-coord-seat) owns the shape and the rules.
 
 ```yaml
-# prod-agent.yml — the filename IS the name; ids live in identity:
-identity:
-  kanban_user_id: 3
+# prod-agent.yml — the filename IS the name (and, here, its roster seat)
+identity: {}
 
-# dev-agent.yml
+# dev-agent.yml — an agent whose roster seat has another name
 identity:
-  kanban_user_id: 4
+  coord_seat: builder
 
 # device.yml
 identity:
-  kanban_user_id: 53
   github_user_id: 41000123
   github_login: device-bot        # display-only label
 ```
 
-`AgentRegistry::fromAgentConfigs` is built once per request from the same scanned YAMLs the `SubscriptionRegistry` already reads. `EchoSuppression` checks the agent's own name and `treat_as_echo` names against the resolved `Actor.name`; `SignalAllowlist` does the same for `treat_as_signal`.
+```jsonc
+// coordination.config.json (the coord roster) — where those agents' kanban ids live
+{ "roster": [
+    { "name": "prod-agent", "kanban_user_id": { "kanban.example.com": 3 } },
+    { "name": "builder",    "kanban_user_id": { "kanban.example.com": 4 } },
+    { "name": "device",     "kanban_user_id": { "kanban.example.com": 53 } }
+] }
+```
 
-An agent's own ids in `identity:` are auto-seeded into its echo suppression — you never hand-list your own id. If an agent has no `identity` ids: attribution for its events falls back to the raw provider id; classifiers still work; only the friendly name is missing.
+`AgentRegistry::fromAgentConfigs` is built once per request from the same scanned YAMLs the `SubscriptionRegistry` already reads; its kanban side is read from the roster on the first kanban lookup, and a kanban delivery that needs it while the roster cannot be read answers 5xx and is redelivered (DL-450). `EchoSuppression` checks the agent's own name and `treat_as_echo` names against the resolved `Actor.name`; `SignalAllowlist` does the same for `treat_as_signal`.
+
+An agent's own ids are auto-seeded into its echo suppression — `identity.github_user_id` at load, and its roster kanban id at dispatch for kanban events — you never hand-list your own id. If an agent has no ids: attribution for its events falls back to the raw provider id; classifiers still work; only the friendly name is missing.
 
 `github_user_id` is optional — it's the immutable GitHub account id (`sender.id`) and the GitHub matching key; agents that don't act on GitHub can omit it. `github_login` is a **display-only label** (GitHub usernames are renameable, so they are never a matching key — see DL-002); if it goes stale the registry logs a one-line drift warning naming the current login.
 
 When several agents share **one** upstream account, declare it once in an optional `shared-identities.json` — see [§ Shared identity across agents](#shared-identity-across-agents).
 
-> **Cross-install peers need a local author-only YAML.** The registry is built from **this install's** config dir — there is no shared `agents.json` anymore. So if an agent names a peer that runs in a *separate* install — e.g. `treat_as_signal: [prod-agent]` or `treat_as_echo: [prod-agent]` where `prod-agent` is its own install — that peer must still have an `<peer>.yml` here so the registry knows the name and can attribute its events. Make it **author-only** (identity ids + no subscriptions), so it's never dispatched to locally:
+> **Cross-install peers need a local author-only YAML.** The registry is built from **this install's** config dir — there is no shared `agents.json` anymore. So if an agent names a peer that runs in a *separate* install — e.g. `treat_as_signal: [prod-agent]` or `treat_as_echo: [prod-agent]` where `prod-agent` is its own install — that peer must still have an `<peer>.yml` here so the registry knows the name and can attribute its events. Make it **author-only** (no subscriptions), so it's never dispatched to locally. Where its kanban id comes from depends on whether it is a seat of THIS install's coord roster:
+> - **It is a seat of this roster** — its kanban id is the roster's, for its seat (its name, or `identity.coord_seat`). Declare nothing else.
+> - **Its seat belongs to ANOTHER roster** — this roster does not own its id, so declare it as `identity.peer_kanban_user_id` (DL-450). That id is used to attribute the peer's events and to match it in `treat_as_echo` / `treat_as_signal`, and **never** as take, start or correction authority. `bridge:check` **fails** it — and the runtime ignores it — when it equals any roster seat's id, on an agent that IS a seat of this roster, or beside an `identity.coord_seat`.
 > ```yaml
-> # prod-agent.yml in the dev install — peer the dev-agent references; not run here
+> # prod-agent.yml in the dev install — a peer from another coordination project; not run here
 > identity:
->   kanban_user_id: 3
+>   peer_kanban_user_id: 3         # its kanban user; its seat is in ANOTHER roster
 > subscriptions: []
 > ```
 > This matters most for `treat_as_signal`, which is **fail-closed**: a name with no matching local `<name>.yml` throws at config load (`bridge:check` catches it). Under the old shared `agents.json`, peers were globally known; per-install registries make this explicit.
@@ -53,8 +64,7 @@ When several agents share **one** upstream account, declare it once in an option
 ```yaml
 # ~/.config/agent-webhook-bridge/prod-agent.yml
 # The FILENAME (prod-agent) is the agent's name and its echo "self" — no identity.self.
-identity:
-  kanban_user_id: 3               # this agent's own immutable upstream ids
+identity: {}                      # github ids / coord_seat; the kanban id is the roster's (DL-450)
 
 subscriptions:
   - provider: kanban
@@ -154,7 +164,7 @@ HMAC secrets are keyed by `(provider, scope)` — one per upstream scope, not pe
 
 ```yaml
 # pm.yml — cross-cutting; subscribes to everything. The filename IS the name.
-identity: { kanban_user_id: 100, github_user_id: 41000101, github_login: pm-bot }
+identity: { github_user_id: 41000101, github_login: pm-bot }   # kanban id: roster seat `pm`
 subscriptions:
   - { provider: kanban, scopes: [2, 3, 4], event_filter: [] }
   - { provider: github, scopes: [myorg/acme-coordination, myorg/acme-device, myorg/acme-backend, myorg/acme-inventory], event_filter: [pull_request.*, issues.*] }
@@ -162,7 +172,7 @@ echo_suppression:
   treat_as_echo: [device, backend, inventory]   # OTHER agents — pm's own ids auto-seed
 
 # device.yml — scope-bounded; subscribes to its own repo + cross-team coord
-identity: { kanban_user_id: 101, github_user_id: 41000102, github_login: device-bot }
+identity: { github_user_id: 41000102, github_login: device-bot }   # kanban id: roster seat `device`
 subscriptions:
   - { provider: github, scopes: [myorg/acme-coordination, myorg/acme-device], event_filter: [pull_request.*, issues.*] }
 echo_suppression:
@@ -173,13 +183,15 @@ echo_suppression:
 
 #### Shared agent registry
 
-The registry is built by scanning all 4 YAMLs' `identity` blocks. Each agent's own ids auto-seed its echo suppression; `treat_as_echo` then names the **other** agents so a `pm` write doesn't re-trigger `device`'s classifier. The `identity` ids above are what cross-attribute each agent's writes:
+The registry is built by scanning all 4 YAMLs' `identity` blocks for the github ids, and the coord roster for each agent's kanban id (its seat is its name here; DL-450). Each agent's own ids auto-seed its echo suppression; `treat_as_echo` then names the **other** agents so a `pm` write doesn't re-trigger `device`'s classifier. These ids are what cross-attribute each agent's writes:
 
 ```yaml
-# pm.yml        identity: { kanban_user_id: 100, github_user_id: 41000101, github_login: pm-bot }
-# device.yml    identity: { kanban_user_id: 101, github_user_id: 41000102, github_login: device-bot }
-# backend.yml   identity: { kanban_user_id: 102, github_user_id: 41000103, github_login: backend-bot }
-# inventory.yml identity: { kanban_user_id: 103, github_user_id: 41000104, github_login: inventory-bot }
+# pm.yml        identity: { github_user_id: 41000101, github_login: pm-bot }
+# device.yml    identity: { github_user_id: 41000102, github_login: device-bot }
+# backend.yml   identity: { github_user_id: 41000103, github_login: backend-bot }
+# inventory.yml identity: { github_user_id: 41000104, github_login: inventory-bot }
+# coordination.config.json roster: pm → {"kanban.example.com": 100}, device → 101,
+#                                  backend → 102, inventory → 103
 ```
 
 (This is the *distinct-account-per-agent* case — each agent has its own GitHub account, so attribution resolves to a name. When all agents share **one** account, declare it once in `shared-identities.json` instead — see [§ Shared identity across agents](#shared-identity-across-agents).)
@@ -337,7 +349,7 @@ Sometimes the platform forces multiple agents to authenticate under **one** acco
 
 ### Path A — Distinct accounts per agent (preferred)
 
-Give each agent its own account, with a distinct `kanban_user_id` / `github_user_id` in its YAML's `identity:` block. The registry resolves cleanly, friendly names work, no special handling. Only blocked when your platform genuinely requires shared credentials.
+Give each agent its own account: a distinct kanban user id for its seat in the coord roster, and a distinct `github_user_id` in its YAML's `identity:` block. The registry resolves cleanly, friendly names work, no special handling. Only blocked when your platform genuinely requires shared credentials.
 
 ### Path B — Declare the shared account once, accept the null name
 

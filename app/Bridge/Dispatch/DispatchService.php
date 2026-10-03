@@ -157,7 +157,7 @@ final class DispatchService
 
             // Filtered out before classify → a gate-drop, not a delivery (DL-036).
             $gateReason = null;
-            if ($this->isEcho($agent, $actor)) {
+            if ($this->isEcho($provider, $agent, $actor)) {
                 $gateReason = 'echo: own write';
                 $this->warnAccountEchoUnderReattribution($provider, $agent, $classifier, $actor, $event);
             } elseif (! $this->isSignal($agent, $actor)) {
@@ -197,7 +197,7 @@ final class DispatchService
             // related name. Feeding it the thread's AUTHOR — the shape shipped
             // until DL-253 — dropped a counterparty's bodyless action on a thread
             // the serving agent had opened, as that agent's own write.
-            if ($gateReason === null && $result->reattributedActor !== null && $this->isEcho($agent, $result->reattributedActor)) {
+            if ($gateReason === null && $result->reattributedActor !== null && $this->isEcho($provider, $agent, $result->reattributedActor)) {
                 if (! $stripToMachine) {
                     $this->markDropped($dispatch, 'echo: own write (reattributed author)');
 
@@ -443,10 +443,10 @@ final class DispatchService
         ]);
     }
 
-    private function isEcho(AgentConfig $agent, Actor $actor): bool
+    private function isEcho(string $provider, AgentConfig $agent, Actor $actor): bool
     {
-        // Self identity is the agent's name (the YAML filename); its own upstream
-        // ids are auto-seeded into treatAsEchoIds by AgentConfig. But drop any id
+        // Self identity is the agent's name (the YAML filename); its own github
+        // id is auto-seeded into treatAsEchoIds by AgentConfig. But drop any id
         // the registry knows is SHARED: a shared account's events must reach
         // classify so the DL-005 re-attribution decides per agent, rather than
         // being suppressed wholesale here by an auto-seeded shared self id (DL-007).
@@ -454,6 +454,17 @@ final class DispatchService
             $agent->echoSuppression->treatAsEchoIds,
             fn (string $id) => ! $this->agents->isSharedGithubId($id),
         ));
+
+        // The agent's own KANBAN user id comes from the coord roster (DL-450), and only
+        // a kanban-shaped event is matched against it — the same provider split
+        // actorFromEvent draws, so a github delivery never reads the roster. It is the
+        // RAW id, shared or not: two agents on one kanban user each wrote that write.
+        // An actor with no id cannot match one, so it is not asked. A roster that
+        // cannot be read throws here → the delivery 5xxs and is
+        // redelivered, rather than letting the agent's own write wake it (DL-450).
+        if ($provider !== 'github' && $actor->id !== null && ($kanbanUserId = $this->agents->kanbanUserIdOf($agent->agentName)) !== null) {
+            $echoIds[] = (string) $kanbanUserId;
+        }
 
         // Global echo ids (DL-009): the bridge's own machine-write identities —
         // e.g. the kanban user a card-move writeback acts as — are never a signal

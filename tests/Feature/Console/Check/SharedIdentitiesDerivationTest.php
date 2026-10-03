@@ -77,7 +77,7 @@ class SharedIdentitiesDerivationTest extends TestCase
             ->boot()
             // The ONLY .yml in the dir, and it does not parse — so `$configs` is empty
             // while the config dir is perfectly usable.
-            ->agent('prod-agent', "identity:\n  kanban_user_id: 137\nsubscriptions: [\n")
+            ->agent('prod-agent', "subscriptions: [\n")
             ->json('shared-identities.json', ['shared_identities' => [
                 ['github_user_id' => 12000042, 'agents' => ['ghost']],
             ]]));
@@ -110,6 +110,6 @@ class SharedIdentitiesDerivationTest extends TestCase
 
     private function kanbanAgentYaml(): string
     {
-        return "identity:\n  kanban_user_id: 137\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n";
+        return "subscriptions:\n  - provider: kanban\n    scopes: [5]\n";
     }
 }

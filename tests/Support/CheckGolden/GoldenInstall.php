@@ -61,7 +61,7 @@ final class GoldenInstall
             ],
             'bridge.default_agent' => null,
             'bridge.writeback.correlation' => 'ref',
-            'bridge.writeback.coord_config_path' => null,
+            'bridge.coord_config_path' => null,
             'bridge.retention.enabled' => true,
             'bridge.retention.interval' => 86400,
             'bridge.retention.older_than' => '30d',
@@ -73,6 +73,27 @@ final class GoldenInstall
             // `BRIDGE_SPAWN_ENABLED` would otherwise add a FAIL line to every capture.
             'bridge.unreadable_flags' => [],
         ]);
+
+        // A CONFIGURED install: the coord roster every kanban user id is read from (DL-450),
+        // giving the fixtures' one agent, `prod-agent`, a kanban user on the pinned host. A
+        // fixture about an unset or unreadable roster overrides `bridge.coord_config_path`.
+        return $this->roster(['prod-agent' => 137]);
+    }
+
+    /**
+     * Replace the coord roster with these seats, each given its id on the pinned kanban host,
+     * and point the bridge at it.
+     *
+     * @param  array<string, int>  $seats
+     */
+    public function roster(array $seats): self
+    {
+        $entries = [];
+        foreach ($seats as $seat => $id) {
+            $entries[] = ['name' => $seat, 'kanban_user_id' => ['kanban.example.com' => $id]];
+        }
+        $this->json('coordination.config.json', ['roster' => $entries]);
+        config(['bridge.coord_config_path' => $this->path('coordination.config.json')]);
 
         return $this;
     }

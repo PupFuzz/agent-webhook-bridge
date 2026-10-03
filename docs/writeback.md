@@ -680,8 +680,8 @@ fails **closed at load** — never a silent no-op.
   (a **stage id**), while the consumer's reconcile derives its terminal from `terminal_columns`
   (column **names**) in the coordination project's `coordination.config.json`. If the two disagree they
   **fight every cycle** — the bridge concludes a card, the reconcile drags it back — with each side
-  individually "working". So `bridge:check` reads `$COORD_CONFIG` (override:
-  `bridge.writeback.coord_config_path`), resolves that board's terminal through the framework's own
+  individually "working". So `bridge:check` reads the file `BRIDGE_COORD_CONFIG_PATH` names
+  (`bridge.coord_config_path`; the ambient `$COORD_CONFIG` when that is unset), resolves that board's terminal through the framework's own
   rule (explicit `terminal_columns`, else the `user_lanes` → `"Done"` lane-model fallback, unioned
   across every `boards[]` entry sharing the `board_id`), and compares:
   - **agrees** → an `info` line naming the column and stage.
@@ -698,13 +698,12 @@ fails **closed at load** — never a silent no-op.
   that the terminal is wrong. The DISAGREE arm — where both configs were read and they differ — stays
   a `warn`, because that one is measured.
 
-  The read is **CLI-only by design**: `bridge:check` runs with the operator's
-  environment, while the receiver runs under PHP-FPM, whose environment does **not** carry
-  `$COORD_CONFIG`. Nothing on the request path reads it.
-  **If you run `php artisan optimize`** (config cache), the ambient `$COORD_CONFIG` is still honored —
-  it is read live at the check via `getenv()`, deliberately not baked into cached config (which would
-  freeze it to the deploying shell's value forever). To pin a path independent of the invoking shell,
-  set `BRIDGE_COORD_CONFIG_PATH` in that install's `.env`.
+  This COMPARE is **CLI-only by design** — it has no runtime half. ⚠ The FILE is no longer
+  CLI-only: since DL-450 the receiver reads its coord roster at runtime, through
+  `BRIDGE_COORD_CONFIG_PATH`, which every install now sets ([`config-schema.md`](config-schema.md) § 1).
+  The ambient `$COORD_CONFIG` fallback is this compare's alone: PHP-FPM does not carry it, and it
+  is read live at the check via `getenv()`, deliberately not baked into cached config (which would
+  freeze it to the deploying shell's value forever).
 
 ## Optional: PR draft → `block_reason` overlay (DL-193)
 

@@ -61,6 +61,33 @@ final class RosterKanbanUser
     }
 
     /**
+     * Every seat the roster gives a usable id on $host: seat name → id. The same reading as
+     * {@see lookUp} — the FIRST entry with a name decides, and only a verdict with an id counts —
+     * enumerated, so a caller asking "is this id any seat's?" asks the roster the way a lookup does.
+     *
+     * @param  array<mixed>  $config  the decoded coordination.config.json
+     * @return array<string, int>
+     */
+    public static function seatIds(array $config, string $host): array
+    {
+        $roster = $config['roster'] ?? null;
+        $ids = [];
+        $seen = [];
+        foreach (is_array($roster) && array_is_list($roster) ? $roster : [] as $entry) {
+            if (! is_array($entry) || ! is_string($entry['name'] ?? null) || isset($seen[$entry['name']])) {
+                continue;
+            }
+            $seen[$entry['name']] = true;
+            $userId = self::verdict($entry, $host)->userId;
+            if ($userId !== null) {
+                $ids[$entry['name']] = $userId;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
      * @param  array<mixed>  $entry
      */
     private static function verdict(array $entry, string $host): self

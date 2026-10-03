@@ -446,7 +446,7 @@ final class WritebackMappingConfigCheck implements Check
         if ($config === null) {
             $where = CoordConfigPath::unreadableClause($path);
 
-            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
 
             return;
         }

@@ -31,7 +31,7 @@ use Illuminate\Support\Facades\Log;
  * terminal — so every impl seat's claim had to route through the one privileged seat,
  * which is the serial hub this door exists to remove.
  *
- * ⛔⭐ THE ID IS RESOLVED FROM THE AGENT REGISTRY AND THERE IS NO ARGUMENT FOR IT. This
+ * ⛔⭐ THE ID IS RESOLVED FROM THE COORD ROSTER AND THERE IS NO ARGUMENT FOR IT. This
  * tool accepts `card_id` and the boolean `start` (card#11150) AND NOTHING ELSE, and neither names
  * a user; the value written is
  * {@see SeatKanbanUser::forCallingSeat}'s answer for the seat the DOOR sealed at dispatch
@@ -51,9 +51,9 @@ use Illuminate\Support\Facades\Log;
  * and never from the arguments. No caller is left believing it
  * assigned somebody either way.
  *
- * ⭐ AND IT LOOKS UP EXACTLY ONE SEAT: ITS OWN. The bridge therefore never needs, and must
- * never grow, a fleet-wide seat→kanban-user map — see {@see SeatKanbanUser} for why that
- * absence is the point rather than a gap.
+ * ⭐ AND IT LOOKS UP EXACTLY ONE SEAT: ITS OWN. The fleet's seat→kanban-user map is the coord
+ * roster, which the bridge READS and never copies (DL-450); this tool asks it about the calling
+ * seat and no other — see {@see SeatKanbanUser}.
  *
  * ⭐ WHY A SEPARATE TOOL AND NOT AN ARGUMENT ON `board_correct_card` — the fork this card
  * turned on, recorded so it can be attacked rather than inherited:
@@ -981,7 +981,7 @@ final class BoardTakeCardTool implements Tool
             404 => new ToolRefusalException("board_take_card: card {$cardId} no longer exists — it was removed between the scope check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.", reason: 'card_gone'),
             403 => new ToolRefusalException("board_take_card: the board refused the {$write} to card {$cardId} (403) — the card is one you may take, but the bridge's writeback user may not write it. ".$forbidden.' Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.', installFault: true, reason: 'install_fault.write_forbidden'),
             401 => new ToolRefusalException("board_take_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.", installFault: true, reason: 'install_fault.token_rejected'),
-            422 => new ToolRefusalException("board_take_card: the board REJECTED the {$write} to card {$cardId} (422), so nothing was written, and re-sending the same call unchanged will be refused the same way. This call sends {$sent} and nothing else".($assigns ? ", and the assignee is resolved from this bridge's config for your agent — so if the reason at the end of this message names `assigned_user_id`, this install's `identity.kanban_user_id` for you does not name a user the board accepts" : '').($moves ? '; a move the board refuses (an enforced WIP limit on the In Progress column, for one) is named in that reason too' : '').'. Report it to your operator. '.BoardCallRefusal::boardReason($e), reason: 'board_rejected'),
+            422 => new ToolRefusalException("board_take_card: the board REJECTED the {$write} to card {$cardId} (422), so nothing was written, and re-sending the same call unchanged will be refused the same way. This call sends {$sent} and nothing else".($assigns ? ", and the assignee is your seat's kanban user id in the coord roster — so if the reason at the end of this message names `assigned_user_id`, the id the roster gives your seat for this kanban instance does not name a user the board accepts" : '').($moves ? '; a move the board refuses (an enforced WIP limit on the In Progress column, for one) is named in that reason too' : '').'. Report it to your operator. '.BoardCallRefusal::boardReason($e), reason: 'board_rejected'),
         };
     }
 }

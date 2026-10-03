@@ -31,8 +31,8 @@ use Illuminate\Support\Facades\Log;
  *     another agent's stamp).
  *  2. ASSIGNED — the card's own `assigned_user_id` is, compared as a strict integer, the
  *     kanban user {@see SeatKanbanUser::declaredForCallingSeat} resolves for the seat the DOOR
- *     sealed ({@see CallingSeat}). A seat whose YAML declares no `identity.kanban_user_id` has
- *     no such user, so for it this arm is simply OFF. The resolver takes no name and this tool accepts no user-naming
+ *     sealed ({@see CallingSeat}) — its seat's id in the coord roster (DL-450). A seat the roster
+ *     gives no id has no such user, so for it this arm is simply OFF. The resolver takes no name and this tool accepts no user-naming
  *     argument, so nothing a caller sends can choose which user is compared — the same
  *     construction `board_take_card` writes that field through.
  * Provenance answers who FILED a card and assignment answers who OWNS it now; the fleet hands
@@ -44,7 +44,7 @@ use Illuminate\Support\Facades\Log;
  * success log — because an audit that flattened the two could not tell a former minter's edit
  * from the current owner's. ⚠ MINTED WINS WHEN BOTH HOLD, AND THE ASSIGNEE ARM IS NEVER EVALUATED
  * ON A MINTED CARD: evaluating it would put the roster read in front of every correction that
- * was authorized before DL-376, and a roster FAULT (an id two agents declare, an unreadable
+ * was authorized before DL-376, and a roster FAULT (an id two seats share, an unreadable
  * roster) would start refusing corrections the seat has always been allowed. So `minted` says the stamp
  * held; it says nothing about the assignee.
  *
@@ -59,8 +59,8 @@ use Illuminate\Support\Facades\Log;
  * kanban USER, which every agent shares (they all write through the one writeback
  * user). Neither can answer "which SEAT filed this", which is the question. The
  * tag is the only per-seat provenance a card carries. (`assigned_user_id` is a different
- * kind of user id: the seat's OWN `identity.kanban_user_id`, which the resolver refuses to
- * answer with when two agents declare it.)
+ * kind of user id: the seat's OWN kanban user in the coord roster, which the resolver refuses
+ * to answer with when the roster gives it to two seats.)
  *
  * ⛔ The stamp compare is CASE-SENSITIVE, deliberately the narrow direction. Agent
  * names are filesystem-cased config names, so `me` and `ME` can be two seats and a
@@ -541,7 +541,7 @@ final class BoardCorrectCardTool implements Tool
     }
 
     /**
-     * The calling seat's own kanban user, or null when its YAML declares none — through the same
+     * The calling seat's own kanban user, or null when the roster gives it none — through the same
      * roster lookup `board_take_card` writes the field with, and this tool's ONLY call site into
      * it. It takes no name: the seat is the one the front door sealed, so no argument this tool
      * receives can reach the value compared. A roster that cannot say who the caller is refuses

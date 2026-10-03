@@ -24,7 +24,7 @@ class AgentConfigTest extends TestCase
     private function raw(array $overrides = []): array
     {
         return array_replace_recursive([
-            'identity' => ['kanban_user_id' => 137],
+            'identity' => ['github_user_id' => 137],
             'subscriptions' => [['provider' => 'kanban', 'scopes' => [5], 'event_filter' => ['task.*']]],
         ], $overrides);
     }
@@ -34,12 +34,12 @@ class AgentConfigTest extends TestCase
         $cfg = AgentConfig::fromArray('prod-agent', $this->raw());
 
         $this->assertSame('prod-agent', $cfg->agentName);
-        $this->assertSame(137, $cfg->identity->kanbanUserId);
-        $this->assertNull($cfg->identity->githubUserId);
+        $this->assertSame(137, $cfg->identity->githubUserId);
+        $this->assertNull($cfg->identity->retiredKanbanUserId);
         $this->assertCount(1, $cfg->subscriptions);
         $this->assertSame('kanban', $cfg->subscriptions[0]->provider);
         $this->assertSame('5', $cfg->subscriptions[0]->scopeId);
-        $this->assertSame(['137'], $cfg->echoSuppression->treatAsEchoIds);   // auto-seeded from identity
+        $this->assertSame(['137'], $cfg->echoSuppression->treatAsEchoIds);   // auto-seeded from identity.github_user_id
         $this->assertSame(InboxOnlyClassifier::class, $cfg->classifierClass);  // default
         $this->assertNull($cfg->channel->socket);
         $this->assertNull($cfg->channel->url);
@@ -54,27 +54,29 @@ class AgentConfigTest extends TestCase
             'identity' => ['kanban_user_id' => 100, 'github_user_id' => 9001, 'github_login' => 'pm-bot'],
         ]));
 
-        $this->assertSame(100, $cfg->identity->kanbanUserId);
+        $this->assertSame(100, $cfg->identity->retiredKanbanUserId, 'parsed for bridge:check\'s migration rows alone (DL-450)');
         $this->assertSame(9001, $cfg->identity->githubUserId);
         $this->assertSame('pm-bot', $cfg->identity->githubLogin);
     }
 
     public function test_self_echo_ids_are_auto_seeded_from_identity(): void
     {
-        // No echo_suppression block at all — the agent's own ids are still
-        // suppressed (the operator never hand-lists self ids).
+        // No echo_suppression block at all — the agent's own github id is still
+        // suppressed (the operator never hand-lists self ids). The RETIRED kanban id is
+        // not seeded: the agent's kanban id is the coord roster's, seeded at dispatch
+        // for kanban events (DL-450; RosterAttributionTest).
         $cfg = AgentConfig::fromArray('pm', [
             'identity' => ['kanban_user_id' => 100, 'github_user_id' => 9001],
             'subscriptions' => [],
         ]);
 
-        $this->assertEqualsCanonicalizing(['100', '9001'], $cfg->echoSuppression->treatAsEchoIds);
+        $this->assertEqualsCanonicalizing(['9001'], $cfg->echoSuppression->treatAsEchoIds);
     }
 
     public function test_explicit_echo_ids_union_with_self_ids(): void
     {
         $cfg = AgentConfig::fromArray('pm', $this->raw([
-            'identity' => ['kanban_user_id' => 137],
+            'identity' => ['github_user_id' => 137],
             'echo_suppression' => ['treat_as_echo_ids' => ['50']],
         ]));
 
@@ -517,7 +519,7 @@ class AgentConfigTest extends TestCase
 
         $cfg = AgentConfig::load('prod-agent', $dir);
         $this->assertSame('prod-agent', $cfg->agentName);
-        $this->assertSame(137, $cfg->identity->kanbanUserId);
+        $this->assertSame(137, $cfg->identity->retiredKanbanUserId);
         $this->assertSame('5', $cfg->subscriptions[0]->scopeId);
 
         File::deleteDirectory($dir);

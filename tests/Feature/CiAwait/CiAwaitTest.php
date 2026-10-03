@@ -57,8 +57,7 @@ class CiAwaitTest extends TestCase
             chmod($this->dir.'/'.$file, 0o600);
         }
         foreach (['seat-a' => [8701, 'a-token'], 'seat-b' => [8702, 'b-token']] as $agent => [$port, $token]) {
-            File::put($this->dir."/{$agent}.yml", "identity:\n  kanban_user_id: ".($port - 8000)."\n"
-                ."subscriptions:\n  - provider: github\n    scopes: [".self::REPO."]\n"
+            File::put($this->dir."/{$agent}.yml", "subscriptions:\n  - provider: github\n    scopes: [".self::REPO."]\n"
                 ."channel:\n  url: http://127.0.0.1:{$port}/\n  auth:\n    token_path: {$this->dir}/{$token}\n");
         }
         config([
