@@ -42,7 +42,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - Not carried: a `late_runs_possible` hint — a workflow started by `on: workflow_run` can appear after the settle, and knowing whether a repo has one is not cheap; `docs/board-tools.md` § *`ci_await` and `ci_await_cancel`* names this and the other limits.
   - ⚠ **MIGRATION — run `php artisan migrate`** (`ci_awaits`). Until it runs, `ci_await` refuses as `install_fault.ci_await_store_unavailable`, and each `workflow_run.completed` delivery logs a `bridge ci_await:` warning; nothing a delivery answers changes.
   - ⚠ **New `bridge:check` leg `ci_await.awaits`**, so every inventory line moves. It is silent with no awaits stored. It FAILs on a `BRIDGE_CI_AWAIT_TTL` that is not a whole number from 60 to 604800, WARNs on a missing table, and with awaits stored WARNs when nothing would expire them, when a read last failed, or when an awaited repo has no stored `workflow_run` delivery (the repo webhook must send **Workflow runs** to this bridge).
-  - ⚠ **Reference channel-server snapshot 0.9.40 → 0.9.41** (advertises the two tools). A seat on an older client does not see them until it updates.
+  - ⚠ **Reference channel-server snapshot 0.9.41 → 0.9.42** (advertises the two tools). A seat on an older client does not see them until it updates.
   - New optional `.env` key `BRIDGE_CI_AWAIT_TTL`. `JobRegistry::declareIfAbsent()` is the declare-on-first-use primitive the owed-write queue now uses too (no behaviour change there). No route change; `--format=json` `schema` stays **1**.
 
 ### Fixed
