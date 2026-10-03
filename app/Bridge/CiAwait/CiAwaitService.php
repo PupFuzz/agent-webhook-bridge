@@ -215,12 +215,13 @@ final class CiAwaitService
             $runs = $this->readRuns($repo, $headSha);
         } catch (CiRunsReadException $e) {
             // The column holds 1000 characters; a longer error would fail the write that records it.
-            CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => mb_substr($e->getMessage(), 0, 1000)]);
+            $error = mb_substr($e->getMessage(), 0, 1000);
+            CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => $error]);
             Log::warning('bridge ci_await: the workflow-run read failed, so nothing was emitted — the await is kept and re-read on the next completed run on this head or by the ci_await sweep, and expires with this error if no read answers', [
-                'repo' => $repo, 'head_sha' => $headSha, 'awaits' => count($ids), 'error' => $e->getMessage(),
+                'repo' => $repo, 'head_sha' => $headSha, 'awaits' => count($ids), 'error' => $error,
             ]);
 
-            return ['runs' => null, 'error' => $e->getMessage(), 'all_terminal' => false];
+            return ['runs' => null, 'error' => $error, 'all_terminal' => false];
         }
         CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null]);
 
