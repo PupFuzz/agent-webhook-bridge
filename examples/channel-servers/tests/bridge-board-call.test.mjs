@@ -437,17 +437,18 @@ for (const bad of ['0', '-5', 'abc', '600001']) {
   });
 }
 
-const FAKE_TOKEN = 'tok-LEAK-CANARY-9f3a';
+// A canary, not a credential: low-entropy on purpose, so the secret scanner has nothing to flag.
+const CANARY = 'leakcanary-leakcanary';
 
 test('a malformed .mcp.json never echoes its content (a token in it must not reach stdout or stderr)', async (t) => {
   const dir = scratch(t, 'bbc-proj-');
   // Unquoted and smart-quoted values: V8's JSON.parse message quotes the input around the error.
-  fs.writeFileSync(path.join(dir, '.mcp.json'), `{"mcpServers":{"seat":{"env":{"BRIDGE_TOOLS_TOKEN": ${FAKE_TOKEN}, "X": “${FAKE_TOKEN}”}}}}`);
+  fs.writeFileSync(path.join(dir, '.mcp.json'), `{"mcpServers":{"seat":{"env":{"BRIDGE_TOOLS_TOKEN": ${CANARY}, "X": “${CANARY}”}}}}`);
   const r = await run(t, START, { cwd: dir, env: { CLAUDE_PROJECT_DIR: dir } });
 
   assert.equal(r.code, 2);
   assert.match(r.stderr, /not valid JSON/);
-  assert.ok(!(r.stdout + r.stderr).includes('LEAK'), r.stderr);
+  assert.ok(!(r.stdout + r.stderr).includes('leakcanary'), r.stderr);
 });
 
 test('a credential in the endpoint URL is never printed', async (t) => {
@@ -455,10 +456,10 @@ test('a credential in the endpoint URL is never printed', async (t) => {
   await new Promise((r) => closed.listen(0, '127.0.0.1', r));
   const port = closed.address().port;
   await new Promise((r) => closed.close(r));
-  const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: `http://user:${FAKE_TOKEN}@127.0.0.1:${port}/agent-tools/call`, BRIDGE_TOOLS_TOKEN: 'tkn' } });
+  const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: `http://user:${CANARY}@127.0.0.1:${port}/agent-tools/call`, BRIDGE_TOOLS_TOKEN: 'tkn' } });
 
   assert.equal(r.code, 2, r.stderr);
-  assert.ok(!(r.stdout + r.stderr).includes('LEAK'), r.stderr);
+  assert.ok(!(r.stdout + r.stderr).includes('leakcanary'), r.stderr);
 });
 
 for (const [stderr, code, label] of [
