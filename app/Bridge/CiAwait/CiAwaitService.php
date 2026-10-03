@@ -33,10 +33,10 @@ use UnexpectedValueException;
  * so the seat stops polling GitHub for it.
  *
  * ⭐ THE GUARANTEE. One terminal event per await (`ci_settled` or `ci_await_expired`), written to the
- * seat's inbox at least once and idempotent by its line id (`<kind>:<await id>`, which `bridge:inbox`
+ * seat's inbox at least once and idempotent by its line id (`<kind>:<await uuid>`, which `bridge:inbox`
  * collapses), then pushed live once — the push carries no line id and is unconfirmed (DL-370).
  * `ci_settled` follows CI finishing by at most the time until the sweep next reads the head
- * ({@see sweepUnsettled()}: a head whose oldest read is one sweep interval old, oldest first, up to
+ * ({@see sweepUnsettled()}: a head none of whose awaits was read, or whose oldest read is one sweep interval old, up to
  * the per-pass cap), PROVIDED THE SWEEP RUNS — a pass needs a webhook or `bridge:tick`.
  *
  * ⭐ THE ONLY THING THE BRIDGE DECIDES IS "EVERY RUN IS `completed`". It does NOT decide green or
@@ -263,58 +263,65 @@ final class CiAwaitService
     }
 
     /**
-     * Emit `ci_await_expired` for up to `$limit` awaits past their expiry, and drop those whose
-     * `ci_await_expired` has failed to reach their seat's inbox and that are
-     * {@see EMIT_GIVE_UP_AFTER_SECONDS} past it.
+     * Emit `ci_await_expired` for up to `$limit` awaits past their expiry, then drop the awaits whose
+     * `ci_await_expired` could NOT be written on this attempt and that are
+     * {@see EMIT_GIVE_UP_AFTER_SECONDS} past their expiry. An await is never dropped without an
+     * attempt in the same pass: an inbox that was fixed since the last failure takes the line.
      *
      * An await whose emit failed within the last `$retryAfterSeconds` is not tried again on this
      * pass, and one that has failed before is tried only after every never-failed due await — so a
      * seat whose inbox cannot be written, however many awaits it holds, never fills the pass ahead
-     * of anyone else's expiry, whatever the jitter between passes.
+     * of anyone else's expiry, whatever the jitter between passes. One whose settle failed before
+     * it expired is tried as an expiry like any other.
      *
      * @return array{emitted: int, failed: int, dropped: int}
      */
     public function expireDue(int $limit, int $retryAfterSeconds): array
     {
         $now = Carbon::now();
-        $dropped = 0;
-        // Only an await whose EXPIRY emit failed: one whose settle failed before it expired is tried
-        // as an expiry first, however late the next pass comes.
-        $abandoned = CiAwait::query()->whereNotNull('emit_failed_at')->whereColumn('emit_failed_at', '>=', 'expires_at')
-            ->where('expires_at', '<=', $now->copy()->subSeconds(self::EMIT_GIVE_UP_AFTER_SECONDS))->get();
-        foreach ($abandoned as $await) {
-            if (CiAwait::query()->whereKey($await->id)->delete() === 1) {
-                $dropped++;
-                Log::error('bridge ci_await: gave up on an await whose ci_await_expired could not be written to its seat\'s inbox — it is deleted UNDELIVERED; fix that inbox (bridge:check names it)', [
-                    'agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha,
-                    'expires_at' => self::instant($await->expires_at), 'emit_failed_at' => self::instant($await->emit_failed_at ?? $now),
-                ]);
-            }
-        }
-
         $due = CiAwait::query()->where('expires_at', '<=', $now)
             ->where(fn ($q) => $q->whereNull('emit_failed_at')->orWhere('emit_failed_at', '<', $now->copy()->subSeconds($retryAfterSeconds)))
             ->orderByRaw('emit_failed_at is not null')->orderBy('expires_at')->orderBy('id')
             ->limit($limit)->get();
         $emitted = 0;
         $failed = 0;
+        $dropped = 0;
+        $giveUpBefore = $now->copy()->subSeconds(self::EMIT_GIVE_UP_AFTER_SECONDS);
         foreach ($due as $await) {
             $result = $this->claimAndEmit($await, self::EXPIRED, self::expiredPayload($await), self::expiredSummary($await));
             $emitted += $result === EmitResult::Emitted ? 1 : 0;
-            $failed += $result === EmitResult::Failed ? 1 : 0;
+            if ($result !== EmitResult::Failed) {
+                continue;
+            }
+            $failed++;
+            if ($await->expires_at->lessThanOrEqualTo($giveUpBefore) && CiAwait::query()->whereKey($await->id)->delete() === 1) {
+                $dropped++;
+                Log::error('bridge ci_await: gave up on an await whose ci_await_expired could not be written to its seat\'s inbox — it is deleted UNDELIVERED; fix that inbox (bridge:check names it)', [
+                    'agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha,
+                    'expires_at' => self::instant($await->expires_at),
+                ]);
+            }
         }
 
         return ['emitted' => $emitted, 'failed' => $failed, 'dropped' => $dropped];
     }
 
     /**
-     * Read up to `$limit` unexpired heads whose OLDEST read is at least `$staleSeconds` old (or that
-     * were never read), oldest first; a head any of whose awaits is rate limited past now is left
-     * out. Each read is {@see evaluate()}, so an all-terminal head settles every await on it. This
-     * is what makes every await settle without depending on any event; returns how many heads were
-     * actually read.
+     * Read up to `$limit` unexpired heads whose oldest READ is at least `$staleSeconds` old, or none
+     * of whose awaits was ever read (a head with one unread await beside read ones counts by its
+     * oldest read: the aggregate ignores the unread row), those never read first and then oldest
+     * read first; a head any of whose awaits is rate limited past now is left out. Each read is
+     * {@see evaluate()}, so an all-terminal head settles every await on it. This is what makes every
+     * await settle without depending on any event.
+     *
+     * ⚑ ONE HEAD THAT THROWS DOES NOT STARVE THE REST. A head whose read raises anything the read
+     * itself does not already catch is logged, its awaits are stamped as read now with the error
+     * (so it takes its turn behind the others instead of heading the next pass), and the pass goes
+     * on — the way {@see claimAndEmit()} isolates one await.
+     *
+     * @return array{read: int, failed: int} the heads actually read, and the heads whose read threw
      */
-    public function sweepUnsettled(int $limit, int $staleSeconds): int
+    public function sweepUnsettled(int $limit, int $staleSeconds): array
     {
         $now = Carbon::now();
         $heads = CiAwait::query()
@@ -328,11 +335,27 @@ final class CiAwaitService
             ->limit($limit)
             ->get();
         $read = 0;
+        $failed = 0;
         foreach ($heads as $head) {
-            $read += $this->evaluate((string) $head->repo, (string) $head->head_sha, null)['read'] ? 1 : 0;
+            try {
+                $read += $this->evaluate((string) $head->repo, (string) $head->head_sha, null)['read'] ? 1 : 0;
+            } catch (Throwable $e) {
+                $failed++;
+                Log::warning('bridge ci_await: the sweep\'s read of a head threw — it is stamped as read and the pass goes on to the next head', [
+                    'repo' => $head->repo, 'head_sha' => $head->head_sha,
+                ] + RedactedErrorText::logContext($e));
+                try {
+                    CiAwait::query()->where('repo', $head->repo)->where('head_sha', $head->head_sha)
+                        ->update(['last_read_at' => Carbon::now(), 'last_error' => mb_substr(RedactedErrorText::of($e), 0, 1000)]);
+                } catch (Throwable $stamp) {
+                    Log::warning('bridge ci_await: the failed read of a head could not be stamped, so it stays first in line', [
+                        'repo' => $head->repo, 'head_sha' => $head->head_sha,
+                    ] + RedactedErrorText::logContext($stamp));
+                }
+            }
         }
 
-        return $read;
+        return ['read' => $read, 'failed' => $failed];
     }
 
     /**
@@ -466,7 +489,7 @@ final class CiAwaitService
                 if (CiAwait::query()->whereKey($await->id)->delete() !== 1) {
                     return false;
                 }
-                $this->intents->stageAuthored($await->agent, "{$kind}:{$await->id}", microtime(true), $intent);
+                $this->intents->stageAuthored($await->agent, "{$kind}:{$await->uuid}", microtime(true), $intent);
 
                 return true;
             });

@@ -1648,12 +1648,12 @@ cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
 
 **What a seat can rely on.** One terminal event per await — `ci_settled` or `ci_await_expired`, never
 both. It is written to your inbox **at least once**, idempotent by its line id
-(`<kind>:<await id>`, which `bridge:inbox` collapses), and pushed live once after that line is
+(`<kind>:<await uuid>`, which `bridge:inbox` collapses), and pushed live once after that line is
 written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
 it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the
 wake on each. Once every run on a head is terminal, `ci_settled` comes at the latest from the first
-sweep pass that starts at least one sweep interval after the head's oldest read — later by one pass
-for every `BRIDGE_CI_AWAIT_SWEEP_READS` eligible heads read before it — provided the sweep runs. An event
+sweep pass that starts at least one sweep interval after the head's oldest read (at once, when no await on it was ever read) — later by one pass
+for every `BRIDGE_CI_AWAIT_SWEEP_READS` eligible heads ahead of it — provided the sweep runs. An event
 that cannot be written to your inbox keeps the await, logged naming you and shown by `bridge:check`,
 and is tried again on later passes; an expiry that still cannot be written
 `CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS` past `expires_at` is dropped undelivered, logged as an

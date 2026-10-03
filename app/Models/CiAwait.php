@@ -5,12 +5,14 @@ namespace App\Models;
 use App\Bridge\CiAwait\CiAwaitService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 
 /**
  * One seat's declared wait for CI on one head (card#11200 / DL-452). Written, claimed and
  * deleted only by {@see CiAwaitService}; the row is data, the model carries no logic.
  *
  * @property int $id
+ * @property string $uuid
  * @property string $agent
  * @property string $repo
  * @property string $repo_name
@@ -29,6 +31,7 @@ class CiAwait extends Model
     protected $table = 'ci_awaits';
 
     protected $fillable = [
+        'uuid',
         'agent',
         'repo',
         'repo_name',
@@ -48,4 +51,19 @@ class CiAwait extends Model
         'retry_not_before' => 'datetime',
         'emit_failed_at' => 'datetime',
     ];
+
+    /**
+     * The row's identity across table recreation, minted at insert. An inbox line is keyed by it
+     * (`ci_settled:<uuid>`), because an auto-increment id restarts at 1 when the table is dropped
+     * and recreated, and the new line would then collide with an earlier one a seat has already
+     * seen and be skipped.
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (self $await): void {
+            if (! is_string($await->uuid) || $await->uuid === '') {
+                $await->uuid = (string) Str::uuid();
+            }
+        });
+    }
 }

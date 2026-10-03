@@ -23,7 +23,7 @@ use Throwable;
  * ⭐ WHY IT IS A JOB (docs/periodic-jobs.md's decision order, step 4). A delivery settles only the
  * awaits its read loaded, a registration's read can see a lagging list, a final delivery can be
  * lost, and CI may never finish — in each case no further arrival will touch the await. Only a clock
- * can. So the sweep is LEVEL-TRIGGERED: it reads every unexpired head whose oldest read is one
+ * can. So the sweep is LEVEL-TRIGGERED: it reads every unexpired head, never-read first, whose oldest read is one
  * interval old, never on the strength of an event having happened.
  *
  * ⭐ ITS COST IS BOUNDED BY CONSTRUCTION: one read per HEAD (shared by every seat awaiting it), only
@@ -67,8 +67,11 @@ final class CiAwaitSweepJob implements JobHandler
         $done = [];
         $failed = [];
         try {
-            $read = $this->awaits->sweepUnsettled(CiAwaitConfig::sweepReads(), $ctx->intervalS);
-            $done[] = "read {$read} head(s) not read within {$ctx->intervalS} s";
+            $swept = $this->awaits->sweepUnsettled(CiAwaitConfig::sweepReads(), $ctx->intervalS);
+            $done[] = "read {$swept['read']} head(s) not read within {$ctx->intervalS} s";
+            if ($swept['failed'] > 0) {
+                $failed[] = "the read of {$swept['failed']} head(s) threw (logged; each is stamped and the other heads were still read)";
+            }
         } catch (Throwable $e) {
             $failed[] = 'reading unsettled heads failed: '.RedactedErrorText::of($e);
         }

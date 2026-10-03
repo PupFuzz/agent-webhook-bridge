@@ -25,6 +25,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
 use Mockery;
+use RuntimeException;
 use Tests\Support\CallingSeatSeal;
 use Tests\TestCase;
 
@@ -635,6 +636,73 @@ class CiAwaitTest extends TestCase
         Log::shouldHaveReceived('error')->with(Mockery::pattern('/gave up/'), Mockery::on(fn (array $c): bool => ($c['agent'] ?? null) === 'seat-a'))->atLeast()->once();
     }
 
+    public function test_an_inbox_line_id_is_the_rows_uuid_so_a_recreated_table_cannot_reissue_it(): void
+    {
+        $this->seedAwait('seat-a', expiresIn: 60);
+        $uuid = CiAwait::query()->sole()->uuid;
+        $this->assertMatchesRegularExpression('/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/', $uuid);
+        Http::fake(['127.0.0.1:*' => Http::response('ok', 200)]);
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
+        $this->runSweep();
+
+        $this->assertSame(["ci_await_expired:{$uuid}"], array_column($this->inbox(), 'id'));
+
+        // The table is recreated and its auto-increment restarts at 1: the new row has the SAME
+        // numeric id as the one just emitted, and must not have the same line id.
+        $migration = require glob(database_path('migrations/*_create_ci_awaits_table.php'))[0];
+        $migration->down();
+        $migration->up();
+        $this->seedAwait('seat-a', expiresIn: 60);
+        $second = CiAwait::query()->sole();
+        $this->assertSame(1, (int) $second->id, 'the id did not restart, so this measured nothing');
+        $this->assertNotSame($uuid, $second->uuid);
+    }
+
+    public function test_a_row_past_the_ceiling_whose_inbox_is_writable_again_is_emitted_not_dropped(): void
+    {
+        config(['bridge.inbox_layout' => 'per-agent']);
+        $blocked = $this->dir.'/state/inbox-seat-a.jsonl';
+        File::ensureDirectoryExists($blocked);
+        $this->seedAwait('seat-a', expiresIn: 60);
+        Http::fake(['127.0.0.1:*' => Http::response('ok', 200)]);
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
+        $this->runSweep();
+        $this->assertNotNull(CiAwait::query()->sole()->emit_failed_at, 'the first pass did not fail the emit, so this measured nothing');
+
+        File::deleteDirectory($blocked);
+        Carbon::setTestNow(Carbon::parse('2026-10-03T10:01:00.000Z')->addSeconds(CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS + 1));
+        $this->runSweep();
+
+        $this->assertSame(0, CiAwait::query()->count());
+        $this->assertSame(['ci_await_expired'], array_column($this->agentInbox('seat-a'), 'kind'), 'dropped without a final attempt although the inbox is writable');
+    }
+
+    public function test_one_head_whose_read_throws_does_not_starve_the_heads_behind_it(): void
+    {
+        config(['bridge.ci_await.sweep_reads' => 10]);
+        $this->seedAwait('seat-a', sha: self::OTHER_SHA);
+        CiAwait::query()->update(['last_read_at' => Carbon::now()->subSeconds(3600)]);
+        $this->seedAwait('seat-a');
+        CiAwait::query()->where('head_sha', self::SHA)->update(['last_read_at' => Carbon::now()->subSeconds(900)]);
+        Http::fake([self::RUNS_URL => function (Request $r) {
+            if (str_contains($r->url(), self::OTHER_SHA)) {
+                throw new RuntimeException('boom');
+            }
+
+            return Http::response($this->runs([['CI', 'completed', 'success']]));
+        }, '127.0.0.1:*' => Http::response('ok', 200)]);
+
+        Carbon::setTestNow('2026-10-03T10:10:00.000Z');
+        try {
+            $this->runSweep();
+        } catch (RuntimeException) {
+            // the job still reports the failed pass; what is measured is the head behind it
+        }
+
+        $this->assertSame(0, CiAwait::query()->where('head_sha', self::SHA)->count(), 'the all-terminal head behind a throwing one was not settled in the same pass');
+        $this->assertTrue(CiAwait::query()->where('head_sha', self::OTHER_SHA)->sole()->last_read_at->isAfter(Carbon::now()->subSeconds(60)), 'the throwing head was not stamped, so it would head the next pass again');
+    }
+
     public function test_an_await_whose_settle_failed_is_tried_as_an_expiry_before_it_can_be_dropped(): void
     {
         $this->seedAwait('seat-a', expiresIn: 60);
@@ -657,7 +725,7 @@ class CiAwaitTest extends TestCase
         $thrown = null;
         try {
             $this->runSweep();
-        } catch (\RuntimeException $e) {
+        } catch (RuntimeException $e) {
             $thrown = $e;
         }
 

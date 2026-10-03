@@ -15,6 +15,9 @@ return new class extends Migration
         // the row's existence is the whole once-only guarantee, and nothing else stores state.
         Schema::create('ci_awaits', function (Blueprint $table) {
             $table->id();
+            // Minted at insert and never reused: the inbox line id of the event this row emits, so a
+            // recreated table cannot reissue an id a seat's seen file already holds.
+            $table->char('uuid', 36)->unique();
             // The agent the board-tools door resolved — never an argument (self-scoped).
             $table->string('agent', 191);
             // The lookup key: the repo LOWER-CASED, so every lookup (which lower-cases its input) finds
