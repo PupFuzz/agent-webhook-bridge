@@ -533,6 +533,92 @@ class GitHubTokenFileCheckTest extends TestCase
         $this->assertStringContainsString('is not visible to this user', $findings[1]->message);
     }
 
+    // ---- an identity this run cannot measure is never evidence (review r3) ----
+
+    public function test_a_run_that_cannot_identify_its_own_user_is_never_ok(): void
+    {
+        // `sudo php artisan bridge:check` on a host without the posix extension: euid() is null,
+        // which is not "not root".
+        $this->tokenFile('ghp_x');
+        $this->runAs(null);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString('this run could not identify its own user (no posix extension)', $finding->message);
+        $this->assertStringContainsString('`sudo -u <pool user> php artisan bridge:check`', $finding->message);
+    }
+
+    public function test_a_run_that_cannot_identify_its_own_user_is_never_ok_even_with_matching_owners(): void
+    {
+        $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        $this->runAs(null);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString('could not identify its own user', $finding->message);
+    }
+
+    public function test_a_token_file_whose_owner_this_run_cannot_read_is_never_ok(): void
+    {
+        $token = $this->tokenFile('ghp_x');
+        $this->runAs($this->realEuid(), [], [], unknownOwners: [$token]);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString("could not read the owner of {$token}", $finding->message);
+    }
+
+    public function test_a_state_dir_whose_owner_this_run_cannot_read_is_never_ok(): void
+    {
+        $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        $dir = dirname(GitHubWriteDebt::path());
+        $this->runAs($this->realEuid(), [], [], unknownOwners: [$dir]);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString("could not read the mode or owner of {$dir}", $finding->message);
+    }
+
+    public function test_a_present_record_whose_owner_this_run_cannot_read_is_never_ok(): void
+    {
+        // Without the rule the LOCK would be read next and, matching, would pass.
+        $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        $this->runAs($this->realEuid(), [], [], unknownOwners: [GitHubWriteDebt::path()]);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString('could not read the owner of '.GitHubWriteDebt::path(), $finding->message);
+    }
+
+    public function test_a_present_lock_whose_owner_this_run_cannot_read_is_never_ok(): void
+    {
+        $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        unlink(GitHubWriteDebt::path());
+        $lock = GitHubWriteDebt::path().'.lock';
+        $this->assertFileExists($lock);
+        $this->runAs($this->realEuid(), [], [], unknownOwners: [$lock]);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString("could not read the owner of {$lock}", $finding->message);
+    }
+
     public function test_an_owner_mismatch_is_named_on_an_unmeasured_scope_line_too(): void
     {
         $this->tokenFile('github_pat_fine_grained');
@@ -621,24 +707,27 @@ class GitHubTokenFileCheckTest extends TestCase
     }
 
     /**
-     * Run the rest of the test as $euid. An EXISTING file's owner is its real one unless overridden
-     * per path; $tokenOwner overrides the token file's.
+     * Run the rest of the test as $euid (null: no posix extension). An EXISTING file's owner is its
+     * real one unless overridden per path; $tokenOwner overrides the token file's; a path in
+     * $unknownOwners answers null — an owner this run could not read — though the file is there.
      *
      * @param  array<int, string>  $names
      * @param  array<string, int>  $owners
+     * @param  list<string>  $unknownOwners
      */
-    private function runAs(int $euid, array $names = [], array $owners = [], ?int $tokenOwner = null): void
+    private function runAs(?int $euid, array $names = [], array $owners = [], ?int $tokenOwner = null, array $unknownOwners = []): void
     {
         if ($tokenOwner !== null) {
             $owners[$this->dir.'/github/token'] = $tokenOwner;
         }
-        $this->app->instance(ProcessIdentity::class, new class($euid, $names, $owners) implements ProcessIdentity
+        $this->app->instance(ProcessIdentity::class, new class($euid, $names, $owners, $unknownOwners) implements ProcessIdentity
         {
             /**
              * @param  array<int, string>  $names
              * @param  array<string, int>  $owners
+             * @param  list<string>  $unknownOwners
              */
-            public function __construct(private int $euid, private array $names, private array $owners) {}
+            public function __construct(private ?int $euid, private array $names, private array $owners, private array $unknownOwners) {}
 
             public function euid(): ?int
             {
@@ -648,8 +737,11 @@ class GitHubTokenFileCheckTest extends TestCase
             public function ownerOf(string $path): ?int
             {
                 $real = (new SystemProcessIdentity)->ownerOf($path);
+                if ($real === null || in_array($path, $this->unknownOwners, true)) {
+                    return null;
+                }
 
-                return $real === null ? null : ($this->owners[$path] ?? $real);
+                return $this->owners[$path] ?? $real;
             }
 
             public function accountName(int $uid): ?string

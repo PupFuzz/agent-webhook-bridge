@@ -236,7 +236,6 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     public function test_promote_on_release_with_both_stages_on_one_column_reports_the_no_op(): void
     {
-
         $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 52));
 
         $this->assertCount(1, $this->warnings($findings));
@@ -249,7 +248,6 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     public function test_promote_on_release_with_distinct_stages_reports_no_no_op(): void
     {
-
         // Orphaned on purpose — the witness for the two absences below.
         $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53), emitting: false);
 

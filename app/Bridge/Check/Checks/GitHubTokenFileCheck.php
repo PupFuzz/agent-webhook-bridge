@@ -62,7 +62,8 @@ use Throwable;
  *
  * ⚑ READ BY THIS RUN IS NOT READ BY THE RECEIVER. The file is owner-only, so this run read it as
  * its owner or as root; an answer GitHub would pass becomes `ok` only where nothing says the receiver's
- * user cannot read it, and never on a root run — `unvalidated` otherwise. {@see receiverRead()} owns
+ * user cannot read it, never on a root run, and never where this run could not measure an identity
+ * it reads (its own euid, an owner, a mode) — `unvalidated` otherwise. {@see receiverRead()} owns
  * the comparison and what it cannot see. A `fail` stands as it is: it holds for every reader.
  *
  * ⚑ WHAT A MISSING FILE ALREADY COST is counted where the bridge keeps it: a comment or label
@@ -242,6 +243,11 @@ final class GitHubTokenFileCheck implements Check
      * used for the same reason: either may be group-writable by design (docs/multi-agent.md). A
      * root-owned record is no witness — root is never the receiver's user.
      *
+     * ⛔ AN IDENTITY THIS RUN CANNOT MEASURE IS NEVER EVIDENCE. A null `euid()` (no posix
+     * extension) is not "not root", and a null `ownerOf()` on the token, the state dir or a present
+     * record file is not "no owner": each is `unvalidated`, never a pass. Only a MEASURED absence
+     * (no state dir, no record) reaches the disclosure a non-root run passes on.
+     *
      * ⛔ A ROOT RUN NEVER PASSES. Root traverses a root-owned `0700` directory above a token the
      * receiver cannot reach, so even matching owners do not establish the receiver's read there.
      *
@@ -261,28 +267,38 @@ final class GitHubTokenFileCheck implements Check
         $name = fn (int $uid): string => $identity->accountName($uid) ?? "uid {$uid}";
         $measure = "Run `sudo -u <pool user> php artisan bridge:check` to measure the receiver's PHP-FPM pool user.";
         $tokenOwner = $identity->ownerOf($path);
-        $root = $identity->euid() === 0;
+        $euid = $identity->euid();
 
         if ($tokenOwner === 0) {
             return [false, "{$path} is owned by root, which the receiver never runs as, and a token file is readable by its owner alone — so the receiver cannot read it: chown it to the user the receiver runs as. {$measure}"];
+        }
+        if ($tokenOwner === null) {
+            return [false, "this run could not read the owner of {$path}, so whether the receiver's user owns it was NOT measured. {$measure}"];
         }
         $stateDir = dirname(GitHubWriteDebt::path());
         if (! PathVisibility::ancestorIsTraversable(GitHubWriteDebt::path())) {
             return [false, "this run cannot see into {$stateDir}, where the receiver writes its state, so it does not run as the receiver's user, and reading a token file it owns says nothing about whether the receiver can. {$measure}"];
         }
-        $witness = $tokenOwner === null ? null : self::receiverOwnedRecord($identity, $stateDir);
-        if ($witness !== null) {
-            [$file, $owner] = $witness;
+        if ($euid === null) {
+            return [false, "this run could not identify its own user (no posix extension), so whether it is root — which reads any file — was NOT measured, and its read says nothing about the user the receiver runs as. {$measure}"];
+        }
+        [$kind, $file, $owner] = self::receiverOwnedRecord($identity, $stateDir);
+        if ($kind === 'unknown') {
+            return [false, "{$file}, so whether the owed-writes record there is evidence of the receiver's user was NOT measured. {$measure}"];
+        }
+        if ($kind === 'evidence') {
+            /** @var string $file */
+            /** @var int $owner */
             if ($owner !== $tokenOwner) {
                 return [false, "{$path} is owned by {$name($tokenOwner)}, but {$file} — in a state dir only {$name($owner)} can write, where the receiver must write — is owned by {$name($owner)}, and a token file is readable by its owner alone, so the receiver most likely cannot read it: chown it to {$name($owner)} if that is the user the receiver runs as. {$measure}"];
             }
-            if ($root) {
+            if ($euid === 0) {
                 return [false, "{$path} shares its owner, {$name($owner)}, with {$file}, but this run is root, which reaches files the receiver may not (a root-owned directory above the token is no barrier to root), so that does not establish the receiver's read. {$measure}"];
             }
 
             return [true, "{$path} is owned by {$name($owner)}, the owner of {$file}, in a state dir only {$name($owner)} can write — and the receiver must write there, so it reads the token file as its owner."];
         }
-        if ($root) {
+        if ($euid === 0) {
             return [false, "this run is root, which reads any file, so its read says nothing about the user the receiver runs as. {$measure}"];
         }
 
@@ -290,27 +306,51 @@ final class GitHubTokenFileCheck implements Check
     }
 
     /**
-     * The first record file the receiver opens whose owner is evidence of the receiver's user: a
-     * non-root owner that also owns `$stateDir`, a dir no group or other user can write. Null
-     * when there is none.
+     * Is there an owed-writes record whose owner is evidence of the receiver's user — a non-root
+     * owner that also owns `$stateDir`, a dir no group or other user can write?
      *
-     * @return ?array{0: string, 1: int}
+     * ⛔ THREE ANSWERS, NOT TWO. `evidence` (the file and its owner); `none`, a MEASURED absence —
+     * the state dir or the record is not there, or the dir is group/other-writable or root-owned,
+     * so its record proves nothing; and `unknown` (the second element is the clause), where a
+     * present dir or file answered no mode or owner. The caller has already established that this
+     * run can traverse to the state dir, so "not there" is a conclusion, not blindness; and an
+     * unknown is never folded into `none`, which a non-root run passes on.
+     *
+     * @return array{0: 'evidence'|'none'|'unknown', 1: ?string, 2: ?int}
      */
-    private static function receiverOwnedRecord(ProcessIdentity $identity, string $stateDir): ?array
+    private static function receiverOwnedRecord(ProcessIdentity $identity, string $stateDir): array
     {
         clearstatcache(true, $stateDir);
+        if (! is_dir($stateDir)) {
+            return ['none', null, null];
+        }
         $perms = @fileperms($stateDir);
         $dirOwner = $identity->ownerOf($stateDir);
-        if ($perms === false || ($perms & 0o022) !== 0 || $dirOwner === null || $dirOwner === 0) {
-            return null;
+        if ($perms === false || $dirOwner === null) {
+            return ['unknown', "this run could not read the mode or owner of {$stateDir}", null];
+        }
+        if (($perms & 0o022) !== 0 || $dirOwner === 0) {
+            return ['none', null, null];
         }
         foreach (GitHubWriteDebt::ownedFiles() as $file => $receiverOpens) {
-            if ($receiverOpens && $identity->ownerOf($file) === $dirOwner) {
-                return [$file, $dirOwner];
+            if (! $receiverOpens) {
+                continue;
+            }
+            $owner = $identity->ownerOf($file);
+            if ($owner === null) {
+                clearstatcache(true, $file);
+                if (file_exists($file)) {
+                    return ['unknown', "this run could not read the owner of {$file}", null];
+                }
+
+                continue;
+            }
+            if ($owner === $dirOwner) {
+                return ['evidence', $file, $dirOwner];
             }
         }
 
-        return null;
+        return ['none', null, null];
     }
 
     /**
