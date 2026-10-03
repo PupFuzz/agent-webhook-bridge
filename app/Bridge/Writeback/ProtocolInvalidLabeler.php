@@ -61,7 +61,7 @@ use Throwable;
  * receiver's placed file and nothing else ({@see GitHubTokenResolver::resolveFromFile()}), so a
  * `bridge:replay` or a `bridge:github-owed` from a shell writes as the receiver or not at all.
  */
-final class ProtocolInvalidLabeler
+final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
 {
     /** The durable reaction the classifier emits. */
     public const HANDLER = 'github_protocol_invalid_label';
@@ -112,17 +112,41 @@ final class ProtocolInvalidLabeler
     /** Whether this install writes the label on $repo. Case-insensitive: GitHub's repo names are. */
     public static function enabledFor(string $repo): bool
     {
-        $repos = config('bridge.protocol_invalid_label.repos', []);
-        if (! is_array($repos)) {
-            return false;
-        }
-        foreach ($repos as $enabled) {
-            if (is_string($enabled) && strcasecmp($enabled, $repo) === 0) {
+        foreach (self::configuredRepos() as $enabled) {
+            if (strcasecmp($enabled, $repo) === 0) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    public static function fileTokenLeg(): string
+    {
+        return 'protocol:invalid labels (DL-408)';
+    }
+
+    public static function fileTokenRepos(?WritebackConfig $writeback): array
+    {
+        return self::configuredRepos();
+    }
+
+    public static function fileTokenWrites(): bool
+    {
+        return true;
+    }
+
+    /**
+     * `bridge.protocol_invalid_label.repos` as written — one read for {@see enabledFor()} and
+     * {@see fileTokenRepos()}, so the leg `bridge:check` reports on is the leg that writes.
+     *
+     * @return list<string>
+     */
+    private static function configuredRepos(): array
+    {
+        $repos = config('bridge.protocol_invalid_label.repos', []);
+
+        return is_array($repos) ? array_values(array_filter($repos, is_string(...))) : [];
     }
 
     /**

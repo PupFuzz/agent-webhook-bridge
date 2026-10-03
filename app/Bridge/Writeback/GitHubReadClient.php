@@ -87,6 +87,31 @@ final class GitHubReadClient
     }
 
     /**
+     * The scopes this token carries when it is a CLASSIC token: GitHub reports them in the
+     * `X-OAuth-Scopes` header of an authenticated answer (GitHub Docs, *Scopes for OAuth apps*).
+     * Null when the answer carries no such header — a fine-grained or installation token, whose
+     * permissions no header reports — so a caller can say UNMEASURED rather than guess (card#11201).
+     * An empty list is a classic token with no scope at all.
+     *
+     * `GET /rate_limit` because every valid token may read it and it does not count against the
+     * rate limit (GitHub Docs, *Rate limit*). Throws RequestException on any non-2xx.
+     *
+     * @return ?list<string>
+     */
+    public function oauthScopes(): ?array
+    {
+        $response = $this->http()->get(self::API_BASE.'/rate_limit')->throw();
+        if (! $response->toPsrResponse()->hasHeader('X-OAuth-Scopes')) {
+            return null;
+        }
+
+        return array_values(array_filter(
+            array_map(trim(...), explode(',', $response->header('X-OAuth-Scopes'))),
+            fn (string $scope): bool => $scope !== '',
+        ));
+    }
+
+    /**
      * Does this repo carry a webhook whose delivery URL is `$receiverUrl` — and, where the
      * answer is no, how many webhooks does it carry? (card#9150, widened by card#9717)
      *

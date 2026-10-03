@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\GitHubReadClient;
+use App\Bridge\Writeback\GitHubTokenFileConsumer;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
@@ -62,7 +63,7 @@ use Illuminate\Support\Facades\Log;
  * operator `writeback.json`; the webhook only triggers a scan for a configured repo; moves are
  * forward-only Shipped→Released. Released is the operator's configured terminal stage.
  */
-final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
+final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubTokenFileConsumer, Handler
 {
     /**
      * Per-request GitHub timeout — TIGHTER than reconcile's human-interactive 15s because
@@ -90,6 +91,33 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
     public function __construct(?WritebackAlertNotifier $alerts = null)
     {
         $this->alerts = $alerts ?? new WritebackAlertNotifier;
+    }
+
+    public static function fileTokenLeg(): string
+    {
+        return 'promote-on-release (DL-207)';
+    }
+
+    /**
+     * A token-FILE consumer although it calls `resolveFor()`: under PHP-FPM `GH_TOKEN` is absent
+     * and the credential-store helper is CLI-only (DL-184), so the receiver resolves only the file
+     * — the comment on the resolve below.
+     */
+    public static function fileTokenRepos(?WritebackConfig $writeback): array
+    {
+        $repos = [];
+        foreach ($writeback === null ? [] : $writeback->mappings as $repo => $mapping) {
+            if ($mapping->promoteOnRelease) {
+                $repos[] = (string) $repo;
+            }
+        }
+
+        return $repos;
+    }
+
+    public static function fileTokenWrites(): bool
+    {
+        return false;
     }
 
     public function handle(ReactionTarget $target, AgentConfig $agent): void

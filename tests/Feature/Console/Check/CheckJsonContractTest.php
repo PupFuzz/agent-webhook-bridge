@@ -12,6 +12,7 @@ use App\Bridge\Support\Finding;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Http;
 use Tests\Support\CheckGolden\BootsGoldenInstall;
 use Tests\Support\CheckGolden\GoldenInstall;
 use Tests\TestCase;
@@ -503,7 +504,15 @@ class CheckJsonContractTest extends TestCase
                             ."channel:\n  url: http://127.0.0.1/push\n")
                         ->json('writeback.json', ['identity_id' => 4242, 'mappings' => [
                             'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]],
-                        ]]);
+                        ]])
+                        // A usable GitHub token file, so the one leg that FAILS such an install
+                        // without one (`github.token_file`, card#11201) leaves the verdict to
+                        // the two legs this fixture is about.
+                        ->secret('github/token', 'ghp_usable');
+                    Http::fake([
+                        'https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo']),
+                        'https://api.github.com/repos/owner/repo' => Http::response(['full_name' => 'owner/repo']),
+                    ]);
                     break;
 
                 case 'event-consumer-unconsumed-type':
