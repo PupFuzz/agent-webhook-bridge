@@ -5,10 +5,13 @@ namespace Tests\Unit\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\AgentIdentityCollisionsCheck;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\AgentKanbanUsers;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Support\SharedIdentity;
+use Illuminate\Support\Facades\File;
+use Tests\Support\CoordRosterFixture;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -23,11 +26,28 @@ use Tests\TestCase;
  *
  * THE COLLISION IS BUILT FROM REAL CONFIGS THROUGH THE REAL REGISTRY, never from a
  * hand-written message. The text belongs to `AgentRegistry`, and a test that asserted a
- * literal copy of it would go green if the check stopped reading the registry at all.
+ * literal copy of it would go green if the check stopped reading the registry at all. Since
+ * DL-450 a kanban id is the coord roster's: the `kanban_user_id` given per agent below is
+ * written into a roster for that agent's seat and read through `AgentKanbanUsers`, as
+ * `CheckCommand` reads it.
  */
 class AgentIdentityCollisionsCheckTest extends TestCase
 {
     use MaterializesChecks;
+
+    private string $dir;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->dir = sys_get_temp_dir().'/collisions-'.uniqid();
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->dir);
+        parent::tearDown();
+    }
 
     public function test_it_warns_once_per_colliding_identity_axis(): void
     {
@@ -90,23 +110,10 @@ class AgentIdentityCollisionsCheckTest extends TestCase
      */
     public function test_a_declared_shared_github_id_is_not_a_collision(): void
     {
-        $configs = [
-            AgentConfig::fromArray('alpha', [
-                'identity' => ['kanban_user_id' => 7, 'github_user_id' => 42],
-                'subscriptions' => [],
-            ]),
-            AgentConfig::fromArray('beta', [
-                'identity' => ['kanban_user_id' => 8, 'github_user_id' => 42],
-                'subscriptions' => [],
-            ]),
-        ];
-
-        $ctx = new CheckContext;
-        $ctx->registry = AgentRegistry::fromAgentConfigs($configs, [
-            new SharedIdentity(githubUserId: 42, githubLogin: 'shared-bot', agentNames: ['alpha', 'beta']),
-        ]);
-
-        $this->assertSame([], $this->findingsOf((new AgentIdentityCollisionsCheck), $ctx));
+        $this->assertSame([], $this->findingsFor([
+            'alpha' => ['kanban_user_id' => 7, 'github_user_id' => 42],
+            'beta' => ['kanban_user_id' => 8, 'github_user_id' => 42],
+        ], [new SharedIdentity(githubUserId: 42, githubLogin: 'shared-bot', agentNames: ['alpha', 'beta'])]));
     }
 
     /** The healthy population — distinct identities must stay silent. */
@@ -131,21 +138,30 @@ class AgentIdentityCollisionsCheckTest extends TestCase
     }
 
     /**
-     * @param  array<string, array<string, mixed>>  $identities
+     * @param  array<string, array<string, mixed>>  $identities  agent => its identity block, plus
+     *                                                           the `kanban_user_id` its roster
+     *                                                           seat carries
+     * @param  list<SharedIdentity>  $shared
      * @return list<Finding>
      */
-    private function findingsFor(array $identities): array
+    private function findingsFor(array $identities, array $shared = []): array
     {
         $configs = [];
+        $seats = [];
         foreach ($identities as $name => $identity) {
+            if (isset($identity['kanban_user_id'])) {
+                $seats[$name] = $identity['kanban_user_id'];
+                unset($identity['kanban_user_id']);
+            }
             $configs[] = AgentConfig::fromArray($name, [
                 'identity' => $identity,
                 'subscriptions' => [],
             ]);
         }
+        CoordRosterFixture::configure($this->dir, $seats);
 
         $ctx = new CheckContext;
-        $ctx->registry = AgentRegistry::fromAgentConfigs($configs);
+        $ctx->registry = AgentRegistry::fromAgentConfigs($configs, $shared, AgentKanbanUsers::of($configs)->ids());
 
         return $this->findingsOf((new AgentIdentityCollisionsCheck), $ctx);
     }

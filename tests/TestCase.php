@@ -106,6 +106,20 @@ abstract class TestCase extends BaseTestCase
             'bridge.inbox_layout' => 'shared',
             'bridge.state_dir' => null,
         ]);
+
+        // Every test starts as a CONFIGURED install whose coord roster names no seats: the
+        // bridge reads each agent's kanban user id from that roster and nowhere else (DL-450),
+        // and an UNSET path is an install fault a kanban delivery answers 5xx on. A test about
+        // ids writes its own roster (`Tests\Support\CoordRosterFixture`); a test about the
+        // unset or unreadable cases sets this itself.
+        // The kanban HOST keys every roster id, so the baseline names one too; a test about a
+        // host-less install clears it.
+        config([
+            'bridge.coord_config_path' => base_path('tests/Fixtures/coord-roster-empty.json'),
+            // Forced, not defaulted: a dev .env's real kanban host would key every fixture
+            // roster under a host the tests never wrote — the BRIDGE_INBOX_LAYOUT leak above.
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+        ]);
     }
 
     /**

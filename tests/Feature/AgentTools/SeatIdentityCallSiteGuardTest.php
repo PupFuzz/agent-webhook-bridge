@@ -7,8 +7,10 @@ use App\Bridge\Tools\BoardTakeCardTool;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\SeatKanbanUser;
 use App\Bridge\Tools\Tool;
+use Illuminate\Support\Facades\File;
 use PHPUnit\Framework\Assert;
 use Tests\Support\CallingSeatSeal;
+use Tests\Support\CoordRosterFixture;
 use Tests\Support\SourceScan;
 use Tests\TestCase;
 
@@ -574,10 +576,11 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     {
         $dir = sys_get_temp_dir().'/seat-identity-'.uniqid();
         mkdir($dir, 0o700, true);
-        foreach (['me' => 111, 'other' => 222, 'pm' => 333] as $name => $id) {
-            file_put_contents($dir."/{$name}.yml", "identity:\n  kanban_user_id: {$id}\nsubscriptions: []\n");
+        foreach (['me', 'other', 'pm'] as $name) {
+            file_put_contents($dir."/{$name}.yml", "identity: {}\nsubscriptions: []\n");
         }
         config(['bridge.config_dir' => $dir]);
+        CoordRosterFixture::configure($dir, ['me' => 111, 'other' => 222, 'pm' => 333]);
 
         try {
             CallingSeatSeal::establishedAs('other');
@@ -610,8 +613,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
                 .'shapes DL-372 Decision 7 was reversed over. That is an operator decision, not a refactor.'
             );
         } finally {
-            array_map('unlink', (array) glob($dir.'/*.yml'));
-            rmdir($dir);
+            File::deleteDirectory($dir);
         }
     }
 
@@ -622,20 +624,22 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      * seat `a` calling `board_take_card` on a card seat `b` holds is answered `taken: true,
      * already_held: true` — it believes it holds work another seat is on, which is precisely
      * the state the tool was filed to make visible. The install state is REACHABLE: the
-     * registry WARNS on a shared id and `bridge:check` reports it at exit 0.
+     * registry WARNS on a shared id and `bridge:check` reports it at exit 0. Since DL-450 the
+     * id is the coord roster's, and the two SEATS here are two roster entries given one id.
      *
      * ⚠ THE FIRST ASSERTION IS THE CONTROL. A roster of three whose third seat still resolves
      * is what says the refusal is about the COLLISION and not about the roster having grown —
      * without it a resolver that refused every multi-agent install would pass this test.
      */
-    public function test_the_identity_resolver_refuses_a_kanban_user_id_two_agents_declare(): void
+    public function test_the_identity_resolver_refuses_a_kanban_user_id_two_seats_share(): void
     {
         $dir = sys_get_temp_dir().'/seat-identity-'.uniqid();
         mkdir($dir, 0o700, true);
-        foreach (['a' => 500, 'b' => 500, 'solo' => 777] as $name => $id) {
-            file_put_contents($dir."/{$name}.yml", "identity:\n  kanban_user_id: {$id}\nsubscriptions: []\n");
+        foreach (['a', 'b', 'solo'] as $name) {
+            file_put_contents($dir."/{$name}.yml", "identity: {}\nsubscriptions: []\n");
         }
         config(['bridge.config_dir' => $dir]);
+        CoordRosterFixture::configure($dir, ['a' => 500, 'b' => 500, 'solo' => 777]);
 
         try {
             CallingSeatSeal::establishedAs('solo');
@@ -643,11 +647,10 @@ class SeatIdentityCallSiteGuardTest extends TestCase
 
             CallingSeatSeal::establishedAs('a');
             $this->expectException(ToolRefusalException::class);
-            $this->expectExceptionMessageMatches('/MORE THAN ONE agent \(a, b\).*NOTHING WAS WRITTEN.*INSTALL fault/s');
+            $this->expectExceptionMessageMatches("/gives kanban user 500 to seat 'a' \\(yours\\) AND to seat 'b'.*NOTHING WAS WRITTEN.*INSTALL fault/s");
             SeatKanbanUser::forCallingSeat('board_take_card');
         } finally {
-            array_map('unlink', (array) glob($dir.'/*.yml'));
-            rmdir($dir);
+            File::deleteDirectory($dir);
         }
     }
 

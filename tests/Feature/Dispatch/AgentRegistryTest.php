@@ -9,6 +9,7 @@ use App\Bridge\Support\SharedIdentitiesFileState;
 use App\Bridge\Support\SharedIdentity;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\CoordRosterFixture;
 use Tests\TestCase;
 
 class AgentRegistryTest extends TestCase
@@ -25,10 +26,17 @@ class AgentRegistryTest extends TestCase
     {
         $regAgents = array_map(fn (array $a): RegisteredAgent => new RegisteredAgent(
             name: (string) $a['name'],
-            kanbanUserId: $a['kanban_user_id'] ?? null,
             githubUserId: $a['github_user_id'] ?? null,
             githubLogin: $a['github_login'] ?? null,
         ), $agents);
+
+        // The kanban ids are the registry's own input (the coord roster's, at runtime — DL-450).
+        $kanbanUserIds = [];
+        foreach ($agents as $a) {
+            if (isset($a['kanban_user_id'])) {
+                $kanbanUserIds[(string) $a['name']] = (int) $a['kanban_user_id'];
+            }
+        }
 
         $shared = array_map(fn (array $s): SharedIdentity => new SharedIdentity(
             githubUserId: (int) $s['github_user_id'],
@@ -36,7 +44,7 @@ class AgentRegistryTest extends TestCase
             agentNames: $s['agents'] ?? [],
         ), $sharedIdentities);
 
-        return new AgentRegistry(array_values($regAgents), array_values($shared));
+        return new AgentRegistry(array_values($regAgents), array_values($shared), $kanbanUserIds);
     }
 
     protected function tearDown(): void
@@ -236,18 +244,21 @@ class AgentRegistryTest extends TestCase
         Log::shouldNotHaveReceived('warning');
     }
 
-    public function test_from_agent_configs_builds_lookups_from_yaml_identity(): void
+    public function test_from_agent_configs_builds_lookups_from_yaml_identity_and_the_coord_roster(): void
     {
-        // The v2 source of truth: the registry is derived from the scanned
-        // per-agent configs' identity blocks, not a separate roster.
+        // The github axis is derived from the scanned per-agent configs' identity blocks; the
+        // kanban axis from the coord roster for each agent's seat (DL-450) — never from the
+        // retired identity.kanban_user_id, which prod-agent still carries here as 999.
         $configs = [
-            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 137], 'subscriptions' => []]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 999], 'subscriptions' => []]),
             AgentConfig::fromArray('acme-pm', ['identity' => ['github_user_id' => 9001, 'github_login' => 'pm-bot'], 'subscriptions' => []]),
         ];
+        CoordRosterFixture::configure(sys_get_temp_dir().'/sharedid-'.uniqid(), ['prod-agent' => 137]);
 
         $registry = AgentRegistry::fromAgentConfigs($configs);
 
         $this->assertSame('prod-agent', $registry->byKanbanUserId(137)?->name);
+        $this->assertNull($registry->byKanbanUserId(999));
         $this->assertSame('acme-pm', $registry->byGithubUserId(9001)?->name);
         $this->assertEqualsCanonicalizing(['prod-agent', 'acme-pm'], $registry->names());
     }

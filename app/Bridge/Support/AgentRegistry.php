@@ -3,7 +3,9 @@
 namespace App\Bridge\Support;
 
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Exceptions\CoordRosterUnreadableException;
 use App\Bridge\Exceptions\UnreadableFileException;
+use Closure;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -20,20 +22,33 @@ use Illuminate\Support\Facades\Log;
  * cross-match.
  *
  * Two ways an account maps to agents:
- *   - per-agent `identity.kanban_user_id` / `github_user_id` → one account, one
- *     agent (attribution sets Actor.name).
+ *   - per-agent kanban user id / `identity.github_user_id` → one account, one
+ *     agent (attribution sets Actor.name). The kanban id is the COORD ROSTER's
+ *     (DL-450, {@see AgentKanbanUsers}), not a YAML key.
  *   - `shared_identities[]` → one account, many agents. Attribution can't pick
  *     one, so Actor.name stays null and a custom classifier re-attributes
  *     (DL-002 / DL-005).
  *
  * Accidental collisions on a per-agent axis (the same id on two agents) are
- * detected at construction and bypassed (Actor.name null, raw id surfaces)
- * rather than mis-attributing; a warning names the sharing agents.
+ * detected when that axis is built and bypassed (Actor.name null, raw id
+ * surfaces) rather than mis-attributing; a warning names the sharing agents.
+ *
+ * ⭐ THE KANBAN AXIS IS BUILT ON FIRST USE when its ids come from the roster
+ * ({@see fromAgentConfigs} with no map). Only a kanban event asks it, so a github
+ * delivery never reads the roster and never fails on it; a kanban event that
+ * needs it on an install whose roster cannot be read THROWS
+ * {@see CoordRosterUnreadableException}, and the delivery answers 5xx (DL-450).
  */
 final class AgentRegistry
 {
-    /** @var array<int, RegisteredAgent> */
-    private array $byKanbanUid = [];
+    /** @var array<int, RegisteredAgent>|null null until the kanban axis is first asked for */
+    private ?array $byKanbanUid = null;
+
+    /** @var array<string, int>|null agent name → kanban user id, collided ids included */
+    private ?array $kanbanUserIds = null;
+
+    /** @var (Closure(): array<string, int>)|null where the map comes from when it is read on first use */
+    private ?Closure $kanbanSource = null;
 
     /** @var array<int, RegisteredAgent> */
     private array $byGithubUid = [];
@@ -56,8 +71,11 @@ final class AgentRegistry
     /**
      * @param  list<RegisteredAgent>  $agents
      * @param  list<SharedIdentity>  $sharedIdentities
+     * @param  array<string, int>|(Closure(): array<string, int>)  $kanbanUserIds  agent name → kanban
+     *                                                                             user id, or a source of
+     *                                                                             that map read on first use
      */
-    public function __construct(private array $agents, array $sharedIdentities = [])
+    public function __construct(private array $agents, array $sharedIdentities = [], array|Closure $kanbanUserIds = [])
     {
         foreach ($agents as $a) {
             $this->byName[$a->name] = $a;
@@ -80,11 +98,11 @@ final class AgentRegistry
             }
         }
 
-        $this->byKanbanUid = $this->buildIntLookup(
-            fn (RegisteredAgent $a) => $a->kanbanUserId,
-            'kanban_user_id',
-            'Give each agent a distinct identity.kanban_user_id.',
-        );
+        if ($kanbanUserIds instanceof Closure) {
+            $this->kanbanSource = $kanbanUserIds;
+        } else {
+            $this->buildKanbanAxis($kanbanUserIds);
+        }
         // A github_user_id declared shared takes precedence over a per-agent
         // entry carrying the same id — exclude it from the unique lookup so the
         // shared bypass wins deterministically.
@@ -102,24 +120,71 @@ final class AgentRegistry
 
     /**
      * Build the registry from the scanned per-agent configs (each carrying its
-     * own identity ids) plus the shared-identities declaration.
+     * own github ids) plus the shared-identities declaration, and each agent's
+     * kanban user id.
      *
      * @param  list<AgentConfig>  $configs
      * @param  list<SharedIdentity>  $sharedIdentities
+     * @param  ?array<string, int>  $kanbanUserIds  null ⇒ the RUNTIME source: the coord roster,
+     *                                              read on the first kanban lookup and throwing
+     *                                              there when it cannot be read. A map ⇒ exactly
+     *                                              those ids — `bridge:check` passes the ones it
+     *                                              could read, and reports the roster itself.
      */
-    public static function fromAgentConfigs(array $configs, array $sharedIdentities = []): self
+    public static function fromAgentConfigs(array $configs, array $sharedIdentities = [], ?array $kanbanUserIds = null): self
     {
         $agents = array_map(
             fn (AgentConfig $c): RegisteredAgent => new RegisteredAgent(
                 name: $c->agentName,
-                kanbanUserId: $c->identity->kanbanUserId,
                 githubUserId: $c->identity->githubUserId,
                 githubLogin: $c->identity->githubLogin,
             ),
             $configs,
         );
 
-        return new self($agents, $sharedIdentities);
+        return new self($agents, $sharedIdentities, $kanbanUserIds ?? static fn (): array => AgentKanbanUsers::of($configs)->ids());
+    }
+
+    /**
+     * @param  array<string, int>  $ids
+     */
+    private function buildKanbanAxis(array $ids): void
+    {
+        $this->kanbanUserIds = $ids;
+        $this->byKanbanUid = $this->buildIntLookup(
+            fn (RegisteredAgent $a) => $ids[$a->name] ?? null,
+            'kanban_user_id',
+            'Each agent\'s kanban user id is its coord roster seat\'s (identity.coord_seat, else the agent name), so two agents resolving to one id are two agents on one seat, or two seats the roster gives one id: keep one bridge agent per seat, and one kanban user per seat.',
+        );
+    }
+
+    /**
+     * @return array<int, RegisteredAgent>
+     *
+     * @throws CoordRosterUnreadableException
+     */
+    private function kanbanLookup(): array
+    {
+        if ($this->byKanbanUid === null) {
+            $source = $this->kanbanSource;
+            $this->buildKanbanAxis($source === null ? [] : $source());
+        }
+
+        return $this->byKanbanUid ?? [];
+    }
+
+    /**
+     * The kanban user id the given agent has — INCLUDING an id another agent shares, which
+     * {@see byKanbanUserId} deliberately resolves to nobody. Self echo-suppression wants this
+     * raw form: an id two agents share is still each one's own write.
+     *
+     * @throws CoordRosterUnreadableException when the roster is the source and cannot be read
+     */
+    public function kanbanUserIdOf(string $name): ?int
+    {
+        $this->kanbanLookup();
+
+        return $this->kanbanUserIds[$name] ?? null;
     }
 
     /**
@@ -232,15 +297,17 @@ final class AgentRegistry
     }
 
     /**
-     * Id-collision warnings accumulated at construction (empty when every
-     * kanban/github id is distinct). bridge:check renders these to the operator
-     * console — they otherwise only reach the log, where a silent
-     * mis-attribution misconfig goes unnoticed.
+     * Id-collision warnings accumulated as each axis was built (empty when every
+     * kanban/github id is distinct); asking for them builds a deferred kanban axis.
+     * bridge:check renders these to the operator console — they otherwise only reach
+     * the log, where a silent mis-attribution misconfig goes unnoticed.
      *
      * @return list<string>
      */
     public function collisions(): array
     {
+        $this->kanbanLookup();
+
         return $this->collisions;
     }
 
@@ -278,7 +345,7 @@ final class AgentRegistry
     {
         $uid = self::numericUid($uid);
 
-        return $uid === null ? null : ($this->byKanbanUid[$uid] ?? null);
+        return $uid === null ? null : ($this->kanbanLookup()[$uid] ?? null);
     }
 
     public function byGithubUserId(int|string|null $uid): ?RegisteredAgent
@@ -327,7 +394,7 @@ final class AgentRegistry
 
     /**
      * Build an Actor from a verified event's actor_id + parsed payload. Matching
-     * is provider-aware: kanban events match `kanban_user_id`, GitHub events
+     * is provider-aware: kanban events match the roster's kanban user ids, GitHub events
      * match the immutable `github_user_id`. A GitHub account in shared_identities
      * resolves to a null name on purpose (custom classifier re-attributes).
      *

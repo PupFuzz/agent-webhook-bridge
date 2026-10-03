@@ -37,6 +37,7 @@ import {
   satisfiesEngines,
   checkPackPath,
   clientDoorUrl,
+  doorFromEnv,
   renameWithRetry,
   shimFor,
   clipBytes,
@@ -221,6 +222,15 @@ test('the seat-tool shim runs the tool of the release current.json names', { ski
 
   assert.equal(out.status, 0, out.stderr);
   assert.equal(out.stdout.trim(), 'seat tool of 1.0.0');
+});
+
+test('a client bin gets a shim named without .mjs that runs the current release\'s copy with node (card#11151)', { skip: process.platform === 'win32' && 'the .cmd shim is validated on Windows by its device agent' }, async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const out = spawnSync(path.join(root, 'bin', 'bridge-board-call'), ['board_my_cards', '{}'], { encoding: 'utf8' });
+
+  assert.equal(out.status, 0, out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { bin: 'client bin of 1.0.0', argv: ['board_my_cards', '{}'] });
+  assert.ok(!fs.existsSync(path.join(root, 'bin', 'bridge-board-call.mjs')), 'no shim under the file\'s own name');
 });
 
 test('a launch on the published release starts it, writes state current, and reports the log', async (t) => {
@@ -815,6 +825,13 @@ test('Windows: with no XDG_RUNTIME_DIR the marker lands in os.tmpdir(), where th
   const env = { BRIDGE_CHANNEL_NAME: 'w', BRIDGE_CHANNEL_TRANSPORT: 'http', BRIDGE_CHANNEL_PORT: '8790' };
   assert.equal(failureMarkerPath(env), path.join(os.tmpdir(), 'agent-webhook-bridge-channel-w.http-8790.FAILED'));
   assert.equal(failureMarkerPath({ BRIDGE_CHANNEL_SOCKET: '/s/c.sock' }), '/s/c.sock.FAILED');
+});
+
+test('Windows: a client bin\'s shim is a .cmd that runs the release\'s copy with node', () => {
+  const shim = shimFor('C:\\r', 'bridge-board-call.mjs', 'win32', 'client-bin');
+  assert.equal(shim.name, 'bridge-board-call.cmd');
+  assert.match(shim.body, /current\.json/);
+  assert.match(shim.body, /node "C:\\r\\versions\\%AWB_RELEASE%\\client\\bin\\bridge-board-call\.mjs" %\*/);
 });
 
 test('Windows: the shim is a .cmd that resolves current.json at run time', () => {
@@ -1717,4 +1734,11 @@ test('a bootstrap that runs past its budget stops before its next irreversible s
   assert.ok(!fs.existsSync(path.join(root, 'staging')), 'the staged pack is removed');
   assert.ok(!fs.existsSync(path.join(root, '.lock')), 'the lock is released');
   assert.equal(logObjs(root).at(-1).action, 'fail');
+});
+
+test('doorFromEnv never quotes an endpoint\'s credential or query (card#11151 review r2)', () => {
+  assert.throws(() => doorFromEnv({ BRIDGE_TOOLS_ENDPOINT: 'http://u:pa/SECRETTAIL@127.0.0.1/agent-tools/call', BRIDGE_TOOLS_TOKEN: 'b' }), (err) => !/SECRETTAIL|u:pa/.test(err.message) && /not a URL that parses/.test(err.message));
+  assert.throws(() => doorFromEnv({ BRIDGE_TOOLS_ENDPOINT: 'http://u:hunter2@127.0.0.1/agent-tools/call', BRIDGE_TOOLS_TOKEN: 'b' }), (err) => !/hunter2/.test(err.message) && /userinfo/.test(err.message));
+  assert.throws(() => doorFromEnv({ BRIDGE_TOOLS_ENDPOINT: 'http://127.0.0.1/elsewhere?token=SECRETQ', BRIDGE_TOOLS_TOKEN: 'b' }), (err) => !/SECRETQ/.test(err.message));
+  assert.equal(doorFromEnv({ BRIDGE_TOOLS_ENDPOINT: 'http://127.0.0.1:9/agent-tools/call?token=SECRETQ', BRIDGE_TOOLS_TOKEN: 'b' }).source, 'bridge-http:http://127.0.0.1:9/agent-tools/client');
 });

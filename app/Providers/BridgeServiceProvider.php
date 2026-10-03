@@ -160,6 +160,9 @@ class BridgeServiceProvider extends ServiceProvider
                 Log::warning('bridge: writeback.json could not be loaded for echo-seeding; bridge:check will report it', ['error' => RedactedErrorText::of($e)]);
             }
 
+            // The kanban axis is the coord roster's, read on the first kanban lookup
+            // (DL-450): a github delivery never touches it, and a kanban one that
+            // needs it on an install whose roster cannot be read 5xxs (redelivered).
             return new DispatchService(
                 $subscriptions,
                 AgentRegistry::fromAgentConfigs(

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's `kb_url_host` — the parser that turns a kanban API base into the BOARD-INSTANCE key a coord roster's `kanban_user_id` object is keyed by (card#10868 / card#10869). The toolkit OWNS the rule; the bridge copies it because `bridge:check` holds each agent's `identity.kanban_user_id` against that roster in PHP. tests/Unit/Support/KanbanInstanceKeyParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors against a toolkit checkout's own `kb_url_host`.",
+  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's `kb_url_host` — the parser that turns a kanban API base into the BOARD-INSTANCE key a coord roster's `kanban_user_id` object is keyed by (card#10868 / card#10869). The toolkit OWNS the rule; the bridge copies it because it reads each agent's kanban user id out of that roster in PHP, at runtime (card#11172 / DL-450). tests/Unit/Support/KanbanInstanceKeyParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors against a toolkit checkout's own `kb_url_host`.",
   "mirror": {
     "repo": "PupFuzz/agent-webhook-bridge",
     "class": "App\\Bridge\\Support\\KanbanInstanceKey",

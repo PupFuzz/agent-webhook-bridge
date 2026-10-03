@@ -14,7 +14,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
 | `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
-| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
+| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none`) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused; the window says `total`, `truncated` and `total_is_lower_bound`. |
@@ -694,8 +694,8 @@ can forge** (DL-376, operator-approved 2026-09-13; before it, only the first exi
    neither can answer *which seat filed this*.
 2. **It is ASSIGNED to you** — the card's own `assigned_user_id` is **identical, as an
    integer**, to your own kanban user, which the bridge resolves from **your bridge
-   identity** (`identity.kanban_user_id` for the agent the door authenticated) exactly as
-   [`board_take_card`](#board_take_card) does. **No argument can influence which user is
+   identity** — the coord roster's id for the seat of the agent the door authenticated
+   (DL-450) — exactly as [`board_take_card`](#board_take_card) does. **No argument can influence which user is
    compared** — this tool accepts no user id, and the resolver takes none.
 
 **Which relation authorized the write is recorded** — `authorized_by` in the response and in
@@ -703,7 +703,7 @@ the bridge's `board_correct_card: corrected` log line — because *who filed a c
 holds it now* are different facts and an audit must be able to tell them apart. ⚠ **When
 both hold, it records `minted`**: the stamp is checked first, and the assignee is not
 consulted at all for a card you minted, so a correction you could make before DL-376 does
-not start depending on your `identity.kanban_user_id` being configured. `minted` therefore
+not start depending on the coord roster being readable. `minted` therefore
 says nothing about who the card is assigned to.
 
 - ⛔ **A row that says nothing readable about its assignee is never yours by assignment.**
@@ -711,13 +711,14 @@ says nothing about who the card is assigned to.
   integer (a digit string, a float, `""`), is a degraded read — it does not authorize, and
   the call gets the ordinary *"not one of yours"* refusal (it may still pass on the mint
   stamp).
-- **If your agent's YAML declares no `identity.kanban_user_id`, the assignee relation is simply
-  off** — no card can be assigned to a user you do not have — and the tool behaves as it did
+- **If the coord roster gives your seat no kanban user id** (the seat is absent from it, or has
+  no id for this kanban host), **the assignee relation is simply off** — no card can be assigned
+  to a user you do not have — and the tool behaves as it did
   before DL-376 **except** that the *"not one of yours"* wording now names both relations and
   the tag-list rule below applies: cards you minted are corrected, everything else gets
   *"not one of yours"*.
-- ⛔ **If the bridge cannot establish WHICH kanban user you are** — another agent declares the
-  same `identity.kanban_user_id`, or the roster cannot be read — every correction that is not
+- ⛔ **If the bridge cannot establish WHICH kanban user you are** — the roster gives your id to
+  another seat this install serves, or the roster cannot be read — every correction that is not
   authorized by your mint stamp is refused with that **install fault**, including a call naming
   a card that does not exist, so the refusal says nothing about whether the card exists.
   Corrections of cards you minted are unaffected.
@@ -839,7 +840,7 @@ rejects outright.
 | State | Refusal |
 | --- | --- |
 | The card is not on your board, or is on it but neither carries your stamp nor is assigned to you (including an assignee the board did not return readably) | *"card N is not one of yours"* — **one message for every one of those**: you are never told whether a card you do not own exists. The message names both relations that would have made it yours. ⚠ It names a **further** cause too, because kanban's search FLOORS a caller to the boards its token is a member of and answers **200 with zero rows** for the rest: an unreadable board and an empty one are one answer here (DL-323's `mapped_board_unreadable_to_this_token`), so the message tells you to have the token's board membership checked if you believe you filed or hold the card. |
-| Your own kanban user cannot be established, and the card is not one you minted | The resolver's **install fault** (an `identity.kanban_user_id` shared with another agent, or an unreadable roster) — the same sentence whether or not the card exists, so it discloses nothing. An agent that declares **no** `identity.kanban_user_id` is not in this row: it gets the ordinary *"not one of yours"*. See the scoping rule above. |
+| Your own kanban user cannot be established, and the card is not one you minted | The resolver's **install fault** (an id the roster gives another seat this install serves, or a roster that cannot be read) — the same sentence whether or not the card exists, so it discloses nothing. A seat the roster gives **no** id is not in this row: it gets the ordinary *"not one of yours"*. See the scoping rule above. |
 | The card is yours and **ARCHIVED** | Named as the retire it is (*"unarchive it first"*) — the stamp or the assignment proves the card is yours, so naming it discloses nothing, and the alternative is a guard telling you a card you demonstrably filed or hold is not yours. The archive side is read **only when the live lookup misses**, so a successful call never pays for it. |
 | You are correcting `tags` and the board's tag list for the card cannot be read in full | *"no readable tag list"* — **install fault**; a wholesale replace would delete tags the bridge cannot read (above). `name`/`description` are unaffected. |
 | The lookup answered a row that is not that card on your board | *"a BROKEN READ, not a verdict"* (DL-323 Decision 2) — report it; it is not a statement about the card. |
@@ -881,8 +882,8 @@ through the one privileged seat, which is the serial hub this door exists to rem
 | `start` | no | A **boolean**. `true` STARTS the card — moves it to In Progress and assigns it to you in one write (§ [The start form](#the-start-form-start-true-card11150--dl-449) below). `false` or omitted is the plain claim, which never moves the card. A string, number or `null` is refused, never coerced. |
 
 > ⛔⭐ **THERE IS NO ARGUMENT FOR THE USER, AND THERE NEVER WILL BE.** The assignee is
-> resolved **server-side** from the agent registry — your own `identity.kanban_user_id`,
-> keyed on the agent name the DOOR derived from your bearer (HTTP) or from the pinned
+> resolved **server-side** from the coord roster — the kanban user id of YOUR seat
+> (DL-450), for the agent name the DOOR derived from your bearer (HTTP) or from the pinned
 > forced command (ssh). Nothing that travelled in your request can influence it.
 >
 > That is a **construction**, not a validation, and the difference is the point: this door
@@ -980,19 +981,29 @@ real value meaning *unassigned* and is the ordinary case. An **absent** or unrea
 means this call cannot tell an unclaimed card from one another seat is working, so it
 refuses rather than risk overwriting a claim — an install fault, named as one.
 
-**⛔ Your `identity.kanban_user_id` must be YOURS ALONE, and this tool is where a shared one
-stops.** If two agent YAMLs in this bridge's config dir declare the same `kanban_user_id`,
-every `board_take_card` call from either seat is **refused (422) before any board request**,
-naming the colliding agents and the config key — because an id that names two seats does not
-say WHICH seat holds the card, and a claim recorded under it tells every other seat that
-*somebody* holds the work without saying who, which is the one question this tool exists to
-answer. ⚠ **Sharing a `kanban_user_id` is an install fault with no supported form** — unlike
-`github_user_id`, it cannot be declared deliberate, and the collision already makes the id
-resolve to nobody everywhere else in the bridge. `bridge:check` warns on it ahead of time (at
-exit 0). [`config-schema.md` § `identity:`](config-schema.md#identity-optional-mapping--the-agents-own-immutable-upstream-ids)
-owns that rule and the reasoning; it is not restated here. ⭐ **That key is the bridge's copy of
-the coord roster's `roster[].kanban_user_id`**, the single store of each seat's id (card#10869),
-and `bridge:check` holds the two against each other — the same section owns how.
+**⭐ Your kanban user id has ONE source: the coord roster** (card#11172 / DL-450) — the
+`roster[].kanban_user_id` of your seat, for this install's kanban host, in the file
+`BRIDGE_COORD_CONFIG_PATH` names. `identity.kanban_user_id` in an agent YAML is retired and is
+never read, not even when the roster cannot answer. Every state in which the roster cannot name
+your id is refused (422) **before any board request**, as a named install fault with its own
+`reason` (the codes table under [the start form](#the-start-form-start-true-card11150--dl-449)):
+the setting unset or relative, no file there or one the receiver may not read, a path that is not
+a file the bridge will read (a symlink, a directory, past the size bound), a file that is not
+JSON, your seat absent from it, or no id for this host. ⛔ `identity.peer_kanban_user_id` — the
+attribution-only id of an agent that is no seat of this roster — is NEVER take, start or
+correction authority. **⛔ The id must also be YOUR SEAT'S ALONE, and this tool is where a shared
+one stops.** If the roster gives your id to another seat this install serves, every call from
+either seat is refused (`install_fault.shared_kanban_user`) — because an id that names two
+seats does not say WHICH seat holds the card, and a claim recorded under it tells every other
+seat that *somebody* holds the work without saying who, which is the one question this tool
+exists to answer. Two bridge agents serving ONE seat are not that fault while only one of them
+has board tools; when MORE than one board-tools agent serves the same seat (a copied
+`identity.coord_seat`, typically) every take from each of them is refused the same way, because
+the id then cannot say which agent holds the card. ⚠ **Sharing a kanban
+user between seats is an install fault with no supported form** — unlike `github_user_id`, it
+cannot be declared deliberate. [`config-schema.md` § `identity:`](config-schema.md#identity-optional-mapping--the-agents-own-immutable-github-ids-and-its-coord-seat)
+owns the roster shape, the seat rule and the reasoning; it is not restated here. `bridge:check`'s
+`agent.kanban_user_roster` leg reports every one of these ahead of time.
 
 **⚠ A PINNED card still takes a claim, and that is a ruling.** The DL-178 hold governs a
 card's stage, its lifecycle and the fields `PinGuard::PINNED_FIELDS` names — which is
@@ -1104,15 +1115,20 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `install_fault.token_rejected` | `board_take_card` write | 401 on the write |
 | `install_fault.start_unmapped` / `install_fault.start_ambiguous` | start | no mapping on the board maps `started`, or mappings name different columns |
 | `install_fault.writeback_config_unreadable` | `board_take_card` | writeback.json will not parse (a start, or a takeover of an assignee) |
-| `install_fault.no_kanban_user` | `board_take_card` | your agent declares no `identity.kanban_user_id`, so a seat with no id is refused by name, never moved unassigned |
+| `install_fault.coord_config_unset` / `install_fault.coord_config_not_absolute` | `board_take_card` and `board_correct_card` | `BRIDGE_COORD_CONFIG_PATH` — where the bridge reads every seat's kanban user id (DL-450) — is not set, or is not an absolute path |
+| `install_fault.coord_config_unreadable` / `install_fault.coord_config_malformed` | `board_take_card` and `board_correct_card` | there is no coord roster at that path, or the receiver's OS user may not read it, or it is not a JSON object; the message names the path |
+| `install_fault.coord_config_not_a_file` | `board_take_card` and `board_correct_card` | the path names something no reader will read: a symlink (point the setting at the file itself), a directory, FIFO, socket or device, or a file past the reader's size bound |
+| `install_fault.roster_seat_absent` | `board_take_card` | the roster has no seat named your agent's seat (`identity.coord_seat`, else the agent name) |
+| `install_fault.no_kanban_user` | `board_take_card` | your seat carries no kanban user id for this kanban host (or the install's kanban API base names no host), so a seat with no id is refused by name, never moved unassigned |
 | `install_fault.no_agent` | the ssh door (exit 1) | the forced command passed no `--agent` |
-| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` | the bridge cannot say which kanban user you are (an id two agents share, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these three only, because a seat with no id simply has no assignee there |
+| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
 
 A failure whose STATUS is the answer carries no code: the 502 `upstream board error` stays one
 body byte for byte for every cause (DL-387); the HTTP door's 401 (bearer) and 503 (install) answers
 are told apart by status; and the ssh door's answers that exit **2** carry no code — an agent
 config that will not load, an unknown `--agent`, an agent that is not a live ssh board-tools agent,
-and the dispatcher's 503 when the writeback token is unusable (`DispatchOutcome::exitCodeFor` maps
+the dispatcher's 503 when the writeback token is unusable, and the 502 itself, which over ssh shares
+that exit code with the install answers and so is not told apart from them (`DispatchOutcome::exitCodeFor` maps
 every status from 500 up to exit 2). ⚠ **Exit 1 is not "your own fault"**: every status below 500
 maps to it, so the `install_fault.*` 422s above exit 1 as well — branch on `reason`, not on the exit
 code. A missing `--agent` (set by the pinned forced command) is the ssh door's own exit-1 install
@@ -1719,13 +1735,28 @@ A seat on a snapshot older than 0.9.8 gets the second message for **both** of th
 rows — see § Staying in sync in [`examples/channel-servers/README.md`](../examples/channel-servers/README.md)
 for reading the deployed version.
 
+## Calling a tool from a script
+
+A hook or a script cannot call these tools through the channel server — they are MCP tools, and only the session speaks MCP to it. From client **0.9.41** the client pack carries **`bridge-board-call`**, which makes ONE call as the seat, over the seat's own configured transport and credential (card#11151, DL-451):
+
+```bash
+bridge-board-call board_take_card '{"card_id":123,"start":true}'
+```
+
+- **No identity argument, and no new credential.** It reads the transport the seat's channel server is configured with — its `.mcp.json` `env` block over the calling environment — and the bridge resolves the seat from that transport's credential exactly as for the channel server: the pinned forced command's `--agent`, or the bearer. A script can therefore act only as its own seat.
+- **One-shot on both doors.** The ssh door's forced command (`bridge:tools-call`) takes one request body on stdin and writes one JSON envelope; the HTTP door is one `POST /agent-tools/call`. Neither speaks MCP, so the CLI sends the channel server's request body — `{tool, args, client_version}`, plus `caller` (below) — over the channel server's own round trip.
+- **It prints the door's answer and exits on a contract** that tells a tool's answer (ok, or a refusal whose `reason` — [tabled above](#the-start-form-start-true-card11150--dl-449) — is what a caller branches on) from a call that reached no tool and from one whose outcome is unmeasured. [`examples/channel-servers/README.md`](../examples/channel-servers/README.md) § *Calling a board tool from a script* owns the exit codes, where the CLI reads its configuration from, and its bounds; they are not restated here.
+- ⭐ **A coded install fault is a refusal, never a success.** Every `install_fault.*` code above arrives as a 422 (exit 1 over ssh) — the door's refusal shape — so the CLI reports it as the tool's refusal, code and text intact: a seat with no kanban user gets `install_fault.no_kanban_user`, printed and non-zero, never an unassigned move. The door's UNCODED install answers are not refusals; the README section above owns how the CLI reports them.
+- ⚠ **What the CLI cannot tell apart over ssh:** the ssh door renders the `502` (which may follow a write that landed) and its own install answers alike as exit 2 with no code (the paragraph under the codes table), so the CLI reports either as unmeasured, never as "reached no tool".
+- **It is not the channel server, and says so:** it sends `caller: "script"` and no `launch`, so the call does not overwrite what the seat's channel server last reported to the fleet ledger (below).
+
 ## The client-update door (DL-430)
 
 A seat's channel server updates itself from its own bridge at launch (card#10568, DL-434) — the seat half is `examples/channel-servers/entry.mjs` and `client-update.mjs`, described in that directory's README § *Installed and updated by the bridge*. The bridge half is a separate door, **not a board tool**: `POST /agent-tools/client` behind the same loopback gate and bearer as `/agent-tools/call`, and, on the ssh transport, the same pinned `bridge:tools-call` forced command given a body carrying `op` instead of `tool`. Both transports answer the same bytes. It never goes through the board-tools dispatcher, so no tool refusal, board outage or client-version rule can stand between a seat and the pack that fixes it.
 
 It serves `client_manifest` (what this bridge publishes, the release a seat should install, whether an approval is owed, and the last install-log entry this bridge holds for the seat), `client_pack` (that release's pack, base64), `client_report` (the seat's install-log lines, chain-checked) and `client_fleet` (every seat's reported client and state — only to an agent with `board_tools.fleet_view: true`). The request and response shapes, and every refusal, are owned by `App\Bridge\ClientUpdate\ClientUpdateDoor`'s class docblock; this section deliberately does not restate them. What it serves is whatever `php artisan bridge:client-pack:install` last published (CLAUDE_DEPLOYMENT.md § Commands); until that has run, `client_manifest` and `client_pack` answer `503` and a seat keeps its installed client. Each release's pack is attached to its GitHub release by the release workflow (DL-442), and `bridge:check`'s `board_tools.client_pack_source` leg warns until this checkout's release is the published one.
 
-**The fleet ledger (DL-432) and approval (DL-433).** What each seat reports — through `client_report`, and through two optional keys on every board-tools call, `caller` (a probe or self-certification says so, and then never overwrites the seat's own report) and `launch` (`{id, bridge_release}`, sent by a client the updater started) — lands in one row per agent. `php artisan bridge:client-fleet` prints each seat's state, and `bridge:check`'s `board_tools.client_fleet` leg warns on the seats that need you. For an agent with `board_tools.client_update.approval_required: true`, `client_manifest` offers nothing until `php artisan bridge:client-approve` has approved the published pack's content for it; a seat that installs without that approval is reported, never blocked. **Client 0.9.29 sends both** (card#10568, DL-434), but only once it is started through its updater's entry point, `<root>/entry.mjs` — getting a seat there is the bootstrap, `provision-board-tools.py --role b --bootstrap-client` (DL-444; below). Until a seat is bootstrapped it sends neither, and a calling seat reads `off_update_path`.
+**The fleet ledger (DL-432) and approval (DL-433).** What each seat reports — through `client_report`, and through two optional keys on every board-tools call, `caller` (a caller that is not the seat's channel server declares one of `App\Bridge\ClientUpdate\ExemptCaller`'s cases — the enum is the list — and then never overwrites the seat's own report) and `launch` (`{id, bridge_release}`, sent by a client the updater started) — lands in one row per agent. `php artisan bridge:client-fleet` prints each seat's state, and `bridge:check`'s `board_tools.client_fleet` leg warns on the seats that need you. For an agent with `board_tools.client_update.approval_required: true`, `client_manifest` offers nothing until `php artisan bridge:client-approve` has approved the published pack's content for it; a seat that installs without that approval is reported, never blocked. **Client 0.9.29 sends both** (card#10568, DL-434), but only once it is started through its updater's entry point, `<root>/entry.mjs` — getting a seat there is the bootstrap, `provision-board-tools.py --role b --bootstrap-client` (DL-444; below). Until a seat is bootstrapped it sends neither, and a calling seat reads `off_update_path`.
 
 ## How it is wired (operator view)
 

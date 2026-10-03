@@ -26,6 +26,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\UnreadableDeclarationClassifier;
 use Tests\Support\AssertsSeatToolRemedy;
 use Tests\Support\ConsoleTable;
+use Tests\Support\CoordRosterFixture;
 use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
@@ -62,6 +63,11 @@ class BridgeCommandsTest extends TestCase
         // asserts no HTTP must not have GH_TOKEN silently satisfy the validity probe).
         $this->origGhToken = getenv('GH_TOKEN');
         putenv('GH_TOKEN');
+
+        // The agents these tests configure are coord roster seats with kanban users (DL-450).
+        foreach (['prod-agent' => 137, 'me' => 1, 'pm' => 100, 'impl' => crc32('impl')] as $seat => $id) {
+            $this->seat($seat, $id);
+        }
     }
 
     protected function tearDown(): void
@@ -79,10 +85,19 @@ class BridgeCommandsTest extends TestCase
         parent::tearDown();
     }
 
+    /** @var array<string, int> roster seat => kanban user id — the one place the bridge reads it (DL-450) */
+    private array $rosterSeats = [];
+
+    /** Give $seat the kanban user $id in this install's coord roster. */
+    private function seat(string $seat, int $id): void
+    {
+        $this->rosterSeats[$seat] = $id;
+        CoordRosterFixture::configure($this->dir.'/coord', $this->rosterSeats);
+    }
+
     private function writeAgent(): void
     {
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
     }
 
     /**
@@ -186,8 +201,7 @@ class BridgeCommandsTest extends TestCase
         // different code path.
         $configDir = $this->dir.'/unreadable-config';
         File::ensureDirectoryExists($configDir);
-        File::put($configDir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        File::put($configDir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
         config(['bridge.config_dir' => $configDir]);
         // Recorded BEFORE the chmod: tearDown must restore the mode even if the chmod is
         // the last thing that succeeds, or File::deleteDirectory leaves it behind and
@@ -232,7 +246,7 @@ class BridgeCommandsTest extends TestCase
         $this->skipAsRoot();
         $configDir = $this->dir.'/mode-0400-config';
         File::ensureDirectoryExists($configDir);
-        File::put($configDir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\nsubscriptions: []\n");
+        File::put($configDir.'/prod-agent.yml', "subscriptions: []\n");
         config(['bridge.config_dir' => $configDir]);
         BoardToolsConfigSeen::query()->create([
             'agent' => 'prod-agent', 'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4,
@@ -330,7 +344,7 @@ class BridgeCommandsTest extends TestCase
     private function writeSshAgent(): void
     {
         $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb');   // gitleaks:allow — test fixture
-        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+        File::put($this->dir.'/me.yml', "subscriptions: []\n"
             ."board_tools:\n  transport: ssh\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
     }
@@ -501,7 +515,7 @@ class BridgeCommandsTest extends TestCase
     private function writeImplicitDefaultSshAgent(): void
     {
         $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb');   // gitleaks:allow — test fixture
-        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+        File::put($this->dir.'/me.yml', "subscriptions: []\n"
             ."board_tools:\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");   // NO transport: key
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
     }
@@ -536,8 +550,7 @@ class BridgeCommandsTest extends TestCase
         // DL-197: the failure-name filter inverts the family's fail-loud posture — a
         // stale/typo'd pattern silently blackholes every CI-failure wake — so
         // bridge:check surfaces the configured patterns at preflight (warn, never fail).
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
             ."  config:\n    families: [impl-ci-wake]\n    ci_failure_workflow_patterns: [protocol integrity]\n");
         $this->artisan('bridge:check')
@@ -549,8 +562,7 @@ class BridgeCommandsTest extends TestCase
     {
         // A non-list value throws at parse (the classify path would 5xx on it) — the
         // check surfaces it per-agent and fails, instead of crashing the whole run.
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
             ."  config:\n    families: [impl-ci-wake]\n    ci_failure_workflow_patterns: not-a-list\n");
         $this->artisan('bridge:check')
@@ -563,8 +575,7 @@ class BridgeCommandsTest extends TestCase
         // DL-213: comment_to is a fleet default, but an install that set wake_membership
         // explicitly overrides it — bridge:check surfaces that its directed-reply wakes
         // are dark (warn, never fail). coord-message family is on (unset families default).
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
             ."  config:\n    wake_membership: [to_me, to_all]\n");
         $this->artisan('bridge:check')
@@ -575,8 +586,7 @@ class BridgeCommandsTest extends TestCase
     public function test_check_does_not_warn_when_wake_membership_is_absent(): void
     {
         // The absent-key install inherits the default (now WITH comment_to) — no gap, no warn.
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n");
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('omits comment_to')
@@ -586,8 +596,7 @@ class BridgeCommandsTest extends TestCase
     public function test_check_does_not_warn_when_wake_membership_includes_comment_to(): void
     {
         // Explicit list that already carries comment_to → no gap, no warn.
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
             ."  config:\n    wake_membership: [to_me, to_all, comment_to]\n");
         $this->artisan('bridge:check')
@@ -599,8 +608,7 @@ class BridgeCommandsTest extends TestCase
     {
         // A non-list value throws at parse (the classify path would 5xx on it) — the check
         // surfaces it per-agent and fails, instead of crashing the whole run.
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
             ."  config:\n    wake_membership: not-a-list\n");
         $this->artisan('bridge:check')
@@ -1443,7 +1451,10 @@ class BridgeCommandsTest extends TestCase
         config([
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
             'bridge.writeback.correlation' => 'scan',
-            'bridge.writeback.coord_config_path' => $coordConfigPath,
+            // No compare file given ⇒ the install's own roster file stays the setting, which
+            // carries no kanban.boards entry: the compare is CANNOT-VERIFY, and the roster leg
+            // still reads its seats (DL-450).
+            'bridge.coord_config_path' => $coordConfigPath ?? config('bridge.coord_config_path'),
         ]);
     }
 
@@ -1474,7 +1485,7 @@ class BridgeCommandsTest extends TestCase
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('issue_number custom field registered on board 8')
-            ->assertExitCode(0);   // CANNOT-VERIFY on the compare (no $COORD_CONFIG) is a warn, not a fail
+            ->assertExitCode(0);   // CANNOT-VERIFY on the compare (no kanban.boards entry) is not a fail
     }
 
     public function test_check_warns_when_bridge_all_disagrees_with_reconcile_prefixed(): void
@@ -1725,7 +1736,7 @@ class BridgeCommandsTest extends TestCase
         // An agent that actually DRIVES the move leg: subscribed to github:owner/repo with the
         // coord-card-move family enabled (gate 1), so the mapping isn't orphaned and the DL-204
         // family gate lets the terminal-agreement compare run.
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n  github_user_id: 555\n"
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  github_user_id: 555\n"
             ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."  - provider: github\n    scopes: [\"owner/repo\"]\n"
             ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
@@ -1755,7 +1766,7 @@ class BridgeCommandsTest extends TestCase
     {
         $p = $this->dir.'/coordination.config.json';
         File::put($p, (string) json_encode($config));
-        config(['bridge.writeback.coord_config_path' => $p]);
+        config(['bridge.coord_config_path' => $p]);
 
         return $p;
     }
@@ -1776,13 +1787,16 @@ class BridgeCommandsTest extends TestCase
         File::put($p, (string) json_encode(['kanban' => ['boards' => [
             ['key' => 'issues', 'board_id' => 8, 'user_lanes' => ['Now']],
         ]]]));
-        config(['bridge.writeback.coord_config_path' => null]);   // no per-install override
+        config(['bridge.coord_config_path' => null]);   // no per-install override
         putenv("COORD_CONFIG={$p}");
 
         try {
+            // The compare still falls back to the ambient file — and since DL-450 the unset
+            // SETTING is itself a FAIL from the roster leg, which never reads the ambient.
             $this->artisan('bridge:check')
                 ->expectsOutputToContain('coord config agrees')
-                ->assertExitCode(0);
+                ->expectsOutputToContain('FAIL: agent roster: BRIDGE_COORD_CONFIG_PATH is not set')
+                ->assertExitCode(1);
         } finally {
             putenv('COORD_CONFIG');
         }
@@ -1803,7 +1817,7 @@ class BridgeCommandsTest extends TestCase
         File::put($ambient, (string) json_encode(['kanban' => ['boards' => [
             ['key' => 'issues', 'board_id' => 8, 'terminal_columns' => ["Won't Do"]],   // -> 54 = would DISAGREE
         ]]]));
-        config(['bridge.writeback.coord_config_path' => $override]);
+        config(['bridge.coord_config_path' => $override]);
         putenv("COORD_CONFIG={$ambient}");
 
         try {
@@ -1853,12 +1867,15 @@ class BridgeCommandsTest extends TestCase
         // Condition (a): a missing input is NOT evidence of agreement — it is evidence
         // we could not ask. Must NOT print "agrees".
         $this->writeMoveLegInstall();
-        config(['bridge.writeback.coord_config_path' => '/nonexistent/coordination.config.json']);
+        config(['bridge.coord_config_path' => '/nonexistent/coordination.config.json']);
 
+        // The compare cannot verify; and since DL-450 (round 1) the roster leg FAILS on a file
+        // that is absent for every reader, the receiver's user included.
         $this->artisan('bridge:check')
             ->expectsOutputToContain('CANNOT VERIFY')
             ->doesntExpectOutputToContain('coord config agrees')
-            ->assertExitCode(0);
+            ->expectsOutputToContain('there is no coord roster at /nonexistent/coordination.config.json')
+            ->assertExitCode(1);
     }
 
     public function test_check_cannot_verify_when_coord_config_is_malformed(): void
@@ -1867,12 +1884,15 @@ class BridgeCommandsTest extends TestCase
         $this->writeMoveLegInstall();
         $p = $this->dir.'/coordination.config.json';
         File::put($p, '{not json');
-        config(['bridge.writeback.coord_config_path' => $p]);
+        config(['bridge.coord_config_path' => $p]);
 
+        // The compare cannot verify; the roster leg reads the same unparseable bytes the
+        // receiver would, and FAILS on them (DL-450).
         $this->artisan('bridge:check')
             ->expectsOutputToContain('CANNOT VERIFY')
             ->doesntExpectOutputToContain('coord config agrees')
-            ->assertExitCode(0);
+            ->expectsOutputToContain('is not a JSON object')
+            ->assertExitCode(1);
     }
 
     public function test_check_cannot_verify_when_the_board_has_no_coord_config_entry(): void
@@ -2111,9 +2131,12 @@ class BridgeCommandsTest extends TestCase
         config(['bridge.providers.kanban.api_base_url' => null]);
         Http::fake();
 
+        // With no kanban host the roster's ids cannot be keyed, which the roster leg FAILS on
+        // (DL-450) — the probe's own skip is what this test is about, and it is unchanged.
         $this->artisan('bridge:check')
             ->expectsOutputToContain('skipped board-visibility probe')
-            ->assertExitCode(0);
+            ->expectsOutputToContain('names no kanban host')
+            ->assertExitCode(1);
 
         $this->assertOnlyTheGithubTokenFileReadsWereSent();
     }
@@ -2410,8 +2433,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_fails_on_unresolvable_classifier_fqcn(): void
     {
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."classifier:\n  class: 'App\\Bridge\\Classifiers\\NoSuchClassifier'\n");
 
         // A bad FQCN would be a dispatch error; bridge:check catches it early.
@@ -2430,8 +2452,7 @@ class BridgeCommandsTest extends TestCase
     public function test_check_fails_on_unknown_treat_as_signal_name(): void
     {
         $this->writeAgent();   // prod-agent
-        File::put($this->dir.'/pm.yml', "identity:\n  kanban_user_id: 100\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [6]\n"
+        File::put($this->dir.'/pm.yml', "subscriptions:\n  - provider: kanban\n    scopes: [6]\n"
             ."echo_suppression:\n  treat_as_signal: [ghost]\n");
 
         // 'ghost' has no config → fail-closed (would 5xx at dispatch); caught at preflight.
@@ -2959,11 +2980,14 @@ class BridgeCommandsTest extends TestCase
      */
     public function test_check_warns_on_a_roster_seat_with_no_kanban_user_id_and_still_exits_zero(): void
     {
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 7\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        // card#11172 / DL-450: an agent that takes no cards and whose roster seat has no id is
+        // WARNED (its events are not attributed to it) and the exit code does not move; a
+        // board-tools agent in the same state FAILS, which AgentKanbanUserRosterCheckTest pins.
+        File::put($this->dir.'/impl.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
         $coord = $this->dir.'/coordination.config.json';
         File::put($coord, (string) json_encode(['project' => 'p', 'roster' => [['name' => 'impl', 'role' => 'impl']]]));
         config([
-            'bridge.writeback.coord_config_path' => $coord,
+            'bridge.coord_config_path' => $coord,
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
         ]);
 
@@ -2971,7 +2995,7 @@ class BridgeCommandsTest extends TestCase
         $out = Artisan::output();
 
         $this->assertStringContainsString("WARN: agent impl: its coord roster seat 'impl' carries no kanban user id for this kanban instance ('kanban.example.com')", $out);
-        $this->assertStringContainsString('UNVERIFIED against the roster', $out);
+        $this->assertStringContainsString('kanban events are not attributed to this agent', $out);
         $this->assertSame(0, $code);
     }
 
@@ -2980,9 +3004,12 @@ class BridgeCommandsTest extends TestCase
         // Two agents sharing a kanban_user_id silently bypasses attribution (DL-007
         // warn). bridge:check must surface it to the operator console, not only to
         // the log where it goes unnoticed. Warn-level (exit 0), not a failure.
-        $yaml = "identity:\n  kanban_user_id: 500\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n";
+        // Since DL-450 the id is each agent's roster seat's: two seats the roster gives one id.
+        $yaml = "subscriptions:\n  - provider: kanban\n    scopes: [5]\n";
         File::put($this->dir.'/agent-a.yml', $yaml);
         File::put($this->dir.'/agent-b.yml', $yaml);
+        $this->seat('agent-a', 500);
+        $this->seat('agent-b', 500);
 
         $code = Artisan::call('bridge:check');
         $out = Artisan::output();
@@ -3017,8 +3044,7 @@ class BridgeCommandsTest extends TestCase
         // check must surface it at preflight (warn, not fail — the socket itself is
         // the channel server's to create).
         File::put($this->dir.'/prod-agent.yml',
-            "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."channel:\n  socket: /run/user/999999/nonexistent-dir/x.sock\n");
 
         $code = Artisan::call('bridge:check');
@@ -3031,8 +3057,7 @@ class BridgeCommandsTest extends TestCase
     private function writeAgentWithChannelSocket(string $socket): void
     {
         File::put($this->dir.'/prod-agent.yml',
-            "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."channel:\n  socket: {$socket}\n");
     }
 
@@ -3096,8 +3121,7 @@ class BridgeCommandsTest extends TestCase
     private function writeAgentWithChannelUrl(string $url): void
     {
         File::put($this->dir.'/prod-agent.yml',
-            "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."channel:\n  url: {$url}\n");
     }
 
@@ -3205,8 +3229,7 @@ class BridgeCommandsTest extends TestCase
     private function writeAgentWithoutChannel(): void
     {
         File::put($this->dir.'/prod-agent.yml',
-            "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+            "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
     }
 
     private function writeAgentWithChannelServerPath(?string $serverPath): void
@@ -3216,8 +3239,7 @@ class BridgeCommandsTest extends TestCase
             $block .= "  server_path: {$serverPath}\n";
         }
         File::put($this->dir.'/prod-agent.yml',
-            "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             .$block);
     }
 
@@ -3810,7 +3832,8 @@ class BridgeCommandsTest extends TestCase
     {
         $tokenFile = $this->dir."/{$name}-tools-token";
         $this->writeSecret($tokenFile, $tokenValue);
-        File::put($this->dir."/{$name}.yml", "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\n"
+        $this->seat($name, crc32($name));
+        File::put($this->dir."/{$name}.yml", "subscriptions: []\n"
             ."board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: 10\n  swimlane_id: {$swimlaneId}\n  create_stage_id: {$createStageId}\n");
     }
 
@@ -3875,7 +3898,7 @@ class BridgeCommandsTest extends TestCase
         // this on the exit code. Missing swimlane_id on an HTTP channel → suppressed.
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
         $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n"
+        File::put($this->dir.'/impl.yml', "subscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: /secrets/channel-token\n"
             ."board_tools:\n  board_id: 10\n  create_stage_id: 55\n");   // no swimlane_id
         $this->fakeBoardOk();
@@ -3913,14 +3936,14 @@ class BridgeCommandsTest extends TestCase
         // 2. The block is gone from a config that is still there: FAIL, and the NEXT STEPS
         //    block must NOT also ask the `no_block` question for that agent — its own answer
         //    ("NO ⇒ set enabled: false") would MUTE the failure printed two lines above.
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n");
+        File::put($this->dir.'/impl.yml', "subscriptions: []\n");
         $this->artisan('bridge:check')
             ->expectsOutputToContain('board_tools: agent impl: block LOST')
             ->doesntExpectOutputToContain('so this agent has no board window at all')
             ->assertExitCode(1);
 
         // 3. The operator states the decommission: exit 0, and the line CONFIRMS THE ROW.
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n"
+        File::put($this->dir.'/impl.yml', "subscriptions: []\n"
             ."board_tools:\n  retired: \"2026-09-08 — seat decommissioned\"\n");
         $this->artisan('bridge:check')
             ->expectsOutputToContain('board_tools: agent impl: RETIRED — 2026-09-08 — seat decommissioned (tombstone on record)')
@@ -3951,7 +3974,7 @@ class BridgeCommandsTest extends TestCase
         $this->fakeBoardOk();
         $this->artisan('bridge:check')->assertExitCode(0);
 
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n"
+        File::put($this->dir.'/impl.yml', "subscriptions: []\n"
             ."board_tools:\n  enabled: false\n");
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('block LOST')
@@ -4110,7 +4133,8 @@ class BridgeCommandsTest extends TestCase
         $block = $enabled
             ? "board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenPath}\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n"
             : '';
-        File::put($this->dir."/{$name}.yml", "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\n".$block);
+        $this->seat($name, crc32($name));
+        File::put($this->dir."/{$name}.yml", "subscriptions: []\n".$block);
     }
 
     public function test_provision_tools_mints_an_absent_bearer_0600(): void
@@ -4139,7 +4163,7 @@ class BridgeCommandsTest extends TestCase
         // deliberately binds nothing, so it also witnesses that the real
         // SystemSshProbeEnvironment / SystemGitRefProbe pair renders SOMETHING rather
         // than throwing on a host where neither answer is knowable.
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+        File::put($this->dir.'/impl.yml', "subscriptions: []\n"
             ."board_tools:\n  transport: ssh\n  ssh_account: bridge-user\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
 
         $script = base_path('bin/provision-board-tools.py');
@@ -4243,7 +4267,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_provision_tools_skeleton_for_named_agent_without_block(): void
     {
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n");
+        File::put($this->dir.'/impl.yml', "subscriptions: []\n");
 
         $this->artisan('bridge:provision-tools', ['--agent' => 'impl'])
             ->expectsOutputToContain('board_tools:')
@@ -4252,7 +4276,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_provision_tools_skips_agent_without_block_when_unfiltered(): void
     {
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n");
+        File::put($this->dir.'/impl.yml', "subscriptions: []\n");
 
         $this->artisan('bridge:provision-tools')
             ->expectsOutputToContain('no board_tools block')
@@ -4267,7 +4291,7 @@ class BridgeCommandsTest extends TestCase
         // token file would clobber channel auth, so it must SKIP.
         $channelTokenFile = $this->dir.'/impl-channel-token';
         $this->writeSecret($channelTokenFile, 'chan-token');   // gitleaks:allow — test fixture
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n"
+        File::put($this->dir.'/impl.yml', "subscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
             ."board_tools:\n  transport: http\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
 

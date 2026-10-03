@@ -58,7 +58,7 @@ class EchoAndSignalTest extends TestCase
     {
         // A treat_as_signal name with no matching agent config is fail-closed
         // (a typo would otherwise silently classify everything NOT-IN-SIGNAL).
-        $registry = new AgentRegistry([new RegisteredAgent(name: 'prod-agent', kanbanUserId: 137)]);
+        $registry = new AgentRegistry([new RegisteredAgent(name: 'prod-agent')], [], ['prod-agent' => 137]);
 
         $this->expectException(ConfigException::class);
         SignalAllowlist::default(['typo-agent'], $registry);

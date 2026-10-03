@@ -97,35 +97,35 @@ return [
     */
     'writeback' => [
         'correlation' => env('BRIDGE_WRITEBACK_CORRELATION', 'ref'),
-
-        /*
-        | The coordination project's coordination.config.json (DL-200). Read ONLY by
-        | `bridge:check`, to compare the OTHER mover's terminal_columns against this
-        | bridge's coord_card_terminal_stage_id — the cross-config compare that makes
-        | the move leg's config legitimate.
-        |
-        | CLI-ONLY, DELIBERATELY. Falls back to the ambient $COORD_CONFIG, which exists in
-        | an operator's shell but NOT in the PHP-FPM environment the receiver runs under.
-        | Nothing on the request path may read this: a synchronous webhook coupled to a
-        | file that isn't there at runtime fails silently in the one process nobody
-        | watches. Absent ⇒ the check reports CANNOT-VERIFY; it never fails the bridge.
-        |
-        | Two installs on one host (-prod / -dev) share ONE ambient $COORD_CONFIG, so
-        | this per-install override in that install's .env is what lets them point at
-        | different coordination projects.
-        |
-        | ⚠ The ambient $COORD_CONFIG is DELIBERATELY NOT read here. `php artisan
-        | optimize` (the documented deploy step, CLAUDE_DEPLOYMENT.md) caches this file,
-        | which FREEZES every env() at cache-build time — and the frozen value then wins
-        | over the live one. An ambient $COORD_CONFIG baked in here would resolve to
-        | whatever the DEPLOYING shell had (usually nothing), permanently, and the
-        | cross-config compare would report CANNOT-VERIFY forever: shipped, running, and
-        | inert — the exact failure this preflight exists to prevent. So the ambient
-        | fallback is read at the CLI read-site via getenv() (see CheckCommand), which is
-        | cache-immune and legitimate precisely because that read-site is CLI-only.
-        */
-        'coord_config_path' => env('BRIDGE_COORD_CONFIG_PATH'),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | The coordination project's coordination.config.json (DL-200, DL-450)
+    |--------------------------------------------------------------------------
+    |
+    | An ABSOLUTE path, set per install in .env. REQUIRED since card#11172 / DL-450:
+    | the coord roster in this file is the ONE store of each agent's kanban user id,
+    | and the bridge reads it AT RUNTIME — `board_take_card` (and its start form)
+    | writes the calling seat's id from it, `board_correct_card` compares against it,
+    | and every kanban event is attributed and echo-suppressed by it. Unset, or
+    | unreadable by the PHP-FPM user, the take refuses as a named install fault and a
+    | kanban delivery that needs attribution answers 5xx; `bridge:check` FAILs on an
+    | unset or relative value. App\Bridge\Support\CoordConfigFile is the one reader.
+    |
+    | ⚠ THE RUNTIME READS THIS SETTING ONLY. The ambient $COORD_CONFIG is not read
+    | here and never reaches the receiver: PHP-FPM does not inherit it, and
+    | `php artisan optimize` would freeze whatever the DEPLOYING shell had. The
+    | `bridge:check` cross-config compares of the writeback legs still fall back to
+    | the ambient variable at their CLI read-site (CoordConfigPath), which is
+    | cache-immune; the roster leg does not, because it measures what the runtime reads.
+    |
+    | Two installs on one host (-prod / -dev) set it separately, which is what lets
+    | them point at different coordination projects.
+    |
+    */
+
+    'coord_config_path' => env('BRIDGE_COORD_CONFIG_PATH'),
 
     /*
     |--------------------------------------------------------------------------

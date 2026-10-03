@@ -120,6 +120,7 @@ export function clientFiles(release, { clientVersion = '0.9.29', realServer = fa
       mode: 0o755,
     },
     { path: 'seat-tools/bin/check-channel-snapshot.py', data: Buffer.from(`#!/bin/sh\necho "seat tool of ${release}"\n`), mode: 0o755 },
+    { path: 'client/bin/bridge-board-call.mjs', data: Buffer.from(`console.log(JSON.stringify({ bin: 'client bin of ${release}', argv: process.argv.slice(2) }));\n`), mode: 0o755 },
   ];
   return files.filter((f) => !omit.includes(f.path));
 }

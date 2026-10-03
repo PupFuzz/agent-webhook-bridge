@@ -2,7 +2,7 @@
 
 namespace App\Bridge\Writeback;
 
-use App\Bridge\Exceptions\UnreadableFileException;
+use App\Bridge\Support\CoordConfigFile;
 use App\Bridge\Support\UntrustedPathContents;
 
 /**
@@ -19,11 +19,13 @@ use App\Bridge\Support\UntrustedPathContents;
  * the bridge concludes a card into stage X while the reconcile treats stage Y as
  * terminal, so they fight every cycle. Only comparing the two CONFIGS catches that.
  *
- * WHY ONLY FROM THE CLI. This read lives in `bridge:check` — an operator-invoked CLI
- * with the operator's environment — and NEVER on the webhook request path, which runs
- * under PHP-FPM whose environment is NOT the operator's. Coupling the request path to
- * `$COORD_CONFIG` would bind it to a file that demonstrably is not there at runtime,
- * failing silently in the one process nobody watches. Keep this CLI-only.
+ * WHY ONLY FROM THE CLI. The terminal COMPARE lives in `bridge:check` — it has no runtime
+ * half — and the reason it stays there is the ambient `$COORD_CONFIG` its path may fall
+ * back to (`CoordConfigPath`): that variable exists in an operator's shell and NOT in the
+ * PHP-FPM environment the receiver runs under, so a request path resolving through it would
+ * be bound to a path that is not there at runtime. ⚠ THE FILE ITSELF IS NOT CLI-ONLY: since
+ * DL-450 the receiver reads it at runtime for the coord roster, through the required
+ * `BRIDGE_COORD_CONFIG_PATH` setting alone (`CoordConfigFile::configured()`).
  *
  * WHY A SECOND IMPLEMENTATION. The rule's home is Python
  * (`coord.kanban_common.terminals_for_board` + `_terminal_columns_by_board`); the
@@ -71,8 +73,10 @@ final class CoordConfigTerminals
      * ask" apart from "asked, and the answer is no terminals". A missing input is not
      * evidence of agreement.
      *
-     * ⭐ THE READER IS {@see UntrustedPathContents} (card#9121, adopting card#9037's
-     * primitive). This is a CROSS-CONFIG read: the file belongs to the coordination
+     * ⭐ THE READ IS {@see CoordConfigFile}'s (card#11172 / DL-450 — one read of this file for the
+     * runtime roster and these compares alike), and ITS reader is {@see UntrustedPathContents}
+     * (card#9121, adopting card#9037's primitive). A RELATIVE path is refused there too, and
+     * answers null here. This is a CROSS-CONFIG read: the file belongs to the coordination
      * project, is named by `$COORD_CONFIG` in the operator's environment, and lives under a
      * directory this process does not own — while `bridge:check` reads it as the operator,
      * routinely root. The shape this replaces was `is_file()` + `is_readable()` + an
@@ -89,26 +93,15 @@ final class CoordConfigTerminals
      * (`WritebackMappingConfigCheck` and `WritebackBoardStateCheck` — NAMED, never
      * `{@see}`-linked: pint rewrites a docblock FQCN into a real `use`, and importing a
      * Check into the Writeback layer would invert it) both depend on this never throwing,
-     * which the catch below preserves for every refusal the reader raises.
+     * which holds because `CoordConfigFile` turns every refusal its reader raises into a fault.
      *
      * @return array<string, mixed>|null
      */
     public static function load(?string $path): ?array
     {
-        if ($path === null || $path === '') {
-            return null;
-        }
-        try {
-            $raw = UntrustedPathContents::read($path, 'coordination.config.json');
-        } catch (UnreadableFileException) {
-            return null;
-        }
-        if ($raw === null) {
-            return null;
-        }
-        $decoded = json_decode($raw, true);
+        $file = CoordConfigFile::at($path === '' ? null : $path);
 
-        return is_array($decoded) ? $decoded : null;
+        return $file->readable() ? $file->config() : null;
     }
 
     /**
