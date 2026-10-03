@@ -56,7 +56,7 @@ final class SeatClientLedger
     /**
      * Record what one board-tools call said about its caller.
      *
-     * ⛔ AN EXEMPT CALL (a probe, a self-certification, an operator) STAMPS `last_exempt_*` AND
+     * ⛔ AN EXEMPT CALL (one declaring an {@see ExemptCaller} case) STAMPS `last_exempt_*` AND
      * NOTHING ELSE. It never writes `last_call_*` or `running_*` — a probe sends no version and no
      * launch, and letting it overwrite a seat's report with nulls is the defect design review r2
      * M-3 found. A seat's call writes `last_call_*`; only a call carrying a `launch` object writes
