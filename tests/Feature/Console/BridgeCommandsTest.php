@@ -107,6 +107,12 @@ class BridgeCommandsTest extends TestCase
      * answers exactly the two reads a placed file adds — {@see isGithubTokenFileRead()} — and
      * returns null for everything else, so a test's own stubs still answer what they did.
      * Call it FIRST: stubs are tried in the order registered.
+     *
+     * ⚑ A THIRD READ FOLLOWS WHERE AN AGENT SUBSCRIBES TO GITHUB: the webhook-subscription leg
+     * lists the repo's hooks with the same file, but only where `BRIDGE_RECEIVER_BASE_URL`
+     * composes a receiver URL — so it is reached on a runner whose `.env` sets one and not on a
+     * box without one. It is answered `403` (a token that may not list hooks), which that leg
+     * reports as COULD NOT LOOK and never as a fail, so these tests stay about their own leg.
      */
     private function placeUsableGithubTokenFile(): void
     {
@@ -114,6 +120,9 @@ class BridgeCommandsTest extends TestCase
         File::put($this->dir.'/github/token', 'ghp_usable');
         chmod($this->dir.'/github/token', 0o600);
         Http::fake(function (Request $request) {
+            if (preg_match('#^https://api\.github\.com/repos/[^/]+/[^/]+/hooks\?#', $request->url()) === 1) {
+                return Http::response(['message' => 'Must have admin rights to Repository.'], 403);
+            }
             if (! self::isGithubTokenFileRead($request->url())) {
                 return null;
             }
