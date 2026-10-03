@@ -154,6 +154,7 @@ class GitHubTokenFileCheckTest extends TestCase
 
     public function test_a_token_path_override_counts_as_the_token_file(): void
     {
+        $this->runAs($this->realEuid());
         $override = $this->dir.'/override-token';
         File::put($override, 'ghp_override');
         chmod($override, 0o600);
@@ -168,6 +169,7 @@ class GitHubTokenFileCheckTest extends TestCase
 
     public function test_a_placed_token_file_is_the_one_tried_beside_a_gh_token(): void
     {
+        $this->runAs($this->realEuid());
         $this->tokenFile('ghp_from_a_file');
         putenv('GH_TOKEN=ghp_ambient');
         Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
@@ -326,6 +328,7 @@ class GitHubTokenFileCheckTest extends TestCase
 
     public function test_the_repo_ok_names_what_a_scope_read_does_not_measure(): void
     {
+        $this->runAs($this->realEuid());
         $this->tokenFile('ghp_x');
         Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
 
@@ -389,8 +392,11 @@ class GitHubTokenFileCheckTest extends TestCase
         $this->assertStringContainsString('sudo -u <pool user> php artisan bridge:check', $finding->message);
     }
 
-    public function test_a_token_file_owned_by_the_owner_of_the_receivers_own_record_is_ok_and_says_how_it_knows(): void
+    public function test_matching_owners_with_a_receiver_owned_record_still_carry_the_disclosure_on_the_ok(): void
     {
+        // Review r4: ownership is inference, and an inference may only LOWER the verdict. A
+        // matching owner cannot see an open_basedir or a service-unit sandbox, so its ok says
+        // what was not measured, exactly as the ok with no record to compare does.
         $this->tokenFile('ghp_x');
         $this->owedForAnotherReason();
         $me = $this->realEuid();
@@ -400,8 +406,8 @@ class GitHubTokenFileCheckTest extends TestCase
         $finding = $this->onlyFinding($this->runCheck());
 
         $this->assertSame(Severity::Ok, $finding->severity, $finding->message);
-        $this->assertStringContainsString('owned by www-data, the owner of '.GitHubWriteDebt::path(), $finding->message);
-        $this->assertStringNotContainsString('was not measured', $finding->message);
+        $this->assertStringContainsString("Whether the receiver's PHP-FPM pool user can read it was not measured: run `sudo -u <pool user> php artisan bridge:check`", $finding->message);
+        $this->assertStringNotContainsString('so it reads the token file as its owner', $finding->message);
     }
 
     public function test_with_no_receiver_owned_file_to_compare_the_ok_discloses_the_pool_user_it_did_not_measure(): void
@@ -638,6 +644,7 @@ class GitHubTokenFileCheckTest extends TestCase
 
     public function test_writes_dropped_for_want_of_a_token_are_counted_from_the_owed_record(): void
     {
+        $this->runAs($this->realEuid());
         $this->tokenFile('ghp_x');
         Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
         GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 7, ['comment_id' => '7'], ProtocolInvalidLabeler::REASON_TOKEN_UNRESOLVED, null, true);

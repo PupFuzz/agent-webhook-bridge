@@ -61,9 +61,11 @@ use Throwable;
  * prefix; on any other it is unmeasured too.
  *
  * ⚑ READ BY THIS RUN IS NOT READ BY THE RECEIVER. The file is owner-only, so this run read it as
- * its owner or as root; an answer GitHub would pass becomes `ok` only where nothing says the receiver's
- * user cannot read it, never on a root run, and never where this run could not measure an identity
- * it reads (its own euid, an owner, a mode) — `unvalidated` otherwise. {@see receiverRead()} owns
+ * its owner or as root. An answer GitHub would pass becomes `ok` only where nothing says the
+ * receiver's user cannot read it, never on a root run, and never where this run could not measure
+ * an identity it reads (its own euid, an owner, a mode) — `unvalidated` otherwise. An `ok` always
+ * carries the disclosure that the receiver's read was not measured: ownership evidence can only
+ * lower the verdict. {@see receiverRead()} owns
  * the comparison and what it cannot see. A `fail` stands as it is: it holds for every reader.
  *
  * ⚑ WHAT A MISSING FILE ALREADY COST is counted where the bridge keeps it: a comment or label
@@ -231,11 +233,16 @@ final class GitHubTokenFileCheck implements Check
      * owner-only (`SecretFile` refuses any group or world bit), so this run read it because it is
      * the file's owner or root, and neither says who the receiver runs as.
      *
+     * ⛔ THE INFERENCE ONLY DOWNGRADES. Ownership never establishes the read — it cannot see an ACL,
+     * an `open_basedir` or a service-unit sandbox — so every pass carries the not-measured
+     * disclosure, matching owners included, and ownership evidence can only lower the verdict.
+     *
      * ⭐ THE COMPARISON IS WITH THE OWED GITHUB-WRITE RECORD — or its lock
      * ({@see GitHubWriteDebt::ownedFiles()}, the entries the receiver opens) — and ONLY where its
      * state dir is writable by its owner alone and that owner also owns the record. The receiver
      * must write in that dir, and nobody but the dir's owner (or root) can create a file there, so
-     * the record's owner is then the receiver's user. The record alone is not enough:
+     * the record's owner is then the receiver's user, and a token file another user owns is one the
+     * receiver most likely cannot read. The record alone is not enough:
      * {@see GitHubWriteDebt::writerRefusal()} cannot refuse the FIRST write of an absent record by
      * a non-root user other than the receiver's (`StateWriterRefusal`'s docblock says so), and
      * `bridge:replay --force` reaches that write as the operator — so in a group-writable state dir
@@ -254,10 +261,9 @@ final class GitHubTokenFileCheck implements Check
      * ⛔ A STATE DIR THIS RUN CANNOT TRAVERSE answers the question the other way: the receiver writes
      * there, so a run that cannot see in is not the receiver's user.
      *
-     * Returns [whether a pass may stand, the clause the finding carries]. A pass may stand where a
-     * non-root run finds matching owners, or finds no such record — then the clause says what was
-     * not measured, as `agent.kanban_user_roster` does. On a healthy install the record is absent,
-     * so that disclosure is the common answer.
+     * Returns [whether a pass may stand, the clause the finding carries]. A pass may stand for a
+     * non-root run that finds no owner mismatch, and its clause always says what was not
+     * measured, as `agent.kanban_user_roster` does.
      *
      * @return array{0: bool, 1: string}
      */
@@ -286,17 +292,10 @@ final class GitHubTokenFileCheck implements Check
         if ($kind === 'unknown') {
             return [false, "{$file}, so whether the owed-writes record there is evidence of the receiver's user was NOT measured. {$measure}"];
         }
-        if ($kind === 'evidence') {
+        if ($kind === 'evidence' && $owner !== $tokenOwner) {
             /** @var string $file */
             /** @var int $owner */
-            if ($owner !== $tokenOwner) {
-                return [false, "{$path} is owned by {$name($tokenOwner)}, but {$file} — in a state dir only {$name($owner)} can write, where the receiver must write — is owned by {$name($owner)}, and a token file is readable by its owner alone, so the receiver most likely cannot read it: chown it to {$name($owner)} if that is the user the receiver runs as. {$measure}"];
-            }
-            if ($euid === 0) {
-                return [false, "{$path} shares its owner, {$name($owner)}, with {$file}, but this run is root, which reaches files the receiver may not (a root-owned directory above the token is no barrier to root), so that does not establish the receiver's read. {$measure}"];
-            }
-
-            return [true, "{$path} is owned by {$name($owner)}, the owner of {$file}, in a state dir only {$name($owner)} can write — and the receiver must write there, so it reads the token file as its owner."];
+            return [false, "{$path} is owned by {$name($tokenOwner)}, but {$file} — in a state dir only {$name($owner)} can write, where the receiver must write — is owned by {$name($owner)}, and a token file is readable by its owner alone, so the receiver most likely cannot read it: chown it to {$name($owner)} if that is the user the receiver runs as. {$measure}"];
         }
         if ($euid === 0) {
             return [false, "this run is root, which reads any file, so its read says nothing about the user the receiver runs as. {$measure}"];
@@ -307,14 +306,15 @@ final class GitHubTokenFileCheck implements Check
 
     /**
      * Is there an owed-writes record whose owner is evidence of the receiver's user — a non-root
-     * owner that also owns `$stateDir`, a dir no group or other user can write?
+     * owner that also owns `$stateDir`, a dir no group or other user can write? Its only use is
+     * the owner-mismatch downgrade.
      *
      * ⛔ THREE ANSWERS, NOT TWO. `evidence` (the file and its owner); `none`, a MEASURED absence —
      * the state dir or the record is not there, or the dir is group/other-writable or root-owned,
      * so its record proves nothing; and `unknown` (the second element is the clause), where a
      * present dir or file answered no mode or owner. The caller has already established that this
      * run can traverse to the state dir, so "not there" is a conclusion, not blindness; and an
-     * unknown is never folded into `none`, which a non-root run passes on.
+     * unknown is never folded into `none`, which a non-root run passes on (with the disclosure).
      *
      * @return array{0: 'evidence'|'none'|'unknown', 1: ?string, 2: ?int}
      */
