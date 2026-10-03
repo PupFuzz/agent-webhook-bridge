@@ -269,24 +269,23 @@ If nothing surfaces to the model after wiring: verify the hook event type is in 
 
 ## Agent registry contract
 
-There is no `agents.json`. The registry is built per request by scanning the per-agent YAMLs in the config dir — the FILENAME (`prod-agent.yml` → `prod-agent`) is the agent's name, and its `identity:` block holds its immutable upstream ids:
+There is no `agents.json`. The registry is built per request by scanning the per-agent YAMLs in the config dir — the FILENAME (`prod-agent.yml` → `prod-agent`) is the agent's name, and its `identity:` block holds its immutable github ids — and from the coord roster at `BRIDGE_COORD_CONFIG_PATH`, which holds each agent's kanban user id for its seat (`identity.coord_seat`, else the agent name; DL-450):
 
 ```yaml
 # prod-agent.yml
 identity:
-  kanban_user_id: 3
   github_user_id: 12345678
   github_login: prod-agent-bot   # display-only label
 
 # dev-agent.yml
 identity:
-  kanban_user_id: 4
+  coord_seat: dev                # only when the roster seat is not the agent name
 ```
 
 | `identity` field | Required? | Notes |
 |---|---|---|
 | (filename) | yes | The `<agent>.yml` filename is the agent name — used for echo suppression by `actor.name` and as the addressing token for ReactionTarget routing |
-| `kanban_user_id` | optional | Immutable integer; absent = agent has no kanban identity |
+| `coord_seat` | optional | The coord roster seat whose `kanban_user_id` is this agent's kanban identity; absent = the agent name. A seat the roster gives no id = no kanban identity. (`kanban_user_id` itself is retired from this block — DL-450.) |
 | `github_user_id` | optional | Immutable numeric GitHub account id (`sender.id`); the GitHub **matching key**. absent = agent has no GitHub identity |
 | `github_login` | optional | Display-only label (GitHub usernames rename, so they are never a matching key — DL-002). A stale label fires a one-line drift warning |
 
@@ -322,7 +321,7 @@ Both filters happen **before** `inbox.jsonl` writes. Consumers do not need to re
 | `webhook_events` DB schema | `EXPECTED_SCHEMA_VERSION` in the migration set | Bumps on column add/remove/rename or constraint change. Internal; consumers tail JSONL, not the DB. |
 | Event-schema (Intent) | `v1` (per `$id` URI path) | Bumps on non-additive change. v2 would live at `docs/v2/event-schema.json`; v1 stays at current path. |
 | ReactionTarget schema | `v1` (per `$id` URI path) | Same policy. |
-| Agent registry | per-agent YAML `identity` blocks + optional `shared-identities.json` | Not a versioned wire surface — operator config. Recognition keys on immutable numeric ids (`kanban_user_id` / `github_user_id`); `github_login` is a display-only label (DL-002). Consumers tail `inbox.jsonl`, not the registry. |
+| Agent registry | per-agent YAML `identity` blocks + optional `shared-identities.json` | Not a versioned wire surface — operator config. Recognition keys on immutable numeric ids (the roster's kanban user id / `github_user_id`); `github_login` is a display-only label (DL-002). Consumers tail `inbox.jsonl`, not the registry. |
 
 Pin to the schema version you built against. Fail-soft (warn + skip) on intents whose `schema_version` doesn't match.
 

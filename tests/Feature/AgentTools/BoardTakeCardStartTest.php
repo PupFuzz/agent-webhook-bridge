@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
+use Tests\Support\CoordRosterFixture;
 use Tests\TestCase;
 
 /**
@@ -60,7 +61,9 @@ class BoardTakeCardStartTest extends TestCase
         chmod($this->dir.'/kanban/writeback-token', 0o600);
         File::put($this->dir.'/me-tools-token', $this->token);
         chmod($this->dir.'/me-tools-token', 0o600);
-        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: ".$this->me()."\nsubscriptions: []\n"
+        // The seat's kanban user id is its coord roster entry's (DL-450), never a YAML key.
+        CoordRosterFixture::configure($this->dir.'/coord', ['me' => $this->me()]);
+        File::put($this->dir.'/me.yml', "subscriptions: []\n"
             ."board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$this->dir}/me-tools-token\n"
             ."  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 48\n");
         $this->writeWriteback(['o/mine' => [
@@ -434,9 +437,10 @@ class BoardTakeCardStartTest extends TestCase
             'the card removed before the write (404)' => [static fn (self $t) => $t->board(patchStatus: 404), ['card_id' => 42, 'start' => true], 'card_gone'],
             'the board rejects the write (422)' => [static fn (self $t) => $t->board(patchStatus: 422), ['card_id' => 42, 'start' => true], 'board_rejected'],
             'the token is not accepted on the write (401)' => [static fn (self $t) => $t->board(patchStatus: 401), ['card_id' => 42, 'start' => true], 'install_fault.token_rejected'],
-            'two agents share this seat\'s kanban user id' => [static function (self $t): void {
+            'the roster gives this seat\'s kanban user id to another seat' => [static function (self $t): void {
                 $t->board();
-                File::put($t->dir.'/other.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
+                File::put($t->dir.'/other.yml', "subscriptions: []\n");
+                CoordRosterFixture::configure($t->dir.'/coord', ['me' => $t->me(), 'other' => $t->me()]);
             }, ['card_id' => 42, 'start' => true], 'install_fault.shared_kanban_user'],
         ];
     }
@@ -519,15 +523,13 @@ class BoardTakeCardStartTest extends TestCase
     }
 
     /**
-     * A seat whose bridge config carries no kanban user id has no one to record as the owner, so a
+     * A seat the coord roster gives no kanban user id has no one to record as the owner, so a
      * start is refused as a named install fault before ANY board request — never an unassigned move.
      */
     public function test_a_seat_with_no_kanban_user_id_is_refused_as_an_install_fault_before_any_request(): void
     {
         $this->board();
-        File::put($this->dir.'/me.yml', "identity: {}\nsubscriptions: []\n"
-            ."board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$this->dir}/me-tools-token\n"
-            ."  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 48\n");
+        CoordRosterFixture::configure($this->dir.'/coord', ['me' => null]);
 
         $res = $this->start()->assertStatus(422)->assertJsonPath('reason', 'install_fault.no_kanban_user');
         $this->assertStringContainsString('INSTALL fault', (string) $res->json('error'));

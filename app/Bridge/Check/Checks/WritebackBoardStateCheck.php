@@ -365,7 +365,7 @@ final class WritebackBoardStateCheck implements Check
         if ($config === null) {
             $where = CoordConfigPath::unreadableClause($path);
 
-            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — {$where}. {$tail} Point bridge.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
 
             return;
         }

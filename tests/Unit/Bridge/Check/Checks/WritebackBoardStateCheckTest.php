@@ -64,7 +64,7 @@ class WritebackBoardStateCheckTest extends TestCase
         File::ensureDirectoryExists($this->dir);
         config([
             'bridge.writeback.correlation' => 'ref',
-            'bridge.writeback.coord_config_path' => null,
+            'bridge.coord_config_path' => null,
         ]);
         $this->origCoordConfig = getenv('COORD_CONFIG');
         putenv('COORD_CONFIG');
@@ -665,7 +665,7 @@ class WritebackBoardStateCheckTest extends TestCase
     public function test_the_compare_is_silent_when_the_move_leg_is_explicitly_opted_out(): void
     {
         $this->fakeBoard(stages: [['id' => 53, 'name' => 'Done', 'position' => 1.0]]);
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig([
+        config(['bridge.coord_config_path' => $this->coordConfig([
             ['board_id' => self::BOARD, 'terminal_columns' => ['Done']],
         ])]);
         $optedOut = new WritebackMapping(
@@ -689,7 +689,7 @@ class WritebackBoardStateCheckTest extends TestCase
     public function test_the_compare_is_silent_where_the_coord_card_move_family_is_off(): void
     {
         $this->fakeBoard(stages: [['id' => 53, 'name' => 'Done', 'position' => 1.0]]);
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig([
+        config(['bridge.coord_config_path' => $this->coordConfig([
             ['board_id' => self::BOARD, 'terminal_columns' => ['Done']],
         ])]);
 
@@ -718,7 +718,7 @@ class WritebackBoardStateCheckTest extends TestCase
     public function test_a_coord_config_declaring_no_terminal_for_this_board_is_cannot_verify(): void
     {
         $this->fakeBoard();
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig([
+        config(['bridge.coord_config_path' => $this->coordConfig([
             ['board_id' => 999, 'terminal_columns' => ['Done']],
         ])]);
 
@@ -737,7 +737,7 @@ class WritebackBoardStateCheckTest extends TestCase
     public function test_two_declared_terminals_is_cannot_verify_rather_than_a_coin_flip(): void
     {
         $this->fakeBoard();
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig([
+        config(['bridge.coord_config_path' => $this->coordConfig([
             ['board_id' => self::BOARD, 'terminal_columns' => ['Done', "Won't Do"]],
         ])]);
 
@@ -751,7 +751,7 @@ class WritebackBoardStateCheckTest extends TestCase
     public function test_a_terminal_column_that_is_not_a_stage_on_the_board_is_cannot_verify(): void
     {
         $this->fakeBoard(stages: [['id' => 53, 'name' => 'Done', 'position' => 1.0]]);
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig([
+        config(['bridge.coord_config_path' => $this->coordConfig([
             ['board_id' => self::BOARD, 'terminal_columns' => ['Archived']],
         ])]);
 
@@ -771,7 +771,7 @@ class WritebackBoardStateCheckTest extends TestCase
             ['id' => 53, 'name' => 'Done', 'position' => 1.0],
             ['id' => 54, 'name' => 'Released', 'position' => 2.0],
         ]);
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig([
+        config(['bridge.coord_config_path' => $this->coordConfig([
             ['board_id' => self::BOARD, 'terminal_columns' => ['Released']],
         ])]);
 
@@ -801,7 +801,7 @@ class WritebackBoardStateCheckTest extends TestCase
 
             return Http::response(['data' => [], 'meta' => ['total' => 1]]);
         });
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig([
+        config(['bridge.coord_config_path' => $this->coordConfig([
             ['board_id' => self::BOARD, 'terminal_columns' => ['Done']],
         ])]);
 

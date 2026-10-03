@@ -18,13 +18,18 @@
 # The API token is read by convention from <secret_dir>/<provider>/token.
 
 # ----------------------------------------------------------------------------
-# identity: this agent's own IMMUTABLE upstream account ids.
+# identity: this agent's own IMMUTABLE github ids, and its coord roster seat.
 # ----------------------------------------------------------------------------
 # Used to build the registry (resolve other agents' events to names) and to
 # AUTO-SEED this agent's own echo-suppression — you never hand-list your own id.
 # Omit an id the agent doesn't have. github_login is a display-only label.
+#
+# The agent's KANBAN user id is NOT set here (DL-450): it is read from the coord
+# roster at BRIDGE_COORD_CONFIG_PATH (.env), for this agent's seat —
+# `coord_seat` below, else this file's agent name. `kanban_user_id` is retired;
+# bridge:check tells you to remove it.
 identity:
-  kanban_user_id: 137
+  # coord_seat: builder           # only when the agent name is not its roster seat
   # github_user_id: 41000123
   # github_login: your-bot        # display label only; recognition keys on the id
 

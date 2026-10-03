@@ -72,7 +72,7 @@ class WritebackMappingConfigCheckTest extends TestCase
             'bridge.providers.github.token_path' => null,
             'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
             'bridge.writeback.correlation' => 'ref',
-            'bridge.writeback.coord_config_path' => null,
+            'bridge.coord_config_path' => null,
         ]);
 
         $this->origGhToken = getenv('GH_TOKEN');
@@ -93,7 +93,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     public function test_issue_population_all_warns_that_the_bridge_is_the_sole_real_time_mover(): void
     {
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig(['all'])]);
+        config(['bridge.coord_config_path' => $this->coordConfig(['all'])]);
 
         $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
@@ -109,7 +109,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     public function test_the_prefixed_population_reports_nothing_about_a_missing_backstop(): void
     {
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig(['all'])]);
+        config(['bridge.coord_config_path' => $this->coordConfig(['all'])]);
 
         // Orphaned on purpose: its warn witnesses that the check reached the mapping loop,
         // so the absence below is evidence rather than a check that never ran.
@@ -124,7 +124,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     {
         config([
             'bridge.writeback.correlation' => 'scan',
-            'bridge.writeback.coord_config_path' => $this->coordConfig(['all']),
+            'bridge.coord_config_path' => $this->coordConfig(['all']),
         ]);
 
         $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
@@ -142,7 +142,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     public function test_an_agreeing_coord_config_reports_the_non_prefixed_set_as_backstopped(): void
     {
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig(['all'])]);
+        config(['bridge.coord_config_path' => $this->coordConfig(['all'])]);
 
         $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
@@ -155,7 +155,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     public function test_a_reconcile_on_prefixed_is_reported_as_a_disagreement_not_as_silence(): void
     {
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig(['prefixed'])]);
+        config(['bridge.coord_config_path' => $this->coordConfig(['prefixed'])]);
 
         $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
@@ -177,7 +177,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     public function test_an_absent_coord_config_file_is_cannot_verify_and_names_the_path(): void
     {
         $missing = $this->dir.'/no-such-coordination.config.json';
-        config(['bridge.writeback.coord_config_path' => $missing]);
+        config(['bridge.coord_config_path' => $missing]);
 
         $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
@@ -191,7 +191,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     {
         $path = $this->dir.'/malformed.json';
         File::put($path, 'not json at all');
-        config(['bridge.writeback.coord_config_path' => $path]);
+        config(['bridge.coord_config_path' => $path]);
 
         $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
@@ -200,7 +200,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     /**
      * The `getenv('COORD_CONFIG')` fallback is the leg that actually fires on a real
-     * install (almost nobody sets `bridge.writeback.coord_config_path`), and it is read
+     * install (almost nobody sets `bridge.coord_config_path`), and it is read
      * live so `php artisan optimize` cannot freeze a deploy-time value.
      */
     public function test_the_ambient_coord_config_env_var_is_used_when_no_path_is_configured(): void
@@ -217,7 +217,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     {
         $path = $this->dir.'/other-board.json';
         File::put($path, (string) json_encode(['kanban' => ['boards' => [['board_id' => 999, 'issue_population' => 'all']]]]));
-        config(['bridge.writeback.coord_config_path' => $path]);
+        config(['bridge.coord_config_path' => $path]);
 
         $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
@@ -230,7 +230,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     public function test_two_disagreeing_entries_for_one_board_is_cannot_verify_not_a_coin_flip(): void
     {
-        config(['bridge.writeback.coord_config_path' => $this->coordConfig(['all', 'prefixed'])]);
+        config(['bridge.coord_config_path' => $this->coordConfig(['all', 'prefixed'])]);
 
         $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 

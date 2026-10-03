@@ -354,7 +354,7 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 
 - **`classify()` runs once per serving agent** — returning an empty `ClassifyResult` for one agent doesn't affect the others; each agent's dispatch is independent.
 - **The instance is cached + shared across agents** (`ClassifierResolver` keys by class). Read `$ctx->agent` as a method-local; **never** stash it on an instance field — the next agent in the same dispatch loop would see stale state. (`$ctx` itself is a fresh per-event object, so reading from it is always safe.)
-- **`$ctx->agent` carries the agent's own config** — `agentName` (the YAML filename), `identity` (`kanban_user_id` / `github_user_id`), `subscriptions`, etc. — so recipient logic can key on whatever the addressing convention uses.
+- **`$ctx->agent` carries the agent's own config** — `agentName` (the YAML filename), `identity` (`github_user_id`, `coord_seat` — the agent's kanban user id is the coord roster's, not a config field; DL-450), `subscriptions`, etc. — so recipient logic can key on whatever the addressing convention uses.
 - **Addressing is operator policy, not bridge policy.** The bridge hands you the serving agent; what `to:`/`from:` labels mean is yours to define in the classifier. (This is why the seam is a classify param, not a built-in label filter.)
 
 #### Comment-level recipient filtering (the `TO:` line, DL-032)
@@ -491,7 +491,7 @@ it('emits new_card intent for task.created', function () {
         actor: $actor,
         provider: 'kanban',
         scopeId: '5',
-        agent: AgentConfig::fromArray('my-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        agent: AgentConfig::fromArray('my-agent', ['identity' => [], 'subscriptions' => []]),
     ));
 
     expect($result->intents)->toHaveCount(1);
@@ -717,9 +717,9 @@ class SyncBoardHandlerTest extends TestCase
 
         // AgentConfig::fromArray needs the minimum required sections; build it
         // inline (there is no global config-fixture helper). The agent name is
-        // the first arg — there is no identity.self; ids live in identity.
+        // the first arg — there is no identity.self; github ids live in identity.
         $agent = AgentConfig::fromArray('test-agent', [
-            'identity' => ['kanban_user_id' => 137],
+            'identity' => ['github_user_id' => 137],
             'subscriptions' => [['provider' => 'kanban', 'scopes' => [5]]],
         ]);
 

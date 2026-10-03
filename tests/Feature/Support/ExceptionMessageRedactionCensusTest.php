@@ -122,6 +122,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Support/ChannelToken.php::read#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         // `ClassifierResolver::for()`: a method named `for` tokenizes as T_FOR, so `SourceScan` keys its arm to the file scope.
         'Bridge/Support/ClassifierResolver.php::(file scope)#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Support/CoordConfigFile.php::read#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Support/RedactedErrorText.php::of#1' => 'the primitive\'s own non-RequestException branch — the one read that is the redaction, not a relay of it',
         'Bridge/Support/TokenFile.php::readTrimmed#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardCorrectCardTool.php::installHoldTags#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,

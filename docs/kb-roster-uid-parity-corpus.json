@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's roster reader — which kanban user a coord roster says ONE seat is on ONE board instance (card#10868 Q1: the roster is the single store; card#10869: the bridge holds each agent's identity.kanban_user_id against it in `bridge:check`). The toolkit OWNS the rule. tests/Unit/Support/RosterKanbanUserParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors through a toolkit checkout's own `kb_owner_resolve`.",
+  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's roster reader — which kanban user a coord roster says ONE seat is on ONE board instance (card#10868 Q1: the roster is the single store; card#11172 / DL-450: the bridge reads each agent's kanban user id from it at runtime). The toolkit OWNS the rule. tests/Unit/Support/RosterKanbanUserParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors through a toolkit checkout's own `kb_owner_resolve`.",
   "mirror": {
     "repo": "PupFuzz/agent-webhook-bridge",
     "class": "App\\Bridge\\Support\\RosterKanbanUser",

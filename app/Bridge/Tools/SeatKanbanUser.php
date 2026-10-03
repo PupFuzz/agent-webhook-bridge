@@ -4,20 +4,32 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
+use App\Bridge\Support\AgentKanbanUsers;
+use App\Bridge\Support\CoordConfigFile;
+use App\Bridge\Support\RosterKanbanUser;
 use App\Bridge\Support\SubscriptionRegistry;
 use Illuminate\Support\Facades\Log;
 
 /**
- * A ROSTER LOOKUP: agent name → that agent's `identity.kanban_user_id` (card#9170) — the
- * server-side resolution that lets {@see BoardTakeCardTool} write an assignee without ever
- * taking a user id from the payload, and that {@see BoardCorrectCardTool} COMPARES with a
- * card's assignee to decide whether a correction is authorized by assignment (DL-376). Both
- * consumers ask about the calling seat and nobody else, which is the only question this answers.
+ * A ROSTER LOOKUP: the calling seat → its kanban user id in the COORD ROSTER (card#9170; the
+ * roster as its source since card#11172 / DL-450) — the server-side resolution that lets
+ * {@see BoardTakeCardTool} write an assignee without ever taking a user id from the payload, and
+ * that {@see BoardCorrectCardTool} COMPARES with a card's assignee to decide whether a correction
+ * is authorized by assignment (DL-376). Both consumers ask about the calling seat and nobody
+ * else, which is the only question this answers.
+ *
+ * ⭐ THE ID HAS ONE SOURCE. The seat is the agent's `identity.coord_seat`, else its agent name, and
+ * its id is that seat's `roster[].kanban_user_id[<kanban host>]` in the file
+ * `BRIDGE_COORD_CONFIG_PATH` names, read through {@see AgentKanbanUsers} — the same read event
+ * attribution uses, so the two cannot disagree about who a seat is. ⛔ `identity.kanban_user_id`
+ * in the agent's YAML is NOT read, not even as a fallback when the roster cannot answer: a copy
+ * consulted only when the store is broken is a copy that decides exactly when nobody is checking
+ * it.
  *
  * ⛔⭐ READ THIS BEFORE YOU CALL IT — WHAT IS AND IS NOT GUARANTEED. There is NO agent-name
  * parameter: {@see forCallingSeat} reads {@see CallingSeat}, the write-once seat the front
  * door sealed at dispatch entry, and there is no expressible call that asks it about anybody
- * else. ⚠ The lookup UNDERNEATH is still a whole-roster scan matching on a name — that has
+ * else. ⚠ The lookup UNDERNEATH is still a whole-config scan matching on a name — that has
  * not changed and is not a defect; what changed is that no caller supplies the name.
  *
  * ⛔⭐ AND THAT IS A REVERSAL OF DL-372 DECISION 7, MADE ON MEASUREMENT AND APPROVED BY THE
@@ -40,74 +52,65 @@ use Illuminate\Support\Facades\Log;
  * {@see CallingSeat} owns that argument and its bounds (reflection, the process model);
  * they are stated there and deliberately not restated here.
  *
- * ⛔ AND IT IS STILL NOT A SEAT MAP, in the sense that matters across the repo boundary
- * (canon #7). It answers name → id, from THIS install's own roster, for a name this install
- * derived; it has no id → name direction, no enumeration, and no second product keying on
- * it. The toolkit's `kbcard` resolves its own board env to RENDER a name for an id; this
- * reads its own roster to WRITE its own id. Nothing crosses, so there is nothing to drift —
- * and a change that gave this class an enumeration or a reverse lookup would be minting
- * exactly the shared table the design exists to avoid.
+ * ⛔ AND IT IS STILL NOT A SEAT MAP the bridge publishes. It answers seat → id for the calling
+ * seat only; it has no id → name direction and no enumeration a consumer could key on. The
+ * map it reads is the coord roster, whose owner is the framework and whose reader of record is
+ * the toolkit — the bridge reads that one store rather than keeping a second.
  *
- * ⚠ IT RE-READS THE ROSTER RATHER THAN BEING THREADED THROUGH {@see Tool::call}, and
- * {@see Tool::call}'s SIGNATURE IS UNTOUCHED BY THIS CHANGE — the seat travels in a static,
- * not in a new parameter, so the extension point operators register their own tools against
- * does not move. ⛔ Two of DL-372's three stated reasons for declining a typed
- * door-derivation were measured FALSE and are not repeated here: the name ALREADY travels
- * through `Tool::call` as `$agentName`, and *"documented extension point"* is documented in
- * 0 of the 5 docs consulted. The third — PHP has no friend visibility, so a private
- * constructor only forces minting through a factory whose argument types
- * (`ResolvedBoardToolAgent`, `AgentConfig`) any code in the app can hold — was measured TRUE,
- * and it is why the answer is a one-shot STATE and not a value object. The read itself is the
- * SAME authoritative source both front doors already used to authenticate this very call, so
- * it cannot answer about a different roster than the one that resolved the agent. What it CAN
- * see is a roster that changed between the two reads, which is why {@see NOT_IN_ROSTER} is a
- * real state and not a defensive one.
+ * ⚠ IT RE-READS THE CONFIG RATHER THAN BEING THREADED THROUGH {@see Tool::call}, and
+ * {@see Tool::call}'s SIGNATURE IS UNTOUCHED — the seat travels in a static, not in a new
+ * parameter, so the extension point operators register their own tools against does not move.
+ * ⛔ Two of DL-372's three stated reasons for declining a typed door-derivation were measured
+ * FALSE and are not repeated here: the name ALREADY travels through `Tool::call` as
+ * `$agentName`, and *"documented extension point"* is documented in 0 of the 5 docs consulted.
+ * The third — PHP has no friend visibility, so a private constructor only forces minting
+ * through a factory whose argument types (`ResolvedBoardToolAgent`, `AgentConfig`) any code in
+ * the app can hold — was measured TRUE, and it is why the answer is a one-shot STATE and not a
+ * value object. The agent-config read is the SAME authoritative source both front doors already
+ * used to authenticate this very call, so it cannot answer about a different config than the
+ * one that resolved the agent. What it CAN see is a config that changed between the two reads,
+ * which is why {@see NOT_IN_ROSTER} is a real state and not a defensive one.
  *
- * ⛔ AND A `kanban_user_id` DECLARED BY MORE THAN ONE AGENT IS ONE OF THOSE FAULTS, because
- * an id that names two seats does not identify the CALLER. `assigned_user_id` is a kanban
- * USER, not a seat: nothing downstream of this method can tell two seats sharing an id apart,
- * so `board_take_card` would answer seat `a` `taken: true, already_held: true` for a card
- * seat `b` is working — the loser believing it holds claimed work, which is the one state
- * that tool exists to make visible. ⚠ The install state is REACHABLE: `AgentRegistry` WARNS
- * on a shared id and excludes it from attribution rather than refusing, and `bridge:check`
- * surfaces that at exit 0, so an install runs in it. This class is the door's last chance to
- * say so, and it refuses rather than write a claim it cannot attribute.
+ * ⛔ AND AN ID THE ROSTER GIVES MORE THAN ONE SEAT IS ONE OF THOSE FAULTS, because an id that
+ * names two seats does not identify the CALLER. `assigned_user_id` is a kanban USER, not a
+ * seat: nothing downstream of this method can tell two seats sharing an id apart, so
+ * `board_take_card` would answer seat `a` `taken: true, already_held: true` for a card seat `b`
+ * is working — the loser believing it holds claimed work, which is the one state that tool
+ * exists to make visible. ⭐ TWO BRIDGE AGENTS ON ONE SEAT are not that fault — they resolve to
+ * the same seat, and the id still names exactly one (`bridge:check` warns on the layout, and
+ * `AgentRegistry` attributes that seat's events to neither agent by name).
  *
- * ⛔ THERE IS NO SUPPORTED WAY TO DECLARE THE SHARING DELIBERATE, AND THAT IS A RULING RATHER
- * THAN A MISSING FEATURE (card#9170 operator gate). `shared-identities.json` declares a shared
- * **github** account and there is deliberately no kanban analogue: the github case is
+ * ⚠ AND THE REFUSAL'S GUARANTEE IS INSTALL-LOCAL — a bound on the check, not a hole in it. The
+ * seats compared are the ones THIS bridge's agents serve ({@see AgentKanbanUsers::otherSeatsWithId}),
+ * so two seats on SEPARATE installs that the roster gives one id are invisible to each other
+ * here, as two installs' YAML ids were before DL-450. Within one install the refusal is
+ * fail-closed.
+ *
+ * ⛔ THERE IS NO SUPPORTED WAY TO DECLARE A SHARED KANBAN USER DELIBERATE, AND THAT IS A RULING
+ * RATHER THAN A MISSING FEATURE (card#9170 operator gate). `shared-identities.json` declares a
+ * shared **github** account and there is deliberately no kanban analogue: the github case is
  * declarable because something else supplies the attribution afterwards (a custom classifier
  * re-attributes, which is why a shared github account resolves to a null name ON PURPOSE).
  * Nothing re-attributes on the kanban axis, so a declaration could only record that the
- * brokenness is intended — and the brokenness is not local to this door: `AgentRegistry`
- * excludes BOTH colliding agents from `byKanbanUid`, so a shared id already resolves to
- * NOBODY on every consumer of it, kanban wake-routing included. The remedy is one line and it
- * is the same one the registry's own warning gives: a distinct `identity.kanban_user_id` per
- * agent. `docs/config-schema.md`'s `kanban_user_id` row OWNS that position; it is pointed at
- * rather than restated.
- *
- * ⚠ AND THE REFUSAL'S GUARANTEE IS INSTALL-LOCAL — a bound on the check, not a hole in it.
- * The scan is one roster: {@see SubscriptionRegistry} globs a single `config_dir`, so two
- * SEPARATE bridge installs whose YAMLs declare the same `kanban_user_id` collide on the board
- * and are invisible to each other here. Nothing in this tree can see that, which is why it is
- * stated rather than implied; within one roster the refusal is fail-closed.
+ * brokenness is intended. The remedy is one kanban user per seat in the roster.
+ * `docs/config-schema.md` § identity OWNS that position; it is pointed at rather than restated.
  *
  * EVERY FAILURE IS AN INSTALL FAULT, NAMED AS ONE, AND PERMANENT. A seat cannot fix any of
  * them by changing its arguments, so each is a {@see ToolRefusalException} (422-class)
- * carrying the config key or file the operator must go and look at — never a bare refusal
- * and never the dispatcher's retryable 502, which would send the seat into the DL-020
- * retry loop for a cause no retry can clear.
+ * carrying its own `install_fault.*` reason and the setting or file the operator must go and
+ * look at — never a bare refusal and never the dispatcher's retryable 502, which would send the
+ * seat into the DL-020 retry loop for a cause no retry can clear.
  */
 final class SeatKanbanUser
 {
-    /** The state where the roster no longer carries the agent the door authenticated. */
+    /** The state where the agent config no longer carries the agent the door authenticated. */
     private const NOT_IN_ROSTER = 'not_in_roster';
 
-    /** The state where the answer would not IDENTIFY the caller: two agents, one id. */
+    /** The state where the answer would not IDENTIFY the caller: two seats, one id. */
     private const SHARED_KANBAN_USER_ID = 'shared_kanban_user_id';
 
     /**
-     * The kanban user id declared for THE SEAT THIS PROCESS IS SERVING, or a named
+     * The kanban user id the coord roster gives THE SEAT THIS PROCESS IS SERVING, or a named
      * INSTALL-fault refusal.
      *
      * ⛔ THERE IS NO NAME PARAMETER, AND THAT ABSENCE IS THE GUARANTEE. The seat comes from
@@ -131,30 +134,38 @@ final class SeatKanbanUser
      */
     public static function forCallingSeat(string $tool): int
     {
-        [$callingAgentName, $kanbanUserId] = self::lookup($tool);
-        if ($kanbanUserId === null) {
-            Log::warning('board tools: the calling agent declares no identity.kanban_user_id, so it has no id to assign itself', [
-                'agent' => $callingAgentName, 'tool' => $tool,
-            ]);
-
-            throw new ToolRefusalException("{$tool}: this bridge's config for agent `{$callingAgentName}` declares no `identity.kanban_user_id`, so there is no kanban user for the bridge to record as YOU — and this door writes only your own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault: the seat's kanban user id is kept in the coord roster (`roster[].kanban_user_id` in coordination.config.json, keyed by kanban host) and this bridge reads its copy from `identity.kanban_user_id` in that agent's YAML — set it there to the roster's value (`bridge:check` holds the two against each other; no id exists until the seat has its own kanban account) and report it to your operator.", installFault: true, reason: 'install_fault.no_kanban_user');
+        [$callingAgentName, $kanbanUserId, $seatName, $missing] = self::lookup($tool);
+        if ($kanbanUserId !== null) {
+            return $kanbanUserId;
         }
 
-        return $kanbanUserId;
+        $path = (string) $missing->file->path;
+        $verdict = $missing->verdictFor($callingAgentName);
+        Log::warning('board tools: the coord roster gives the calling seat no kanban user id, so it has no id to assign itself', [
+            'agent' => $callingAgentName, 'tool' => $tool, 'seat' => $seatName, 'roster' => $path, 'verdict' => $verdict->why,
+        ]);
+        $tail = ' NOTHING WAS WRITTEN — this door writes only your own id, never one from your arguments, and never one from a copy. This is an INSTALL fault, not something your arguments can fix; report it to your operator (`php artisan bridge:check` names it too).';
+
+        if ($verdict->why === RosterKanbanUser::ABSENT) {
+            throw new ToolRefusalException("{$tool}: the coord roster at {$path} has no seat named '{$seatName}', which is the seat your agent `{$callingAgentName}` serves (its `identity.coord_seat`, else its agent name) — so there is no kanban user for the bridge to record as YOU.{$tail}", installFault: true, reason: 'install_fault.roster_seat_absent');
+        }
+
+        throw new ToolRefusalException("{$tool}: the coord roster at {$path} gives seat '{$seatName}' no kanban user id for this kanban instance ('{$missing->host}') — roster verdict `{$verdict->why}`; the id is written there as \"kanban_user_id\": {\"{$missing->host}\": <id>} once the seat has its own kanban account — so there is no kanban user for the bridge to record as YOU.{$tail}", installFault: true, reason: 'install_fault.no_kanban_user');
     }
 
     /**
-     * The kanban user id declared for the seat this process is serving, or NULL when that seat's
-     * YAML declares NONE — for a consumer that only COMPARES a card against the caller
-     * (`board_correct_card`'s assignee arm, DL-376) rather than writing the caller's id.
+     * The kanban user id the coord roster gives the seat this process is serving, or NULL when the
+     * roster gives that seat NONE — the seat is absent from it, or carries no id for this host —
+     * for a consumer that only COMPARES a card against the caller (`board_correct_card`'s assignee
+     * arm, DL-376) rather than writing the caller's id.
      *
-     * ⭐ NULL IS A REAL ANSWER HERE, NOT A FAULT. `identity.kanban_user_id` is optional, and a seat
-     * that declares none is a seat no card can be assigned to, so "compare against nothing" is the
-     * true reading. That is the one difference from {@see forCallingSeat}, which must WRITE an id
-     * and therefore refuses there. ⛔ Every OTHER state is still a named INSTALL-fault refusal and
-     * NEVER null — an unreadable roster, a seat the roster no longer carries, and an id two agents
-     * declare all mean this run cannot say who the caller is, and a comparer treating that as
-     * "unassigned" would be answering a question it could not ask.
+     * ⭐ NULL IS A REAL ANSWER HERE, NOT A FAULT. A seat the roster gives no kanban user is a seat no
+     * card can be assigned to, so "compare against nothing" is the true reading. That is the one
+     * difference from {@see forCallingSeat}, which must WRITE an id and therefore refuses there.
+     * ⛔ Every OTHER state is still a named INSTALL-fault refusal and NEVER null — a roster that
+     * cannot be read, an agent the config no longer carries, an id two seats share all mean this
+     * run cannot say who the caller is, and a comparer treating that as "unassigned" would be
+     * answering a question it could not ask.
      *
      * @param  string  $tool  the tool name every refusal is prefixed with
      *
@@ -168,8 +179,8 @@ final class SeatKanbanUser
 
     /**
      * The coord roster SEAT name the calling seat's own YAML says it is — `identity.coord_seat`,
-     * else its agent name (card#10869). Read from the same roster read as the id, so the two
-     * cannot answer about different configs. `board_take_card` uses it to tell a legacy
+     * else its agent name (card#10869). Read from the same lookup as the id, so the two cannot
+     * answer about different configs. `board_take_card` uses it to tell a legacy
      * `owner:<project>/<seat>` tag naming ANOTHER seat from one that may be this seat's own.
      *
      * @throws ToolRefusalException
@@ -181,11 +192,12 @@ final class SeatKanbanUser
     }
 
     /**
-     * The ONE roster read both answers share, so the two cannot drift on what counts as a fault:
-     * the sealed seat's name and its declared id (null when undeclared), or a named refusal for
-     * every state in which the id would not identify the caller.
+     * The ONE read every answer shares, so they cannot drift on what counts as a fault: the
+     * sealed seat's agent name, its roster id (null when the roster gives it none), its seat, and
+     * the roster read that answered; or a named refusal for every state in which the id would not
+     * identify the caller.
      *
-     * @return array{0: string, 1: ?int, 2: string}
+     * @return array{0: string, 1: ?int, 2: string, 3: AgentKanbanUsers}
      *
      * @throws ToolRefusalException
      * @throws \LogicException if no front door established a seat for this process
@@ -197,7 +209,7 @@ final class SeatKanbanUser
         try {
             $configs = (new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs();
         } catch (ConfigException $e) {
-            Log::warning('board tools: could not read the agent roster to resolve the calling seat\'s own kanban user', [
+            Log::warning('board tools: could not read the agent configuration to resolve the calling seat\'s own kanban user', [
                 'agent' => $callingAgentName, 'tool' => $tool, 'error' => $e->getMessage(),
             ]);
 
@@ -216,36 +228,60 @@ final class SeatKanbanUser
             }
         }
 
-        if ($mine !== null) {
-            $kanbanUserId = $mine->identity->kanbanUserId;
-            $seatName = $mine->identity->seatName($callingAgentName);
-            if ($kanbanUserId === null) {
-                return [$callingAgentName, null, $seatName];
-            }
+        if ($mine === null) {
+            Log::warning('board tools: the agent this call authenticated as is no longer configured', [
+                'agent' => $callingAgentName, 'tool' => $tool, 'reason' => self::NOT_IN_ROSTER,
+            ]);
 
-            $sharing = [];
-            foreach ($configs as $config) {
-                if ($config->identity->kanbanUserId === $kanbanUserId) {
-                    $sharing[] = $config->agentName;
-                }
-            }
-            if (count($sharing) > 1) {
-                sort($sharing);
-                Log::warning('board tools: the calling agent\'s identity.kanban_user_id is declared by more than one agent, so it does not identify the caller', [
-                    'agent' => $callingAgentName, 'tool' => $tool, 'kanban_user_id' => $kanbanUserId,
-                    'agents' => $sharing, 'reason' => self::SHARED_KANBAN_USER_ID,
-                ]);
-
-                throw new ToolRefusalException("{$tool}: this bridge's config declares `identity.kanban_user_id` {$kanbanUserId} for MORE THAN ONE agent (".implode(', ', $sharing).'), so that id does not say WHICH seat you are — and a card recorded under it would tell every other seat that somebody holds the work without saying who, which is the one question this door exists to answer. NOTHING WAS WRITTEN. This is an INSTALL fault: give each agent a distinct `identity.kanban_user_id` (`bridge:check` already WARNS on this collision — it does not fail, so an install can run in this state for a long time) and report it to your operator.', installFault: true, reason: 'install_fault.shared_kanban_user');
-            }
-
-            return [$callingAgentName, $kanbanUserId, $seatName];
+            throw new ToolRefusalException("{$tool}: this bridge has no configuration for agent `{$callingAgentName}`, so it cannot establish which kanban user you are — the agent configuration this call authenticated against no longer carries you (a YAML removed or renamed under the running bridge). NOTHING WAS WRITTEN. This is an INSTALL fault; report it to your operator.", installFault: true, reason: 'install_fault.not_in_roster');
         }
 
-        Log::warning('board tools: the agent this call authenticated as is no longer in the roster', [
-            'agent' => $callingAgentName, 'tool' => $tool, 'reason' => self::NOT_IN_ROSTER,
+        $seatName = $mine->identity->seatName($callingAgentName);
+        $roster = AgentKanbanUsers::of($configs);
+        if (! $roster->readable()) {
+            self::refuseUnreadable($tool, $callingAgentName, $roster);
+        }
+
+        $kanbanUserId = $roster->verdictFor($callingAgentName)->userId;
+        if ($kanbanUserId === null) {
+            return [$callingAgentName, null, $seatName, $roster];
+        }
+
+        $sharing = $roster->otherSeatsWithId($kanbanUserId, $seatName);
+        if ($sharing !== []) {
+            Log::warning('board tools: the coord roster gives the calling seat\'s kanban user id to another seat too, so it does not identify the caller', [
+                'agent' => $callingAgentName, 'tool' => $tool, 'seat' => $seatName, 'kanban_user_id' => $kanbanUserId,
+                'seats' => $sharing, 'reason' => self::SHARED_KANBAN_USER_ID,
+            ]);
+
+            throw new ToolRefusalException("{$tool}: the coord roster at {$roster->file->path} gives kanban user {$kanbanUserId} to seat '{$seatName}' (yours) AND to ".(count($sharing) === 1 ? 'seat ' : 'seats ').implode(', ', array_map(static fn (string $s): string => "'{$s}'", $sharing)).', which this install also serves, so that id does not say WHICH seat you are — and a card recorded under it would tell every other seat that somebody holds the work without saying who, which is the one question this door exists to answer. NOTHING WAS WRITTEN. This is an INSTALL fault: give each seat its own kanban user in the roster, and report it to your operator.', installFault: true, reason: 'install_fault.shared_kanban_user');
+        }
+
+        return [$callingAgentName, $kanbanUserId, $seatName, $roster];
+    }
+
+    /**
+     * The roster could not be asked at all — a refusal per fault, each with its own reason, and
+     * the message names the setting or the path and which case it is.
+     *
+     * @throws ToolRefusalException always
+     */
+    private static function refuseUnreadable(string $tool, string $callingAgentName, AgentKanbanUsers $roster): never
+    {
+        $file = $roster->file;
+        Log::warning('board tools: the coord roster could not be read, so the calling seat\'s kanban user id is unknown', [
+            'agent' => $callingAgentName, 'tool' => $tool, 'fault' => $file->fault ?? 'no_kanban_host', 'roster' => $file->path,
         ]);
 
-        throw new ToolRefusalException("{$tool}: this bridge has no configuration for agent `{$callingAgentName}`, so it cannot establish which kanban user you are — the roster this call authenticated against no longer carries you (a YAML removed or renamed under the running bridge). NOTHING WAS WRITTEN. This is an INSTALL fault; report it to your operator.", installFault: true, reason: 'install_fault.not_in_roster');
+        $message = "{$tool}: the bridge reads each seat's kanban user id from the coord roster, and ".$roster->faultClause()
+            .' — so it cannot establish WHICH kanban user you are. NOTHING WAS WRITTEN, and nothing else is consulted in its place: this door writes only your own id from that one source, never one from your arguments. This is an INSTALL fault, not something your arguments can fix; report it to your operator (`php artisan bridge:check` names it too).';
+
+        throw match ($file->fault) {
+            CoordConfigFile::UNSET => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_unset'),
+            CoordConfigFile::NOT_ABSOLUTE => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_not_absolute'),
+            CoordConfigFile::UNREADABLE => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_unreadable'),
+            CoordConfigFile::MALFORMED => new ToolRefusalException($message, installFault: true, reason: 'install_fault.coord_config_malformed'),
+            default => new ToolRefusalException($message, installFault: true, reason: 'install_fault.no_kanban_user'),
+        };
     }
 }

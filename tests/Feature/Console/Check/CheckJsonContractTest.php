@@ -460,7 +460,7 @@ class CheckJsonContractTest extends TestCase
         // used to omit. `fpm` and `coordConfig` take the trait's defaults (absent, unset),
         // which is what the hand-rolled `apply()` here passed explicitly.
         $this->bootGoldenInstall('json-'.$name, function (GoldenInstall $install) use ($name): void {
-            $kanbanAgent = "identity:\n  kanban_user_id: 137\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n";
+            $kanbanAgent = "subscriptions:\n  - provider: kanban\n    scopes: [5]\n";
 
             switch ($name) {
                 case 'minimal':
@@ -468,7 +468,7 @@ class CheckJsonContractTest extends TestCase
                     break;
 
                 case 'agent-yaml-malformed':
-                    $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\nsubscriptions: [\n");
+                    $install->boot()->agent('prod-agent', "subscriptions: [\n");
                     break;
 
                 case 'agent-classifier-missing-mixed-subscriptions':
@@ -476,7 +476,7 @@ class CheckJsonContractTest extends TestCase
                     // parsed — on an agent subscribed to BOTH providers. The ledger's scope
                     // set must carry the github scope and NOT the kanban one, which is the
                     // only shape that can tell the provider filter from its absence.
-                    $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n  github_user_id: 555\n"
+                    $install->boot()->agent('prod-agent', "identity:\n  github_user_id: 555\n"
                         ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                         ."  - provider: github\n    scopes: [\"owner/repo\"]\n"
                         ."classifier:\n  class: App\\Bridge\\Classifiers\\NoSuchClassifier\n");
@@ -499,8 +499,7 @@ class CheckJsonContractTest extends TestCase
                     // (the board client cannot be constructed ⇒ `handle()`'s second fail-soft
                     // envelope fires and the whole WritebackProbe slot is skipped).
                     $install->boot()
-                        ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
-                            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                        ->agent('prod-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                             ."channel:\n  url: http://127.0.0.1/push\n")
                         ->json('writeback.json', ['identity_id' => 4242, 'mappings' => [
                             'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]],
