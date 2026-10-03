@@ -158,7 +158,7 @@ final class ProgramCardGuard
             .'and not one deliverable; one pull request cannot speak for it. Nothing was written: not the stage, not a '
             .'correlation ref. The pull request should cite the LEG card it finishes instead, and the parent should be '
             .'moved when every leg is done.',
-            ['card_id' => $cardId, 'repo' => $repo, 'program_tag' => self::TAG] + $logContext,
+            ['handler' => BoardMoverScope::handler(), 'op' => BoardMoverScope::op(), 'card_id' => $cardId, 'repo' => $repo, 'program_tag' => self::TAG] + $logContext,
             $repo, $outcome, $cardId, self::REASON, $issueNumber,
         );
 

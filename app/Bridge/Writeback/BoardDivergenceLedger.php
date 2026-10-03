@@ -118,7 +118,7 @@ final class BoardDivergenceLedger
         } catch (Throwable $e) {
             Log::error(
                 'writeback: a board divergence could not be persisted — this observation now expires with the log',
-                ['catalog_id' => 'divergence_ledger.observation_not_persisted', 'disposition' => $disposition, 'error' => RedactedErrorText::of($e)] + $boardContext,
+                ['catalog_id' => 'divergence_ledger.observation_not_persisted', 'handler' => BoardMoverScope::handler(), 'op' => BoardMoverScope::op(), 'disposition' => $disposition, 'error' => RedactedErrorText::of($e)] + $boardContext,
             );
         }
     }

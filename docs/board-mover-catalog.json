@@ -1,7 +1,18 @@
 {
   "schema": 1,
-  "about": "The bridge's board-mover log catalog: every log row the card-move, park/unpark and writeback code emits carries `catalog_id` in its log context, and every id is an entry here. docs/writeback.md § The board-mover catalog owns the contract; tests/Feature/Writeback/BoardMoverCatalogTest.php checks this file against the source.",
+  "about": "The bridge's board-mover log catalog: every log row the card-move, park/unpark and writeback code emits carries `catalog_id` in its log context, and every id is an entry here. Every such row also carries `handler` (the registry name of the handler whose dispatch wrote it, null when no handler's dispatch did: a classifier, bridge:reconcile, bridge:github-owed) and `op` (the write-kind the row is about, one of `ops`). `handler` is always read at run time, and so is `op` wherever the row is written by a site shared between writes, so neither is a field of an entry. docs/writeback.md § The board-mover catalog owns the contract; tests/Feature/Writeback/BoardMoverCatalogTest.php checks this file against the source.",
   "context_key": "catalog_id",
+  "handler_key": "handler",
+  "op_key": "op",
+  "ops": {
+    "move": "A card's stage: a stage move, a re-lane, a revive, an unpark, a promote, the coordination-card terminal move, and a dependabot card's place on its move-or-create path.",
+    "write": "A board write other than a stage move or a correlation stamp: create, archive, rename, block_reason.",
+    "stamp": "Correlation refs on a card's payload (pr_url, pr_number, dl_number).",
+    "label": "A label on a GitHub issue or pull request.",
+    "comment": "A comment: the correlation comment on a GitHub pull request, or a correlation note on a kanban card.",
+    "none": "The row is not about a board or GitHub write (declaring the owed-write periodic jobs).",
+    "undeclared": "Nothing declared which write the row is about: a shared site reached outside any handler's dispatch (bridge:github-owed reading its record, the board-tools door, bridge:check), or a custom durable handler that does not implement DeclaresWriteOp. Never written as a literal."
+  },
   "kinds": {
     "moved": "A card's stage move landed.",
     "written": "A board write other than a stage move landed (create, archive, rename, block_reason, card note, owner-tag clear).",
@@ -167,7 +178,7 @@
     {"id":"protocol_invalid_label.no_token","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
     {"id":"protocol_invalid_label.payload_invalid","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
     {"id":"protocol_invalid_label.repo_not_enabled","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
-    {"id":"protocol_invalid_label.unexpected_failure","kind":"observability_fault","surface":["log"],"site":"ProtocolInvalidLabeler::apply","since":"0.88.0"},
+    {"id":"protocol_invalid_label.unexpected_failure","kind":"observability_fault","surface":["log"],"site":"ProtocolInvalidLabeler::attempt","since":"0.88.0"},
     {"id":"promote_released.bare_pr_number","kind":"refused","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::handle","since":"0.91.0"},
     {"id":"promote_released.board_truncated","kind":"partial_read","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::handle","since":"0.88.0"},
     {"id":"promote_released.candidate_cap","kind":"partial_read","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::handle","since":"0.88.0"},

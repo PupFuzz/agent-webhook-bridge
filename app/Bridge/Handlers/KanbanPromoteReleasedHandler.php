@@ -2,12 +2,14 @@
 
 namespace App\Bridge\Handlers;
 
+use App\Bridge\Contracts\DeclaresWriteOp;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RefusalContext;
+use App\Bridge\Writeback\BoardMoverScope;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenFileConsumer;
 use App\Bridge\Writeback\GitHubTokenResolver;
@@ -22,6 +24,7 @@ use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
+use App\Bridge\Writeback\WriteOp;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -63,7 +66,7 @@ use Illuminate\Support\Facades\Log;
  * operator `writeback.json`; the webhook only triggers a scan for a configured repo; moves are
  * forward-only Shipped→Released. Released is the operator's configured terminal stage.
  */
-final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubTokenFileConsumer, Handler
+final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReaction, GitHubTokenFileConsumer, Handler
 {
     /**
      * Per-request GitHub timeout — TIGHTER than reconcile's human-interactive 15s because
@@ -120,6 +123,11 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
         return false;
     }
 
+    public function writeOp(ReactionTarget $target): WriteOp
+    {
+        return WriteOp::Move;
+    }
+
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
         $repo = $target->payload['repo'] ?? null;
@@ -130,7 +138,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
             $this->alerts->warnAndNotify(
                 'promote_released.repo_invalid',
                 'kanban_promote_released: payload.repo is missing or not a string; ignoring',
-                ['payload' => $target->payload],
+                ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'payload' => $target->payload],
                 '', 'promote_on_release', null, 'promote_repo_invalid',
             );
 
@@ -144,7 +152,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
             $this->alerts->warnAndNotify(
                 'promote_released.writeback_not_configured',
                 'kanban_promote_released: writeback is not configured (no writeback.json); ignoring',
-                ['repo' => $repo],
+                ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'repo' => $repo],
                 $repo, 'promote_on_release', null, 'writeback_not_configured',
             );
 
@@ -152,7 +160,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
         }
         $mapping = $writeback->mappingFor($repo);
         if ($mapping === null || ! $mapping->promoteOnRelease) {
-            Log::info('kanban_promote_released: repo not configured for promote_on_release; ignoring', ['catalog_id' => 'promote_released.repo_not_mapped', 'repo' => $repo]);
+            Log::info('kanban_promote_released: repo not configured for promote_on_release; ignoring', ['catalog_id' => 'promote_released.repo_not_mapped', 'handler' => BoardMoverScope::handler(), 'op' => 'move', 'repo' => $repo]);
 
             return;
         }
@@ -166,12 +174,12 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
             // stage value as numeric — so no config that reaches here can leave either null.
             // An alert on a branch that cannot fire is a decoration, and it could never be
             // seen to fail (canon #9). Recorded in docs/writeback.md's *Still log-only*.
-            Log::warning('kanban_promote_released: mapping is missing the Shipped and/or Released stage; ignoring', ['catalog_id' => 'promote_released.stages_missing', 'repo' => $repo]);
+            Log::warning('kanban_promote_released: mapping is missing the Shipped and/or Released stage; ignoring', ['catalog_id' => 'promote_released.stages_missing', 'handler' => BoardMoverScope::handler(), 'op' => 'move', 'repo' => $repo]);
 
             return;
         }
         if ($shipped === $released) {
-            Log::info('kanban_promote_released: Shipped and Released map to the same stage — nothing to promote', ['catalog_id' => 'promote_released.stages_identical', 'repo' => $repo]);
+            Log::info('kanban_promote_released: Shipped and Released map to the same stage — nothing to promote', ['catalog_id' => 'promote_released.stages_identical', 'handler' => BoardMoverScope::handler(), 'op' => 'move', 'repo' => $repo]);
 
             return;
         }
@@ -195,7 +203,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
             $this->alerts->warnAndNotify(
                 'promote_released.no_github_token',
                 'kanban_promote_released: no GitHub read token for repo — cannot verify commit reachability; skipping (place <secret_dir>/github/token, or set providers.github.token_path)',
-                ['repo' => $repo, 'reason' => $resolution->problem],
+                ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'repo' => $repo, 'reason' => $resolution->problem],
                 $repo, 'promote_on_release', null, 'promote_no_github_token',
             );
 
@@ -214,7 +222,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
             $this->alerts->warnAndNotify(
                 'promote_released.board_truncated',
                 'kanban_promote_released: board read hit the page ceiling — cards beyond it are invisible to this scan and will not be promoted (they do not self-heal on the next release)',
-                ['repo' => $repo, 'board' => $mapping->boardId],
+                ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'repo' => $repo, 'board' => $mapping->boardId],
                 $repo, 'promote_on_release', null, 'promote_board_truncated',
             );
         }
@@ -258,7 +266,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
                 $this->alerts->warnAndNotify(
                     'promote_released.bare_pr_number',
                     'kanban_promote_released: a Shipped card carries a bare pr_number and no pr_url naming its pull request, so which repo that number belongs to is unknown — skipping card (stamp the pr_url, e.g. `kbcard patch --task <id> --pr-url <url>`)',
-                    ['card_id' => $cardId, 'repo' => $repo, 'pr_number' => $ref->prNumber],
+                    ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'pr_number' => $ref->prNumber],
                     $repo, 'promote_on_release', $cardId, 'promote_bare_pr_number',
                 );
             }
@@ -294,7 +302,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
             $this->alerts->warnAndNotify(
                 'promote_released.candidate_cap',
                 'kanban_promote_released: Shipped candidate count exceeds the per-event cap — processing the cap; the remainder promote on the next release event',
-                ['repo' => $repo, 'count' => count($candidates), 'cap' => self::MAX_CANDIDATES],
+                ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'repo' => $repo, 'count' => count($candidates), 'cap' => self::MAX_CANDIDATES],
                 $repo, 'promote_on_release', null, 'promote_candidate_cap',
             );
             $candidates = array_slice($candidates, 0, self::MAX_CANDIDATES, true);
@@ -315,6 +323,8 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
         }
         Log::info('kanban_promote_released: scan complete', [
             'catalog_id' => 'promote_released.scan_complete',
+            'handler' => BoardMoverScope::handler(),
+            'op' => 'move',
             'repo' => $repo, 'board' => $mapping->boardId, 'candidates' => count($candidates), 'promoted' => $promoted,
             // Named here, never silently dropped: which source(s) paused this run, if any —
             // the source's OWN refusal is also logged at the call site, this is the summary.
@@ -381,7 +391,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
                 $this->alerts->warnAndNotify(
                     'promote_released.getpull_4xx',
                     'kanban_promote_released: getPull refused (4xx) — skipping card (see `body`)',
-                    ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
                     $repo, 'promote_on_release', $cardId, 'promote_getpull_4xx',
                 );
 
@@ -421,7 +431,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
                 $this->alerts->warnAndNotify(
                     'promote_released.compare_4xx',
                     'kanban_promote_released: compareStatus refused (4xx) — skipping card (see `body`)',
-                    ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
                     $repo, 'promote_on_release', $cardId, 'promote_compare_4xx',
                 );
 
@@ -462,7 +472,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
                 $this->alerts->warnAndNotify(
                     'promote_released.move_4xx',
                     'kanban_promote_released: kanban refused the move (4xx) — skipping card (see `body`)',
-                    ['card_id' => $cardId, 'stage' => $released] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'stage' => $released] + RefusalContext::from($e),
                     $repo, 'promote_on_release', $cardId, RefusalContext::writeReason('promote_movecard', $e),
                 );
 
@@ -470,7 +480,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
             }
             throw $e;
         }
-        Log::info('kanban_promote_released: promoted Shipped→Released', ['catalog_id' => 'promote_released.promoted', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
+        Log::info('kanban_promote_released: promoted Shipped→Released', ['catalog_id' => 'promote_released.promoted', 'handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
 
         return true;
     }
@@ -500,7 +510,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, GitHubToken
         $this->alerts->warnAndNotify(
             'promote_released.release_state_unreadable',
             'kanban_promote_released: GitHub answered, but the answer does not say whether this card is released — skipping card (see `reason`)',
-            ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'reason' => $reason],
+            ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'reason' => $reason],
             $repo, 'promote_on_release', $cardId, $reason,
         );
     }

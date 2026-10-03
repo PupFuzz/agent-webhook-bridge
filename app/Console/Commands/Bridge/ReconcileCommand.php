@@ -9,6 +9,7 @@ use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RevertGrammar;
 use App\Bridge\Support\UntrustedText;
+use App\Bridge\Writeback\BoardMoverScope;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\KanbanClient;
@@ -23,6 +24,7 @@ use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
+use App\Bridge\Writeback\WriteOp;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -107,6 +109,14 @@ class ReconcileCommand extends BridgeCommand
     }
 
     public function handle(): int
+    {
+        // Every write this command makes is a stage move, so the catalogued rows it writes
+        // through the shared guards say `op: move` (card#11223). It is no handler's dispatch, so
+        // they carry `handler: null`.
+        return BoardMoverScope::forOp(WriteOp::Move, fn (): int => $this->reconcile());
+    }
+
+    private function reconcile(): int
     {
         $fix = (bool) $this->option('fix');
 

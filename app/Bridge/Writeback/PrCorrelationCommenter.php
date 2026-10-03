@@ -229,6 +229,14 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
 
     private function attempt(string $repo, int $number, string $outcome, string $body, ?string $cause): GitHubWriteAttempt
     {
+        // Narrowed here, not left to the caller: the comment is the write whoever asks for it
+        // (the move handler, the comment handler, `bridge:github-owed`), and the record and read
+        // rows written on its way are about it, not about the caller's move.
+        return BoardMoverScope::forOp(WriteOp::Comment, fn (): GitHubWriteAttempt => $this->attemptInScope($repo, $number, $outcome, $body, $cause));
+    }
+
+    private function attemptInScope(string $repo, int $number, string $outcome, string $body, ?string $cause): GitHubWriteAttempt
+    {
         $context = ['repo' => $repo, 'pr' => $number, 'outcome' => $outcome, 'cause' => $cause];
         try {
             return $this->post($repo, $number, $outcome, $body, $context);
@@ -247,6 +255,8 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
     {
         Log::warning('pr_correlation_comment: NOT posted — an unexpected failure; the writeback outcome is unchanged', [
             'catalog_id' => 'pr_correlation_comment.unexpected_failure',
+            'handler' => BoardMoverScope::handler(),
+            'op' => 'comment',
         ] + $context + ['reason' => self::REASON_UNEXPECTED, 'error' => RedactedErrorText::of($e)]);
     }
 
@@ -274,7 +284,7 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
 
         $resolution = $this->tokens->resolveFromFile();
         if (! $resolution->ok()) {
-            Log::warning('pr_correlation_comment: NOT posted — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token', 'handler' => BoardMoverScope::handler(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_TOKEN_UNRESOLVED, 'problem' => $resolution->problem,
             ]);
 
@@ -285,27 +295,27 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         try {
             $present = (new GitHubReadClient($token, self::TIMEOUT_SECONDS))->hasIssueCommentStartingWith($repo, $number, $marker);
         } catch (RequestException $e) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the read of this pull request\'s comments with an HTTP error, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_http_error'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the read of this pull request\'s comments with an HTTP error, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_http_error', 'handler' => BoardMoverScope::handler(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_DEDUPE_READ_REFUSED, 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_DEDUPE_READ_REFUSED, $e->response->status());
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — the read of this pull request\'s comments failed, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_failed'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — the read of this pull request\'s comments failed, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_failed', 'handler' => BoardMoverScope::handler(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_DEDUPE_READ_FAILED, 'error' => RedactedErrorText::of($e),
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_DEDUPE_READ_FAILED, null);
         }
         if ($present === null) {
-            Log::warning('pr_correlation_comment: NOT posted — this pull request\'s comments could not be read to the end, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_incomplete'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — this pull request\'s comments could not be read to the end, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_incomplete', 'handler' => BoardMoverScope::handler(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_DEDUPE_READ_INCOMPLETE,
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_DEDUPE_READ_INCOMPLETE, null);
         }
         if ($present) {
-            Log::info('pr_correlation_comment: already on the pull request for this outcome; not posted again', ['catalog_id' => 'pr_correlation_comment.already_posted'] + $context);
+            Log::info('pr_correlation_comment: already on the pull request for this outcome; not posted again', ['catalog_id' => 'pr_correlation_comment.already_posted', 'handler' => BoardMoverScope::handler(), 'op' => 'comment'] + $context);
 
             return $this->settled($repo, $number, $outcome, $body, self::ALREADY_POSTED, null);
         }
@@ -313,26 +323,26 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         try {
             $answered = (new GitHubWriteClient($token, self::TIMEOUT_SECONDS))->createIssueComment($repo, $number, $body);
         } catch (RequestException $e) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the comment with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried in this run, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_http_error'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the comment with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried in this run, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_http_error', 'handler' => BoardMoverScope::handler(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_POST_REFUSED, 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_POST_REFUSED, $e->response->status());
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — the comment could not be sent to GitHub; not retried in this run, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_failed'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — the comment could not be sent to GitHub; not retried in this run, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_failed', 'handler' => BoardMoverScope::handler(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_POST_FAILED, 'error' => RedactedErrorText::of($e),
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_POST_FAILED, null);
         }
         if ($answered === null || ! str_starts_with($answered, $marker)) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub ACCEPTED the comment and its answer does not carry it, so the post is not confirmed; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_unconfirmed'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub ACCEPTED the comment and its answer does not carry it, so the post is not confirmed; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_unconfirmed', 'handler' => BoardMoverScope::handler(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_POST_UNCONFIRMED,
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_POST_UNCONFIRMED, null);
         }
-        Log::info('pr_correlation_comment: posted', ['catalog_id' => 'pr_correlation_comment.posted'] + $context);
+        Log::info('pr_correlation_comment: posted', ['catalog_id' => 'pr_correlation_comment.posted', 'handler' => BoardMoverScope::handler(), 'op' => 'comment'] + $context);
 
         return $this->settled($repo, $number, $outcome, $body, self::POSTED, null);
     }

@@ -152,7 +152,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Console/Commands/Bridge/ProvisionCommand.php::handle#3' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/ProvisionCommand.php::receiverBaseRefusal#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/ProvisionToolsCommand.php::handle#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
-        'Console/Commands/Bridge/ReconcileCommand.php::handle#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Console/Commands/Bridge/ReconcileCommand.php::reconcile#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/GitHubOwedCommand.php::owedInScope#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/GitHubOwedCommand.php::owedInScope#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/ReplayCommand.php::handleGuarded#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
