@@ -61,7 +61,7 @@ final class GitHubWebhookProbe
      */
     public function probe(string $repo, string $receiverUrl): GitHubWebhookProbeResult
     {
-        $resolution = $this->resolver->resolveFor($repo);
+        $resolution = $this->resolver->resolveFor($repo, ambient: true);
         if (! $resolution->ok()) {
             return GitHubWebhookProbeResult::unresolvable((string) $resolution->problem);
         }

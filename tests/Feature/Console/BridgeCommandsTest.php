@@ -54,9 +54,6 @@ class BridgeCommandsTest extends TestCase
         config([
             'bridge.config_dir' => $this->dir,
             'bridge.secret_dir' => $this->dir,
-            // Neutralize the store-native reconcile-token leg (this host has a real
-            // git-credential-coord on PATH) so bridge:check is deterministic.
-            'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
         ]);
         // Hermetic: the host/CI may export GH_TOKEN, now a reconcile-token leg — clear
         // it so the reconcile-token check resolves deterministically (a test that

@@ -42,7 +42,7 @@ final class GitHubRepoProbe
      */
     public function probe(string $repo): GitHubRepoProbeResult
     {
-        $resolution = $this->resolver->resolveFor($repo);
+        $resolution = $this->resolver->resolveFor($repo, ambient: true);
         if (! $resolution->ok()) {
             return GitHubRepoProbeResult::unresolvable((string) $resolution->problem);
         }

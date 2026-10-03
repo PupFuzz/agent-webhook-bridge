@@ -34,14 +34,13 @@ use Illuminate\Support\Facades\File;
  *   3. `COORD_CONFIG` — the proven-divergent one above, read by
  *      `WritebackBoardStateCheck::coordTerminalAgreement()` (and by
  *      `WritebackMappingConfigCheck`, which spells the same two `$where` diagnoses).
- *   4. `GH_TOKEN` — `GitHubTokenResolver` falls back to it (resolver L204), so an
- *      operator shell that exports it silently satisfies a token probe that must fail
- *      on a fixture with no token.
+ *   4. `GH_TOKEN` — `GitHubTokenResolver` falls back to it for a caller asking for the
+ *      ambient leg (`resolveFor(…, ambient: true)`), so an operator shell that exports it
+ *      silently satisfies a token probe that must fail on a fixture with no token.
  *
  * (4) is NOT in the falsifier's six. The falsifier enumerated `CheckCommand.php`; this
  * one is reached transitively through `GitHubTokenResolver`, together with the
- * `providers.github.credential_helper` config neutralization {@see GoldenInstall}
- * performs. An enumeration bounded by one file is bounded by that file.
+ * `bridge.coord_credentials_path` config neutralization {@see GoldenInstall} performs. An enumeration bounded by one file is bounded by that file.
  *
  * The remaining host inputs from that enumeration are handled elsewhere because they
  * are not env: `posix_getuid()` (the channel-socket uid hint) and absolute paths are

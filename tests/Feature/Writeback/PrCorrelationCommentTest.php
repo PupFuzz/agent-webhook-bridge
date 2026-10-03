@@ -103,7 +103,6 @@ class PrCorrelationCommentTest extends TestCase
             'bridge.secret_dir' => $this->dir,
             'bridge.state_dir' => $this->dir.'/state',
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
-            'bridge.providers.github.credential_helper' => '',
         ]);
         $this->github = new GitHubIssueCommentsStub;
         $this->origGhToken = getenv('GH_TOKEN');

@@ -15,6 +15,7 @@ use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\CoordCredentialStoreFixture;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -37,6 +38,8 @@ class GitHubTokenFileCheckTest extends TestCase
 
     private string|false $origGhToken;
 
+    private CoordCredentialStoreFixture $store;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -47,9 +50,9 @@ class GitHubTokenFileCheckTest extends TestCase
             'bridge.secret_dir' => $this->dir,
             'bridge.state_dir' => $this->dir.'/state',
             'bridge.providers.github.token_path' => null,
-            'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
             'bridge.protocol_invalid_label.repos' => [],
         ]);
+        $this->store = (new CoordCredentialStoreFixture($this->dir.'/coord'))->use();
         $this->origGhToken = getenv('GH_TOKEN');
         putenv('GH_TOKEN');
     }
@@ -130,14 +133,117 @@ class GitHubTokenFileCheckTest extends TestCase
         $this->assertStringContainsString('absent', $finding->message);
     }
 
-    public function test_a_credential_store_only_install_fails_because_the_helper_is_cli_only(): void
-    {
-        $helper = $this->dir.'/store-helper';
-        File::put($helper, "#!/bin/sh\nprintf 'password=ghp_from_the_store\\n'\n");
-        chmod($helper, 0o700);
-        config(['bridge.providers.github.credential_helper' => $helper]);
+    // ---- per repo, by source (card#11208 / DL-456) ----
 
-        $this->assertSame(Severity::Fail, $this->onlyFinding($this->runCheck())->severity);
+    public function test_a_credential_store_only_install_is_judged_on_the_file_the_store_names(): void
+    {
+        // Until DL-456 the store was a CLI-only helper and this install FAILED; the receiver now
+        // reads the store in-process, so the check judges the file it names.
+        $this->runAs($this->realEuid());
+        $path = $this->storeKey('github.com/owner', 'framework', 'ghp_from_the_store');
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Ok, $finding->severity, $finding->message);
+        $this->assertStringContainsString("store key framework ([git-credential-map] github.com/owner) ({$path})", $finding->message);
+        Http::assertSent(fn ($request) => $request->hasHeader('Authorization', 'Bearer ghp_from_the_store'));
+    }
+
+    public function test_repos_on_two_sources_get_one_finding_and_one_read_each(): void
+    {
+        $this->runAs($this->realEuid());
+        $this->tokenFile('ghp_owner_a');
+        $this->storeKey('github.com/owner-b', 'owner_b', 'ghp_owner_b');
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $findings = $this->runCheckOn(['owner-a/one' => $this->mapping(), 'owner-b/two' => $this->mapping(), 'owner-b/three' => $this->mapping()]);
+
+        $this->assertCount(2, $findings);
+        $this->assertStringContainsString('token file ('.$this->dir.'/github/token)', $findings[0]->message);
+        $this->assertStringContainsString('PR correlation comments (DL-390) on owner-a/one need', $findings[0]->message);
+        $this->assertStringContainsString('store key owner_b ([git-credential-map] github.com/owner-b)', $findings[1]->message);
+        $this->assertStringContainsString('on owner-b/two, owner-b/three', $findings[1]->message);
+        Http::assertSentCount(2);
+    }
+
+    public function test_a_mapped_repo_whose_key_file_is_missing_fails_by_name_and_is_never_judged_on_the_single_file(): void
+    {
+        // THE CONTROL for a wrongly scoped fall-through: the single file is present and good, and
+        // a resolver that let it stand in for the mapped repo would print an `ok` for it here.
+        $this->runAs($this->realEuid());
+        $this->tokenFile('ghp_owner_a');
+        $this->store->write(['github.com/owner-b' => 'owner_b'], ['owner_b_file' => $this->store->dir.'/owner-b-token']);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $findings = $this->runCheckOn(['owner-a/one' => $this->mapping(), 'owner-b/two' => $this->mapping()]);
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity, 'the witness: the single file serves the unmapped repo');
+        $this->assertStringContainsString('owner-a/one', $findings[0]->message);
+        $this->assertStringNotContainsString('owner-b/two', $findings[0]->message);
+        $this->assertSame(Severity::Fail, $findings[1]->severity);
+        $this->assertStringContainsString('the file store key owner_b ([git-credential-map] github.com/owner-b) names for owner-b/two', $findings[1]->message);
+        $this->assertStringContainsString($this->store->dir.'/owner-b-token absent', $findings[1]->message);
+        $this->assertStringContainsString('The single token file does not stand in for a repo the store maps; these legs reach GitHub with no token', $findings[1]->message);
+        Http::assertSentCount(1);
+    }
+
+    public function test_a_store_the_bridge_cannot_parse_is_one_named_failure_over_every_repo(): void
+    {
+        $this->tokenFile('ghp_single');
+        $this->store->raw("[github]\nghp_a_bare_token\n");
+        Http::fake();
+
+        $findings = $this->runCheckOn(['owner-a/one' => $this->mapping(), 'owner-b/two' => $this->mapping()]);
+
+        $finding = $this->onlyFinding($findings);
+        $this->assertSame(Severity::Fail, $finding->severity);
+        $this->assertStringContainsString('the coord credential store at '.$this->store->path().' is not in the shape the bridge reads (line 2', $finding->message);
+        $this->assertStringContainsString('on owner-a/one, owner-b/two', $finding->message);
+        $this->assertStringNotContainsString('ghp_a_bare_token', $finding->message);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_store_this_process_cannot_read_is_unvalidated_never_ok_or_failed(): void
+    {
+        $this->tokenFile('ghp_single');
+        $this->store->write(['github.com/o' => 'k'], ['k_file' => '/x']);
+        chmod($this->store->path(), 0o000);
+        clearstatcache();
+        if (is_readable($this->store->path())) {
+            $this->markTestSkipped('this process reads through mode 0000 (running as root?)');
+        }
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        chmod($this->store->path(), 0o600);
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringContainsString('could not be read by this OS user', $finding->message);
+    }
+
+    public function test_a_write_token_path_is_named_as_the_source(): void
+    {
+        $this->runAs($this->realEuid());
+        $this->tokenFile('ghp_single');
+        $write = $this->store->tokenFile('write-token', 'ghp_write');
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck(new WritebackMapping(8, ['merged' => 52], writeTokenPath: $write)));
+
+        $this->assertSame(Severity::Ok, $finding->severity);
+        $this->assertStringContainsString('write_token_path for owner/repo ('.$write.')', $finding->message);
+        Http::assertSent(fn ($request) => $request->hasHeader('Authorization', 'Bearer ghp_write'));
+    }
+
+    public function test_a_missing_write_token_path_fails_and_names_writeback_json(): void
+    {
+        $this->tokenFile('ghp_single');
+
+        $finding = $this->onlyFinding($this->runCheck(new WritebackMapping(8, ['merged' => 52], writeTokenPath: $this->dir.'/missing')));
+
+        $this->assertSame(Severity::Fail, $finding->severity);
+        $this->assertStringContainsString('remove the repo\'s write_token_path from writeback.json', $finding->message);
     }
 
     public function test_a_token_path_override_whose_file_is_missing_fails_even_with_a_gh_token(): void
@@ -208,11 +314,13 @@ class GitHubTokenFileCheckTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_a_resolved_token_with_writeback_json_unread_is_still_tried_for_a_leg_switched_on_elsewhere(): void
+    public function test_with_writeback_json_unread_a_leg_switched_on_elsewhere_is_unvalidated_because_an_override_may_apply(): void
     {
+        // Since DL-456 a repo's own write_token_path, in writeback.json, outranks every other
+        // source — so with writeback.json unread, which file the label leg's repo uses is unknown,
+        // and the receiver resolves nothing for it either.
         $this->tokenFile('ghp_x');
-        $this->runAs((int) (new SystemProcessIdentity)->euid());
-        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+        Http::fake();
         config(['bridge.protocol_invalid_label.repos' => ['owner/other']]);
         $ctx = new CheckContext;
         $ctx->writebackUnread = true;
@@ -220,9 +328,12 @@ class GitHubTokenFileCheckTest extends TestCase
         $findings = $this->findingsOf(new GitHubTokenFileCheck, $ctx);
 
         $this->assertCount(2, $findings);
-        $this->assertSame(Severity::Ok, $findings[0]->severity, 'the witness: the label leg needs no writeback.json and is judged');
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('whether owner/other declares a write_token_path was NOT determined', $findings[0]->message);
+        $this->assertStringContainsString('protocol:invalid labels (DL-408) on owner/other', $findings[0]->message);
         $this->assertSame(Severity::Unvalidated, $findings[1]->severity);
         $this->assertStringContainsString('writeback.json did not load', $findings[1]->message);
+        Http::assertNothingSent();
     }
 
     // ---- the file resolves: the one GitHub read ----
@@ -682,10 +793,34 @@ class GitHubTokenFileCheckTest extends TestCase
     private function runCheck(?WritebackMapping $mapping = null, array $labelRepos = []): array
     {
         config(['bridge.protocol_invalid_label.repos' => $labelRepos]);
+
+        return $this->runCheckOn([self::REPO => $mapping ?? $this->mapping()]);
+    }
+
+    /**
+     * @param  array<string, WritebackMapping>  $mappings
+     * @return list<Finding>
+     */
+    private function runCheckOn(array $mappings): array
+    {
         $ctx = new CheckContext;
-        $ctx->writeback = new WritebackConfig(null, [self::REPO => $mapping ?? new WritebackMapping(8, ['merged' => 52])]);
+        $ctx->writeback = new WritebackConfig(null, $mappings);
 
         return $this->findingsOf(new GitHubTokenFileCheck, $ctx);
+    }
+
+    private function mapping(): WritebackMapping
+    {
+        return new WritebackMapping(8, ['merged' => 52]);
+    }
+
+    /** The store maps `$coordinate` to `$key`, whose file holds `$token`; returns that file. */
+    private function storeKey(string $coordinate, string $key, string $token): string
+    {
+        $path = $this->store->tokenFile($key.'-token', $token);
+        $this->store->write([$coordinate => $key], ["{$key}_file" => $path]);
+
+        return $path;
     }
 
     /** @param  list<Finding>  $findings */

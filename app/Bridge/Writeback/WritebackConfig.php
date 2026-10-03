@@ -44,6 +44,7 @@ use App\Bridge\Support\PathHelper;
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
  *         "draft_overlay": false,                   // optional (DL-193) — mirror PR draft state to block_reason
  *         "promote_on_release": false,              // optional (DL-207) — on a release merge to main, promote Shipped cards now on main to Released (needs stages.merged + stages.merged_to_main)
+ *         "write_token_path": "/abs/path/token",    // optional (DL-456) — this repo's GitHub token FILE, ahead of the coord credential store and the single file (a path, never the token)
  *         "boards": {                               // optional (card#9850 / DL-404) — the OTHER boards this repo's PRs cite cards on,
  *           "13": {"opened": 96, "merged": 97,      //   each with its OWN stage map (stage ids are per-board arbitrary integers). The
  *                  "started": 95,                   //   card-move path resolves the destination board FROM THE CARD, by asking
@@ -476,7 +477,18 @@ final class WritebackConfig
                     ];
                 }
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease, $issuePopulation, $coordCardLaneStageIds, $boards);
+            // Optional per-repo token FILE (card#11208 / DL-456), ahead of the coord credential
+            // store and the single file. A PATH, never a token. ABSOLUTE only: relative, it would
+            // resolve against the checkout under the CLI and `public/` under FPM, and `~` against
+            // whichever user's HOME the process has — two files under one setting.
+            $writeTokenPath = null;
+            if (array_key_exists('write_token_path', $m) && $m['write_token_path'] !== null) {
+                if (! is_string($m['write_token_path']) || ! str_starts_with($m['write_token_path'], '/')) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} write_token_path must be an absolute path to a token file (chmod 600) — a path, never the token itself");
+                }
+                $writeTokenPath = $m['write_token_path'];
+            }
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease, $issuePopulation, $coordCardLaneStageIds, $boards, $writeTokenPath);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));

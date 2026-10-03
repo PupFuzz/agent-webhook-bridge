@@ -13,6 +13,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\CoordCredentialStoreFixture;
 use Tests\Support\KanbanCardStub;
 use Tests\Support\KanbanSearchSim;
 use Tests\TestCase;
@@ -161,16 +162,15 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         // payload spelling resolves a DIFFERENT credential (in practice: none) from the one
         // `bridge:check` verifies, which iterates the configured keys.
         //
-        // Proven on the REAL exec surface, not a mock: a stub helper echoes the requested
-        // `path=` back as the token, so the Bearer the GitHub read carries IS the string
-        // handed to the case-sensitive store.
+        // Proven on a REAL store (DL-456): the configured spelling and the payload spelling
+        // are each mapped to their own key, so the Bearer the GitHub read carries names which
+        // spelling the case-sensitive store was asked with.
         $this->writeWritebackKeyed('owner/Repo', ['promote_on_release' => true]);
-        File::delete($this->dir.'/github/token');   // drop leg 2 so the store leg is reached
-        $stub = $this->dir.'/stub-credential-helper';
-        File::put($stub, "#!/bin/sh\npath=\$(sed -n 's/^path=//p')\n"
-            ."printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=tok:%s\\n' \"\$path\"\n");
-        chmod($stub, 0o755);
-        config(['bridge.providers.github.credential_helper' => $stub]);
+        $store = (new CoordCredentialStoreFixture($this->dir.'/coord'))->use();
+        $store->write(
+            ['github.com/owner/Repo' => 'configured', 'github.com/Owner/repo' => 'payload'],
+            ['configured_file' => $store->tokenFile('configured', 'tok:owner/Repo'), 'payload_file' => $store->tokenFile('payload', 'tok:Owner/repo')],
+        );
         // ⚑ The GitHub read is addressed with the PAYLOAD spelling, so `fakeBoard`'s
         // `…/repos/owner/repo/…` defaults do not answer it — `Str::is` is case-SENSITIVE.
         // Until card#7300 that left the request UNSTUBBED, and `Http::fake()` does not block

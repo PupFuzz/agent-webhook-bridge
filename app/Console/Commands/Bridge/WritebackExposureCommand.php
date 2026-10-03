@@ -104,7 +104,7 @@ class WritebackExposureCommand extends BridgeCommand
         $evaluated = 0;
         $exposed = 0;
         $unreachable = 0;
-        $resolver = new GitHubTokenResolver;
+        $resolver = GitHubTokenResolver::forWriteback($writeback);
 
         try {
             $kanban = WritebackClientFactory::make();
@@ -160,7 +160,7 @@ class WritebackExposureCommand extends BridgeCommand
         $boards = $mapping->declaredBoardIds();
         $declares = 'declares board'.(count($boards) > 1 ? 's ' : ' ').implode('+', $boards);
 
-        $token = $resolver->resolveFor($repo);
+        $token = $resolver->resolveFor($repo, ambient: true);
         if (! $token->ok()) {
             return $this->unreachable("{$declares} — no github token for this repo, so its merged pull requests could not be read ({$token->problem})");
         }

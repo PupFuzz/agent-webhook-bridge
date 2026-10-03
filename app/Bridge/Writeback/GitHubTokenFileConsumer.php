@@ -3,8 +3,10 @@
 namespace App\Bridge\Writeback;
 
 /**
- * A runtime leg that reaches GitHub with the placed token FILE and nothing else — the receiver's
- * `<secret_dir>/github/token`, or `providers.github.token_path` (card#11201).
+ * A runtime leg that reaches GitHub with a token FILE and nothing else — the file
+ * `GitHubTokenResolver::resolveFor()` gives each repo without `GH_TOKEN`: the repo's
+ * `write_token_path`, else the file the coord credential store names for it, else the single
+ * `<secret_dir>/github/token` / `providers.github.token_path` (card#11201, DL-456).
  *
  * WHY A LEG DECLARES ITSELF. With no readable file such a leg drops every GitHub request it
  * decides on, and logs it, and that is all: nothing retries on its own and nothing in the

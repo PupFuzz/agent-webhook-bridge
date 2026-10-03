@@ -134,6 +134,30 @@ final class UntrustedPathContents
     public const MAX_BYTES = 1_048_576;
 
     /**
+     * Why the entry an `lstat` describes is one no caller of {@see read()} takes, or null when it is
+     * a regular file within the bound — the refusals that are the same for EVERY reader (a symlink,
+     * a directory/FIFO/socket/device, a file past {@see MAX_BYTES}), judged off the `lstat` a caller
+     * already took, so it is not measured twice.
+     *
+     * @param  array<int|string, int>  $stat
+     */
+    public static function lstatRefusal(array $stat): ?string
+    {
+        $type = $stat['mode'] & 0o170000;
+        if ($type === 0o120000) {
+            return 'it is a symlink, which is refused — point the setting at the file itself';
+        }
+        if ($type !== 0o100000) {
+            return 'it is not a regular file (a directory, FIFO, socket or device)';
+        }
+        if ($stat['size'] > self::MAX_BYTES) {
+            return "it is {$stat['size']} bytes, past the ".self::MAX_BYTES.'-byte bound the reader will read';
+        }
+
+        return null;
+    }
+
+    /**
      * The file's bytes; null when the path is ABSENT. Throws when this process did not read
      * it — see the class docblock for the two kinds of refusal and which type carries which.
      *
