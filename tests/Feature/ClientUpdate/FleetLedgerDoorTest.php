@@ -699,7 +699,7 @@ class FleetLedgerDoorTest extends TestCase
     // ───────────────────────── caller / launch on a tool call ─────────────────────────
 
     /**
-     * r2 M-3: a probe or self-certification carries no version and no launch; it must not overwrite
+     * r2 M-3: a probe, a self-certification or a bridge-board-call script (card#11151) carries no launch; it must not overwrite
      * what the seat's own call recorded. The call is refused as an unknown tool so no board is read —
      * the ledger is stamped at the dispatcher's ENTRY, whatever the tool then answers.
      */
@@ -709,7 +709,7 @@ class FleetLedgerDoorTest extends TestCase
         $this->ssh(['tool' => 'no_such_tool', 'client_version' => '0.9.28', 'launch' => ['id' => 'L8', 'bridge_release' => '0.91.0']]);
         $before = SeatClientState::query()->orderBy('agent')->get()->map(fn (SeatClientState $r) => $r->only(['agent', 'running_bridge_release', 'running_client_version', 'running_launch_id', 'last_call_client_version', 'last_call_launch_id']))->all();
 
-        foreach (['probe', 'self-cert', 'operator'] as $caller) {
+        foreach (['probe', 'self-cert', 'script', 'operator'] as $caller) {
             $this->http('/agent-tools/call', ['tool' => 'no_such_tool', 'caller' => $caller]);
             $this->ssh(['tool' => 'no_such_tool', 'caller' => $caller]);
         }

@@ -1,16 +1,19 @@
-// Helpers for the reference channel MCP server (agent-webhook-bridge-channel.mjs) and its
-// launch-time updater (client-update.mjs).
+// Helpers for the reference channel MCP server (agent-webhook-bridge-channel.mjs), its
+// launch-time updater (client-update.mjs) and the seat CLI (bin/bridge-board-call.mjs).
 //
 // Two kinds of export, and one rule for both: every input is an ARGUMENT. Nothing here reads
 // process.env, closes over a startup constant, or calls process.exit — so each is testable
-// directly, and the updater and the server share ONE implementation of each (canon #5):
+// directly, and the programs share ONE implementation of each (canon #5). The one exception is
+// `readClientVersion`, which reads this directory's own package.json — the manifest every
+// copy of this file travels with:
 //   - PURE helpers (scrubSnippet, relayBridgeResponse, deriveMeta, launchIdentity,
 //     clientUpdateInstruction, resolveToolsToken's precedence) — no I/O beyond what an
 //     argument names;
 //   - the bridge TRANSPORT primitives (sshRoundTrip, httpRoundTrip) — they do I/O (a child
 //     process, a fetch), but only to the target their caller passes, and they return what
 //     happened rather than deciding what it means. The board-tools proxy relays that as a
-//     tool result; the updater reads it as a client-update door answer.
+//     tool result; the updater reads it as a client-update door answer; bridge-board-call
+//     maps it to its exit-code contract.
 // The main server self-executes on import (it binds a real transport and calls process.exit
 // on refuse paths), so importing IT to reach these is not an option.
 //
@@ -122,6 +125,33 @@ export function resolveToolsToken(env) {
     return env.BRIDGE_CHANNEL_TOKEN;
   }
   return '';
+}
+
+// This client's OWN package version, sent on every board-tools call as `client_version`
+// (card#8974 / DL-364) by the channel server and by bridge-board-call. WHY: `bridge:check`
+// could see the version of the snapshot the BRIDGE bundles and nothing whatever about the copy
+// the seat actually runs, so a tool missing from a stale seat copy was attributed to the bridge.
+// Measured: a seat on 0.4.4 against a bridge bundling 0.9.12 reported `board_correct_card`
+// "absent from my surface", and nothing compared the two numbers because nothing carried the
+// first one.
+//
+// READ FROM THE SIBLING MANIFEST, never written as a literal. Consumers copy the WHOLE
+// directory, so `package.json` travels with this file — and a literal would be a second copy
+// of the one field the DL-038 bump guard already maintains, free to drift the moment somebody
+// bumps one and not the other.
+//
+// ⛔ FAIL-SOFT AND OPTIONAL, AT BOTH ENDS. An unreadable, absent or malformed manifest yields
+// null, the key is then OMITTED, and the call goes out exactly as it did before this field
+// existed. The bridge reads a missing key as "not reported" and MUST NOT refuse a call over
+// it — adding this field changed nothing about what the door accepts.
+export function readClientVersion() {
+  try {
+    const version = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+
+    return typeof version === 'string' && version !== '' ? version : null;
+  } catch {
+    return null;
+  }
 }
 
 // One ssh round trip to the bridge's forced command: spawn `ssh [-i key] [-p port] <target>`

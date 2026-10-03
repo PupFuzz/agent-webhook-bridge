@@ -18,6 +18,7 @@ Seat tools ship **inside the channel-server client pack** the bridge publishes f
 
 - each release's copy is at `<root>/versions/<release>/seat-tools/bin/<tool>`;
 - `<root>/bin/<tool>` is a **shim** (`<tool>.cmd` on Windows) that runs the copy from the release `<root>/current.json` names, resolved each time it runs.
+- The same root also gets a shim for each **client program** the release carries under `client/bin/` — `bridge-board-call` (card#11151, DL-451) — named without its `.mjs` and run with `node`, because it imports the client beside it. It is not a seat tool: it is not in `seat-tools.json` and does not run copied alone. `examples/channel-servers/README.md` § *Calling a board tool from a script* owns it.
 
 `<root>` is `${XDG_DATA_HOME:-~/.local/share}/agent-webhook-bridge/client/<channel>` (`%LOCALAPPDATA%\agent-webhook-bridge\client\<channel>` on Windows). `examples/channel-servers/README.md` § *Installed and updated by the bridge* owns the root's layout.
 

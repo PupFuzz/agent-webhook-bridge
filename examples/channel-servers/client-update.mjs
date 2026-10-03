@@ -41,7 +41,7 @@
 // ⛔ THE BUDGET. `signal` is aborted by entry.mjs when its deadline wins. The pack's
 // verify-and-stage (the longest synchronous step) and every irreversible step — the rename into
 // `versions/`, the `current.json` switch (with its install-log line), the
-// `entry.mjs` replace, the seat-tool shims, the prune — checks the signal AND the wall-clock
+// `entry.mjs` replace, the shims, the prune — checks the signal AND the wall-clock
 // deadline immediately before it, and none of them awaits: each runs to completion or not at all,
 // so the deadline timer cannot fire half-way through one. After an abort the ONLY writes are
 // removing the staging directory, one `fail` install-log line and releasing the lock, and no
@@ -1046,35 +1046,46 @@ function shellQuote(text) {
   return `'${String(text).replace(/'/g, `'\\''`)}'`;
 }
 
-/** The shim for one seat tool: resolve current.json at RUN time, then run that release's copy. */
-export function shimFor(root, tool, platform = process.platform) {
+/**
+ * The shim for one program a release carries: resolve current.json at RUN time, then run that
+ * release's copy. A `seat-tool` is `seat-tools/bin/<tool>`, run as itself (python on Windows); a
+ * `client-bin` is `client/bin/<tool>`, a node program beside the client it imports from, run with
+ * node and shimmed under its name without `.mjs` (bridge-board-call, card#11151 / DL-451).
+ */
+export function shimFor(root, tool, platform = process.platform, kind = 'seat-tool') {
   const resolver =
     'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));' +
     'if(!/^[0-9]{1,9}\\.[0-9]{1,9}\\.[0-9]{1,9}$/.test(c.bridge_release))process.exit(3);' +
     'process.stdout.write(c.bridge_release)';
+  const clientBin = kind === 'client-bin';
+  const name = clientBin ? tool.replace(/\.mjs$/, '') : tool;
   if (platform === 'win32') {
     return {
-      name: `${tool}.cmd`,
+      name: `${name}.cmd`,
       body:
         `@echo off\r\nrem ${SHIM_MARKER}\r\n` +
         `for /f "usebackq delims=" %%r in (\`node -e "${resolver.replace(/"/g, '\\"')}" "${root}\\current.json"\`) do set "AWB_RELEASE=%%r"\r\n` +
         'if not defined AWB_RELEASE (echo the agent-webhook-bridge client root has no readable current.json 1>&2 & exit /b 2)\r\n' +
-        `python "${root}\\versions\\%AWB_RELEASE%\\seat-tools\\bin\\${tool}" %*\r\n`,
+        (clientBin
+          ? `node "${root}\\versions\\%AWB_RELEASE%\\client\\bin\\${tool}" %*\r\n`
+          : `python "${root}\\versions\\%AWB_RELEASE%\\seat-tools\\bin\\${tool}" %*\r\n`),
     };
   }
   return {
-    name: tool,
+    name,
     body:
       `#!/bin/sh\n# ${SHIM_MARKER} — runs ${tool} from the release ${root}/current.json names.\n` +
       `root=${shellQuote(root)}\n` +
       `release=$(node -e ${shellQuote(resolver)} "$root/current.json") || { echo "$root/current.json is unreadable or names no release; this seat's client needs re-bootstrapping" >&2; exit 2; }\n` +
-      `exec "$root/versions/$release/seat-tools/bin/${tool}" "$@"\n`,
+      (clientBin
+        ? `exec node "$root/versions/$release/client/bin/${tool}" "$@"\n`
+        : `exec "$root/versions/$release/seat-tools/bin/${tool}" "$@"\n`),
   };
 }
 
 /**
  * Bring the root's release-independent files in line with the installed release — `entry.mjs`,
- * the seat-tool shims, and the prune — each budget-checked, each logged when it changed anything.
+ * the shims (seat tools and client programs), and the prune — each budget-checked, each logged when it changed anything.
  * Run after an install AND on a current launch, so a launch the budget cut off between the pointer
  * switch and these steps is completed by the next one.
  */
@@ -1098,7 +1109,7 @@ function settleRoot(ctx, release) {
     }
   }
 
-  checkBudget(ctx, 'updating the seat-tool shims');
+  checkBudget(ctx, 'updating the shims');
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   // The tool list comes from the verified FILES.json listing, never a directory read (design
@@ -1108,15 +1119,19 @@ function settleRoot(ctx, release) {
   // shim is touched — untested, since a launch reaches here only with a release it just found `ok`.
   const classified = classifyRelease(root, release, 'required');
   if (classified.status !== 'ok') {
-    ctx.say(`seat-tool shims not updated: release ${release} is not intact (${classified.status === 'bad' ? classified.message : `${release} is not a valid X.Y.Z`})`);
+    ctx.say(`shims not updated: release ${release} is not intact (${classified.status === 'bad' ? classified.message : `${release} is not a valid X.Y.Z`})`);
   } else {
-    const prefix = 'seat-tools/bin/';
-    const tools = classified.listing
-      .filter((l) => l && typeof l.path === 'string' && l.path.startsWith(prefix) && l.path.length > prefix.length)
-      .map((l) => l.path.slice(prefix.length));
+    const listed = (prefix, suffix = '') =>
+      classified.listing
+        .filter((l) => l && typeof l.path === 'string' && l.path.startsWith(prefix) && l.path.endsWith(suffix) && l.path.length > prefix.length + suffix.length && !l.path.slice(prefix.length).includes('/'))
+        .map((l) => l.path.slice(prefix.length));
+    const programs = [
+      ...listed('seat-tools/bin/').map((tool) => [tool, 'seat-tool']),
+      ...listed('client/bin/', '.mjs').map((tool) => [tool, 'client-bin']),
+    ];
     const wanted = new Set();
-    for (const tool of tools) {
-      const shim = shimFor(root, tool);
+    for (const [tool, kind] of programs) {
+      const shim = shimFor(root, tool, process.platform, kind);
       wanted.add(shim.name);
       const file = path.join(bin, shim.name);
       let current = null;
@@ -1283,7 +1298,7 @@ async function report(ctx, head) {
 /**
  * Repair current.json: point it at the release step 1 selected, whenever it names anything else
  * (design review rule 3, reversing the earlier "keepPointer" behavior, which exempted an
- * unconfirmable release). The seat-tool shims resolve current.json at run time, so this is what
+ * unconfirmable release). The shims resolve current.json at run time, so this is what
  * brings them back to the release the server runs. DELETES NOTHING — removing a release is `commitInstall`'s reuse check and `settleRoot`'s prune,
  * each on its own policy; this function only ever repoints. One `pointer_recovered` line says what
  * was found and what current.json names now.
