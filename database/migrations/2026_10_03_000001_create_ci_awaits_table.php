@@ -22,9 +22,15 @@ return new class extends Migration
             $table->string('repo', 128);
             $table->char('head_sha', 40);
             $table->unsignedInteger('pr')->nullable();
-            $table->timestamp('created_at', 3);
-            $table->timestamp('updated_at', 3);
-            $table->timestamp('expires_at', 3);
+            // ⛔ EVERY TIMESTAMP HERE IS NULLABLE OR CARRIES AN EXPLICIT DEFAULT. Under MariaDB's
+            // `explicit_defaults_for_timestamp=OFF` (the default before 10.10) the first NOT NULL
+            // TIMESTAMP with neither is given `ON UPDATE CURRENT_TIMESTAMP` — every later write to
+            // the row (a read's `last_read_at`) would silently move it — and a second such column is
+            // refused outright (1067). The app always writes `expires_at`; its default only exists
+            // to take it out of that rule.
+            $table->timestamp('created_at', 3)->useCurrent();
+            $table->timestamp('updated_at', 3)->nullable();
+            $table->timestamp('expires_at', 3)->useCurrent();
             // The last runs read for this head: when it ran and, when it FAILED, why. A null
             // error with a non-null time is a read that answered.
             $table->timestamp('last_read_at', 3)->nullable();

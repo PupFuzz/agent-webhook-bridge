@@ -332,6 +332,26 @@ class CiAwaitTest extends TestCase
         $this->assertSame('cancelled', $lines[0]['payload']['runs'][100]['conclusion']);
     }
 
+    /**
+     * The row's own times do not move when a read is recorded on it. ⚠ SQLite cannot fail this: the
+     * hazard is MariaDB's implicit `ON UPDATE CURRENT_TIMESTAMP` on a TIMESTAMP column declared
+     * without a default (the `ci_awaits` migration says why), which only the MariaDB CI legs run.
+     */
+    public function test_recording_a_read_moves_neither_the_registration_time_nor_the_expiry(): void
+    {
+        $this->seedAwait('seat-a');
+        $before = CiAwait::query()->sole();
+        $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null]])]]);
+
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
+        $this->app->make(CiAwaitService::class)->onWorkflowRunCompleted(self::REPO, self::SHA);
+
+        $after = CiAwait::query()->sole();
+        $this->assertNotNull($after->last_read_at, 'the read was not recorded, so this measured nothing');
+        $this->assertSame($before->expires_at->toIso8601String(), $after->expires_at->toIso8601String());
+        $this->assertSame($before->created_at->toIso8601String(), $after->created_at->toIso8601String());
+    }
+
     // ---- read failures -------------------------------------------------------------------
 
     public function test_a_failed_read_keeps_the_await_emits_nothing_and_is_retried(): void
