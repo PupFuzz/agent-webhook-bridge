@@ -2,6 +2,7 @@
 
 namespace Tests\Support\CheckGolden;
 
+use App\Bridge\Support\ProcessIdentity;
 use Illuminate\Support\Facades\File;
 
 /**
@@ -77,6 +78,9 @@ final class GoldenInstall
             // `BRIDGE_SPAWN_ENABLED` would otherwise add a FAIL line to every capture.
             'bridge.unreadable_flags' => [],
         ]);
+
+        // The run's OS identity is a host input too: pinned non-root, owning every fixture file.
+        app()->instance(ProcessIdentity::class, new GoldenProcessIdentity);
 
         // A CONFIGURED install: the coord roster every kanban user id is read from (DL-450),
         // giving the fixtures' one agent, `prod-agent`, a kanban user on the pinned host. A

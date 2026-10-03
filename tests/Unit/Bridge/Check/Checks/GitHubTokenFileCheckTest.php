@@ -373,19 +373,19 @@ class GitHubTokenFileCheckTest extends TestCase
     public function test_a_token_file_owned_by_another_user_than_the_receivers_own_record_is_never_ok(): void
     {
         // The review's MAJOR (PR #854 r1): a 0600 file placed by the operator's login user reads fine
-        // here and is unreadable to the receiver. The owed-writes record is the receiver's (only its
-        // user may write it, StateWriterRefusal), so its owner is the receiver's user.
+        // here and is unreadable to the receiver. The owed-writes record, in a state dir only its
+        // owner can write, is the receiver's — the receiver must write there.
         $token = $this->tokenFile('ghp_x');
         $this->owedForAnotherReason();
         $me = $this->realEuid();
-        $this->runAs($me, [$me => 'operator', $me + 1 => 'www-data'], [GitHubWriteDebt::path() => $me + 1]);
+        $this->runAs($me, [$me => 'operator', $me + 1 => 'www-data'], [GitHubWriteDebt::path() => $me + 1, dirname(GitHubWriteDebt::path()) => $me + 1]);
         Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
 
         $finding = $this->onlyFinding($this->runCheck());
 
         $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
         $this->assertStringContainsString("{$token} is owned by operator", $finding->message);
-        $this->assertStringContainsString(GitHubWriteDebt::path().' — a file only the receiver\'s user writes — is owned by www-data', $finding->message);
+        $this->assertStringContainsString(GitHubWriteDebt::path().' — in a state dir only www-data can write, where the receiver must write — is owned by www-data', $finding->message);
         $this->assertStringContainsString('sudo -u <pool user> php artisan bridge:check', $finding->message);
     }
 
@@ -401,7 +401,7 @@ class GitHubTokenFileCheckTest extends TestCase
 
         $this->assertSame(Severity::Ok, $finding->severity, $finding->message);
         $this->assertStringContainsString('owned by www-data, the owner of '.GitHubWriteDebt::path(), $finding->message);
-        $this->assertStringNotContainsString('which this run does not measure', $finding->message);
+        $this->assertStringNotContainsString('was not measured', $finding->message);
     }
 
     public function test_with_no_receiver_owned_file_to_compare_the_ok_discloses_the_pool_user_it_did_not_measure(): void
@@ -413,7 +413,7 @@ class GitHubTokenFileCheckTest extends TestCase
         $finding = $this->onlyFinding($this->runCheck());
 
         $this->assertSame(Severity::Ok, $finding->severity, $finding->message);
-        $this->assertStringContainsString('The receiver reads it as its PHP-FPM pool user, which this run does not measure: run sudo -u <pool user> php artisan bridge:check', $finding->message);
+        $this->assertStringContainsString("Whether the receiver's PHP-FPM pool user can read it was not measured: run `sudo -u <pool user> php artisan bridge:check`", $finding->message);
     }
 
     public function test_a_root_run_with_no_receiver_owned_file_to_compare_is_never_ok(): void
@@ -442,18 +442,66 @@ class GitHubTokenFileCheckTest extends TestCase
         $this->assertStringContainsString("{$token} is owned by root", $finding->message);
     }
 
-    public function test_a_root_run_is_ok_where_the_token_file_and_the_receivers_record_share_an_owner(): void
+    public function test_a_root_run_is_never_ok_even_where_the_token_file_and_the_receivers_record_share_an_owner(): void
     {
-        // What establishes the read here is the shared owner, not root's own read of the file.
-        $token = $this->tokenFile('ghp_x');
+        // Review r2: root traverses a root:root 0700 directory above a token the receiver cannot
+        // reach, so a shared owner is not enough under root.
+        $this->tokenFile('ghp_x');
         $this->owedForAnotherReason();
-        $this->runAs(0, [1000 => 'www-data'], [GitHubWriteDebt::path() => 1000], tokenOwner: 1000);
+        $this->runAs(0, [1000 => 'www-data'], [GitHubWriteDebt::path() => 1000, dirname(GitHubWriteDebt::path()) => 1000], tokenOwner: 1000);
         Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
 
         $finding = $this->onlyFinding($this->runCheck());
 
-        $this->assertSame(Severity::Ok, $finding->severity, $finding->message);
-        $this->assertStringContainsString("{$token} is owned by www-data, the owner of", $finding->message);
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringContainsString('this run is root', $finding->message);
+        $this->assertStringContainsString('`sudo -u <pool user> php artisan bridge:check`', $finding->message);
+    }
+
+    public function test_a_record_in_a_group_writable_state_dir_is_no_evidence_of_the_receivers_user(): void
+    {
+        // Review r2 MAJOR: StateWriterRefusal does not refuse the FIRST write of an absent record,
+        // so in a group-writable state dir the operator (say, `bridge:replay --force`) can own it.
+        // Matching owners there prove nothing; the run falls through to the disclosure.
+        $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        chmod(dirname(GitHubWriteDebt::path()), 0o770);
+        $me = $this->realEuid();
+        $this->runAs($me, [$me => 'operator']);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertStringNotContainsString('the owner of', $finding->message, 'the record must not be cited as evidence');
+        $this->assertStringContainsString("Whether the receiver's PHP-FPM pool user can read it was not measured: run `sudo -u <pool user> php artisan bridge:check`", $finding->message);
+    }
+
+    public function test_a_record_whose_state_dir_another_user_owns_is_no_evidence_of_the_receivers_user(): void
+    {
+        $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        $me = $this->realEuid();
+        $this->runAs($me, [$me => 'operator'], [dirname(GitHubWriteDebt::path()) => $me + 1]);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertStringNotContainsString('the owner of', $finding->message);
+        $this->assertStringContainsString('was not measured', $finding->message);
+    }
+
+    public function test_a_root_run_with_a_group_writable_state_dir_is_unvalidated(): void
+    {
+        $this->tokenFile('ghp_x');
+        $this->owedForAnotherReason();
+        chmod(dirname(GitHubWriteDebt::path()), 0o770);
+        $this->runAs(0, [1000 => 'operator'], [GitHubWriteDebt::path() => 1000, dirname(GitHubWriteDebt::path()) => 1000], tokenOwner: 1000);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $finding = $this->onlyFinding($this->runCheck());
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity, $finding->message);
+        $this->assertStringNotContainsString('the owner of', $finding->message);
     }
 
     public function test_a_state_dir_this_run_cannot_traverse_means_it_is_not_the_receivers_user(): void
@@ -490,7 +538,7 @@ class GitHubTokenFileCheckTest extends TestCase
         $this->tokenFile('github_pat_fine_grained');
         $this->owedForAnotherReason();
         $me = $this->realEuid();
-        $this->runAs($me, [$me => 'operator', $me + 1 => 'www-data'], [GitHubWriteDebt::path() => $me + 1]);
+        $this->runAs($me, [$me => 'operator', $me + 1 => 'www-data'], [GitHubWriteDebt::path() => $me + 1, dirname(GitHubWriteDebt::path()) => $me + 1]);
         Http::fake(['https://api.github.com/rate_limit' => Http::response(['resources' => []])]);
 
         $finding = $this->onlyFinding($this->runCheck());
