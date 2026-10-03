@@ -21,11 +21,12 @@ use App\Bridge\Exceptions\ConfigException;
  * tells the operator to remove it — and `RetiredKanbanUserIdReaderTest` holds that
  * set of readers.
  *
- * ⭐ {@see $peerKanbanUserId} IS A DIFFERENT FACT, NOT A SECOND COPY: the kanban user of an agent
- * that is NOT a seat of this roster — a cross-install peer, a `treat_as_echo` / `treat_as_signal`
- * target — which this roster therefore does not own. It feeds attribution and echo/signal
- * matching only, and never take/start/correct authority (those are roster-only); `bridge:check`
- * FAILS an agent that IS a roster seat and declares it.
+ * ⭐ {@see $peerKanbanUserId} is the kanban user of an agent that is NOT a seat of this roster —
+ * a cross-install peer, a `treat_as_echo` / `treat_as_signal` target. It feeds attribution and
+ * echo/signal matching only, and never take/start/correct authority (those are roster-only). The
+ * guard against it duplicating a roster id is `AgentKanbanUsers::peerOf()` (runtime) and
+ * `bridge:check` (FAIL): an id the roster gives ANY seat, an agent whose name or coord_seat is a
+ * seat, or any coord_seat beside it. It does not, and cannot, check that the id is the peer's.
  */
 final class IdentityConfig
 {

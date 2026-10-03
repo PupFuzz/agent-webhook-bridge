@@ -3826,6 +3826,27 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
+     * Round 2 M1: `identity.peer_kanban_user_id` is attribution only. A seat that is NO seat of
+     * this roster and declares a peer id equal to a card's assignee gets NO assignee authority —
+     * pinned at the door, so a later split of `SeatKanbanUser::lookup()` cannot start reading it.
+     */
+    public function test_a_peer_id_equal_to_the_assignee_grants_no_correction_authority(): void
+    {
+        $this->writeAgent('me', $this->token, ['board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55], "identity:\n  peer_kanban_user_id: 815\n");
+        unset($this->rosterSeats['me']);
+        $this->seat('somebody-else', 4);
+        $live = [$this->assignedCardRow(815)];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('not one of yours', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
      * The archived-side exception follows the SAME predicate as the live side: a retired card
      * the seat HOLDS is named as the retire (telling it "not one of yours" would be false), and
      * a retired card somebody else holds is not disclosed.

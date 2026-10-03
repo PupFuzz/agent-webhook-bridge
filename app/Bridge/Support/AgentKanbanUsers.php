@@ -31,7 +31,9 @@ final class AgentKanbanUsers
     /**
      * @param  array<string, RosterKanbanUser>  $verdicts  agent name → the roster's answer (readable only)
      * @param  array<string, string>  $seats  agent name → its seat
-     * @param  array<string, int>  $peers  agent name → its `identity.peer_kanban_user_id`
+     * @param  array<string, int>  $peers  agent name → its `identity.peer_kanban_user_id`, for an
+     *                                     agent that declares no `identity.coord_seat`
+     * @param  array<string, int>  $seatIds  every roster seat with an id on this host → that id
      */
     private function __construct(
         public readonly CoordConfigFile $file,
@@ -39,6 +41,7 @@ final class AgentKanbanUsers
         private readonly array $verdicts,
         private readonly array $seats,
         private readonly array $peers = [],
+        private readonly array $seatIds = [],
     ) {}
 
     /**
@@ -55,7 +58,7 @@ final class AgentKanbanUsers
         foreach ($configs as $config) {
             $seat = $config->identity->seatName($config->agentName);
             $seats[$config->agentName] = $seat;
-            if ($config->identity->peerKanbanUserId !== null) {
+            if ($config->identity->peerKanbanUserId !== null && $config->identity->coordSeat === null) {
                 $peers[$config->agentName] = $config->identity->peerKanbanUserId;
             }
             if ($file->readable() && $host !== '') {
@@ -63,7 +66,9 @@ final class AgentKanbanUsers
             }
         }
 
-        return new self($file, $host, $verdicts, $seats, $peers);
+        $seatIds = $file->readable() && $host !== '' ? RosterKanbanUser::seatIds($file->config(), $host) : [];
+
+        return new self($file, $host, $verdicts, $seats, $peers, $seatIds);
     }
 
     /** Whether the roster could be asked at all: the file read, and a host to key ids by. */
@@ -131,10 +136,42 @@ final class AgentKanbanUsers
     }
 
     /**
+     * The `identity.peer_kanban_user_id` the runtime USES for an agent, or null. It is used only
+     * when all three hold: the agent is no seat of this roster, it declares no `identity.coord_seat`
+     * (a coord_seat is a claim to BE a seat), and the id is no roster seat's id on this host — an id
+     * the roster gives a seat, carried under another agent's name, would collide with that seat
+     * and take its attribution away. `bridge:check` FAILS each of those; this keeps the runtime
+     * from acting on one meanwhile.
+     */
+    public function peerOf(string $agentName): ?int
+    {
+        $peer = $this->peers[$agentName] ?? null;
+        if ($peer === null || ! $this->readable() || $this->verdictFor($agentName)->why !== RosterKanbanUser::ABSENT) {
+            return null;
+        }
+
+        return in_array($peer, $this->seatIds, true) ? null : $peer;
+    }
+
+    /**
+     * The roster seats whose id on this host is $userId — every seat the roster names, whether or
+     * not this install serves it. Sorted.
+     *
+     * @return list<string>
+     */
+    public function rosterSeatsWithId(int $userId): array
+    {
+        $seats = array_keys(array_filter($this->seatIds, static fn (int $id): bool => $id === $userId));
+        sort($seats);
+
+        return $seats;
+    }
+
+    /**
      * Every agent's kanban user id FOR ATTRIBUTION AND ECHO/SIGNAL MATCHING: agent name → id. A
      * roster seat's id is the roster's; an agent that is NO seat of this roster contributes its
-     * `identity.peer_kanban_user_id`, if it declares one — never a seat, whose id is the roster's
-     * alone. An agent with neither is not in the map: it has no kanban user. ⛔ Take, start and
+     * `identity.peer_kanban_user_id` where {@see peerOf} uses it — never a seat, whose id is the
+     * roster's alone, and never an id the roster gives any seat. An agent with neither is not in the map: it has no kanban user. ⛔ Take, start and
      * correction authority never read this map; they read {@see verdictFor}, the roster alone.
      *
      * @return array<string, int>
@@ -151,8 +188,8 @@ final class AgentKanbanUsers
         foreach ($this->verdicts as $agent => $verdict) {
             if ($verdict->userId !== null) {
                 $ids[$agent] = $verdict->userId;
-            } elseif ($verdict->why === RosterKanbanUser::ABSENT && isset($this->peers[$agent])) {
-                $ids[$agent] = $this->peers[$agent];
+            } elseif (($peer = $this->peerOf($agent)) !== null) {
+                $ids[$agent] = $peer;
             }
         }
 

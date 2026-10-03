@@ -337,6 +337,40 @@ class AgentKanbanUserRosterCheckTest extends TestCase
         $this->assertStringContainsString("declares identity.peer_kanban_user_id 7, but it IS coord roster seat 'impl'", $fails[0]->message);
     }
 
+    /**
+     * Round 2 S1(a): an agent that is no seat BY NAME but whose peer id is a roster seat's id is
+     * carrying that seat's id under another name — the duplicate the field must never hold.
+     */
+    public function test_a_peer_id_equal_to_any_roster_seat_s_id_fails(): void
+    {
+        $this->roster(['impl' => 7]);
+
+        $findings = $this->agentFindings($this->configs(['impl-bridge' => ['peer_kanban_user_id' => 7]]));
+
+        $fails = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Fail));
+        $this->assertCount(1, $fails);
+        $this->assertStringContainsString("identity.peer_kanban_user_id 7 is the kanban user the coord roster gives seat 'impl'", $fails[0]->message);
+        $this->assertSame([], array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Ok), 'never reported as a valid attribution-only id');
+    }
+
+    /**
+     * Round 2 S1(b): a coord_seat is a claim to BE a seat, so it and a peer id are exclusive — and
+     * a mistyped coord_seat still WARNS whatever the peer field says.
+     */
+    public function test_coord_seat_and_a_peer_id_together_fail_and_the_absent_seat_still_warns(): void
+    {
+        $this->roster(['impl' => 7]);
+
+        $findings = $this->agentFindings($this->configs(['me' => ['coord_seat' => 'typo', 'peer_kanban_user_id' => 42]]));
+
+        $fails = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Fail));
+        $warns = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Warn));
+        $this->assertCount(1, $fails);
+        $this->assertStringContainsString('declares both identity.coord_seat and identity.peer_kanban_user_id', $fails[0]->message);
+        $this->assertCount(1, $warns);
+        $this->assertStringContainsString("declares identity.coord_seat 'typo'", $warns[0]->message);
+    }
+
     // ---- a seat whose id does not identify one taker (round-1 rulings 4 and 8) ----
 
     public function test_two_board_tools_agents_on_one_seat_both_fail(): void

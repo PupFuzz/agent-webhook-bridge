@@ -160,6 +160,27 @@ class RosterAttributionTest extends TestCase
         $this->assertNull($registry->byKanbanUserId(9999), 'a seat\'s peer field is never read');
     }
 
+    /**
+     * Round 2 S1(c): a peer id equal to a roster seat's id is dropped at runtime, not only failed
+     * by the check — otherwise it collides on the kanban axis and the SEAT stops being attributed
+     * by name (its treat_as_echo / treat_as_signal matches go with it).
+     */
+    public function test_a_peer_id_equal_to_a_seat_s_roster_id_is_dropped_at_runtime(): void
+    {
+        File::put($this->dir.'/remote.yml', "identity:\n  peer_kanban_user_id: ".self::PEER."\nsubscriptions: []\n");
+        // A coord_seat is a claim to BE a seat, so a peer id beside one is not used either.
+        File::put($this->dir.'/claims-a-seat.yml', "identity:\n  coord_seat: nowhere\n  peer_kanban_user_id: 7300\nsubscriptions: []\n");
+
+        $registry = AgentRegistry::fromAgentConfigs((new SubscriptionRegistry($this->dir))->agentConfigs());
+
+        $this->assertSame('peer', $registry->byKanbanUserId(self::PEER)?->name, 'the seat keeps its attribution');
+        $this->assertNull($registry->kanbanUserIdOf('remote'), 'the duplicate peer id is never used');
+        $this->assertNull($registry->kanbanUserIdOf('claims-a-seat'), 'a peer id beside a coord_seat is never used');
+
+        $this->kanbanEvent((string) self::PEER);
+        $this->assertSame('echo: own write', $this->outcome(), 'me still drops peer\'s write by name (treat_as_echo: [peer])');
+    }
+
     /** @return array<string, array{\Closure(self): void}> */
     public static function unreadableRosters(): array
     {

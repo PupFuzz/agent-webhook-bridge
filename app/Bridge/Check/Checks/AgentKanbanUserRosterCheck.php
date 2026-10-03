@@ -49,8 +49,10 @@ use App\Bridge\Support\RosterKanbanUser;
  *    all WARNS, naming the three ways to give it a kanban user. Silent only for a non-seat that
  *    subscribes to nothing kanban.
  *  - `identity.peer_kanban_user_id` — the attribution-only id of an agent that is NOT a seat of
- *    this roster (a cross-install peer) — is reported for a non-seat, and FAILS on an agent that
- *    IS a seat, where it would be a second copy of the roster's id.
+ *    this roster (a cross-install peer) — FAILS where it could carry a seat's id: on an agent
+ *    whose name or coord_seat IS a seat, beside any `coord_seat` at all, or when it equals ANY
+ *    roster seat's id on this host ({@see RosterKanbanUser::seatIds}). Otherwise it is reported
+ *    in an `ok` line. The runtime uses it only in that last case ({@see AgentKanbanUsers::peerOf}).
  *
  * THE MIGRATION, for an agent whose YAML still carries `identity.kanban_user_id`, which nothing
  * reads any more: equal to the id the bridge now uses (the roster's, or a non-seat's peer id)
@@ -147,6 +149,12 @@ final class AgentKanbanUserRosterCheck implements Check
         $isSeat = $verdict->why !== RosterKanbanUser::ABSENT;
         $peer = $agent->identity->peerKanbanUserId;
 
+        if ($peer !== null && $agent->identity->coordSeat !== null) {
+            yield Finding::fail("agent {$name}: declares both identity.coord_seat and identity.peer_kanban_user_id — a coord_seat is a claim that the agent IS a seat of this roster, whose id is the roster's alone, and the peer field is only for an agent that is NOT (DL-450). Keep one: coord_seat for a seat of this roster, peer_kanban_user_id for a peer whose seat another roster owns. The peer id is not used meanwhile.");
+        } elseif ($peer !== null && ! $isSeat && ($sameId = $users->rosterSeatsWithId($peer)) !== []) {
+            yield Finding::fail("agent {$name}: identity.peer_kanban_user_id {$peer} is the kanban user the coord roster gives seat ".implode(', ', array_map(static fn (string $s): string => "'{$s}'", $sameId))." on '{$host}' — carried under another agent's name it would collide with that seat and take its attribution away (DL-450). If this agent IS that seat, set identity.coord_seat to it and remove the peer field; otherwise correct the id. The peer id is not used meanwhile.");
+        }
+
         if ($peer !== null && $isSeat) {
             yield Finding::fail("agent {$name}: declares identity.peer_kanban_user_id {$peer}, but it IS coord roster seat '{$seat}' — a seat's kanban user id is the roster's alone, so this would be a second copy of it (DL-450). Remove identity.peer_kanban_user_id from {$name}.yml; the field is only for an agent that is no seat of this roster.");
         }
@@ -165,18 +173,20 @@ final class AgentKanbanUserRosterCheck implements Check
                 ? "the coord roster has no seat named '{$seat}' (its identity.coord_seat, else its agent name) — so board_take_card refuses every call from it (install_fault.roster_seat_absent)".($peer !== null ? '; identity.peer_kanban_user_id is attribution only and never take authority' : '').'. Set identity.coord_seat to this agent\'s roster seat, or add the seat to the roster.'
                 : "its coord roster seat '{$seat}' carries no kanban user id for this kanban instance ('{$host}') — ".self::missingClause($verdict, $host).' So board_take_card refuses every call from it (install_fault.no_kanban_user).'.self::whoWritesIt()));
         } elseif (! $isSeat) {
-            if ($peer !== null) {
-                yield Finding::ok("agent {$name}: attribution-only kanban user {$peer} (identity.peer_kanban_user_id — no seat of this coord roster; never take, start or correction authority)");
-            } elseif ($agent->identity->coordSeat !== null) {
+            // The coord_seat-absent WARN first and whatever the peer field says: a mistyped
+            // coord_seat must not be hidden by a peer id beside it.
+            if ($agent->identity->coordSeat !== null) {
                 yield Finding::warn("agent {$name}: declares identity.coord_seat '{$seat}', but the coord roster has no seat named '{$seat}' — so it has no kanban user: kanban events are not attributed to it, and its own kanban writes are not suppressed as its echoes. Correct identity.coord_seat, or add the seat to the roster.");
-            } elseif (self::subscribesToKanban($agent)) {
+            } elseif (($usable = $users->peerOf($name)) !== null) {
+                yield Finding::ok("agent {$name}: attribution-only kanban user {$usable} (identity.peer_kanban_user_id — no seat of this coord roster, and no seat's id in it; never take, start or correction authority)");
+            } elseif ($peer === null && self::subscribesToKanban($agent)) {
                 yield Finding::warn("agent {$name}: subscribes to kanban events but is no seat of the coord roster (no seat named '{$name}', and no identity.coord_seat) — so it has no kanban user: kanban events from its own account are not attributed to it or suppressed as its echoes. If it is a seat, set identity.coord_seat to the seat (or add the seat to the roster); if its seat belongs to ANOTHER roster, set identity.peer_kanban_user_id to its kanban user id.");
             }
         } else {
             yield Finding::warn("agent {$name}: its coord roster seat '{$seat}' carries no kanban user id for this kanban instance ('{$host}') — ".self::missingClause($verdict, $host).' Until it does, kanban events are not attributed to this agent and its own kanban writes are not suppressed as its echoes.'.self::whoWritesIt());
         }
 
-        yield from $this->migration($agent, $verdict, $seat, $host);
+        yield from $this->migration($agent, $users, $verdict, $seat, $host);
     }
 
     /**
@@ -184,14 +194,14 @@ final class AgentKanbanUserRosterCheck implements Check
      *
      * @return iterable<Finding>
      */
-    private function migration(AgentConfig $agent, RosterKanbanUser $verdict, string $seat, string $host): iterable
+    private function migration(AgentConfig $agent, AgentKanbanUsers $users, RosterKanbanUser $verdict, string $seat, string $host): iterable
     {
         $retired = $agent->identity->retiredKanbanUserId;
         if ($retired === null) {
             return;
         }
         $name = $agent->agentName;
-        $peer = $verdict->why === RosterKanbanUser::ABSENT ? $agent->identity->peerKanbanUserId : null;
+        $peer = $users->peerOf($name);
         $used = $verdict->userId ?? $peer;
         $where = $verdict->userId !== null ? "seat '{$seat}'s id in the coord roster" : 'its identity.peer_kanban_user_id';
 
