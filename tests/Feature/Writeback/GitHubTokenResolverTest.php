@@ -18,7 +18,7 @@ use Tests\TestCase;
 /**
  * GitHubTokenResolver — the one home of the per-repo token precedence (DL-184, DL-185, DL-456):
  * the repo's `write_token_path`, then the coord credential store read in-process, then the single
- * file, then `GH_TOKEN` for a caller that asks. Every test writes real files in a temp dir; the
+ * file, then `GH_TOKEN` for `resolveForCli()` alone. Every test writes real files in a temp dir; the
  * store is a real `credentials.ini` ({@see CoordCredentialStoreFixture}), never the operator's.
  */
 class GitHubTokenResolverTest extends TestCase
@@ -188,7 +188,7 @@ class GitHubTokenResolverTest extends TestCase
         $this->assertStringContainsString('REPLACE_ME placeholder', (string) $r->problem);
     }
 
-    // ---- leg 4: GH_TOKEN, for a caller that asks ----
+    // ---- leg 4: GH_TOKEN, for resolveForCli() alone ----
 
     public function test_gh_token_serves_only_a_caller_that_asks_for_it(): void
     {
