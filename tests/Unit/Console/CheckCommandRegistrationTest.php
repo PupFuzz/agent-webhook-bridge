@@ -52,6 +52,7 @@ class CheckCommandRegistrationTest extends TestCase
         'database.connectivity',
         'database.install_suffix',
         'writeback.owed_writes_table',
+        'ci_await.awaits',
         'install.inbox_config',
         'retention.posture',
         'jobs.posture',

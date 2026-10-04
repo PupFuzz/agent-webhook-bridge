@@ -5659,8 +5659,66 @@ class AgentToolsCallTest extends TestCase
                 'args' => ['tags_any' => ['a', 'b'], 'stage' => [50], 'include_archived' => true, 'lane' => 'mine', 'name_contains' => 'c', 'updated_since' => '2026-09-01', 'fields' => ['id', 'stage'], 'limit' => 5],
                 'fake' => $this->searchFake(),
             ],
+            'ci_await' => $this->ciAwaitFixture(['repo' => self::CI_REPO, 'head_sha' => str_repeat('a', 40), 'pr' => 3]),
+            'ci_await_cancel' => $this->ciAwaitFixture(['repo' => self::CI_REPO, 'head_sha' => str_repeat('a', 40)]),
             default => $this->fail("no undeclared-key fixture for the registered tool `{$tool}` — add one, so its refusal is covered"),
         };
+    }
+
+    /**
+     * The tools whose path reaches NO board (card#11200 / DL-452): `ci_await` reads GitHub's run
+     * list and `ci_await_cancel` reads nothing upstream. The door-wide arms that are about the
+     * BOARD's answers — {@see test_a_board_call_that_gets_no_answer_is_the_retryable_502_on_every_upstream_call}
+     * and the 422 relay — have nothing to walk on them, so their population leaves these out;
+     * {@see test_a_boardless_tool_sends_no_board_request} is what keeps a tool on this list from
+     * being one that does reach the board. A failed GitHub read is not a 502 here: it is
+     * `state: unmeasured` (docs/board-tools.md § `ci_await` and `ci_await_cancel`).
+     *
+     * @var list<string>
+     */
+    public const BOARDLESS_TOOLS = ['ci_await', 'ci_await_cancel'];
+
+    private const CI_REPO = 'octo/widgets';
+
+    /**
+     * A repo this install receives GitHub events for (another agent subscribes to it), a GitHub
+     * read token, and a run list with one run still going, so `ci_await` answers `waiting`.
+     *
+     * @param  array<string, mixed>  $args
+     * @return array{args: array<string, mixed>, fake: \Closure}
+     */
+    private function ciAwaitFixture(array $args): array
+    {
+        File::put($this->dir.'/gh-subscriber.yml', "subscriptions:\n  - provider: github\n    scopes: [".self::CI_REPO."]\n");
+        File::ensureDirectoryExists($this->dir.'/github');
+        $this->writeSecret($this->dir.'/github/token', 'gh-read-token');   // gitleaks:allow — test fixture
+
+        return [
+            'args' => $args,
+            'fake' => fn ($request) => str_contains($request->url(), 'api.github.com/repos/'.self::CI_REPO.'/actions/runs')
+                ? Http::response(['total_count' => 1, 'workflow_runs' => [['name' => 'CI', 'status' => 'in_progress', 'conclusion' => null, 'html_url' => 'https://github.com/x', 'event' => 'push']]])
+                : Http::response(['message' => 'a board-less tool reached '.$request->url()], 500),
+        ];
+    }
+
+    #[DataProvider('boardlessTools')]
+    public function test_a_boardless_tool_sends_no_board_request(string $tool): void
+    {
+        $fixture = $this->undeclaredKeyFixture($tool);
+        Http::fake($fixture['fake']);
+
+        $this->callTool(['tool' => $tool, 'args' => $fixture['args']])->assertStatus(200)->assertJsonPath('ok', true);
+
+        $this->assertSame([], array_values(array_filter(
+            array_map(fn (array $pair): string => $pair[0]->url(), Http::recorded()->all()),
+            fn (string $url): bool => str_contains($url, 'kanban.example.com'),
+        )), "{$tool} is listed as board-less and sent a board request");
+    }
+
+    /** @return array<string, array{string}> */
+    public static function boardlessTools(): array
+    {
+        return array_combine(self::BOARDLESS_TOOLS, array_map(fn (string $t): array => [$t], self::BOARDLESS_TOOLS));
     }
 
     /**
@@ -5717,7 +5775,10 @@ class AgentToolsCallTest extends TestCase
         Http::fake($fixture['fake']);
 
         $this->callTool(['tool' => $tool, 'args' => $fixture['args']])->assertStatus(200);
-        $this->assertNotEmpty(Http::recorded(), 'the call succeeded without reaching the board, so it witnessed nothing');
+        if ($tool !== 'ci_await_cancel') {
+            // ci_await_cancel sends no request at all: a 200 is its whole witness.
+            $this->assertNotEmpty(Http::recorded(), 'the call succeeded without reaching the board, so it witnessed nothing');
+        }
     }
 
     #[DataProvider('registeredTools')]
@@ -5808,8 +5869,9 @@ class AgentToolsCallTest extends TestCase
     // ─── a board call that gets NO answer (DL-387) ────────────────────────────
 
     /**
-     * What the no-answer arm below walks: every registered tool's success path — the fixture
-     * {@see undeclaredKeyFixture} already owns, so a tool added later is in it — plus a named
+     * What the no-answer arm below walks: every registered tool's success path except the
+     * {@see BOARDLESS_TOOLS}, which reach no board — the fixture {@see undeclaredKeyFixture} already
+     * owns, so a tool added later is in it — plus a named
      * scenario for each branch that path never sends a request down.
      *
      * @return array<string, array{string}>
@@ -5831,7 +5893,7 @@ class AgentToolsCallTest extends TestCase
             $extra[$scenario] = [$scenario];
         }
 
-        return self::registeredTools() + $extra;
+        return array_diff_key(self::registeredTools(), array_flip(self::BOARDLESS_TOOLS)) + $extra;
     }
 
     /**

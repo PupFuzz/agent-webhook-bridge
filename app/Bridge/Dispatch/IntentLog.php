@@ -45,9 +45,26 @@ class IntentLog
         // re-stage produces the identical ts (read-side idempotency, req 3).
         $ts = (float) $event->received_at->format('U.u') + $index * 1e-6;
 
-        $line = array_merge(['id' => $id, 'ts' => $ts, 'agent' => $agent->agentName], $intent->toArray());
+        $this->append($agent->agentName, $id, $ts, $intent);
+    }
 
-        foreach ($this->targetPaths($agent->agentName) as $path) {
+    /**
+     * Stage an intent the BRIDGE authored, which no stored webhook event stands behind
+     * (card#11200 / DL-452: `ci_settled`, `ci_await_expired`). The caller supplies what
+     * {@see stage()} derives from the event: a line `id` that is stable for this one emission —
+     * `bridge:inbox` collapses duplicates on it — and its `ts`. Same files, same failure
+     * contract: an IO failure propagates.
+     */
+    public function stageAuthored(string $agentName, string $id, float $ts, Intent $intent): void
+    {
+        $this->append($agentName, $id, $ts, $intent);
+    }
+
+    private function append(string $agentName, string $id, float $ts, Intent $intent): void
+    {
+        $line = array_merge(['id' => $id, 'ts' => $ts, 'agent' => $agentName], $intent->toArray());
+
+        foreach ($this->targetPaths($agentName) as $path) {
             // No read-before-write dedup: the per-intent file scan was O(file)
             // on the synchronous hot path and grew with calendar time. Dedup is
             // upstream (processed_at) + read-side (bridge:inbox by id); see the

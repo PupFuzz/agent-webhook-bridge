@@ -70,6 +70,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
     private const TYPE_BOUNDS = [
         'App\Bridge\ClientUpdate\InstallLogRefused' => 'composed by InstallLogEntry / SeatClientLedger from their own refusal vocabulary over a client_report: an entry index, a field name, a seq number and fixed phrases — never the line itself (card#10567 / DL-432)',
         'App\Bridge\Exceptions\ChannelTokenException' => 'a local channel-token read fault, composed by ChannelToken from a path and a file-read fault',
+        'App\Bridge\Exceptions\CiRunsReadException' => 'composed by CiAwaitService::readRuns() from a GitHub status code and a fixed phrase, a TokenResolution problem (already reduced at its producer), or RedactedErrorText::of() over a ConnectionException / UnexpectedValueException — never a response body (card#11200 / DL-452)',
         'App\Bridge\Exceptions\ConfigException' => 'composed by this app from its own config files and env; a wrap site that builds one from another exception is itself a site here',
         'App\Bridge\Exceptions\InsecureSecretPermsException' => 'a local secret-file mode check: the path and its octal mode',
         'App\Bridge\Exceptions\PathResolvesToNoFileException' => 'an UnreadableFileException subtype raised only by UntrustedPathContents for a path that resolves to no bytes (a directory, FIFO, socket or device, a dangling or looping symlink chain): the subject, the path and its own fixed phrase',
@@ -104,7 +105,12 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Tools/BoardCallRefusal.php::errorEntries#1' => 'mixed $value is a value decoded from a board 422 body\'s `errors`; the array literal holds it only behind is_string()',
         'Bridge/Check/Checks/BoardToolsHttpProbeCheck.php::run#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Check/Checks/ChannelTransportCheck.php::markerLeg#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        // card#11200 / DL-452: a ConfigException naming the BRIDGE_CI_AWAIT_TTL value read (the check and the
+        // tool), an agent-config ConfigException (the tool), and a CiRunsReadException whose message the
+        // service composed from a status or an already-redacted error (the evaluate arm).
+        'Bridge/Check/Checks/CiAwaitsCheck.php::run#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Check/Checks/WritebackAlertChannelCheck.php::run#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/CiAwait/CiAwaitService.php::evaluate#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/ClientUpdate/ClientUpdateDoor.php::report#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/ClientUpdate/SeatClientLedger.php::report#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Handlers/ChannelPushHandler.php::handle#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
@@ -135,6 +141,8 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#3' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Tools/CiAwaitTool.php::call#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Tools/CiAwaitTool.php::call#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/ClientUpdateClause.php::fromBundledTable#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/SeatKanbanUser.php::lookup#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/ToolCallBody.php::parse#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
