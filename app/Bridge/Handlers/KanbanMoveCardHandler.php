@@ -585,6 +585,17 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             }
             throw $e;   // transient → stays owed (class docblock)
         }
+        // The landing is recorded the moment the move succeeds, BEFORE anything that can throw after it
+        // (the stamp below). A stamp that fails transiently re-throws and the write stays owed; its retries
+        // find the card already at the stage and log no landing (the guard above), so this row is the ONLY
+        // record that the move landed. `webhook_event_id` is the key the owed write's own rows carry, so a
+        // give-up joins to it: a `move_card.moved` row for that delivery means the move landed.
+        // `card_board` + `mapped_board`, the same pair the refusal arm emits and from the
+        // same primitive (card#7212). The old single `board` key was the CONFIG's board —
+        // the one we intended to write to — so a write that landed on an out-of-mapping
+        // card logged identically to a correct one, and "has a cross-board write ever
+        // landed?" was unanswerable from the record rather than merely unanswered.
+        Log::info('kanban_move_card: moved', ['catalog_id' => 'move_card.moved', 'handler' => BoardMoverScope::handler(), 'op' => 'move', 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome] + MappedBoardGuard::boardContext($card, $mapping));
         OwnerlessStart::noteAfterMove($this->alerts, $card, $mapping, $isRevive, $cardId, $repo, $outcome, $stageId);
         // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and
         // BEFORE the stamp (which may 5xx-throw), emit the compensating "we overrode a
@@ -630,12 +641,6 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
         // above) — stamp its correlation refs add-if-missing (#3866). Done AFTER the move
         // so a stale/redelivered/regressive event, which the guards no-op, never stamps.
         $this->stampCorrelationRefs($card, $storedRef, $mapping, $payload, $cardId, $client, $repo, $outcome);
-        // `card_board` + `mapped_board`, the same pair the refusal arm emits and from the
-        // same primitive (card#7212). The old single `board` key was the CONFIG's board —
-        // the one we intended to write to — so a write that landed on an out-of-mapping
-        // card logged identically to a correct one, and "has a cross-board write ever
-        // landed?" was unanswerable from the record rather than merely unanswered.
-        Log::info('kanban_move_card: moved', ['catalog_id' => 'move_card.moved', 'handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome] + MappedBoardGuard::boardContext($card, $mapping));
     }
 
     /**
@@ -855,6 +860,10 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
 
                 return;
             }
+            // The write stays owed and the retry re-stamps; this row is what a reader of stamp failures sees
+            // meanwhile (the permanent arm above alerts, this one only logs: the owed-write queue alerts if it
+            // gives up).
+            Log::warning('kanban_move_card: stamp failed transiently — the card is at its stage; the stamp stays owed and the retry re-stamps', ['catalog_id' => 'move_card.stamp_transient_failure', 'handler' => BoardMoverScope::handler(), 'op' => 'stamp', 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'card_id' => $cardId] + RefusalContext::from($e));
             throw $e;   // transient → the retry re-stamps (add-if-missing idempotent)
         }
     }

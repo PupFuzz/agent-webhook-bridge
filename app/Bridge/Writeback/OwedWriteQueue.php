@@ -133,7 +133,7 @@ final class OwedWriteQueue
      */
     public function enqueue(string $subjectKey, ReactionTarget $target, AgentConfig $agent, WebhookEvent $event): void
     {
-        BoardMoverScope::forHandler($target->handler, $this->writeOpOf($target), fn () => $this->insert($subjectKey, $target, $agent, $event));
+        BoardMoverScope::forHandler($target->handler, $this->writeOpOf($target), fn () => $this->insert($subjectKey, $target, $agent, $event), (int) $event->id);
     }
 
     private function insert(string $subjectKey, ReactionTarget $target, AgentConfig $agent, WebhookEvent $event): void
@@ -624,7 +624,7 @@ final class OwedWriteQueue
      */
     private function inRowScope(WritebackOwedWrite $row, callable $fn): mixed
     {
-        return BoardMoverScope::forHandler($row->handler, $this->writeOpOf(self::targetOf($row)), $fn);
+        return BoardMoverScope::forHandler($row->handler, $this->writeOpOf(self::targetOf($row)), $fn, (int) $row->webhook_event_id);
     }
 
     /** What the target's handler says it writes, or {@see WriteOp::Undeclared} when it does not say (or is gone). */

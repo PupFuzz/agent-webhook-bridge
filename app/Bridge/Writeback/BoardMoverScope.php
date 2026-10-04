@@ -28,6 +28,8 @@ final class BoardMoverScope
 
     private const OP = 'bridge.board_mover.op';
 
+    private const EVENT = 'bridge.board_mover.webhook_event_id';
+
     public static function handler(): ?string
     {
         $handler = Context::getHidden(self::HANDLER);
@@ -43,17 +45,30 @@ final class BoardMoverScope
     }
 
     /**
-     * Run $fn as $handler's dispatch, making $op. Restores the previous values afterwards, on a
-     * throw too.
+     * The id of the webhook delivery the running write was queued for, the `webhook_event_id` an
+     * owed write's own rows carry, so a row logged by a handler can be joined to them. Null outside
+     * a write applied for a delivery.
+     */
+    public static function webhookEventId(): ?int
+    {
+        $id = Context::getHidden(self::EVENT);
+
+        return is_int($id) ? $id : null;
+    }
+
+    /**
+     * Run $fn as $handler's dispatch, making $op, for the delivery $webhookEventId (null: none,
+     * and an outer scope's delivery is not inherited). Restores the previous values afterwards, on
+     * a throw too.
      *
      * @template T
      *
      * @param  callable(): T  $fn
      * @return T
      */
-    public static function forHandler(string $handler, WriteOp $op, callable $fn): mixed
+    public static function forHandler(string $handler, WriteOp $op, callable $fn, ?int $webhookEventId = null): mixed
     {
-        return Context::scope($fn, hidden: [self::HANDLER => $handler, self::OP => $op->value]);
+        return Context::scope($fn, hidden: [self::HANDLER => $handler, self::OP => $op->value, self::EVENT => $webhookEventId]);
     }
 
     /**
