@@ -11,6 +11,7 @@ use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Support\CoordCredentialStoreFixture;
 use Tests\Support\PastedTokenFixture;
@@ -312,11 +313,30 @@ class ProtocolInvalidLabelTest extends TestCase
         $this->assertSame([], $this->github);
     }
 
-    public function test_a_token_pasted_as_the_map_value_is_in_no_log_line_and_no_push(): void
+    /**
+     * Where a pasted token can sit: the store's map value (round 1), or a path setting the store or
+     * the single file is read from (round 2) — every one must reach no log line.
+     *
+     * @return array<string, array{0: callable(CoordCredentialStoreFixture, string): void}>
+     */
+    public static function pastedTokenPlaces(): array
+    {
+        return [
+            'the store map value' => [fn ($s, $t) => $s->write(['github.com/acme' => $t], [])],
+            'BRIDGE_COORD_CREDENTIALS_PATH' => [fn ($s, $t) => config(['bridge.coord_credentials_path' => $t])],
+            'BRIDGE_GITHUB_TOKEN_PATH' => [function ($s, $t): void {
+                $s->write([], []);
+                config(['bridge.providers.github.token_path' => $t]);
+            }],
+        ];
+    }
+
+    /** @param  callable(CoordCredentialStoreFixture, string): void  $arrange */
+    #[DataProvider('pastedTokenPlaces')]
+    public function test_a_pasted_token_is_in_no_log_line_and_no_push(callable $arrange): void
     {
         $pasted = PastedTokenFixture::value();
-        $store = (new CoordCredentialStoreFixture($this->dir.'/coord'))->use();
-        $store->write(['github.com/acme' => $pasted], []);
+        $arrange((new CoordCredentialStoreFixture($this->dir.'/coord'))->use(), $pasted);
         $this->fakePeers();
         $logged = [];
         Log::listen(function (MessageLogged $e) use (&$logged): void {

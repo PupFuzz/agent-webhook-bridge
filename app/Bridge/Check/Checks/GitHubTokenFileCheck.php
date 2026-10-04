@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
+use App\Bridge\Support\CoordCredentialStore;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\ProcessIdentity;
@@ -187,6 +188,7 @@ final class GitHubTokenFileCheck implements Check
     {
         $legs = self::describe($enabled);
         $path = $resolution->path;
+        $shown = CoordCredentialStore::displayPathSetting((string) $path);
         if ($resolution->fileFault === TokenFileFault::Unreadable) {
             return Finding::unvalidated("github token file: {$resolution->problem} — THIS process could not read it, which says nothing about the user the receiver runs as, so whether {$legs} can reach GitHub was NOT determined. Re-run bridge:check as the receiver's user.");
         }
@@ -194,7 +196,7 @@ final class GitHubTokenFileCheck implements Check
             return Finding::unvalidated("github token file: {$resolution->problem} — so whether {$legs} can reach GitHub was NOT determined.");
         }
         if ($resolution->fileFault === TokenFileFault::Absent && $path !== null) {
-            $unseen = PathVisibility::unverifiedUnlessVisible($path, "github token file at {$path}");
+            $unseen = PathVisibility::unverifiedUnlessVisible($path, "github token file at {$shown}");
             if ($unseen !== null) {
                 return $unseen;
             }
@@ -205,10 +207,10 @@ final class GitHubTokenFileCheck implements Check
         $owed = $writing === [] ? '' : ', then run `php artisan bridge:github-owed --fix` to make the comments and labels already owed';
         $inert = "so they are INERT on this install: {$legs}. Each GitHub request they decide is dropped and logged, and nothing retries it on its own.";
         $remedy = match (true) {
-            $resolution->sourceKind === TokenSource::TokenFile => "No write_token_path and no coord credential store entry covers these repos, so they fall back to the single token file. These legs reach GitHub with this file and nothing else, {$inert} Place a token{$scope} at {$path} (chmod 600, owned by the user the receiver runs as), or map the repos in the coord credential store{$owed}.",
-            $resolution->sourceKind === TokenSource::WriteTokenPath => "These legs reach GitHub with this file and nothing else, {$inert} Place a token{$scope} at {$path} (chmod 600, owned by the user the receiver runs as), or remove the repo's write_token_path from writeback.json{$owed}.",
+            $resolution->sourceKind === TokenSource::TokenFile => "No write_token_path and no coord credential store entry covers these repos, so they fall back to the single token file. These legs reach GitHub with this file and nothing else, {$inert} Place a token{$scope} at {$shown} (chmod 600, owned by the user the receiver runs as), or map the repos in the coord credential store{$owed}.",
+            $resolution->sourceKind === TokenSource::WriteTokenPath => "These legs reach GitHub with this file and nothing else, {$inert} Place a token{$scope} at {$shown} (chmod 600, owned by the user the receiver runs as), or remove the repo's write_token_path from writeback.json{$owed}.",
             $resolution->fileFault === TokenFileFault::Misconfigured => "The single token file does not stand in for a repo the store may map; these legs reach GitHub with no token, {$inert} Fix what is named above{$owed}.",
-            default => "The single token file does not stand in for a repo the store maps; these legs reach GitHub with no token, {$inert} Place the token{$scope} at {$path} (chmod 600, owned by the store's owner, who must be the user the receiver runs as), or correct the pointer in the coord credential store{$owed}.",
+            default => "The single token file does not stand in for a repo the store maps; these legs reach GitHub with no token, {$inert} Place the token{$scope} at {$shown} (chmod 600, owned by the store's owner, who must be the user the receiver runs as), or correct the pointer in the coord credential store{$owed}.",
         };
 
         return Finding::fail("github token file: {$resolution->problem}. {$remedy}");
@@ -318,13 +320,14 @@ final class GitHubTokenFileCheck implements Check
         $name = fn (int $uid): string => $identity->accountName($uid) ?? "uid {$uid}";
         $measure = "Run `sudo -u <pool user> php artisan bridge:check` to measure the receiver's PHP-FPM pool user.";
         $tokenOwner = $identity->ownerOf($path);
+        $shown = CoordCredentialStore::displayPathSetting($path);
         $euid = $identity->euid();
 
         if ($tokenOwner === 0) {
-            return [false, "{$path} is owned by root, which the receiver never runs as, and a token file is readable by its owner alone — so the receiver cannot read it: chown it to the user the receiver runs as. {$measure}"];
+            return [false, "{$shown} is owned by root, which the receiver never runs as, and a token file is readable by its owner alone — so the receiver cannot read it: chown it to the user the receiver runs as. {$measure}"];
         }
         if ($tokenOwner === null) {
-            return [false, "this run could not read the owner of {$path}, so whether the receiver's user owns it was NOT measured. {$measure}"];
+            return [false, "this run could not read the owner of {$shown}, so whether the receiver's user owns it was NOT measured. {$measure}"];
         }
         $stateDir = dirname(GitHubWriteDebt::path());
         if (! PathVisibility::ancestorIsTraversable(GitHubWriteDebt::path())) {
@@ -340,7 +343,7 @@ final class GitHubTokenFileCheck implements Check
         if ($kind === 'evidence' && $owner !== $tokenOwner) {
             /** @var string $file */
             /** @var int $owner */
-            return [false, "{$path} is owned by {$name($tokenOwner)}, but {$file} — in a state dir only {$name($owner)} can write, where the receiver must write — is owned by {$name($owner)}, and a token file is readable by its owner alone, so the receiver most likely cannot read it: chown it to {$name($owner)} if that is the user the receiver runs as. {$measure}"];
+            return [false, "{$shown} is owned by {$name($tokenOwner)}, but {$file} — in a state dir only {$name($owner)} can write, where the receiver must write — is owned by {$name($owner)}, and a token file is readable by its owner alone, so the receiver most likely cannot read it: chown it to {$name($owner)} if that is the user the receiver runs as. {$measure}"];
         }
         if ($euid === 0) {
             return [false, "this run is root, which reads any file, so its read says nothing about the user the receiver runs as. {$measure}"];

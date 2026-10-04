@@ -200,13 +200,14 @@ final class GitHubTokenResolver
         }
         $identity = app(ProcessIdentity::class);
         $fileOwner = $identity->ownerOf($path);
+        $shown = CoordCredentialStore::displayPathSetting($path);
         if ($fileOwner === null || $expected === null) {
-            return TokenResolution::problem("{$label} for {$repo} names {$path}, and this process could not read the owner of ".($fileOwner === null ? 'that file' : $namer).', so whether it belongs to '.$who.' was NOT determined', TokenFileFault::Undetermined, $kind, $path);
+            return TokenResolution::problem("{$label} for {$repo} names {$shown}, and this process could not read the owner of ".($fileOwner === null ? 'that file' : $namer).', so whether it belongs to '.$who.' was NOT determined', TokenFileFault::Undetermined, $kind, $path);
         }
         if ($fileOwner !== $expected) {
             $name = fn (int $uid): string => $identity->accountName($uid) ?? "uid {$uid}";
 
-            return TokenResolution::problem("{$label} for {$repo} names {$path}, which is owned by {$name($fileOwner)} and not by {$who} {$name($expected)} — the bridge reads a file named there only when ".$who.' owns it', TokenFileFault::Misconfigured, $kind, $path);
+            return TokenResolution::problem("{$label} for {$repo} names {$shown}, which is owned by {$name($fileOwner)} and not by {$who} {$name($expected)} — the bridge reads a file named there only when ".$who.' owns it', TokenFileFault::Misconfigured, $kind, $path);
         }
 
         return null;
@@ -220,7 +221,8 @@ final class GitHubTokenResolver
     {
         $override = $this->hasTokenPathOverride();
         $path = $this->tokenPath();
-        $resolution = $this->readTokenFile($path, TokenSource::TokenFile, $override ? "token_path override ({$path})" : "token file ({$path})", 'the configured token_path');
+        $shown = CoordCredentialStore::displayPathSetting($path);
+        $resolution = $this->readTokenFile($path, TokenSource::TokenFile, $override ? "token_path override ({$shown})" : "token file ({$shown})", 'the configured token_path');
         if ($resolution === null && $override) {
             // Authoritative but missing/blank → fail loud; nothing below stands in.
             return self::unplacedProblem($path, 'the configured token_path', TokenSource::TokenFile);
@@ -236,7 +238,8 @@ final class GitHubTokenResolver
      */
     private function readTokenFile(string $path, TokenSource $kind, string $source, string $what): ?TokenResolution
     {
-        $named = $kind === TokenSource::TokenFile ? "github token file {$path}" : "{$what}: github token file {$path}";
+        $shown = CoordCredentialStore::displayPathSetting($path);
+        $named = $kind === TokenSource::TokenFile ? "github token file {$shown}" : "{$what}: github token file {$shown}";
         try {
             $token = SecretFile::read($path);   // throws on insecure perms; null when absent or blank
         } catch (InsecureSecretPermsException $e) {
@@ -248,7 +251,7 @@ final class GitHubTokenResolver
             return null;
         }
         if ($token === CoordCredentialStore::PLACEHOLDER) {
-            return TokenResolution::problem("no github token at {$what}: {$path} holds the unfilled ".CoordCredentialStore::PLACEHOLDER.' placeholder', TokenFileFault::Empty, $kind, $path);
+            return TokenResolution::problem("no github token at {$what}: {$shown} holds the unfilled ".CoordCredentialStore::PLACEHOLDER.' placeholder', TokenFileFault::Empty, $kind, $path);
         }
 
         return TokenResolution::resolved($token, $source, $kind, $path);
@@ -272,14 +275,15 @@ final class GitHubTokenResolver
     private static function unplaced(string $path): array
     {
         clearstatcache(true, $path);
+        $shown = CoordCredentialStore::displayPathSetting($path);
         if (is_file($path)) {
-            return [TokenFileFault::Empty, "{$path} is empty"];
+            return [TokenFileFault::Empty, "{$shown} is empty"];
         }
         if (file_exists($path)) {
-            return [TokenFileFault::NotAFile, "{$path} is not a regular file"];
+            return [TokenFileFault::NotAFile, "{$shown} is not a regular file"];
         }
 
-        return [TokenFileFault::Absent, "{$path} absent"];
+        return [TokenFileFault::Absent, "{$shown} absent"];
     }
 
     private function loadWriteback(): void

@@ -169,13 +169,15 @@ final class CoordCredentialStore
      */
     public function faultClause(): string
     {
+        $path = self::displayPathSetting((string) $this->path);
+
         return match ($this->fault) {
             self::UNSET => 'where the coord credential store is was not determined: neither '.self::SETTING.' nor BRIDGE_COORD_CONFIG_PATH (an absolute path, which the store sits beside) is set in this install\'s .env',
-            self::NOT_ABSOLUTE => self::SETTING." is '{$this->path}', which is not an absolute path",
-            self::NOT_A_FILE => "the coord credential store at {$this->path} is not a file the bridge will read: {$this->detail}",
-            self::UNREADABLE => "the coord credential store at {$this->path} could not be read by this OS user: {$this->detail}",
-            self::MALFORMED => "the coord credential store at {$this->path} is not in the shape the bridge reads ({$this->detail}); the offending text is not shown, because in that file a malformed line is often a bare token",
-            default => "the coord credential store at {$this->path} was read",
+            self::NOT_ABSOLUTE => self::SETTING." is '{$path}', which is not an absolute path",
+            self::NOT_A_FILE => "the coord credential store at {$path} is not a file the bridge will read: {$this->detail}",
+            self::UNREADABLE => "the coord credential store at {$path} could not be read by this OS user: {$this->detail}",
+            self::MALFORMED => "the coord credential store at {$path} is not in the shape the bridge reads ({$this->detail}); the offending text is not shown, because in that file a malformed line is often a bare token",
+            default => "the coord credential store at {$path} was read",
         };
     }
 
@@ -187,9 +189,25 @@ final class CoordCredentialStore
      */
     public static function displayName(string $name): string
     {
-        return self::looksLikePastedSecret($name)
-            ? '<a credential-shaped name, '.self::fingerprint($name).'>'
-            : $name;
+        return self::elide($name, 'name');
+    }
+
+    /**
+     * A path-valued SETTING (an env var, a config key) as a message may print it — the one display
+     * rule for every such value, so a token pasted where a path belongs is printed by none of the
+     * messages that name the setting. An absolute or `~/` path never has the shape (it holds a
+     * separator), so a real path is printed as written; only a bare value can be elided.
+     */
+    public static function displayPathSetting(string $value): string
+    {
+        return self::elide($value, 'value');
+    }
+
+    private static function elide(string $value, string $noun): string
+    {
+        return self::looksLikePastedSecret($value)
+            ? "<a credential-shaped {$noun}, ".self::fingerprint($value).'>'
+            : $value;
     }
 
     /**

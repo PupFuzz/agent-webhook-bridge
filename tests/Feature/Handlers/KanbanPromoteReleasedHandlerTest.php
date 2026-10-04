@@ -14,6 +14,7 @@ use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CoordCredentialStoreFixture;
 use Tests\Support\KanbanCardStub;
 use Tests\Support\KanbanSearchSim;
@@ -154,12 +155,31 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), "/tasks/{$cardId}.json"));
     }
 
-    public function test_a_token_pasted_as_the_map_value_is_in_no_log_line_and_no_alert(): void
+    /**
+     * Where a pasted token can sit: the store's map value (round 1), or a path setting the store or
+     * the single file is read from (round 2) — every one must reach no log line.
+     *
+     * @return array<string, array{0: callable(CoordCredentialStoreFixture, string): void}>
+     */
+    public static function pastedTokenPlaces(): array
+    {
+        return [
+            'the store map value' => [fn ($s, $t) => $s->write(['github.com/owner/repo' => $t], [])],
+            'BRIDGE_COORD_CREDENTIALS_PATH' => [fn ($s, $t) => config(['bridge.coord_credentials_path' => $t])],
+            'BRIDGE_GITHUB_TOKEN_PATH' => [function ($s, $t): void {
+                $s->write([], []);
+                config(['bridge.providers.github.token_path' => $t]);
+            }],
+        ];
+    }
+
+    /** @param  callable(CoordCredentialStoreFixture, string): void  $arrange */
+    #[DataProvider('pastedTokenPlaces')]
+    public function test_a_pasted_token_is_in_no_log_line_and_no_alert(callable $arrange): void
     {
         $pasted = PastedTokenFixture::value();
         $this->writeWritebackWithAlert(['promote_on_release' => true, 'stages' => ['merged' => 52, 'merged_to_main' => 53]]);
-        $store = (new CoordCredentialStoreFixture($this->dir.'/coord'))->use();
-        $store->write(['github.com/owner/repo' => $pasted], []);
+        $arrange((new CoordCredentialStoreFixture($this->dir.'/coord'))->use(), $pasted);
         $this->fakeBoard(
             [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']]],
             [self::ALERT_URL.'*' => Http::response('ok')],

@@ -398,6 +398,37 @@ class GitHubTokenResolverTest extends TestCase
         $this->assertStringContainsString($says, (string) $r->problem, 'the witness: the problem is the one this shape raises');
     }
 
+    /**
+     * ⛔ A TOKEN PASTED WHERE A PATH SETTING BELONGS IS NEVER RENDERED (round-2 review, MINOR 1):
+     * `BRIDGE_COORD_CREDENTIALS_PATH` and `BRIDGE_GITHUB_TOKEN_PATH` are printed by the same
+     * problems, through `CoordCredentialStore::displayPathSetting()`.
+     *
+     * @return array<string, array{0: callable(CoordCredentialStoreFixture, string): void, 1: string}>
+     */
+    public static function pastedPathSettings(): array
+    {
+        return [
+            'BRIDGE_COORD_CREDENTIALS_PATH' => [fn ($s, $t) => config(['bridge.coord_credentials_path' => $t]), 'BRIDGE_COORD_CREDENTIALS_PATH is \'<a credential-shaped value'],
+            'BRIDGE_GITHUB_TOKEN_PATH' => [function ($s, $t): void {
+                $s->write([], []);
+                config(['bridge.providers.github.token_path' => $t]);
+            }, '<a credential-shaped value, sha256:'],
+        ];
+    }
+
+    /** @param  callable(CoordCredentialStoreFixture, string): void  $arrange */
+    #[DataProvider('pastedPathSettings')]
+    public function test_a_path_setting_holding_a_pasted_token_is_never_printed(callable $arrange, string $says): void
+    {
+        $arrange($this->store, PastedTokenFixture::value());
+
+        $r = $this->resolver()->resolveFor('o/r');
+
+        $this->assertFalse($r->ok());
+        $this->assertStringNotContainsString(PastedTokenFixture::value(), (string) $r->problem);
+        $this->assertStringContainsString($says, (string) $r->problem, 'the witness: the problem names the setting, elided');
+    }
+
     public function test_a_long_key_name_is_elided_from_messages_but_still_serves_its_repo(): void
     {
         // The framework's heuristic flags any separator-free name of 24+ characters without a dot;

@@ -774,6 +774,11 @@ class BridgeCommandsTest extends TestCase
         return [
             'as the map value' => [fn ($s, $t) => $s->write(['github.com/owner/repo' => $t], []), '/^FAIL: github token file: .*credential-shaped/m'],
             'as a map name' => [fn ($s, $t) => $s->raw("[git-credential-map]\n{$t} = two words\n"), '/^FAIL: github token file: .*line 2 maps a \[git-credential-map\] name/m'],
+            'as BRIDGE_COORD_CREDENTIALS_PATH' => [fn ($s, $t) => config(['bridge.coord_credentials_path' => $t]), "/^FAIL: github token file: BRIDGE_COORD_CREDENTIALS_PATH is '<a credential-shaped value, sha256:/m"],
+            'as BRIDGE_GITHUB_TOKEN_PATH' => [function ($s, $t): void {
+                $s->write([], []);
+                config(['bridge.providers.github.token_path' => $t]);
+            }, '/^FAIL: github token file: .*<a credential-shaped value, sha256:[0-9a-f]{8}> absent/m'],
         ];
     }
 
