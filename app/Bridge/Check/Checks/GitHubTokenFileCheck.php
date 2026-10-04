@@ -49,7 +49,7 @@ use Throwable;
  * name and on/off predicate live on the consumer ({@see GitHubTokenFileConsumer}). This class
  * keeps no list of leg names or switches. `GitHubTokenFileConsumerRegistryTest` reds when a
  * class under `app/` calls `->resolveFromFile(` or `->resolveFor(` and is neither registered
- * here nor ruled CLI-only in that test — a lexical census, so a call it cannot spell is not in it.
+ * here nor ruled CLI-only or receiver-and-CLI in that test — a lexical census, so a call it cannot spell is not in it.
  *
  * ⛔ SEVERITY — `fail` WHERE THE FILE IS PROVEN UNUSABLE FOR EVERY READER, and that is a
  * deliberate departure from the `warn` the promote-only probe carried. The comment and the label

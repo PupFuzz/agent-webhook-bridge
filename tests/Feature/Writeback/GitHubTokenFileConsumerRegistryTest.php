@@ -51,6 +51,25 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
         'App\Console\Commands\Bridge\WritebackExposureCommand' => 'an artisan command',
     ];
 
+    /**
+     * Classes that call `resolveFor()` from BOTH the receiver and the CLI, so the file is not the
+     * only way they resolve a token and a missing file does not make them inert: registering one
+     * would have `github.token_file` FAIL, calling it INERT, on an install where the CLI reaches
+     * GitHub through a source the file does not hold. Since DL-456 that is a `write_token_path` or
+     * the credential store, both read in-process by the receiver too; `GH_TOKEN` is no longer one
+     * (`resolveFor()` never reads it). Each names the leg that reports it.
+     *
+     * @var array<class-string, string>
+     */
+    private const RECEIVER_AND_CLI = [
+        // The receiver reads on a `workflow_run` delivery and on a registration through the HTTP tool
+        // door (also inside the receiver); the `ci-await-sweep` job (bridge:tick, a CLI) and a
+        // registration through the ssh tool door (a CLI) resolve one token per repo exactly as the
+        // receiver does (DL-456) — none of them reads GH_TOKEN. A head whose reads fail is kept and read again, and `ci_await.awaits` (bridge:check)
+        // warns with the read's own error — "no GitHub read token: …" — when none answers.
+        'App\Bridge\CiAwait\CiAwaitService' => 'receiver delivery and HTTP-door registration (both inside the receiver), bridge:tick sweep and ssh-door registration (CLI); reported by ci_await.awaits',
+    ];
+
     /** The check reads the file to ask about the consumers; it is not one. */
     private const THE_CHECK_ITSELF = GitHubTokenFileCheck::class;
 
@@ -68,7 +87,7 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
             }
         }
         foreach ($callers['resolveFor'] as $class) {
-            if (! in_array($class, $registered, true) && ! array_key_exists($class, self::CLI_ONLY) && $class !== self::THE_CHECK_ITSELF) {
+            if (! in_array($class, $registered, true) && ! array_key_exists($class, self::CLI_ONLY) && ! array_key_exists($class, self::RECEIVER_AND_CLI) && $class !== self::THE_CHECK_ITSELF) {
                 $unregistered[] = "{$class} calls resolveFor()";
             }
         }
@@ -82,7 +101,8 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
             "a class resolves a GitHub token and is not declared.\n"
             .'If it runs in the RECEIVER, it is a token-FILE consumer: implement GitHubTokenFileConsumer and add it to '
             ."GitHubTokenFileCheck::CONSUMERS, or bridge:check will say nothing while its writes are dropped.\n"
-            .'If it runs only from artisan, rule it CLI-only in this test, with the reason.');
+            .'If it runs only from artisan, rule it CLI-only in this test, with the reason. If it runs in the receiver AND '
+            .'from the CLI, so the file is not its only way to a token, rule it RECEIVER_AND_CLI and name the check that reports it.');
     }
 
     public function test_every_registered_consumer_still_resolves_a_token_and_declares_itself(): void
@@ -96,6 +116,9 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
         }
         foreach (array_keys(self::CLI_ONLY) as $class) {
             $this->assertContains($class, array_merge($callers['resolveFor'], $callers['resolveForCli']), "{$class} is ruled CLI-only but no longer calls the resolver — drop the ruling");
+        }
+        foreach (array_keys(self::RECEIVER_AND_CLI) as $class) {
+            $this->assertContains($class, $callers['resolveFor'], "{$class} is ruled RECEIVER_AND_CLI but no longer calls resolveFor() — drop the ruling");
         }
     }
 

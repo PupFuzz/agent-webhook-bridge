@@ -27,6 +27,7 @@ use App\Bridge\Check\Checks\BoardToolsSuppressedCheck;
 use App\Bridge\Check\Checks\ChannelSnapshotCheck;
 use App\Bridge\Check\Checks\ChannelTokenPathCheck;
 use App\Bridge\Check\Checks\ChannelTransportCheck;
+use App\Bridge\Check\Checks\CiAwaitsCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\ClientFleetCheck;
 use App\Bridge\Check\Checks\ClientPackSourceCheck;
@@ -910,7 +911,7 @@ class CheckCommand extends BridgeCommand
     {
         return (new CheckRunner)
             ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck, new InstallFlagValuesCheck)
-            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck, new WritebackOwedWritesTableCheck)
+            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck, new WritebackOwedWritesTableCheck, new CiAwaitsCheck)
             ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
             ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))
             ->register(CheckSlot::Jobs, new JobsPostureCheck)

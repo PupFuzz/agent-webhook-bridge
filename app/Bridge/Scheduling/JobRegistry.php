@@ -4,6 +4,7 @@ namespace App\Bridge\Scheduling;
 
 use App\Models\ScheduledJob;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -41,6 +42,8 @@ final class JobRegistry
      *
      * @throws JobSpecException when the handler may not be invoked on this install — see
      *                          {@see JobRefusal} for the two reasons and their remedies
+     * @throws UniqueConstraintViolationException when a concurrent insert of the same name lands
+     *                                            between this read and this save
      */
     public function insert(JobSpec $spec): ScheduledJob
     {
@@ -105,6 +108,30 @@ final class JobRegistry
         ]);
 
         return $job;
+    }
+
+    /**
+     * Make sure an instance by this spec's name EXISTS, inserting the spec only when none does —
+     * the declare-on-first-use shape a subsystem uses when its own work creates the need for a
+     * job (the owed-write queue at every durable write, `ci_await` at every registration). An
+     * existing row is left exactly as it is, so an operator's `bridge:jobs disable` or edit
+     * survives every later declare; one who REMOVES the instance gets it back at the next.
+     * Costs one indexed `exists()` once the row is there.
+     *
+     * @throws JobSpecException|\Throwable when the instance does not exist and {@see insert()}
+     *                                     refuses or fails; a concurrent declare of the same
+     *                                     name is not a failure — the row exists either way
+     */
+    public function declareIfAbsent(JobSpec $spec): void
+    {
+        if (ScheduledJob::query()->where('name', $spec->name)->exists()) {
+            return;
+        }
+        try {
+            $this->insert($spec);
+        } catch (UniqueConstraintViolationException) {
+            // A concurrent request declared it between the read and this insert.
+        }
     }
 
     /** Remove an instance. Returns whether there was one to remove. */

@@ -9,13 +9,11 @@ use App\Bridge\Scheduling\Handlers\OwedWriteRetryJob;
 use App\Bridge\Scheduling\Handlers\OwedWriteWatchdogJob;
 use App\Bridge\Scheduling\JobHandlerRegistry;
 use App\Bridge\Scheduling\JobRegistry;
-use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Support\SubscriptionRegistry;
-use App\Models\ScheduledJob;
 use App\Models\WebhookEvent;
 use App\Models\WritebackOwedWrite;
 use Illuminate\Database\Eloquent\Builder;
@@ -492,7 +490,7 @@ final class OwedWriteQueue
     private function declareJobs(): void
     {
         try {
-            $this->declareOne(OwedWriteWatchdogJob::INSTANCE, OwedWriteWatchdogJob::spec());
+            app(JobRegistry::class)->declareIfAbsent(OwedWriteWatchdogJob::spec());
         } catch (Throwable $e) {
             Log::warning('bridge owed-write: could not declare the owed-write watchdog job — owed writes will not be aged out or alerted on until it exists', [
                 'catalog_id' => 'owed_write.watchdog_undeclared',
@@ -510,27 +508,13 @@ final class OwedWriteQueue
             return;
         }
         try {
-            $this->declareOne(OwedWriteRetryJob::INSTANCE, OwedWriteRetryJob::spec());
+            app(JobRegistry::class)->declareIfAbsent(OwedWriteRetryJob::spec());
         } catch (Throwable $e) {
             Log::warning('bridge owed-write: could not declare the owed-write retry job — owed writes will not be retried on a clock until it exists (each subject\'s next event still retries it inline)', [
                 'catalog_id' => 'owed_write.retry_undeclared',
                 'error' => RedactedErrorText::of($e),
                 'remedy' => 'php artisan bridge:jobs add '.OwedWriteRetryJob::INSTANCE.' --handler='.OwedWriteRetryJob::NAME.' (docs/periodic-jobs.md)',
             ]);
-        }
-    }
-
-    /** @throws Throwable when the instance does not yet exist and JobRegistry::insert() refuses or fails */
-    private function declareOne(string $instance, JobSpec $spec): void
-    {
-        if (ScheduledJob::query()->where('name', $instance)->exists()) {
-            return;
-        }
-        try {
-            app(JobRegistry::class)->insert($spec);
-        } catch (UniqueConstraintViolationException) {
-            // A concurrent request declared it between the read and this insert — the
-            // instance exists, which is all this method promises.
         }
     }
 

@@ -19,7 +19,8 @@ namespace App\Bridge\Writeback;
  * `App\Bridge\Check\Checks\GitHubTokenFileCheck::CONSUMERS` (NAMED, not `{@see}`-linked: pint
  * turns a docblock FQCN into a real `use`, and this namespace depends on no check), and
  * `GitHubTokenFileConsumerRegistryTest` reds when a class under `app/` calls `->resolveFromFile(`
- * or `->resolveFor(` without being registered there or ruled CLI-only in that test.
+ * or `->resolveFor(` without being registered there or ruled CLI-only, or receiver-and-CLI (a leg the file
+ * is not the only way for, reported by its own check), in that test.
  *
  * The methods are STATIC because each answers from config alone: the check must not construct a
  * handler, with its clients and its alert channel, to ask whether it is switched on.
