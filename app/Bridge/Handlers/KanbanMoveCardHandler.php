@@ -442,10 +442,6 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
         if (($card['workflow_stage_id'] ?? null) === $stageId) {
             // Self-heal: the move is a no-op (already here), but a card# fallback card
             // may still be missing its correlation refs — stamp add-if-missing (#3866).
-            // The row says the card was already at the stage, BEFORE the stamp that can throw: a
-            // give-up for this delivery then has an outcome to join to, and is not read as a move
-            // that was abandoned.
-            Log::info('kanban_move_card: card already at the target stage — nothing to move', ['catalog_id' => 'move_card.already_at_stage', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome] + MappedBoardGuard::boardContext($card, $mapping));
             $this->stampCorrelationRefs($card, $storedRef, $mapping, $payload, $cardId, $client, $repo, $outcome);
 
             return;   // idempotent: already in the target stage
@@ -596,8 +592,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
         // The landing is recorded the moment the move succeeds, BEFORE anything that can throw after it
         // (the stamp below). A stamp that fails transiently re-throws and the write stays owed; its retries
         // find the card already at the stage and log no landing (the guard above), so this row is the ONLY
-        // record that the move landed. `webhook_event_id` is the key the owed write's own rows carry, so a
-        // give-up joins to it: a `move_card.moved` row for that delivery means the move landed.
+        // record that the move landed.
         // `card_board` + `mapped_board`, the same pair the refusal arm emits and from the
         // same primitive (card#7212). The old single `board` key was the CONFIG's board —
         // the one we intended to write to — so a write that landed on an out-of-mapping

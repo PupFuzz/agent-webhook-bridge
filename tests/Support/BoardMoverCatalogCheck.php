@@ -51,9 +51,8 @@ use ReflectionParameter;
  * argument of a `Log::` call, the `$logContext` argument of a helper. `handler` is always
  * {@see BoardMoverScope::handler()}, never a typed name: a shared site logs for whichever handler
  * called it, so only the runtime scope knows. `webhook_event_id` is always
- * {@see BoardMoverScope::webhookEventId()} for the same reason, and a site that omits it is what
- * let a landed move's row fail to join to its give-up: the delivery is the join key, so no row may
- * leave it to a caller to add. `op` is a string literal the catalog's `ops` declares
+ * {@see BoardMoverScope::webhookEventId()} for the same reason, so no row leaves the delivery to a
+ * caller to add. `op` is a string literal the catalog's `ops` declares
  * where the site's write is the same on every path, or {@see BoardMoverScope::op()} where it
  * depends on the caller. `undeclared` is the scope's value when nobody declared one, so it is never
  * a literal. The check sees the keys, not the values they take at run time: that the scope is set
@@ -274,16 +273,6 @@ final class BoardMoverCatalogCheck
             }
         }
         $kinds = is_array($catalog['kinds'] ?? null) ? $catalog['kinds'] : [];
-        $outcomeKinds = $catalog['outcome_kinds'] ?? null;
-        if (! is_array($outcomeKinds) || $outcomeKinds === [] || ! array_is_list($outcomeKinds)) {
-            $out[] = 'OUTCOME_KINDS: `outcome_kinds` must be a non-empty list of kinds the catalog declares';
-        } else {
-            foreach ($outcomeKinds as $kind) {
-                if (! is_string($kind) || ! array_key_exists($kind, $kinds)) {
-                    $out[] = 'OUTCOME_KINDS: `'.(is_string($kind) ? $kind : 'a non-string member').'` is listed in `outcome_kinds` and is not a kind the catalog declares';
-                }
-            }
-        }
         $entries = is_array($catalog['entries'] ?? null) ? $catalog['entries'] : [];
         if ($entries === []) {
             $out[] = 'CATALOG_EMPTY: the catalog declares no entries — nothing was checked';
@@ -481,7 +470,7 @@ final class BoardMoverCatalogCheck
         $event = self::contextValue($context->value, self::EVENT_KEY);
         $eventProblem = match (true) {
             $event === null => 'no `'.self::EVENT_KEY.'` key in a literal context array',
-            ! self::isScopeRead($event, 'webhookEventId') => '`'.self::EVENT_KEY.'` is not `BoardMoverScope::webhookEventId()` — the delivery is the join key between a give-up and the rows that say what landed, and only the scope knows it at every site',
+            ! self::isScopeRead($event, 'webhookEventId') => '`'.self::EVENT_KEY.'` is not `BoardMoverScope::webhookEventId()` — only the scope knows the delivery at every site',
             default => null,
         };
 

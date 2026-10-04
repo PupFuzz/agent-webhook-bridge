@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "The bridge's board-mover log catalog: every log row the card-move, park/unpark and writeback code emits carries `catalog_id` in its log context, and every id is an entry here. Every such row also carries `handler` (the registry name of the handler whose dispatch wrote it, null when no handler's dispatch did: a classifier, bridge:reconcile, bridge:github-owed) `webhook_event_id` (the delivery the running write was queued for, null outside one: the key a give-up shares with the rows that say what landed) and `op` (the write-kind the row is about, one of `ops`). `handler` and `webhook_event_id` are always read at run time, and so is `op` wherever the row is written by a site shared between writes, so none is a field of an entry. `outcome_kinds` are the kinds that record how a delivery's write ended: a give-up is an abandoned write only if no row of an outcome kind carries its `webhook_event_id`. docs/writeback.md § The board-mover catalog owns the contract; tests/Feature/Writeback/BoardMoverCatalogTest.php checks this file against the source.",
+  "about": "The bridge's board-mover log catalog: every log row the card-move, park/unpark and writeback code emits carries `catalog_id` in its log context, and every id is an entry here. Every such row also carries `handler` (the registry name of the handler whose dispatch wrote it, null when no handler's dispatch did: a classifier, bridge:reconcile, bridge:github-owed) `webhook_event_id` (the delivery the running write was queued for, null outside one) and `op` (the write-kind the row is about, one of `ops`). `handler` and `webhook_event_id` are always read at run time, and so is `op` wherever the row is written by a site shared between writes, so none is a field of an entry. ⚠ An `owed_write.gave_up` or `owed_write.overflow_gave_up` row with `op: move` means this move is NOT CONFIRMED: it is an upper bound on failed moves, and docs/writeback.md names the cases that over-report. `webhook_event_id` is the DELIVERY id. One delivery can cover several writes and several cards, so it is not a key for deciding whether a given move landed. docs/writeback.md § The board-mover catalog owns the contract; tests/Feature/Writeback/BoardMoverCatalogTest.php checks this file against the source.",
   "context_key": "catalog_id",
   "handler_key": "handler",
   "op_key": "op",
@@ -14,11 +14,8 @@
     "none": "The row is not about a board or GitHub write (declaring the owed-write periodic jobs).",
     "undeclared": "Nothing declared which write the row is about: a shared site reached outside any handler's dispatch (bridge:github-owed reading its record, the board-tools door, bridge:check), or a custom durable handler that does not implement DeclaresWriteOp. Never written as a literal."
   },
-  "outcome_kinds": ["moved", "at_stage", "created", "declined"],
   "kinds": {
     "moved": "A card's stage move landed.",
-    "at_stage": "The card was already at the stage the write targets, so no move was needed.",
-    "created": "A card was created at the stage the write targets.",
     "written": "A board write other than a stage move landed (create, archive, rename, block_reason, card note, owner-tag clear).",
     "stamped": "Correlation refs were stamped on the card.",
     "stamp_refused": "kanban refused the correlation stamp (4xx), or the stamp failed transiently and stays owed.",
@@ -104,7 +101,7 @@
     {"id":"dependabot_card.archive_not_applied","kind":"upstream_contract","surface":["log"],"site":"KanbanDependabotCardHandler::handle","since":"0.88.0"},
     {"id":"dependabot_card.archived","kind":"written","surface":["log"],"site":"KanbanDependabotCardHandler::handle","since":"0.88.0"},
     {"id":"dependabot_card.constant_value_not_accepted","kind":"config_gap","surface":["log"],"site":"KanbanDependabotCardHandler::withoutUnacceptedConstants","since":"0.88.0"},
-    {"id":"dependabot_card.created","kind":"created","surface":["log"],"site":"KanbanDependabotCardHandler::handle","since":"0.88.0"},
+    {"id":"dependabot_card.created","kind":"written","surface":["log"],"site":"KanbanDependabotCardHandler::handle","since":"0.88.0"},
     {"id":"dependabot_card.moved","kind":"moved","surface":["log"],"site":"KanbanDependabotCardHandler::handle","since":"0.88.0"},
     {"id":"dependabot_card.no_stage_mapped","kind":"not_mapped","surface":["log"],"site":"KanbanDependabotCardHandler::handle","since":"0.88.0"},
     {"id":"dependabot_card.payload_invalid","kind":"not_mapped","surface":["log","alert_channel"],"site":"KanbanDependabotCardHandler::handle","since":"0.88.0"},
@@ -128,7 +125,6 @@
     {"id":"mapped_board_guard.board_scope_lookup_4xx","kind":"upstream_refused","surface":["log","alert_channel"],"site":"MappedBoardGuard::refusesCardIdOutsideMappedBoard","since":"0.88.0"},
     {"id":"mapped_board_guard.card_id_not_established","kind":"refused","surface":["log","alert_channel"],"site":"MappedBoardGuard::refusesCardIdOutsideMappedBoard","since":"0.88.0"},
     {"id":"mapped_board_guard.card_not_on_mapped_board","kind":"refused","surface":["log","alert_channel"],"site":"MappedBoardGuard::refuses","since":"0.88.0"},
-    {"id":"move_card.already_at_stage","kind":"at_stage","surface":["log"],"site":"KanbanMoveCardHandler::handle","since":"0.96.0"},
     {"id":"move_card.auto_unparked","kind":"stage_adjusted","surface":["log"],"site":"KanbanMoveCardHandler::handle","since":"0.88.0"},
     {"id":"move_card.card_id_not_int","kind":"not_mapped","surface":["log","alert_channel"],"site":"KanbanMoveCardHandler::handle","since":"0.88.0"},
     {"id":"move_card.card_token_near_miss","kind":"refused","surface":["log","alert_channel"],"site":"KanbanMoveCardHandler::handle","since":"0.88.0"},

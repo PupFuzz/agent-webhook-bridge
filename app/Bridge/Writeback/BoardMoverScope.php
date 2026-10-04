@@ -8,8 +8,9 @@ use Illuminate\Support\Facades\Context;
  * Which handler is running, which delivery it runs for, and which kind of write it is making, for
  * the board-mover log rows written meanwhile — the runtime values of their `handler`,
  * `webhook_event_id` and `op` context keys (card#11223, `docs/writeback.md` § *The board-mover
- * catalog*). `webhook_event_id` is the key a give-up shares with the rows that say what landed, so
- * every site spells it from here and none leaves it to a caller to add.
+ * catalog*). `webhook_event_id` identifies the DELIVERY, which can cover several writes and several cards, so
+ * it correlates rows and does not say whether a given move landed. Every site spells it from here
+ * and none leaves it to a caller to add.
  *
  * ⭐ HELD IN LARAVEL'S CONTEXT, NOT THREADED THROUGH SIGNATURES. A shared site (a guard, the kanban
  * client, the alert notifier) logs on behalf of whichever handler called it, often several frames
@@ -50,8 +51,8 @@ final class BoardMoverScope
 
     /**
      * The id of the webhook delivery the running write was queued for, the `webhook_event_id` an
-     * owed write's own rows carry, so a row logged by a handler can be joined to them. Null outside
-     * a write applied for a delivery.
+     * owed write's own rows carry, so rows of one delivery can be correlated. Null outside a write
+     * applied for a delivery.
      */
     public static function webhookEventId(): ?int
     {

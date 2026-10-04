@@ -59,23 +59,27 @@ class BoardMoverScopeTest extends TestCase
         $this->assertSame('undeclared', BoardMoverScope::op());
     }
 
-    public function test_a_scope_sets_both_values_narrows_the_op_and_restores_on_return_and_on_a_throw(): void
+    public function test_a_scope_sets_its_values_narrows_the_op_and_restores_on_return_and_on_a_throw(): void
     {
-        $seen = BoardMoverScope::forHandler('kanban_move_card', WriteOp::Move, function (): array {
-            $inner = BoardMoverScope::forOp(WriteOp::Write, fn (): array => [BoardMoverScope::handler(), BoardMoverScope::op()]);
+        $read = fn (): array => [BoardMoverScope::handler(), BoardMoverScope::op(), BoardMoverScope::webhookEventId()];
 
-            return [[BoardMoverScope::handler(), BoardMoverScope::op()], $inner, [BoardMoverScope::handler(), BoardMoverScope::op()]];
-        });
+        $seen = BoardMoverScope::forHandler('kanban_move_card', WriteOp::Move, function () use ($read): array {
+            $inner = BoardMoverScope::forOp(WriteOp::Write, $read);
 
-        $this->assertSame([['kanban_move_card', 'move'], ['kanban_move_card', 'write'], ['kanban_move_card', 'move']], $seen);
-        $this->assertNull(BoardMoverScope::handler());
+            return [$read(), $inner, $read()];
+        }, 4242);
+
+        $this->assertSame([['kanban_move_card', 'move', 4242], ['kanban_move_card', 'write', 4242], ['kanban_move_card', 'move', 4242]], $seen);
+        $this->assertSame([null, 'undeclared', null], $read());
 
         try {
-            BoardMoverScope::forHandler('kanban_block_reason', WriteOp::Write, fn () => throw new RuntimeException('boom'));
+            BoardMoverScope::forHandler('kanban_block_reason', WriteOp::Write, fn () => throw new RuntimeException('boom'), 7);
         } catch (RuntimeException) {
         }
-        $this->assertNull(BoardMoverScope::handler(), 'a throw out of the scope does not leave its handler behind');
-        $this->assertSame('undeclared', BoardMoverScope::op());
+        $this->assertSame([null, 'undeclared', null], $read(), 'a throw out of the scope does not leave its handler, op or delivery behind');
+
+        $this->assertNull(BoardMoverScope::forHandler('kanban_move_card', WriteOp::Move, fn () => BoardMoverScope::webhookEventId()), 'a scope with no delivery says none, and does not inherit an outer one');
+        $this->assertNull(BoardMoverScope::forHandler('kanban_move_card', WriteOp::Move, fn () => BoardMoverScope::forHandler('kanban_move_card', WriteOp::Move, fn () => BoardMoverScope::webhookEventId()), 4242));
     }
 
     public function test_a_shared_site_logs_the_handler_that_called_it_not_a_fixed_one(): void

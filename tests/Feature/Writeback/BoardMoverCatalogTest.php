@@ -252,9 +252,9 @@ class BoardMoverCatalogTest extends TestCase
         // The scope read for `op`, and either key in the other operand of a `+` union, are the site spelling them.
         $this->assertFindings([], "Log::warning('x', ['catalog_id' => 'h.a'] + ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op()]);", [self::entry('h.a')]);
 
-        // The delivery is read from the scope like the handler: a typed or computed value, or no key, is the site leaving the join to its caller.
+        // The delivery is read from the scope like the handler: a typed or computed value, or no key, is the site leaving it to its caller.
         $this->assertFindings(
-            ['SITE_WITHOUT_EVENT_ID: Handler::handle (Fixture.php:10) — `webhook_event_id` is not `BoardMoverScope::webhookEventId()` — the delivery is the join key between a give-up and the rows that say what landed, and only the scope knows it at every site'],
+            ['SITE_WITHOUT_EVENT_ID: Handler::handle (Fixture.php:10) — `webhook_event_id` is not `BoardMoverScope::webhookEventId()` — only the scope knows the delivery at every site'],
             "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => \$event->id, 'op' => 'move']);",
             [self::entry('h.a')],
         );
@@ -288,6 +288,14 @@ class BoardMoverCatalogTest extends TestCase
         ], BoardMoverCatalogCheck::findings([], $catalog));
     }
 
+    public function test_the_catalog_states_what_a_give_up_and_a_delivery_id_do_and_do_not_say(): void
+    {
+        $about = $this->catalog()['about'];
+        $this->assertIsString($about);
+        $this->assertStringContainsString('NOT CONFIRMED', $about, 'a give-up with op: move is an upper bound on failed moves');
+        $this->assertStringContainsString('DELIVERY id', $about, 'webhook_event_id does not decide whether a given move landed');
+    }
+
     public function test_the_surface_and_schema_are_checked_against_the_site(): void
     {
         $this->assertSame([
@@ -297,16 +305,8 @@ class BoardMoverCatalogTest extends TestCase
             'CATALOG_SCHEMA: `op_key` is not `op`',
             'CATALOG_SCHEMA: `event_key` is not `webhook_event_id`',
             ...array_map(fn (WriteOp $op) => "OPS_MISMATCH: `{$op->value}` is a WriteOp case the catalog's `ops` does not declare", WriteOp::cases()),
-            'OUTCOME_KINDS: `outcome_kinds` must be a non-empty list of kinds the catalog declares',
             'CATALOG_EMPTY: the catalog declares no entries — nothing was checked',
         ], BoardMoverCatalogCheck::findings([], ['context_key' => 'reason', 'entries' => []]));
-
-        // An outcome kind is a kind the catalog declares, so a rename of one cannot silently empty the join's answer.
-        $catalog = ['outcome_kinds' => ['declined', 'vanished', 7], 'kinds' => ['declined' => 'x'], 'entries' => [['retired_since' => '0.80.0'] + self::entry('h.anchor')]] + self::catalogHead();
-        $this->assertSame([
-            'OUTCOME_KINDS: `vanished` is listed in `outcome_kinds` and is not a kind the catalog declares',
-            'OUTCOME_KINDS: `a non-string member` is listed in `outcome_kinds` and is not a kind the catalog declares',
-        ], BoardMoverCatalogCheck::findings([], $catalog));
 
         $this->assertFindings(
             ['SURFACE_MISMATCH: `h.paired` is emitted through the paired log+alert helper, so its surface must include `alert_channel`'],
@@ -399,7 +399,6 @@ class BoardMoverCatalogTest extends TestCase
             'handler_key' => 'handler',
             'op_key' => 'op',
             'event_key' => 'webhook_event_id',
-            'outcome_kinds' => ['declined'],
             'ops' => array_fill_keys(array_map(fn (WriteOp $op) => $op->value, WriteOp::cases()), 'described'),
         ];
     }
