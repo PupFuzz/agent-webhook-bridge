@@ -52,21 +52,21 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
     ];
 
     /**
-     * Classes that call `resolveFor()` from BOTH the receiver and the CLI, so the file is not the
-     * only way they resolve a token and a missing file does not make them inert: registering one
-     * would have `github.token_file` FAIL, calling it INERT, on an install where the CLI reaches
-     * GitHub through a source the file does not hold. Since DL-456 that is a `write_token_path` or
-     * the credential store, both read in-process by the receiver too; `GH_TOKEN` is no longer one
-     * (`resolveFor()` never reads it). Each names the leg that reports it.
+     * Runtime classes that call `resolveFor()` but cannot be registered consumers, because the repos
+     * they reach GitHub for are not in `writeback.json`: they are registered at runtime, so
+     * `GitHubTokenFileConsumer::fileTokenRepos()` — which answers from `writeback.json` alone — has
+     * nothing to list, and `github.token_file` could neither name them nor resolve a token for them.
+     * They resolve exactly as a registered consumer does (no `GH_TOKEN`, in the receiver or the
+     * CLI), so each names the check that reports a missing token for those repos instead.
      *
      * @var array<class-string, string>
      */
     private const RECEIVER_AND_CLI = [
-        // The receiver reads on a `workflow_run` delivery and on a registration through the HTTP tool
-        // door (also inside the receiver); the `ci-await-sweep` job (bridge:tick, a CLI) and a
-        // registration through the ssh tool door (a CLI) resolve one token per repo exactly as the
-        // receiver does (DL-456) — none of them reads GH_TOKEN. A head whose reads fail is kept and read again, and `ci_await.awaits` (bridge:check)
-        // warns with the read's own error — "no GitHub read token: …" — when none answers.
+        // Its repos are the ones seats register heads for with `ci_await`, stored in the database,
+        // never in writeback.json. It reads in the receiver (a `workflow_run` delivery, an HTTP-door
+        // registration) and from the CLI (the bridge:tick sweep, an ssh-door registration), the same
+        // way in both. A head whose reads fail is kept and read again, and `ci_await.awaits`
+        // (bridge:check) warns with the read's own error — "no GitHub read token: …" — when none answers.
         'App\Bridge\CiAwait\CiAwaitService' => 'receiver delivery and HTTP-door registration (both inside the receiver), bridge:tick sweep and ssh-door registration (CLI); reported by ci_await.awaits',
     ];
 
@@ -101,8 +101,8 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
             "a class resolves a GitHub token and is not declared.\n"
             .'If it runs in the RECEIVER, it is a token-FILE consumer: implement GitHubTokenFileConsumer and add it to '
             ."GitHubTokenFileCheck::CONSUMERS, or bridge:check will say nothing while its writes are dropped.\n"
-            .'If it runs only from artisan, rule it CLI-only in this test, with the reason. If it runs in the receiver AND '
-            .'from the CLI, so the file is not its only way to a token, rule it RECEIVER_AND_CLI and name the check that reports it.');
+            .'If it runs only from artisan, rule it CLI-only in this test, with the reason. If it runs in the receiver for repos '
+            .'writeback.json does not list (registered at runtime), rule it RECEIVER_AND_CLI and name the check that reports it.');
     }
 
     public function test_every_registered_consumer_still_resolves_a_token_and_declares_itself(): void
