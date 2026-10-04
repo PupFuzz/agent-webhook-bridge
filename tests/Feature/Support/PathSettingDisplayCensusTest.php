@@ -65,7 +65,7 @@ class PathSettingDisplayCensusTest extends TestCase
     ];
 
     /**
-     * Every path-valued `.env` key `config/bridge.php` reads → where its value is printed, or why
+     * Every `env('…_PATH')` / `env('…_DIR')` key `config/bridge.php` reads → where its value is printed, or why
      * this census does not cover it. Ambient variables read by `getenv()` (`$COORD_CONFIG`, read by
      * `CoordConfigPath`; `BRIDGE_TOOLS_SSH_KEY`) are not in `config/bridge.php`: the first is a
      * {@see self::CARRIERS} entry, the second is never interpolated by the bridge — `ssh` prints it
@@ -91,7 +91,7 @@ class PathSettingDisplayCensusTest extends TestCase
     /** The calls whose arguments are message text. */
     private const FORMATTERS = ['sprintf', 'implode', 'join', 'permissionsfault'];
 
-    public function test_no_message_in_app_prints_a_path_setting_raw(): void
+    public function test_the_census_finds_no_raw_print_it_recognises(): void
     {
         $sites = [];
         foreach (SourceScan::appFiles() as $path) {
@@ -115,7 +115,7 @@ class PathSettingDisplayCensusTest extends TestCase
         }
     }
 
-    public function test_every_path_setting_in_config_is_declared(): void
+    public function test_every_path_or_dir_env_key_in_config_is_declared(): void
     {
         preg_match_all("/env\\('([A-Z0-9_]+_(?:PATH|DIR))'/", (string) file_get_contents(base_path('config/bridge.php')), $m);
         $read = array_values(array_unique($m[1]));
@@ -304,7 +304,7 @@ class PathSettingDisplayCensusTest extends TestCase
     }
 
     /**
-     * Every key the readers read that is path-valued: `…path` or `socket`, as `['key']` or
+     * Every key the readers read that is path-valued: a key ending in `path` or `socket`, as `['key']` or
      * `array_key_exists('key', …)`.
      *
      * @param  array<string, string>  $sources

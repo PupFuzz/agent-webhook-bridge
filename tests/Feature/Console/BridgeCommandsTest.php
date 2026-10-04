@@ -827,7 +827,7 @@ class BridgeCommandsTest extends TestCase
      * @param  callable(self, string): void  $arrange
      */
     #[DataProvider('pastedTokenPathSettings')]
-    public function test_check_never_prints_a_token_pasted_into_a_path_setting(callable $arrange, string $witness): void
+    public function test_check_prints_a_fingerprint_for_a_token_pasted_into_these_path_settings(callable $arrange, string $witness): void
     {
         $pasted = PastedTokenFixture::value();
         $arrange($this, $pasted);

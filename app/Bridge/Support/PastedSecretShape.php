@@ -12,13 +12,13 @@ namespace App\Bridge\Support;
  *  - {@see displayName()} — a coord credential-store NAME (a `[git-credential-map]` value, a
  *    `[github]` key), where a token pasted as a map value then stands as the key (card#11208);
  *  - {@see displayPathSetting()} — the value of a path-valued SETTING (an `.env` path or a config-file path), where a token pasted instead of a path would otherwise be
- *    printed by every message naming the setting (card#11261). A message that prints such a
+ *    printed by the messages that name the settings listed in docs/config-schema.md (card#11261). A message that prints such a
  *    value is meant to go through it; `Tests\Feature\Support\PathSettingDisplayCensusTest` is a
  *    tripwire, not a completeness guarantee: it recognises only the shapes its controls
  *    exercise, which its class docblock names.
  *
  * Its own class rather than `CoordCredentialStore`'s since card#11261: the file-read primitives
- * (`SecretFile`, `ChannelToken`, `UnreadableFileException`, `UntrustedPathContents`), the checks,
+ * (`SecretFile`, `ChannelToken`, `FileContents`, `UntrustedPathContents`), the checks,
  * handlers and commands print path settings that have nothing to do with the credential store, and
  * a dependency on the store's class for a rule that is not about the store would mislead.
  *
