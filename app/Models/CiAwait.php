@@ -31,7 +31,6 @@ class CiAwait extends Model
     protected $table = 'ci_awaits';
 
     protected $fillable = [
-        'uuid',
         'agent',
         'repo',
         'repo_name',
@@ -52,18 +51,11 @@ class CiAwait extends Model
         'emit_failed_at' => 'datetime',
     ];
 
-    /**
-     * The row's identity across table recreation, minted at insert. An inbox line is keyed by it
-     * (`ci_settled:<uuid>`), because an auto-increment id restarts at 1 when the table is dropped
-     * and recreated, and the new line would then collide with an earlier one a seat has already
-     * seen and be skipped.
-     */
+    /** The row's identity across table recreation, minted at insert; `docs/board-tools.md` § `ci_await` defines its use as the inbox line id. */
     protected static function booted(): void
     {
         static::creating(function (self $await): void {
-            if (! is_string($await->uuid) || $await->uuid === '') {
-                $await->uuid = (string) Str::uuid();
-            }
+            $await->uuid = (string) Str::uuid();
         });
     }
 }

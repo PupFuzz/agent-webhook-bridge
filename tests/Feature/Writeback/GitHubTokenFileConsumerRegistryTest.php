@@ -58,11 +58,12 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
      * @var array<class-string, string>
      */
     private const RECEIVER_AND_CLI = [
-        // The receiver reads on a `workflow_run` delivery; the `ci-await-sweep` job (bridge:tick, a
-        // CLI) and a registration (the ssh tool door, a CLI) read from where the store and GH_TOKEN
+        // The receiver reads on a `workflow_run` delivery and on a registration through the HTTP tool
+        // door (also inside the receiver); the `ci-await-sweep` job (bridge:tick, a CLI) and a
+        // registration through the ssh tool door (a CLI) read from where the store and GH_TOKEN
         // resolve. A head whose reads fail is kept and read again, and `ci_await.awaits` (bridge:check)
         // warns with the read's own error — "no GitHub read token: …" — when none answers.
-        'App\Bridge\CiAwait\CiAwaitService' => 'receiver delivery, bridge:tick sweep and ssh registration; reported by ci_await.awaits',
+        'App\Bridge\CiAwait\CiAwaitService' => 'receiver delivery and HTTP-door registration (both inside the receiver), bridge:tick sweep and ssh-door registration (CLI); reported by ci_await.awaits',
     ];
 
     /** The check reads the file to ask about the consumers; it is not one. */

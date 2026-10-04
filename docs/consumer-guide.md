@@ -75,7 +75,7 @@ carry `provider: "bridge"` and a null actor. `seat_idle_nudge` and `pm_standup` 
 `channel_push` **only** and are never staged to the inbox; `ci_settled` and `ci_await_expired` are
 **staged to the inbox first and then pushed**, because the await they answer is deleted when they
 are sent and nothing else would carry them to a seat whose channel was down (their line `id` is
-`<kind>:<await id>`).
+defined in [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`*).
 
 **`ci_settled`** (card#11200 / DL-452) — every workflow run GitHub lists for a head this seat
 registered with `ci_await` is terminal. One terminal event per await, written to the inbox at least

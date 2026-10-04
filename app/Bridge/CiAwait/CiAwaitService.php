@@ -33,8 +33,9 @@ use UnexpectedValueException;
  * so the seat stops polling GitHub for it.
  *
  * ⭐ THE GUARANTEE. One terminal event per await (`ci_settled` or `ci_await_expired`), written to the
- * seat's inbox at least once and idempotent by its line id (`<kind>:<await uuid>`, which `bridge:inbox`
- * collapses), then pushed live once — the push carries no line id and is unconfirmed (DL-370).
+ * seat's inbox at least once and idempotent by its line id, then pushed live once — the push carries no
+ * line id and is unconfirmed (DL-370). The id's form and why are defined once, in `docs/board-tools.md`
+ * § `ci_await` and `ci_await_cancel`.
  * `ci_settled` follows CI finishing by at most the time until the sweep next reads the head
  * ({@see sweepUnsettled()}: a head none of whose awaits was read, or whose oldest read is one sweep interval old, up to
  * the per-pass cap), PROVIDED THE SWEEP RUNS — a pass needs a webhook or `bridge:tick`.
@@ -485,11 +486,11 @@ final class CiAwaitService
         );
 
         try {
-            $claimed = DB::transaction(function () use ($await, $kind, $intent): bool {
+            $claimed = DB::transaction(function () use ($await, $intent): bool {
                 if (CiAwait::query()->whereKey($await->id)->delete() !== 1) {
                     return false;
                 }
-                $this->intents->stageAuthored($await->agent, "{$kind}:{$await->uuid}", microtime(true), $intent);
+                $this->intents->stageAuthored($await->agent, "ci_await:{$await->uuid}", microtime(true), $intent);
 
                 return true;
             });

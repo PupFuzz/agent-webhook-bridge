@@ -1648,7 +1648,7 @@ cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
 
 **What a seat can rely on.** One terminal event per await — `ci_settled` or `ci_await_expired`, never
 both. It is written to your inbox **at least once**, idempotent by its line id
-(`<kind>:<await uuid>`, which `bridge:inbox` collapses), and pushed live once after that line is
+(its line id is `ci_await:<uuid>` for BOTH kinds — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
 written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
 it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the
 wake on each. Once every run on a head is terminal, `ci_settled` comes at the latest from the first

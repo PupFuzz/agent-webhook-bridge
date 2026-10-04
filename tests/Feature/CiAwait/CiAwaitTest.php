@@ -9,6 +9,7 @@ use App\Bridge\Scheduling\JobContext;
 use App\Bridge\Scheduling\JobOutcome;
 use App\Bridge\Scheduling\JobPassSource;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\BridgePaths;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallProvenance;
@@ -636,7 +637,7 @@ class CiAwaitTest extends TestCase
         Log::shouldHaveReceived('error')->with(Mockery::pattern('/gave up/'), Mockery::on(fn (array $c): bool => ($c['agent'] ?? null) === 'seat-a'))->atLeast()->once();
     }
 
-    public function test_an_inbox_line_id_is_the_rows_uuid_so_a_recreated_table_cannot_reissue_it(): void
+    public function test_an_inbox_line_id_is_ci_await_and_the_rows_uuid_so_a_recreated_table_cannot_reissue_it(): void
     {
         $this->seedAwait('seat-a', expiresIn: 60);
         $uuid = CiAwait::query()->sole()->uuid;
@@ -645,7 +646,7 @@ class CiAwaitTest extends TestCase
         Carbon::setTestNow('2026-10-03T10:05:00.000Z');
         $this->runSweep();
 
-        $this->assertSame(["ci_await_expired:{$uuid}"], array_column($this->inbox(), 'id'));
+        $this->assertSame(["ci_await:{$uuid}"], array_column($this->inbox(), 'id'));
 
         // The table is recreated and its auto-increment restarts at 1: the new row has the SAME
         // numeric id as the one just emitted, and must not have the same line id.
@@ -656,6 +657,27 @@ class CiAwaitTest extends TestCase
         $second = CiAwait::query()->sole();
         $this->assertSame(1, (int) $second->id, 'the id did not restart, so this measured nothing');
         $this->assertNotSame($uuid, $second->uuid);
+    }
+
+    public function test_a_settle_that_reached_only_part_of_the_inbox_and_then_an_expiry_leave_one_terminal_event(): void
+    {
+        config(['bridge.inbox_layout' => 'both']);
+        $blocked = $this->dir.'/state/inbox-seat-a.jsonl';
+        File::ensureDirectoryExists($blocked);
+        $this->seedAwait('seat-a', expiresIn: 600);
+        Http::fake([self::RUNS_URL => Http::response($this->runs([['CI', 'completed', 'success']])), '127.0.0.1:*' => Http::response('ok', 200)]);
+        $this->runSweep();
+        $this->assertSame(1, CiAwait::query()->count(), 'the settle did not fail on the per-agent file, so this measured nothing');
+        $this->assertSame(['ci_settled'], array_column($this->inbox(), 'kind'), 'the shared file did not take the first half of the append, so this measured nothing');
+
+        File::deleteDirectory($blocked);
+        Http::fake([self::RUNS_URL => Http::response($this->runs([['CI', 'in_progress', null]])), '127.0.0.1:*' => Http::response('ok', 200)]);
+        Carbon::setTestNow(Carbon::now()->addSeconds(601));
+        $this->runSweep();
+
+        $this->assertSame(['ci_settled', 'ci_await_expired'], array_column($this->inbox(), 'kind'), 'the expiry was not written, so this measured nothing');
+        $terminal = array_values(array_filter(BridgePaths::unseenInboxLines(null), fn (array $l): bool => str_starts_with((string) ($l['kind'] ?? ''), 'ci_')));
+        $this->assertCount(1, $terminal, 'a shared-inbox reader sees both ci_settled and ci_await_expired for one await: '.implode(', ', array_column($terminal, 'kind')));
     }
 
     public function test_a_row_past_the_ceiling_whose_inbox_is_writable_again_is_emitted_not_dropped(): void
@@ -693,12 +715,16 @@ class CiAwaitTest extends TestCase
         }, '127.0.0.1:*' => Http::response('ok', 200)]);
 
         Carbon::setTestNow('2026-10-03T10:10:00.000Z');
+        $thrown = null;
         try {
             $this->runSweep();
-        } catch (RuntimeException) {
-            // the job still reports the failed pass; what is measured is the head behind it
+        } catch (RuntimeException $e) {
+            $thrown = $e;
         }
 
+        $this->assertNotNull($thrown, 'the pass reported success although a head read threw, so the registry would record it as ok');
+        $this->assertStringContainsString('head(s) threw', $thrown->getMessage());
+        $this->assertStringContainsString('boom', (string) CiAwait::query()->where('head_sha', self::OTHER_SHA)->sole()->last_error, 'the throwing head carries no error, so bridge:check cannot name why it never settles');
         $this->assertSame(0, CiAwait::query()->where('head_sha', self::SHA)->count(), 'the all-terminal head behind a throwing one was not settled in the same pass');
         $this->assertTrue(CiAwait::query()->where('head_sha', self::OTHER_SHA)->sole()->last_read_at->isAfter(Carbon::now()->subSeconds(60)), 'the throwing head was not stamped, so it would head the next pass again');
     }
