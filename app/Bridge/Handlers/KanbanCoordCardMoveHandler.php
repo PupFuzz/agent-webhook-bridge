@@ -2,11 +2,13 @@
 
 namespace App\Bridge\Handlers;
 
+use App\Bridge\Contracts\DeclaresWriteOp;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
+use App\Bridge\Writeback\BoardMoverScope;
 use App\Bridge\Writeback\CoordCardLanePlacement;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
@@ -16,6 +18,7 @@ use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
+use App\Bridge\Writeback\WriteOp;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -81,7 +84,7 @@ use Illuminate\Support\Facades\Log;
  * Its refusals are keyed by the coordination ISSUE, so the alert carries `issue_number`
  * (DL-285); the per-card arms reached from inside the loop additionally carry that card's id.
  */
-final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
+final class KanbanCoordCardMoveHandler implements DeclaresWriteOp, DurableReaction, Handler
 {
     /**
      * The synthetic `outcome` this handler's alerts carry — see the create leg's twin.
@@ -108,6 +111,11 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         $this->alerts = $alerts ?? new WritebackAlertNotifier;
     }
 
+    public function writeOp(ReactionTarget $target): WriteOp
+    {
+        return WriteOp::Move;
+    }
+
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
         $p = $target->payload;
@@ -128,7 +136,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             $this->alerts->warnAndNotify(
                 'coord_card_move.payload_invalid',
                 'kanban_coord_card_move: malformed payload (repo/issue_number/disposition); ignoring',
-                ['payload' => $p],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'payload' => $p],
                 is_string($repo) ? $repo : '', self::ALERT_OUTCOME, null, 'coord_card_move_payload_invalid',
                 is_numeric($issueNumber) ? (int) $issueNumber : null,
             );
@@ -145,7 +153,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             $this->alerts->warnAndNotify(
                 'coord_card_move.writeback_not_configured',
                 'kanban_coord_card_move: writeback not configured; ignoring',
-                ['repo' => $repo, 'issue' => $issueNumber],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'issue' => $issueNumber],
                 $repo, self::ALERT_OUTCOME, null, 'writeback_not_configured', $issueNumber,
             );
 
@@ -157,7 +165,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             // Opt-out / unmapped: permanent refusal — log + no-op (never 5xx-retry a config gap).
             // The stage-null arms are unreachable while move_coord_cards is on (WritebackConfig
             // fails closed at load); they are the type-narrowing for the moves below.
-            Log::info('kanban_coord_card_move: repo not mapped or opt-out; ignoring', ['catalog_id' => 'coord_card_move.repo_not_mapped', 'repo' => $repo, 'issue' => $issueNumber]);
+            Log::info('kanban_coord_card_move: repo not mapped or opt-out; ignoring', ['catalog_id' => 'coord_card_move.repo_not_mapped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'issue' => $issueNumber]);
 
             return;
         }
@@ -174,7 +182,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             $this->alerts->warnAndNotify(
                 'coord_card_move.no_correlation_key',
                 'kanban_coord_card_move: malformed payload (empty sid with population=prefixed — no correlation key); ignoring',
-                ['payload' => $p],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'payload' => $p],
                 $repo, self::ALERT_OUTCOME, null, 'coord_card_move_no_correlation_key', $issueNumber,
             );
 
@@ -193,7 +201,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             if ($ids === []) {
                 // Never carded (create leg off / pre-ship issue), or the reconcile hasn't
                 // run yet. Nothing to move — and this leg never creates.
-                Log::info('kanban_coord_card_move: no card correlated; nothing to move', ['catalog_id' => 'coord_card_move.no_card_correlated', 'repo' => $repo, 'issue' => $issueNumber, 'sid' => $sid, 'by_ref' => $byRef]);
+                Log::info('kanban_coord_card_move: no card correlated; nothing to move', ['catalog_id' => 'coord_card_move.no_card_correlated', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'issue' => $issueNumber, 'sid' => $sid, 'by_ref' => $byRef]);
 
                 return;
             }
@@ -217,7 +225,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                         $this->alerts->warnAndNotify(
                             'coord_card_move.card_4xx',
                             'kanban_coord_card_move: kanban refused (4xx) for this card — skipping it (see `body` for the reason kanban gave)',
-                            ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e),
+                            ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e),
                             $repo, self::ALERT_OUTCOME, $id, 'coord_card_move_card_4xx', $issueNumber,
                         );
 
@@ -232,7 +240,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                 $this->alerts->warnAndNotify(
                     'coord_card_move.lookup_4xx',
                     'kanban_coord_card_move: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)',
-                    ['repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e),
                     $repo, self::ALERT_OUTCOME, null, 'coord_card_move_lookup_4xx', $issueNumber,
                 );
 
@@ -304,7 +312,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                 return;
             }
             $client->moveCard($id, (int) $mapping->coordCardTerminalStageId);
-            Log::info('kanban_coord_card_move: moved to terminal', ['catalog_id' => 'coord_card_move.moved_to_terminal', 'card_id' => $id, 'stage' => $mapping->coordCardTerminalStageId, 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
+            Log::info('kanban_coord_card_move: moved to terminal', ['catalog_id' => 'coord_card_move.moved_to_terminal', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'stage' => $mapping->coordCardTerminalStageId, 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
 
             return;
         }
@@ -334,7 +342,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         // never heard of — fails CLOSED. A human's closure intent is never reversed.
         if (! self::serviceSet($card)) {
             $lastMove = is_array($card['last_stage_move'] ?? null) ? $card['last_stage_move'] : [];
-            Log::info('kanban_coord_card_move: terminal was not service-set; refusing to revive', ['catalog_id' => 'coord_card_move.revive_refused_not_service_set', 'card_id' => $id, 'actor_type' => $lastMove['actor_type'] ?? null, 'sid' => $sid, 'issue' => $issueNumber]);
+            Log::info('kanban_coord_card_move: terminal was not service-set; refusing to revive', ['catalog_id' => 'coord_card_move.revive_refused_not_service_set', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'actor_type' => $lastMove['actor_type'] ?? null, 'sid' => $sid, 'issue' => $issueNumber]);
 
             return;
         }
@@ -354,7 +362,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         }
         $this->warnUnmappedLanes($placement, $mapping, $id, $repo, $issueNumber);
         $client->moveCard($id, $placement['stage']);
-        Log::info('kanban_coord_card_move: revived', ['catalog_id' => 'coord_card_move.revived', 'card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
+        Log::info('kanban_coord_card_move: revived', ['catalog_id' => 'coord_card_move.revived', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
     }
 
     /**
@@ -397,9 +405,9 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             // not govern is the design working (only an anchored `[TASK]` is lane-derived,
             // mirroring the consumer's own gate) and needs nothing done.
             if ($mapping->coordCardLaneStageIds === null) {
-                Log::info('kanban_coord_card_move: no lane model is configured for this repo; nothing to re-lane', ['catalog_id' => 'coord_card_move.relane_no_lane_model', 'card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber]);
+                Log::info('kanban_coord_card_move: no lane model is configured for this repo; nothing to re-lane', ['catalog_id' => 'coord_card_move.relane_no_lane_model', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber]);
             } else {
-                Log::info('kanban_coord_card_move: the lane model does not govern this issue (its title is not an anchored [TASK]); nothing to re-lane', ['catalog_id' => 'coord_card_move.relane_not_governed', 'card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber]);
+                Log::info('kanban_coord_card_move: the lane model does not govern this issue (its title is not an anchored [TASK]); nothing to re-lane', ['catalog_id' => 'coord_card_move.relane_not_governed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber]);
             }
 
             return;
@@ -409,13 +417,13 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         }
         $lanes = $mapping->coordCardLaneStageIds ?? [];
         if ($stage === null || ! in_array($stage, $lanes, true)) {
-            Log::info('kanban_coord_card_move: card is not in a mapped lane; refusing to re-lane', ['catalog_id' => 'coord_card_move.relane_refused_unmapped_lane', 'card_id' => $id, 'stage' => $stage, 'sid' => $sid, 'issue' => $issueNumber]);
+            Log::info('kanban_coord_card_move: card is not in a mapped lane; refusing to re-lane', ['catalog_id' => 'coord_card_move.relane_refused_unmapped_lane', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'stage' => $stage, 'sid' => $sid, 'issue' => $issueNumber]);
 
             return;
         }
         if (! self::serviceSet($card)) {
             $lastMove = is_array($card['last_stage_move'] ?? null) ? $card['last_stage_move'] : [];
-            Log::info('kanban_coord_card_move: lane was not service-set; refusing to re-lane', ['catalog_id' => 'coord_card_move.relane_refused_not_service_set', 'card_id' => $id, 'actor_type' => $lastMove['actor_type'] ?? null, 'sid' => $sid, 'issue' => $issueNumber]);
+            Log::info('kanban_coord_card_move: lane was not service-set; refusing to re-lane', ['catalog_id' => 'coord_card_move.relane_refused_not_service_set', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'actor_type' => $lastMove['actor_type'] ?? null, 'sid' => $sid, 'issue' => $issueNumber]);
 
             return;
         }
@@ -431,7 +439,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         }
         $this->warnUnmappedLanes($placement, $mapping, $id, $repo, $issueNumber);
         $client->moveCard($id, $placement['stage']);
-        Log::info('kanban_coord_card_move: re-laned', ['catalog_id' => 'coord_card_move.relaned', 'card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'from_stage' => $stage, 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
+        Log::info('kanban_coord_card_move: re-laned', ['catalog_id' => 'coord_card_move.relaned', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'from_stage' => $stage, 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
     }
 
     /**
@@ -471,6 +479,6 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         // The skipped lanes and the mapped set are CONTEXT, not interpolation: the DL-285
         // refusal-signal guard keys its accounted-for list on the message literal, and an
         // interpolated message degrades that key to a line number.
-        Log::warning('kanban_coord_card_move: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — moving to the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column', ['catalog_id' => 'coord_card_move.lane_unmapped', 'card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber, 'unmapped_lanes' => $placement['unmapped'], 'moved_to_lane' => $placement['lane'], 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds ?? [])]);
+        Log::warning('kanban_coord_card_move: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — moving to the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column', ['catalog_id' => 'coord_card_move.lane_unmapped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber, 'unmapped_lanes' => $placement['unmapped'], 'moved_to_lane' => $placement['lane'], 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds ?? [])]);
     }
 }

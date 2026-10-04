@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Handlers;
 
+use App\Bridge\Contracts\DeclaresWriteOp;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
@@ -10,6 +11,7 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\BoardCustomFields;
+use App\Bridge\Writeback\BoardMoverScope;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
@@ -21,6 +23,7 @@ use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
+use App\Bridge\Writeback\WriteOp;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
@@ -66,7 +69,7 @@ use Illuminate\Support\Facades\Log;
  * carries the PR number in the body's `issue_number` — GitHub numbers issues and PRs in
  * one space, so DL-285 gave the body one field rather than two.
  */
-final class KanbanDependabotCardHandler implements DurableReaction, Handler
+final class KanbanDependabotCardHandler implements DeclaresWriteOp, DurableReaction, Handler
 {
     /**
      * The synthetic `outcome` this handler's alerts carry. The event's own `outcome`
@@ -120,6 +123,19 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         $this->alerts = $alerts ?? new WritebackAlertNotifier;
     }
 
+    /**
+     * An archive (closed unmerged) and a name restamp are writes; every other outcome asks for the card
+     * to stand at that outcome's stage. On that path the card is created when none exists, and the
+     * create's own rows say `write`; the one catch that spans the correlation reads, the move and the
+     * create (`dependabot_card.write_4xx`) reports `move`, for the reason its flat `reason` gives.
+     */
+    public function writeOp(ReactionTarget $target): WriteOp
+    {
+        $outcome = $target->payload['outcome'] ?? null;
+
+        return $outcome === PrOutcome::CLOSED_UNMERGED || $outcome === self::RENAMED_OUTCOME ? WriteOp::Write : WriteOp::Move;
+    }
+
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
         $p = $target->payload;
@@ -133,7 +149,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             $this->alerts->warnAndNotify(
                 'dependabot_card.payload_invalid',
                 'kanban_dependabot_card: malformed payload (repo/outcome/pr_number); ignoring',
-                ['payload' => $p],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'payload' => $p],
                 is_string($repo) ? $repo : '', self::ALERT_OUTCOME, null, 'dependabot_card_payload_invalid',
                 is_numeric($prNumber) ? (int) $prNumber : null,
             );
@@ -151,7 +167,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             $this->alerts->warnAndNotify(
                 'dependabot_card.writeback_not_configured',
                 'kanban_dependabot_card: writeback not configured; ignoring',
-                ['repo' => $repo, 'pr' => $prNumber],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'repo' => $repo, 'pr' => $prNumber],
                 $repo, self::ALERT_OUTCOME, null, 'writeback_not_configured', $prNumber,
             );
 
@@ -160,7 +176,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         $mapping = $writeback->mappingFor($repo);
         if ($mapping === null || ! $mapping->createDependabotCards) {
             // Opt-out / unmapped: permanent refusal — log + no-op (never 5xx-retry a config gap).
-            Log::info('kanban_dependabot_card: repo not mapped or opt-out; ignoring', ['catalog_id' => 'dependabot_card.repo_not_mapped', 'repo' => $repo, 'pr' => $prNumber]);
+            Log::info('kanban_dependabot_card: repo not mapped or opt-out; ignoring', ['catalog_id' => 'dependabot_card.repo_not_mapped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'repo' => $repo, 'pr' => $prNumber]);
 
             return;
         }
@@ -197,11 +213,11 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                         // evidence only when it REFUSES. Recording BOTH boards is what makes a
                         // landed cross-board write distinguishable from a correct one after the
                         // fact (card#7212).
-                        Log::info('kanban_dependabot_card: archived (closed-unmerged)', ['catalog_id' => 'dependabot_card.archived', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
+                        Log::info('kanban_dependabot_card: archived (closed-unmerged)', ['catalog_id' => 'dependabot_card.archived', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
                     } else {
                         // 200 but not archived = wrong-verb / kanban contract change.
                         // Deterministic ⇒ permanent: log LOUD + no-op, never 5xx-storm it (DL-020 posture).
-                        Log::error('kanban_dependabot_card: archive returned 200 but the card is not archived (archived_at null) — kanban _action:archive contract may have changed; NOT retrying', ['catalog_id' => 'dependabot_card.archive_not_applied', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
+                        Log::error('kanban_dependabot_card: archive returned 200 but the card is not archived (archived_at null) — kanban _action:archive contract may have changed; NOT retrying', ['catalog_id' => 'dependabot_card.archive_not_applied', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
                     }
                 }
 
@@ -219,7 +235,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
 
             $stageId = $mapping->stageFor($outcome);
             if ($stageId === null) {
-                Log::info('kanban_dependabot_card: no stage mapped for outcome; ignoring', ['catalog_id' => 'dependabot_card.no_stage_mapped', 'repo' => $repo, 'outcome' => $outcome, 'pr' => $prNumber]);
+                Log::info('kanban_dependabot_card: no stage mapped for outcome; ignoring', ['catalog_id' => 'dependabot_card.no_stage_mapped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'outcome' => $outcome, 'pr' => $prNumber]);
 
                 return;
             }
@@ -244,7 +260,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                     $client->moveCard((int) $survivor['id'], $stageId);
                     // Group-B, as the archive arm above (card#7211/card#7212): the survivor was
                     // resolved by search, not by a token, so its own board is recorded here.
-                    Log::info('kanban_dependabot_card: moved', ['catalog_id' => 'dependabot_card.moved', 'card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber] + MappedBoardGuard::boardContext($survivor, $mapping));
+                    Log::info('kanban_dependabot_card: moved', ['catalog_id' => 'dependabot_card.moved', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber] + MappedBoardGuard::boardContext($survivor, $mapping));
                 }
 
                 return;
@@ -267,7 +283,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 array_unshift($tags, $this->renderIdTag($mapping->cardIdTagTemplate, $prNumber, $writeback->configuredRepoFor($repo) ?? $repo));
             }
             $newId = $client->createCard($mapping->boardId, $stageId, $title, $payload, $tags, $mapping->swimlaneId);
-            Log::info('kanban_dependabot_card: created', ['catalog_id' => 'dependabot_card.created', 'card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'outcome' => $outcome, 'pr' => $prNumber]);
+            Log::info('kanban_dependabot_card: created', ['catalog_id' => 'dependabot_card.created', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'outcome' => $outcome, 'pr' => $prNumber]);
 
             // Close the create-or-move race. The correlate→create above is not atomic
             // across concurrent deliveries: two events for the same repo+PR (opened+
@@ -290,7 +306,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 $this->alerts->warnAndNotify(
                     'dependabot_card.write_4xx',
                     'kanban_dependabot_card: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)',
-                    ['repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
                     $repo, self::ALERT_OUTCOME, null, 'dependabot_card_4xx', $prNumber,
                 );
 
@@ -334,10 +350,10 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             $context = ['repo' => $repo, 'pr' => $prNumber, 'board' => $mapping->boardId, 'key' => $key, 'value' => $value];
             if ($fields === null) {
                 unset($payload[$key]);
-                Log::warning('kanban_dependabot_card: could NOT read which values the board accepts — creating the card WITHOUT this constant payload key', ['catalog_id' => 'dependabot_card.accepted_values_unreadable'] + $context + ['error' => $error ?? 'the custom-field read carried no collection']);
+                Log::warning('kanban_dependabot_card: could NOT read which values the board accepts — creating the card WITHOUT this constant payload key', ['catalog_id' => 'dependabot_card.accepted_values_unreadable', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write'] + $context + ['error' => $error ?? 'the custom-field read carried no collection']);
             } elseif (! $fields->accepts($key, $value)) {
                 unset($payload[$key]);
-                Log::info('kanban_dependabot_card: the board does not accept this constant payload value — creating the card without the key', ['catalog_id' => 'dependabot_card.constant_value_not_accepted'] + $context + ['field_type' => $fields->type($key)]);
+                Log::info('kanban_dependabot_card: the board does not accept this constant payload value — creating the card without the key', ['catalog_id' => 'dependabot_card.constant_value_not_accepted', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write'] + $context + ['field_type' => $fields->type($key)]);
             }
         }
 
@@ -437,7 +453,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             $this->alerts->warnAndNotify(
                 'dependabot_card.rename_payload_invalid',
                 'kanban_dependabot_card: malformed rename payload (name_from/pr_title); no name written',
-                ['repo' => $repo, 'pr' => $prNumber],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'repo' => $repo, 'pr' => $prNumber],
                 $repo, self::ALERT_OUTCOME, null, 'dependabot_card_rename_payload_invalid', $prNumber,
             );
 
@@ -455,7 +471,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 // the redelivery path (DL-314's shape), so the text reports only what was
                 // compared. Info, not warn: on every one of those histories the no-op is the
                 // designed outcome, not a failure.
-                Log::info('kanban_dependabot_card: card name is not `changes.title.from`; not restamped', ['catalog_id' => 'dependabot_card.rename_not_ours', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
+                Log::info('kanban_dependabot_card: card name is not `changes.title.from`; not restamped', ['catalog_id' => 'dependabot_card.rename_not_ours', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
 
                 continue;
             }
@@ -478,7 +494,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             $client->patchCard($cardId, $fields);
             // Group-B (card#7211/card#7212): the card came out of a board-scoped SEARCH, so
             // its own board is recorded beside the write that landed on it.
-            Log::info('kanban_dependabot_card: restamped name from the upstream retitle', ['catalog_id' => 'dependabot_card.renamed', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
+            Log::info('kanban_dependabot_card: restamped name from the upstream retitle', ['catalog_id' => 'dependabot_card.renamed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
         }
     }
 

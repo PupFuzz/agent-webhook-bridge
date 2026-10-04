@@ -16,12 +16,14 @@ use App\Bridge\Support\DlTokenGrammar;
 use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Support\RevertGrammar;
 use App\Bridge\Support\TitleChangeEvidence;
+use App\Bridge\Writeback\BoardMoverScope;
 use App\Bridge\Writeback\CardTokenVerdict;
 use App\Bridge\Writeback\PrCorrelationComment;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
+use App\Bridge\Writeback\WriteOp;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -345,7 +347,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             // Deliberately does NOT claim which card ends up moving: a resolving DL can
             // still win below (DL-148 makes that one-to-many), and only the token
             // ruling is decided at this point. What is always true here is the ruling.
-            Log::warning("kanban_move_card: PR title names card#{$foreignTitleToken} but the head branch names card#{$cardToken} — the branch ref is this install's own artifact and is AUTHORITATIVE; the title token is treated as a foreign/descriptive citation and refused (title-vs-branch conflict, card#5287). The card token in force is card#{$cardToken}", ['catalog_id' => 'card_move_classifier.title_vs_branch_conflict']);
+            Log::warning("kanban_move_card: PR title names card#{$foreignTitleToken} but the head branch names card#{$cardToken} — the branch ref is this install's own artifact and is AUTHORITATIVE; the title token is treated as a foreign/descriptive citation and refused (title-vs-branch conflict, card#5287). The card token in force is card#{$cardToken}", ['catalog_id' => 'card_move_classifier.title_vs_branch_conflict', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
         }
 
         // A DL that resolved to a DIFFERENT card than a co-present card# (the DL-218
@@ -374,7 +376,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             // exclude cards whose derived refs carry no source (operator-stamped
             // dl_number cards) while protecting nothing — so it is omitted.
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
-            $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
+            $cardIds = $this->correlateDl(WriteOp::Move, $mapping, $dl, $sourceRepo);
             if ($cardIds !== []) {
                 // A co-present card# is a CONFLICT only when it names a card the DL
                 // did NOT resolve to (DL-218 / card#4811 incident): a descriptive or
@@ -400,7 +402,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                     // stamp refs ride it: a refused move writes nothing at all.
                     Log::warning('kanban_move_card: PR carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).') AND a card-SHAPED token that does not parse ('
                         .CardTokenGrammar::describe()."), which appears to name card#{$cardResolution['nearMissId']} — a DIFFERENT card. The {$dl} move onto card(s) "
-                        .implode(',', $cardIds).' is REFUSED so a near-miss spelling cannot hijack it (near-miss card token, DL-287): '.$this->titleAndHead($payload), ['catalog_id' => 'card_move_classifier.pr_dl_near_miss_card_token_refused']);
+                        .implode(',', $cardIds).' is REFUSED so a near-miss spelling cannot hijack it (near-miss card token, DL-287): '.$this->titleAndHead($payload), ['catalog_id' => 'card_move_classifier.pr_dl_near_miss_card_token_refused', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
 
                     return new ClassifyResult(targets: array_merge(
                         $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true, evidence: $this->claimsClosure($this->prTitle($payload), $moveOutcome, $dl, null)
@@ -414,7 +416,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                     // (1)/(3) DL resolved → it wins. A co-present card# that names the
                     // SAME card is redundant, logged for the ledger (nothing dropped).
                     if ($cardToken !== null) {
-                        Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# names the same card, so nothing is dropped", ['catalog_id' => 'card_move_classifier.pr_dl_wins_same_card']);
+                        Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# names the same card, so nothing is dropped", ['catalog_id' => 'card_move_classifier.pr_dl_wins_same_card', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
                     } elseif ($verdict === CardTokenVerdict::NearMissRedundant) {
                         // The same ledger line for the unreadable spelling of it: it
                         // recovers to a card the DL already resolved to, so nothing is
@@ -422,7 +424,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                         // separates "the guard can see the shape" from "the guard
                         // refuses the shape" — the latter would reject ordinary prose.
                         Log::info("kanban_move_card: PR carries {$dl} and a card-SHAPED token that does not parse ("
-                            .CardTokenGrammar::describe()."), but it appears to name card#{$cardResolution['nearMissId']} — the SAME card the DL resolved to, so nothing is dropped and the DL wins (near-miss card token, DL-287)", ['catalog_id' => 'card_move_classifier.pr_dl_wins_near_miss_same_card']);
+                            .CardTokenGrammar::describe()."), but it appears to name card#{$cardResolution['nearMissId']} — the SAME card the DL resolved to, so nothing is dropped and the DL wins (near-miss card token, DL-287)", ['catalog_id' => 'card_move_classifier.pr_dl_wins_near_miss_same_card', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
                     }
 
                     // The DL-resolved card(s) also carry the PR provenance refs, with
@@ -462,14 +464,14 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 // is what is unconditionally true at this point, so the ruling is what is
                 // said. ⚠ The push path's twin keeps its move claim: `started` is not a
                 // gated outcome, so nothing downstream of it can withhold the move.
-                Log::warning('kanban_move_card: PR carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).") AND a DIFFERENT card#{$cardToken} — treating the explicit card# as authoritative (foreign-DL-mention guard, DL-218); the card token in force is card#{$cardToken}, not the DL card(s)", ['catalog_id' => 'card_move_classifier.pr_card_over_foreign_dl']);
+                Log::warning('kanban_move_card: PR carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).") AND a DIFFERENT card#{$cardToken} — treating the explicit card# as authoritative (foreign-DL-mention guard, DL-218); the card token in force is card#{$cardToken}, not the DL card(s)", ['catalog_id' => 'card_move_classifier.pr_card_over_foreign_dl', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
                 $conflictDl = $dl;   // foreign to the card# card → do not stamp it
                 // fall through to the card# path below (do NOT return the DL targets)
             } elseif ($cardToken === null) {
                 // (4) DL present but nothing resolved and no card# fallback → a
                 // high-value miss (a decision-logged-but-unstamped card is the live
                 // footgun this fallback exists for). Warn loudly; never silent no-op.
-                Log::warning("kanban_move_card: PR carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)", ['catalog_id' => 'card_move_classifier.pr_dl_without_card']);
+                Log::warning("kanban_move_card: PR carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)", ['catalog_id' => 'card_move_classifier.pr_dl_without_card', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
                 // …and if the "no card# fallback token" was actually an UNREADABLE one,
                 // say so (DL-287). The near-miss line's own "no move" clause is TRUE
                 // about this subject — nothing moves here — which is precisely the
@@ -497,7 +499,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 ));
             } else {
                 // (2) DL unresolved → fall through to the present card#.
-                Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)", ['catalog_id' => 'card_move_classifier.pr_dl_no_card_fallthrough']);
+                Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)", ['catalog_id' => 'card_move_classifier.pr_dl_no_card_fallthrough', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
             }
         }
 
@@ -940,7 +942,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 default => '',
             }
             .'A merge moves a card on '.PrOutcome::describeClosure().'. '
-            ."The card is left where it is, never moved back. Title: {$title} — head ref: {$head}", ['catalog_id' => 'card_move_classifier.mention_without_closure', 'decision' => 'DL-436']);
+            ."The card is left where it is, never moved back. Title: {$title} — head ref: {$head}", ['catalog_id' => 'card_move_classifier.mention_without_closure', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'decision' => 'DL-436']);
     }
 
     /**
@@ -1011,6 +1013,18 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     }
 
     /**
+     * The DL correlation read, under the write it correlates for, so its shared `kanban_client.*`
+     * rows say the op the same read says inside that write's handler (card#11223). No handler
+     * runs yet, so `handler` stays null.
+     *
+     * @return list<int>
+     */
+    private function correlateDl(WriteOp $op, WritebackMapping $mapping, string $dl, ?string $sourceRepo): array
+    {
+        return BoardMoverScope::forOp($op, fn (): array => WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo));
+    }
+
+    /**
      * The card ids a PR correlates to, for the draft overlay — the SAME DL→card /
      * card#-fallback resolution the move path uses (FR-7 try-in-order, incl. the
      * DL-218 conflict rule via {@see self::cardTokenVerdict()}): a DL that resolves wins (all
@@ -1058,7 +1072,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $cardToken = $cardResolution['token'];
         if ($dl !== null) {
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
-            $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
+            $cardIds = $this->correlateDl(WriteOp::Write, $mapping, $dl, $sourceRepo);
             $verdict = $cardIds !== [] ? $this->cardTokenVerdict($cardResolution, $cardIds) : null;
             if ($verdict === CardTokenVerdict::DlWins || $verdict === CardTokenVerdict::NearMissRedundant) {
                 return ['ids' => $cardIds, 'uncorroborated' => false];
@@ -1133,7 +1147,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             // Repo-qualified (DL-167) only where ambiguity exists (DL-174) — same
             // shared-board conditional as the pull_request path above.
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
-            $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
+            $cardIds = $this->correlateDl(WriteOp::Move, $mapping, $dl, $sourceRepo);
             if ($cardIds !== []) {
                 // DL-218 conflict (same rule + harm as the move path): a branch like
                 // `card-4811-guard-DL-219` where DL-219 resolves elsewhere must not
@@ -1148,25 +1162,25 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                     // so it alerts.
                     Log::warning('kanban_move_card: branch carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).') AND a card-SHAPED token that does not parse ('
                         .CardTokenGrammar::describe()."), which appears to name card#{$cardState['nearMissId']} — a DIFFERENT card. The {$dl} move onto card(s) "
-                        .implode(',', $cardIds).' is REFUSED so a near-miss spelling cannot hijack it (near-miss card token, DL-287): '.$branch, ['catalog_id' => 'card_move_classifier.branch_dl_near_miss_card_token_refused']);
+                        .implode(',', $cardIds).' is REFUSED so a near-miss spelling cannot hijack it (near-miss card token, DL-287): '.$branch, ['catalog_id' => 'card_move_classifier.branch_dl_near_miss_card_token_refused', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
 
                     return new ClassifyResult(targets: $this->moveTargets($cardIds, $repo, 'started', cardTokenNearMiss: true));
                 }
                 if ($verdict !== CardTokenVerdict::CardTokenAuthoritative) {
                     if ($cardToken !== null) {
-                        Log::info("kanban_move_card: branch carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# names the same card, so nothing is dropped", ['catalog_id' => 'card_move_classifier.branch_dl_wins_same_card']);
+                        Log::info("kanban_move_card: branch carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# names the same card, so nothing is dropped", ['catalog_id' => 'card_move_classifier.branch_dl_wins_same_card', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
                     } elseif ($verdict === CardTokenVerdict::NearMissRedundant) {
                         Log::info("kanban_move_card: branch carries {$dl} and a card-SHAPED token that does not parse ("
-                            .CardTokenGrammar::describe()."), but it appears to name card#{$cardState['nearMissId']} — the SAME card the DL resolved to, so nothing is dropped and the DL wins (near-miss card token, DL-287)", ['catalog_id' => 'card_move_classifier.branch_dl_wins_near_miss_same_card']);
+                            .CardTokenGrammar::describe()."), but it appears to name card#{$cardState['nearMissId']} — the SAME card the DL resolved to, so nothing is dropped and the DL wins (near-miss card token, DL-287)", ['catalog_id' => 'card_move_classifier.branch_dl_wins_near_miss_same_card', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
                     }
 
                     return new ClassifyResult(targets: $this->moveTargets($cardIds, $repo, 'started'));
                 }
-                Log::warning('kanban_move_card: branch carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).") AND a DIFFERENT card#{$cardToken} — treating the explicit card# as authoritative (foreign-DL-mention guard, DL-218); moving card#{$cardToken}, not the DL card(s)", ['catalog_id' => 'card_move_classifier.branch_card_over_foreign_dl']);
+                Log::warning('kanban_move_card: branch carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).") AND a DIFFERENT card#{$cardToken} — treating the explicit card# as authoritative (foreign-DL-mention guard, DL-218); moving card#{$cardToken}, not the DL card(s)", ['catalog_id' => 'card_move_classifier.branch_card_over_foreign_dl', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
                 $conflictDl = $dl;   // foreign to the card# card → do not stamp it
                 // fall through to the card# path below (do NOT return the DL targets)
             } elseif ($cardToken === null) {
-                Log::warning("kanban_move_card: branch carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)", ['catalog_id' => 'card_move_classifier.branch_dl_without_card']);
+                Log::warning("kanban_move_card: branch carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)", ['catalog_id' => 'card_move_classifier.branch_dl_without_card', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
                 // Nothing moves on this arm, so the near-miss line's "no move" clause
                 // is true about this ref and the probe can honestly run (DL-287) —
                 // the same honesty fix as the move path's arm.
@@ -1174,7 +1188,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
                 return new ClassifyResult;
             } else {
-                Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)", ['catalog_id' => 'card_move_classifier.branch_dl_no_card_fallthrough']);
+                Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)", ['catalog_id' => 'card_move_classifier.branch_dl_no_card_fallthrough', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
             }
         }
 
@@ -1433,7 +1447,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         foreach ($nearMisses as $what => $accepted) {
-            Log::warning("kanban_move_card: {$surface} appears to name {$what} but the token does not parse ({$accepted}) — no move (FR-7 near-miss): {$text}", ['catalog_id' => 'card_move_classifier.token_near_miss_no_move']);
+            Log::warning("kanban_move_card: {$surface} appears to name {$what} but the token does not parse ({$accepted}) — no move (FR-7 near-miss): {$text}", ['catalog_id' => 'card_move_classifier.token_near_miss_no_move', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);
         }
 
         return $nearMisses !== [];
@@ -1505,7 +1519,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
         if (DlTokenGrammar::parse($text) === null && DlTokenGrammar::looksLikeDlToken($text)) {
             Log::warning('kanban_move_card: a card token correlates, so this event moves a card rather than no-opping (the durable handler may still refuse it) — but the subject also carries a DL-shaped token that does not parse ('
-                .DlTokenGrammar::describe().'), so no dl_number is stamped with the move (FR-7 lost DL stamp): '.$text, ['catalog_id' => 'card_move_classifier.dl_token_unparseable_no_dl_stamp']);
+                .DlTokenGrammar::describe().'), so no dl_number is stamped with the move (FR-7 lost DL stamp): '.$text, ['catalog_id' => 'card_move_classifier.dl_token_unparseable_no_dl_stamp', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'stamp']);
         }
         if ($prNumber !== null) {
             $refs['stamp_pr'] = $prNumber;
