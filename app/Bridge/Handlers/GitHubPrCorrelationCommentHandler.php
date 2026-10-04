@@ -2,12 +2,14 @@
 
 namespace App\Bridge\Handlers;
 
+use App\Bridge\Contracts\DeclaresWriteOp;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Writeback\PrCorrelationComment;
 use App\Bridge\Writeback\PrCorrelationCommenter;
+use App\Bridge\Writeback\WriteOp;
 
 /**
  * Posts the correlation-failure comment for a merge the CLASSIFIER could not correlate
@@ -25,9 +27,14 @@ use App\Bridge\Writeback\PrCorrelationCommenter;
  * looked up, or null) and `title_closes_dl`, `card_id` (the head branch's card, on
  * {@see PrCorrelationComment::NO_CLOSING_FORM} only), and the classifier's `pr_correlation` evidence.
  */
-final class GitHubPrCorrelationCommentHandler implements DurableReaction, Handler
+final class GitHubPrCorrelationCommentHandler implements DeclaresWriteOp, DurableReaction, Handler
 {
     public function __construct(private readonly PrCorrelationCommenter $commenter = new PrCorrelationCommenter) {}
+
+    public function writeOp(ReactionTarget $target): WriteOp
+    {
+        return WriteOp::Comment;
+    }
 
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {

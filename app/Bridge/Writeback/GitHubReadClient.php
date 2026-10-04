@@ -653,7 +653,7 @@ final class GitHubReadClient
      */
     private static function warnUnreadableBody(string $what, array $context): void
     {
-        Log::warning("github read: {$what}; ".self::UNREADABLE_BODY_CAUSE, ['catalog_id' => 'github_read_client.body_unreadable'] + $context);
+        Log::warning("github read: {$what}; ".self::UNREADABLE_BODY_CAUSE, ['catalog_id' => 'github_read_client.body_unreadable', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op()] + $context);
     }
 
     private function http(): PendingRequest

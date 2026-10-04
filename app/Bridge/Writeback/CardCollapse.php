@@ -116,22 +116,26 @@ final class CardCollapse
         // fresh instance per refused card could not differ from this one — writing it that way
         // said the opposite.
         $alerts = new WritebackAlertNotifier;
-        foreach (array_keys($cards) as $id) {
-            if ($id === $survivorId) {
-                continue;
+        // The archive is the write here whatever the caller is making (a dependabot move, a
+        // coordination-card create, a seat's create), so the pin refusal it may log says so.
+        BoardMoverScope::forOp(WriteOp::Write, function () use ($cards, $survivorId, $mapping, $logContext, $alerts, $subsystem, $repo, $client): void {
+            foreach (array_keys($cards) as $id) {
+                if ($id === $survivorId) {
+                    continue;
+                }
+                $ctx = ['card_id' => $id, 'survivor' => $survivorId]
+                    + ($mapping === null ? [] : MappedBoardGuard::boardContext($cards[$id], $mapping))
+                    + $logContext;
+                if (PinGuard::refuses($alerts, $cards[$id], $subsystem, 'duplicate archive', $id, $repo, $subsystem, $ctx)) {
+                    continue;
+                }
+                if ($client->archiveCard($id)) {
+                    Log::info("{$subsystem}: archived duplicate card sharing the same correlation key", ['catalog_id' => 'card_collapse.duplicate_archived', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write'] + $ctx);
+                } else {
+                    Log::error("{$subsystem}: duplicate archive returned 200 but the card is not archived (archived_at null); NOT retrying", ['catalog_id' => 'card_collapse.archive_not_applied', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write'] + $ctx);
+                }
             }
-            $ctx = ['card_id' => $id, 'survivor' => $survivorId]
-                + ($mapping === null ? [] : MappedBoardGuard::boardContext($cards[$id], $mapping))
-                + $logContext;
-            if (PinGuard::refuses($alerts, $cards[$id], $subsystem, 'duplicate archive', $id, $repo, $subsystem, $ctx)) {
-                continue;
-            }
-            if ($client->archiveCard($id)) {
-                Log::info("{$subsystem}: archived duplicate card sharing the same correlation key", ['catalog_id' => 'card_collapse.duplicate_archived'] + $ctx);
-            } else {
-                Log::error("{$subsystem}: duplicate archive returned 200 but the card is not archived (archived_at null); NOT retrying", ['catalog_id' => 'card_collapse.archive_not_applied'] + $ctx);
-            }
-        }
+        });
 
         return $cards[$survivorId];
     }
