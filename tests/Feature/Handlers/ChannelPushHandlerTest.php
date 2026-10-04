@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use ReflectionClassConstant;
 use Tests\Support\BundledChannelServer;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 class ChannelPushHandlerTest extends TestCase
@@ -244,6 +245,21 @@ class ChannelPushHandlerTest extends TestCase
         $this->expectException(HandlerException::class);
         $this->expectExceptionMessageMatches('/outside the allowed dir/');
         $this->push(['socket' => '/run/other/'.uniqid().'.sock']);
+    }
+
+    /** card#11261 — a token pasted as BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR is not in the refusal. */
+    public function test_a_token_pasted_as_the_allowed_socket_dir_is_not_in_the_refusal(): void
+    {
+        $pasted = PastedTokenFixture::value();
+        config(['bridge.channel.allowed_socket_dir' => $pasted]);
+
+        try {
+            $this->push(['socket' => '/run/other/'.uniqid().'.sock']);
+            $this->fail('expected the handler to refuse');
+        } catch (HandlerException $e) {
+            $this->assertStringNotContainsString($pasted, $e->getMessage());
+            $this->assertMatchesRegularExpression('/outside the allowed dir <a credential-shaped value, sha256:[0-9a-f]{8}>$/', $e->getMessage());
+        }
     }
 
     public function test_classifier_socket_traversal_rejected(): void

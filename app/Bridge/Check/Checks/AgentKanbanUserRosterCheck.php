@@ -100,7 +100,7 @@ final class AgentKanbanUserRosterCheck implements Check
             return;
         }
 
-        yield Finding::ok("agent roster: the coord roster at {$file->path} is readable by this run's OS user ".$this->whoAmI().'. ⚠ The receiver reads it as its PHP-FPM pool user, which this run does not measure: run sudo -u <pool user> php artisan bridge:check to measure that user (a pool user that cannot read it refuses every take as install_fault.coord_config_unreadable and answers 5xx to kanban deliveries).');
+        yield Finding::ok("agent roster: the coord roster at {$file->shownPath()} is readable by this run's OS user ".$this->whoAmI().'. ⚠ The receiver reads it as its PHP-FPM pool user, which this run does not measure: run sudo -u <pool user> php artisan bridge:check to measure that user (a pool user that cannot read it refuses every take as install_fault.coord_config_unreadable and answers 5xx to kanban deliveries).');
 
         $users = AgentKanbanUsers::of($ctx->configs, $file);
         if (! $users->readable()) {

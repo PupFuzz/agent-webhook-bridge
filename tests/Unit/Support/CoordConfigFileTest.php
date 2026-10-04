@@ -3,8 +3,10 @@
 namespace Tests\Unit\Support;
 
 use App\Bridge\Support\CoordConfigFile;
+use App\Bridge\Support\CoordConfigPath;
 use App\Bridge\Support\UntrustedPathContents;
 use Illuminate\Support\Facades\File;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 /**
@@ -73,6 +75,23 @@ class CoordConfigFileTest extends TestCase
      * The ONE uid-relative fault: a file this process is refused, or a path under a directory it
      * may not traverse — where another OS user (the receiver's) may read it fine.
      */
+    /**
+     * card#11261 — a token pasted as BRIDGE_COORD_CONFIG_PATH (or `$COORD_CONFIG`) is printed as a
+     * fingerprint by both clauses every refusal, exception and finding about this read is built from.
+     */
+    public function test_a_token_pasted_as_the_setting_is_in_neither_clause(): void
+    {
+        $pasted = PastedTokenFixture::value();
+
+        $fault = CoordConfigFile::at($pasted)->faultClause();
+        $unreadable = CoordConfigPath::unreadableClause($pasted);
+
+        $this->assertStringNotContainsString($pasted, $fault);
+        $this->assertMatchesRegularExpression("/^BRIDGE_COORD_CONFIG_PATH is '<a credential-shaped value, sha256:[0-9a-f]{8}>', which is not an absolute path$/", $fault);
+        $this->assertStringNotContainsString($pasted, $unreadable);
+        $this->assertMatchesRegularExpression('/^the coordination config at <a credential-shaped value, sha256:[0-9a-f]{8}> is absent/', $unreadable);
+    }
+
     public function test_only_a_permission_refusal_is_unreadable(): void
     {
         $this->skipAsRoot();

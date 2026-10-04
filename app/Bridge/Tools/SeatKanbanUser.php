@@ -141,7 +141,7 @@ final class SeatKanbanUser
             return $kanbanUserId;
         }
 
-        $path = (string) $missing->file->path;
+        $path = $missing->file->shownPath();
         $verdict = $missing->verdictFor($callingAgentName);
         Log::warning('board tools: the coord roster gives the calling seat no kanban user id, so it has no id to assign itself', [
             'agent' => $callingAgentName, 'tool' => $tool, 'seat' => $seatName, 'roster' => $path, 'verdict' => $verdict->why,
@@ -274,7 +274,7 @@ final class SeatKanbanUser
                 'seats' => $sharing, 'reason' => self::SHARED_KANBAN_USER_ID,
             ]);
 
-            throw new ToolRefusalException("{$tool}: the coord roster at {$roster->file->path} gives kanban user {$kanbanUserId} to seat '{$seatName}' (yours) AND to ".(count($sharing) === 1 ? 'seat ' : 'seats ').implode(', ', array_map(static fn (string $s): string => "'{$s}'", $sharing)).', which this install also serves, so that id does not say WHICH seat you are — and a card recorded under it would tell every other seat that somebody holds the work without saying who, which is the one question this door exists to answer. NOTHING WAS WRITTEN. This is an INSTALL fault: give each seat its own kanban user in the roster, and report it to your operator.', installFault: true, reason: 'install_fault.shared_kanban_user');
+            throw new ToolRefusalException("{$tool}: the coord roster at {$roster->file->shownPath()} gives kanban user {$kanbanUserId} to seat '{$seatName}' (yours) AND to ".(count($sharing) === 1 ? 'seat ' : 'seats ').implode(', ', array_map(static fn (string $s): string => "'{$s}'", $sharing)).', which this install also serves, so that id does not say WHICH seat you are — and a card recorded under it would tell every other seat that somebody holds the work without saying who, which is the one question this door exists to answer. NOTHING WAS WRITTEN. This is an INSTALL fault: give each seat its own kanban user in the roster, and report it to your operator.', installFault: true, reason: 'install_fault.shared_kanban_user');
         }
 
         return [$callingAgentName, $kanbanUserId, $seatName, $roster];
@@ -290,7 +290,7 @@ final class SeatKanbanUser
     {
         $file = $roster->file;
         Log::warning('board tools: the coord roster could not be read, so the calling seat\'s kanban user id is unknown', [
-            'agent' => $callingAgentName, 'tool' => $tool, 'fault' => $file->fault ?? 'no_kanban_host', 'roster' => $file->path,
+            'agent' => $callingAgentName, 'tool' => $tool, 'fault' => $file->fault ?? 'no_kanban_host', 'roster' => $file->shownPath(),
         ]);
 
         $message = "{$tool}: the bridge reads each seat's kanban user id from the coord roster, and ".$roster->faultClause()

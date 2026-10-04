@@ -5,6 +5,7 @@ namespace App\Bridge\Writeback;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\InsecureSecretPermsException;
 use App\Bridge\Support\CoordCredentialStore;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\PathHelper;
 use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\RedactedErrorText;
@@ -112,7 +113,7 @@ final class GitHubTokenResolver
                 return $refusal;
             }
 
-            return $this->readTokenFile($override, TokenSource::WriteTokenPath, "write_token_path for {$configured} ({$override})", "the write_token_path writeback.json declares for {$configured}") ?? self::unplacedProblem($override, "the write_token_path writeback.json declares for {$configured}", TokenSource::WriteTokenPath);
+            return $this->readTokenFile($override, TokenSource::WriteTokenPath, "write_token_path for {$configured} (".PastedSecretShape::displayPathSetting($override).')', "the write_token_path writeback.json declares for {$configured}") ?? self::unplacedProblem($override, "the write_token_path writeback.json declares for {$configured}", TokenSource::WriteTokenPath);
         }
 
         // 2: the store.
@@ -174,16 +175,16 @@ final class GitHubTokenResolver
      */
     private function resolveStoreKey(CoordCredentialStore $store, string $repo, string $key, string $matched): TokenResolution
     {
-        $label = 'store key '.CoordCredentialStore::displayName($key)." ([git-credential-map] {$matched})";
+        $label = 'store key '.PastedSecretShape::displayName($key)." ([git-credential-map] {$matched})";
         [$path, $why] = $store->tokenFileFor($key);
         if ($path === null) {
-            return TokenResolution::problem("{$label} for {$repo}: {$why}. Fix the coord credential store at {$store->path}; the single token file does not stand in for a repo the store maps", TokenFileFault::Misconfigured, TokenSource::Store, $store->path);
+            return TokenResolution::problem("{$label} for {$repo}: {$why}. Fix the coord credential store at {$store->shownPath()}; the single token file does not stand in for a repo the store maps", TokenFileFault::Misconfigured, TokenSource::Store, $store->path);
         }
-        if (($refusal = $this->ownerRefusal($path, $label, $repo, $store->owner(), "the store at {$store->path}", "the store's owner", TokenSource::Store)) !== null) {
+        if (($refusal = $this->ownerRefusal($path, $label, $repo, $store->owner(), "the store at {$store->shownPath()}", "the store's owner", TokenSource::Store)) !== null) {
             return $refusal;
         }
 
-        return $this->readTokenFile($path, TokenSource::Store, "{$label} ({$path})", "the file {$label} names for {$repo}")
+        return $this->readTokenFile($path, TokenSource::Store, "{$label} (".PastedSecretShape::displayPathSetting($path).')', "the file {$label} names for {$repo}")
             ?? self::unplacedProblem($path, "the file {$label} names for {$repo}", TokenSource::Store);
     }
 
@@ -200,7 +201,7 @@ final class GitHubTokenResolver
         }
         $identity = app(ProcessIdentity::class);
         $fileOwner = $identity->ownerOf($path);
-        $shown = CoordCredentialStore::displayPathSetting($path);
+        $shown = PastedSecretShape::displayPathSetting($path);
         if ($fileOwner === null || $expected === null) {
             return TokenResolution::problem("{$label} for {$repo} names {$shown}, and this process could not read the owner of ".($fileOwner === null ? 'that file' : $namer).', so whether it belongs to '.$who.' was NOT determined', TokenFileFault::Undetermined, $kind, $path);
         }
@@ -221,7 +222,7 @@ final class GitHubTokenResolver
     {
         $override = $this->hasTokenPathOverride();
         $path = $this->tokenPath();
-        $shown = CoordCredentialStore::displayPathSetting($path);
+        $shown = PastedSecretShape::displayPathSetting($path);
         $resolution = $this->readTokenFile($path, TokenSource::TokenFile, $override ? "token_path override ({$shown})" : "token file ({$shown})", 'the configured token_path');
         if ($resolution === null && $override) {
             // Authoritative but missing/blank → fail loud; nothing below stands in.
@@ -238,7 +239,7 @@ final class GitHubTokenResolver
      */
     private function readTokenFile(string $path, TokenSource $kind, string $source, string $what): ?TokenResolution
     {
-        $shown = CoordCredentialStore::displayPathSetting($path);
+        $shown = PastedSecretShape::displayPathSetting($path);
         $named = $kind === TokenSource::TokenFile ? "github token file {$shown}" : "{$what}: github token file {$shown}";
         try {
             $token = SecretFile::read($path);   // throws on insecure perms; null when absent or blank
@@ -275,7 +276,7 @@ final class GitHubTokenResolver
     private static function unplaced(string $path): array
     {
         clearstatcache(true, $path);
-        $shown = CoordCredentialStore::displayPathSetting($path);
+        $shown = PastedSecretShape::displayPathSetting($path);
         if (is_file($path)) {
             return [TokenFileFault::Empty, "{$shown} is empty"];
         }

@@ -23,8 +23,9 @@ final class ChannelToken
 {
     public static function read(string $path): string
     {
+        $shown = PastedSecretShape::displayPathSetting($path);
         if (! is_file($path) || ! is_readable($path)) {
-            throw new ChannelTokenException("channel auth token not readable at {$path}", self::unreadableFault($path));
+            throw new ChannelTokenException("channel auth token not readable at {$shown}", self::unreadableFault($path));
         }
         // The mode & 0o077 gate lives in SecretFile (DL-010, shared with the HMAC
         // receiver + API/writeback token); the channel-specific message + the
@@ -32,7 +33,7 @@ final class ChannelToken
         if (SecretFile::isInsecure($path)) {
             throw new ChannelTokenException(sprintf(
                 'channel auth token at %s is group/world-readable (mode %04o) — chmod 600',
-                $path,
+                $shown,
                 (int) fileperms($path) & 0o777,
             ), ChannelTokenFault::InsecurePerms);
         }
@@ -47,7 +48,7 @@ final class ChannelToken
             throw new ChannelTokenException($e->getMessage(), ChannelTokenFault::NotReadable);
         }
         if ($token === null) {
-            throw new ChannelTokenException("channel auth token at {$path} is empty", ChannelTokenFault::EmptyFile);
+            throw new ChannelTokenException("channel auth token at {$shown} is empty", ChannelTokenFault::EmptyFile);
         }
 
         return $token;

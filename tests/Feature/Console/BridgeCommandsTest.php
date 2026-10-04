@@ -803,6 +803,47 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString($pasted, Artisan::output());
     }
 
+    /** @return array<string, array{0: callable(self, string): void, 1: string}> */
+    public static function pastedTokenPathSettings(): array
+    {
+        return [
+            'as BRIDGE_COORD_CONFIG_PATH' => [function (self $t, string $pasted): void {
+                $t->writeAgent();
+                config(['bridge.coord_config_path' => $pasted]);
+            }, "/^FAIL: agent roster: BRIDGE_COORD_CONFIG_PATH is '<a credential-shaped value, sha256:[0-9a-f]{8}>'/m"],
+            'as an agent YAML api token_path' => [function (self $t, string $pasted): void {
+                File::put($t->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\napi:\n  kanban:\n    token_path: {$pasted}\n");
+            }, '/^WARN: agent prod-agent: kanban API token not readable at <a credential-shaped value, sha256:[0-9a-f]{8}> /m'],
+            'as a board_tools.auth.token_path' => [function (self $t, string $pasted): void {
+                $t->writeToolsAgentYaml('impl', $pasted);
+            }, '/board_tools: agent impl: no token at <a credential-shaped value, sha256:[0-9a-f]{8}> /m'],
+        ];
+    }
+
+    /**
+     * card#11261 — a token pasted where a path setting belongs is in neither `bridge:check`'s text
+     * nor its JSON, and the finding naming the setting is still there (the witness).
+     *
+     * @param  callable(self, string): void  $arrange
+     */
+    #[DataProvider('pastedTokenPathSettings')]
+    public function test_check_never_prints_a_token_pasted_into_a_path_setting(callable $arrange, string $witness): void
+    {
+        $pasted = PastedTokenFixture::value();
+        $arrange($this, $pasted);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])] + $this->fakePreload());
+
+        Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertStringNotContainsString($pasted, $out);
+        $this->assertMatchesRegularExpression($witness, $out);
+        Artisan::call('bridge:check', ['--format' => 'json']);
+        $json = Artisan::output();
+        $this->assertStringNotContainsString($pasted, $json);
+        $this->assertStringContainsString('credential-shaped value', $json);
+    }
+
     public function test_check_classifies_the_reconcile_token_probe_status_into_a_hint(): void
     {
         // The shared GitHubRepoProbe gives bridge:check the status classification it
@@ -4294,6 +4335,19 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
 
         $this->assertFileDoesNotExist($tokenPath);
+    }
+
+    /** card#11261 — a token pasted as `board_tools.auth.token_path` is not printed by the command. */
+    public function test_provision_tools_never_prints_a_token_pasted_as_the_bearer_path(): void
+    {
+        $pasted = PastedTokenFixture::value();
+        $this->writeToolsAgentYaml('impl', $pasted);
+
+        $this->assertSame(0, Artisan::call('bridge:provision-tools', ['--dry-run' => true]));
+        $out = Artisan::output();
+
+        $this->assertStringNotContainsString($pasted, $out);
+        $this->assertMatchesRegularExpression('/DRY-RUN — would mint a new bearer at <a credential-shaped value, sha256:[0-9a-f]{8}>/', $out);
     }
 
     public function test_provision_tools_fails_both_agents_on_token_collision(): void

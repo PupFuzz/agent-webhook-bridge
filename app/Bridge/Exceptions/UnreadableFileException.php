@@ -44,12 +44,16 @@ class UnreadableFileException extends RuntimeException
      * about constructors this class does not own.
      *
      * @param  string  $subject  the noun the operator would recognize, which is not always
-     *                           the basename of $path.
+     *                           the basename of the path.
+     * @param  string  $shownPath  the path AS A MESSAGE MAY PRINT IT — the caller passes it through
+     *                             `PastedSecretShape::displayPathSetting()` (NAMED, for the layer
+     *                             reason above), so a token pasted where a path belongs is not
+     *                             printed by this sentence (card#11261).
      */
-    public static function permissionsFault(string $subject, string $path): self
+    public static function permissionsFault(string $subject, string $shownPath): self
     {
         return new self(
-            "{$subject} at {$path} could not be read by this process (a regular file was "
+            "{$subject} at {$shownPath} could not be read by this process (a regular file was "
             .'found at the path, so this is a permissions fault rather than an absence) — '
             .'ownership and mode are relative to the asking user, so another OS user may read it fine'
         );

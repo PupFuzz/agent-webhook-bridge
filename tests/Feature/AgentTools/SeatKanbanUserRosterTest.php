@@ -3,12 +3,15 @@
 namespace Tests\Feature\AgentTools;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\CoordRosterFixture;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 /**
@@ -234,6 +237,30 @@ class SeatKanbanUserRosterTest extends TestCase
             $this->assertStringNotContainsString((string) self::YAML_ID, $error, 'the retired YAML value must not surface as if it were an answer');
         }
         Http::assertNothingSent();
+    }
+
+    /**
+     * card#11261 — a token pasted as `BRIDGE_COORD_CONFIG_PATH` is in neither the take's refusal nor
+     * any log line, and the refusal still names the setting and says the value is not absolute.
+     */
+    public function test_a_token_pasted_as_the_roster_setting_is_in_no_refusal_and_no_log_line(): void
+    {
+        $pasted = PastedTokenFixture::value();
+        config(['bridge.coord_config_path' => $pasted]);
+        Http::fake();
+        $logged = [];
+        Log::listen(function (MessageLogged $e) use (&$logged): void {
+            $logged[] = $e->message.' '.json_encode($e->context);
+        });
+
+        $error = (string) $this->take()->assertStatus(422)->assertJsonPath('reason', 'install_fault.coord_config_not_absolute')->json('error');
+
+        $this->assertStringNotContainsString($pasted, $error);
+        $this->assertMatchesRegularExpression("/BRIDGE_COORD_CONFIG_PATH is '<a credential-shaped value, sha256:[0-9a-f]{8}>', which is not an absolute path/", $error);
+        $this->assertNotSame([], $logged, 'the witness: the refusal is logged');
+        foreach ($logged as $line) {
+            $this->assertStringNotContainsString($pasted, $line);
+        }
     }
 
     /**

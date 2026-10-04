@@ -12,6 +12,7 @@ use App\Bridge\IdleNudge\IdleNudgeSources;
 use App\Bridge\Scheduling\Handlers\IdleNudgeJob;
 use App\Bridge\Scheduling\TickPosture;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
@@ -92,10 +93,11 @@ final class IdleNudgePostureCheck implements Check
             // Its one input is the path somebody set: a file that is missing or readable by
             // others is its own fault, whatever the OTHER keys are.
             if ($cfg->tokenPath !== null) {
+                $shown = PastedSecretShape::displayPathSetting($cfg->tokenPath);
                 if (! is_file($cfg->tokenPath)) {
-                    yield Finding::fail("idle_nudge: the fleet token file {$cfg->tokenPath} is absent or unreachable — every Mezzanine-sourced agent is unmeasured.");
+                    yield Finding::fail("idle_nudge: the fleet token file {$shown} is absent or unreachable — every Mezzanine-sourced agent is unmeasured.");
                 } elseif (SecretFile::isInsecure($cfg->tokenPath)) {
-                    yield Finding::fail("idle_nudge: the fleet token file {$cfg->tokenPath} is group/world-readable — chmod 600; the fleet read refuses it, so every Mezzanine-sourced agent is unmeasured.");
+                    yield Finding::fail("idle_nudge: the fleet token file {$shown} is group/world-readable — chmod 600; the fleet read refuses it, so every Mezzanine-sourced agent is unmeasured.");
                 }
             }
         }

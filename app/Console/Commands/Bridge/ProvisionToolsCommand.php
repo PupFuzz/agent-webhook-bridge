@@ -8,6 +8,7 @@ use App\Bridge\Scheduling\TickAdoptionNotice;
 use App\Bridge\Scheduling\TickRecord;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\AgentNameShape;
@@ -158,6 +159,7 @@ class ProvisionToolsCommand extends BridgeCommand
             }
 
             $path = $bt->tokenPath;
+            $shown = PastedSecretShape::displayPathSetting($path);
             if (is_file($path)) {
                 if (SecretFile::isInsecure($path)) {
                     $this->error("{$label} FAIL — ".SecretFile::permsMessage($path).' (a co-tenant could read this bearer and drive the board as this agent)');
@@ -177,25 +179,25 @@ class ProvisionToolsCommand extends BridgeCommand
                     continue;
                 }
                 if ($value === null) {
-                    $this->error("{$label} FAIL — bearer file {$path} is empty; remove it and re-run to mint a fresh one");
+                    $this->error("{$label} FAIL — bearer file {$shown} is empty; remove it and re-run to mint a fresh one");
                     $rc = self::FAILURE;
 
                     continue;
                 }
-                $this->info("{$label} already minted — {$path}");
+                $this->info("{$label} already minted — {$shown}");
                 $tokenValues[$cfg->agentName] = $value;
 
                 continue;
             }
 
             if ($dryRun) {
-                $this->line("{$label} DRY-RUN — would mint a new bearer at {$path}");
+                $this->line("{$label} DRY-RUN — would mint a new bearer at {$shown}");
 
                 continue;
             }
             $value = bin2hex(random_bytes(32));
             $this->writeSecret($path, $value);
-            $this->info("{$label} MINTED — {$path}");
+            $this->info("{$label} MINTED — {$shown}");
             $tokenValues[$cfg->agentName] = $value;
         }
 

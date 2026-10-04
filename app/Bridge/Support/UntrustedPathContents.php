@@ -191,7 +191,7 @@ final class UntrustedPathContents
 
         $handle = @fopen($path, 'rb');
         if ($handle === false) {
-            throw UnreadableFileException::permissionsFault($subject, $path);
+            throw UnreadableFileException::permissionsFault($subject, PastedSecretShape::displayPathSetting($path));
         }
 
         try {
@@ -240,7 +240,7 @@ final class UntrustedPathContents
             $raw = $size > 0 ? @fread($handle, $size) : '';
             if ($raw === false) {
                 throw new UnreadableFileException(
-                    "{$subject} at {$path} was opened but could not be read from by this process"
+                    "{$subject} at ".PastedSecretShape::displayPathSetting($path).' was opened but could not be read from by this process'
                 );
             }
 
@@ -476,7 +476,9 @@ final class UntrustedPathContents
      */
     private static function refusal(string $subject, string $path, string $because): string
     {
-        return "{$subject} at {$path} was NOT read: {$because}. This read is taken over a path "
+        $shown = PastedSecretShape::displayPathSetting($path);
+
+        return "{$subject} at {$shown} was NOT read: {$because}. This read is taken over a path "
             .'whose directory is controlled by an account other than the one running this process, '
             .'so what the path resolves to is that account\'s choice rather than a fact about the '
             .'file this process meant to read — the contents of the intended file are not a '

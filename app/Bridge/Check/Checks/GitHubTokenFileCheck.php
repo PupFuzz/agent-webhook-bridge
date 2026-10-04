@@ -6,8 +6,8 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
-use App\Bridge\Support\CoordCredentialStore;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\RedactedErrorText;
@@ -188,7 +188,7 @@ final class GitHubTokenFileCheck implements Check
     {
         $legs = self::describe($enabled);
         $path = $resolution->path;
-        $shown = CoordCredentialStore::displayPathSetting((string) $path);
+        $shown = PastedSecretShape::displayPathSetting((string) $path);
         if ($resolution->fileFault === TokenFileFault::Unreadable) {
             return Finding::unvalidated("github token file: {$resolution->problem} — THIS process could not read it, which says nothing about the user the receiver runs as, so whether {$legs} can reach GitHub was NOT determined. Re-run bridge:check as the receiver's user.");
         }
@@ -320,7 +320,7 @@ final class GitHubTokenFileCheck implements Check
         $name = fn (int $uid): string => $identity->accountName($uid) ?? "uid {$uid}";
         $measure = "Run `sudo -u <pool user> php artisan bridge:check` to measure the receiver's PHP-FPM pool user.";
         $tokenOwner = $identity->ownerOf($path);
-        $shown = CoordCredentialStore::displayPathSetting($path);
+        $shown = PastedSecretShape::displayPathSetting($path);
         $euid = $identity->euid();
 
         if ($tokenOwner === 0) {

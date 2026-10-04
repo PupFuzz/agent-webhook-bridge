@@ -8,6 +8,7 @@ use App\Bridge\Check\OptInCheck;
 use App\Bridge\ClientUpdate\ExemptCaller;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\UntrustedText;
@@ -103,6 +104,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 // that cannot happen.
                 continue;
             }
+            $shownBearer = PastedSecretShape::displayPathSetting($bt->tokenPath);
             // An enabled agent whose bearer can't be presented IS a broken enablement —
             // the probe certifies before the operator flips traffic on, so these fail
             // (unlike the offline checks, which never do).
@@ -135,7 +137,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 // (via SecretFile::read) is false for EACCES exactly as for ENOENT, so
                 // naming just one sent the operator to re-mint a token that may already
                 // be there and readable by the web user the runtime actually serves as.
-                yield Finding::fail("board_tools probe: agent {$name}: no usable bearer at {$bt->tokenPath} — it is absent, or a directory above it denies this process traversal (the read cannot distinguish them; the bridge commonly runs as a different OS user than the agent). Run bridge:provision-tools if it is missing, or re-run bridge:check as a user that can read it; cannot certify this agent.");
+                yield Finding::fail("board_tools probe: agent {$name}: no usable bearer at {$shownBearer} — it is absent, or a directory above it denies this process traversal (the read cannot distinguish them; the bridge commonly runs as a different OS user than the agent). Run bridge:provision-tools if it is missing, or re-run bridge:check as a user that can read it; cannot certify this agent.");
 
                 continue;
             }
@@ -162,7 +164,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 continue;
             }
             if ($status === 401) {
-                yield Finding::fail("board_tools probe: agent {$name}: {$endpoint} → 401 (bearer rejected). The presented token resolves to no agent — verify the bearer at {$bt->tokenPath} matches what the channel server presents (BRIDGE_TOOLS_TOKEN / _FILE), and that it does not collide with another agent's.");
+                yield Finding::fail("board_tools probe: agent {$name}: {$endpoint} → 401 (bearer rejected). The presented token resolves to no agent — verify the bearer at {$shownBearer} matches what the channel server presents (BRIDGE_TOOLS_TOKEN / _FILE), and that it does not collide with another agent's.");
 
                 continue;
             }
@@ -184,7 +186,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
             if ($gotBoard !== $bt->boardId || $gotSwimlane !== $bt->swimlaneId) {
                 yield Finding::fail("board_tools probe: agent {$name}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. ".$header->boardSpelling->mismatchCause(
                     credential: 'the presented bearer',
-                    credentialFix: "look for a token collision or a mis-pinned bearer at {$bt->tokenPath}",
+                    credentialFix: "look for a token collision or a mis-pinned bearer at {$shownBearer}",
                     routeFix: 'check what '.$endpoint.' actually reached; a wrong vhost, a relay, or any JSON service answering `{"ok":true,"result":{}}` answers a probe exactly this way',
                 ).' It says nothing about the bridge-side lane filter, which this response has no observable for. '.$header->boardSpelling->note());
 
