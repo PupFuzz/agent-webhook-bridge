@@ -24,8 +24,8 @@ use Tests\TestCase;
  * repo's override, the coord credential store, the single file) and `resolveFromFile()` is the
  * single file alone; a new caller of either must choose a side.
  *
- * ⛔ A RUNTIME LEG NEVER ASKS FOR `GH_TOKEN`. `resolveFor(…, ambient: true)` is the CLI form; a
- * registered consumer that passed it would resolve a token in a shell `bridge:replay` that the
+ * ⛔ A RUNTIME LEG NEVER ASKS FOR `GH_TOKEN`. `resolveForCli()` is the CLI form; a
+ * registered consumer that called it would resolve a token in a shell `bridge:replay` that the
  * receiver never has, and post as an identity the receiver never uses. Checked lexically below.
  *
  * WHAT IT DOES NOT DO: it cannot tell whether a class ruled CLI-only below has since been wired
@@ -72,6 +72,11 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
                 $unregistered[] = "{$class} calls resolveFor()";
             }
         }
+        foreach ($callers['resolveForCli'] as $class) {
+            if (! array_key_exists($class, self::CLI_ONLY)) {
+                $unregistered[] = "{$class} calls resolveForCli() and is not ruled CLI-only";
+            }
+        }
 
         $this->assertSame([], $unregistered,
             "a class resolves a GitHub token and is not declared.\n"
@@ -83,14 +88,14 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
     public function test_every_registered_consumer_still_resolves_a_token_and_declares_itself(): void
     {
         $callers = self::callers();
-        $resolving = array_merge($callers['resolveFromFile'], $callers['resolveFor']);
+        $resolving = array_merge($callers['resolveFromFile'], $callers['resolveFor'], $callers['resolveForCli']);
 
         foreach (GitHubTokenFileCheck::CONSUMERS as $consumer) {
             $this->assertContains($consumer, $resolving, "{$consumer} is registered but no longer calls the resolver — a stale entry names a leg that cannot be inert");
             $this->assertTrue(is_subclass_of($consumer, GitHubTokenFileConsumer::class), "{$consumer} is registered but does not implement GitHubTokenFileConsumer");
         }
         foreach (array_keys(self::CLI_ONLY) as $class) {
-            $this->assertContains($class, $callers['resolveFor'], "{$class} is ruled CLI-only but no longer calls resolveFor() — drop the ruling");
+            $this->assertContains($class, array_merge($callers['resolveFor'], $callers['resolveForCli']), "{$class} is ruled CLI-only but no longer calls the resolver — drop the ruling");
         }
     }
 
@@ -100,7 +105,7 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
             $file = app_path(str_replace('\\', '/', substr($consumer, strlen('App\\'))).'.php');
             $words = array_column(SourceScan::significantTokens((string) file_get_contents($file)), 1);
             $this->assertContains('resolveFor', $words, "the scan read {$file} and found no resolveFor call — the scan is broken, not the code");
-            $this->assertNotContains('ambient', $words, "{$consumer} runs in the receiver and must resolve as the receiver does — never with GH_TOKEN");
+            $this->assertNotContains('resolveForCli', $words, "{$consumer} runs in the receiver and must resolve as the receiver does — never with GH_TOKEN");
         }
     }
 
@@ -114,18 +119,18 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
     /**
      * The classes under `app/` that call each resolving method, by `->name(` call site.
      *
-     * @return array{resolveFromFile: list<string>, resolveFor: list<string>}
+     * @return array{resolveFromFile: list<string>, resolveFor: list<string>, resolveForCli: list<string>}
      */
     private static function callers(): array
     {
-        $out = ['resolveFromFile' => [], 'resolveFor' => []];
+        $out = ['resolveFromFile' => [], 'resolveFor' => [], 'resolveForCli' => []];
         foreach (SourceScan::appFiles() as $path) {
             $relative = SourceScan::relativeToApp($path);
             if ($relative === self::RESOLVER_FILE) {
                 continue;
             }
             $sites = SourceScan::sites((string) file_get_contents($path), $relative,
-                fn (array $tokens, int $i): ?string => SourceScan::methodCallAt($tokens, $i, ['resolveFromFile', 'resolveFor']));
+                fn (array $tokens, int $i): ?string => SourceScan::methodCallAt($tokens, $i, ['resolveFromFile', 'resolveFor', 'resolveForCli']));
             $class = 'App\\'.str_replace('/', '\\', substr($relative, 0, -strlen('.php')));
             foreach (array_unique($sites) as $method) {
                 $out[$method][] = $class;

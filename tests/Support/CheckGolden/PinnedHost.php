@@ -35,7 +35,7 @@ use Illuminate\Support\Facades\File;
  *      `WritebackBoardStateCheck::coordTerminalAgreement()` (and by
  *      `WritebackMappingConfigCheck`, which spells the same two `$where` diagnoses).
  *   4. `GH_TOKEN` — `GitHubTokenResolver` falls back to it for a caller asking for the
- *      ambient leg (`resolveFor(…, ambient: true)`), so an operator shell that exports it
+ *      ambient leg (`resolveForCli()`), so an operator shell that exports it
  *      silently satisfies a token probe that must fail on a fixture with no token.
  *
  * (4) is NOT in the falsifier's six. The falsifier enumerated `CheckCommand.php`; this

@@ -114,6 +114,11 @@ final class GitHubTokenFileCheck implements Check
      */
     public function run(CheckContext $ctx): iterable
     {
+        if (config('bridge.providers.github.credential_helper') !== null) {
+            yield Finding::warn('github token file: BRIDGE_GITHUB_CREDENTIAL_HELPER is set and has NO effect — nothing runs the credential helper since DL-456, and the coord credential store is read in-process for every repo it maps (an empty value no longer keeps it out). '
+                .'Remove it; a repo that must not use its store key declares a write_token_path in writeback.json.');
+        }
+
         /** @var array<string, array{repos: list<string>, writes: bool}> $enabled */
         $enabled = [];
         foreach (self::CONSUMERS as $consumer) {

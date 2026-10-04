@@ -29,7 +29,7 @@ use Throwable;
  *      repo, because it may map the repo.
  *   3. the single file: `providers.github.token_path` (authoritative within this leg: missing or
  *      blank fails loud), else the conventional `<secret_dir>/github/token`.
- *   4. `GH_TOKEN` — ONLY for a caller that asks (`$ambient`: the artisan commands), and only when no
+ *   4. `GH_TOKEN` — ONLY for a caller of `resolveForCli()` (the artisan commands), and only when no
  *      source above applies. The receiver never asks: under PHP-FPM it is absent anyway, and a
  *      shell `bridge:replay` must resolve the token the receiver would.
  *
@@ -48,7 +48,7 @@ final class GitHubTokenResolver
 
     private ?CoordCredentialStore $store = null;
 
-    /** @var array<string, TokenResolution> memoized per (ambient, RAW repo key). */
+    /** @var array<string, TokenResolution> memoized per (runtime|cli, RAW repo key). */
     private array $memo = [];
 
     /**
@@ -78,11 +78,22 @@ final class GitHubTokenResolver
     /**
      * The token for a repo, any spelling: the store is asked with the spelling `writeback.json`
      * uses for it where it maps the repo, because `[git-credential-map]` is case-sensitive.
-     * `$ambient` adds the `GH_TOKEN` leg — for an artisan command, never for the receiver.
+     * What the RECEIVER resolves: no `GH_TOKEN`. A shell `bridge:replay` must resolve the token the
+     * receiver would, so every runtime leg calls this and nothing else.
      */
-    public function resolveFor(string $repo, bool $ambient = false): TokenResolution
+    public function resolveFor(string $repo): TokenResolution
     {
-        return $this->memo[($ambient ? 'ambient:' : 'runtime:').$repo] ??= $this->resolve($repo, $ambient);
+        return $this->memo['runtime:'.$repo] ??= $this->resolve($repo, false);
+    }
+
+    /**
+     * What an artisan command resolves: {@see resolveFor()} plus the `GH_TOKEN` leg. A SEPARATE
+     * method, not a flag, so a lexical guard can key on the name — a positional `true` is not
+     * something a scan can tell from any other argument.
+     */
+    public function resolveForCli(string $repo): TokenResolution
+    {
+        return $this->memo['cli:'.$repo] ??= $this->resolve($repo, true);
     }
 
     private function resolve(string $repo, bool $ambient): TokenResolution
@@ -96,6 +107,11 @@ final class GitHubTokenResolver
         // 1: the repo's own override.
         $override = $this->writeback?->mappingFor($repo)?->writeTokenPath;
         if ($override !== null) {
+            $configDir = rtrim((string) config('bridge.config_dir'), '/');
+            if (($refusal = $this->ownerRefusal($override, "write_token_path for {$configured}", $configured, $configDir === '' ? null : app(ProcessIdentity::class)->ownerOf($configDir), "the config dir {$configDir}", "the config dir's owner", TokenSource::WriteTokenPath)) !== null) {
+                return $refusal;
+            }
+
             return $this->readTokenFile($override, TokenSource::WriteTokenPath, "write_token_path for {$configured} ({$override})", "the write_token_path writeback.json declares for {$configured}") ?? self::unplacedProblem($override, "the write_token_path writeback.json declares for {$configured}", TokenSource::WriteTokenPath);
         }
 
@@ -163,23 +179,37 @@ final class GitHubTokenResolver
         if ($path === null) {
             return TokenResolution::problem("{$label} for {$repo}: {$why}. Fix the coord credential store at {$store->path}; the single token file does not stand in for a repo the store maps", TokenFileFault::Misconfigured, TokenSource::Store, $store->path);
         }
-        clearstatcache(true, $path);
-        if (file_exists($path)) {
-            $identity = app(ProcessIdentity::class);
-            $fileOwner = $identity->ownerOf($path);
-            $storeOwner = $store->owner();
-            if ($fileOwner === null || $storeOwner === null) {
-                return TokenResolution::problem("{$label} for {$repo} names {$path}, and this process could not read the owner of ".($fileOwner === null ? 'that file' : "the store at {$store->path}").', so whether it belongs to the store\'s owner was NOT determined', TokenFileFault::Undetermined, TokenSource::Store, $path);
-            }
-            if ($fileOwner !== $storeOwner) {
-                $name = fn (int $uid): string => $identity->accountName($uid) ?? "uid {$uid}";
-
-                return TokenResolution::problem("{$label} for {$repo} names {$path}, which is owned by {$name($fileOwner)} and not by the store's owner {$name($storeOwner)} — the bridge reads a file the store names only when the store's owner owns it", TokenFileFault::Misconfigured, TokenSource::Store, $path);
-            }
+        if (($refusal = $this->ownerRefusal($path, $label, $repo, $store->owner(), "the store at {$store->path}", "the store's owner", TokenSource::Store)) !== null) {
+            return $refusal;
         }
 
         return $this->readTokenFile($path, TokenSource::Store, "{$label} ({$path})", "the file {$label} names for {$repo}")
             ?? self::unplacedProblem($path, "the file {$label} names for {$repo}", TokenSource::Store);
+    }
+
+    /**
+     * The token file must belong to the owner of the file that names it, where that file is
+     * another account's to write: a problem, or null when it does (or the file is not there, which
+     * the read reports). An owner this process cannot read is undetermined, never a pass.
+     */
+    private function ownerRefusal(string $path, string $label, string $repo, ?int $expected, string $namer, string $who, TokenSource $kind): ?TokenResolution
+    {
+        clearstatcache(true, $path);
+        if (! file_exists($path)) {
+            return null;
+        }
+        $identity = app(ProcessIdentity::class);
+        $fileOwner = $identity->ownerOf($path);
+        if ($fileOwner === null || $expected === null) {
+            return TokenResolution::problem("{$label} for {$repo} names {$path}, and this process could not read the owner of ".($fileOwner === null ? 'that file' : $namer).', so whether it belongs to '.$who.' was NOT determined', TokenFileFault::Undetermined, $kind, $path);
+        }
+        if ($fileOwner !== $expected) {
+            $name = fn (int $uid): string => $identity->accountName($uid) ?? "uid {$uid}";
+
+            return TokenResolution::problem("{$label} for {$repo} names {$path}, which is owned by {$name($fileOwner)} and not by {$who} {$name($expected)} — the bridge reads a file named there only when ".$who.' owns it', TokenFileFault::Misconfigured, $kind, $path);
+        }
+
+        return null;
     }
 
     /**

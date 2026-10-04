@@ -33,7 +33,7 @@ class GitHubTokenResolverTest extends TestCase
         parent::setUp();
         $this->dir = sys_get_temp_dir().'/ghtok-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/github');
-        config(['bridge.secret_dir' => $this->dir, 'bridge.providers.github.token_path' => null]);
+        config(['bridge.secret_dir' => $this->dir, 'bridge.config_dir' => $this->dir, 'bridge.providers.github.token_path' => null]);
         $this->store = new CoordCredentialStoreFixture($this->dir.'/coord');
         $this->store->use();   // absent until a test writes it: an empty store
         $this->origGhToken = getenv('GH_TOKEN');
@@ -94,7 +94,7 @@ class GitHubTokenResolverTest extends TestCase
         config(['bridge.providers.github.token_path' => $this->dir.'/missing-pat']);
         putenv('GH_TOKEN=ghp_env');
 
-        $r = $this->resolver()->resolveFor('owner/repo', ambient: true);
+        $r = $this->resolver()->resolveForCli('owner/repo');
 
         $this->assertFalse($r->ok());
         $this->assertSame("no github token at the configured token_path: {$this->dir}/missing-pat absent", $r->problem);
@@ -108,7 +108,7 @@ class GitHubTokenResolverTest extends TestCase
         config(['bridge.providers.github.token_path' => $custom]);
         putenv('GH_TOKEN=ghp_env');
 
-        $r = $this->resolver()->resolveFor('owner/repo', ambient: true);
+        $r = $this->resolver()->resolveForCli('owner/repo');
 
         $this->assertSame(TokenFileFault::Empty, $r->fileFault);
         $this->assertSame("no github token at the configured token_path: {$custom} is empty", $r->problem);
@@ -194,7 +194,7 @@ class GitHubTokenResolverTest extends TestCase
         putenv('GH_TOKEN=ghp_env');
 
         $runtime = $this->resolver()->resolveFor('owner/repo');
-        $cli = $this->resolver()->resolveFor('owner/repo', ambient: true);
+        $cli = $this->resolver()->resolveForCli('owner/repo');
 
         $this->assertFalse($runtime->ok(), 'the receiver never reads GH_TOKEN, so a shell replay cannot post as an identity the receiver never uses');
         $this->assertSame('no github token file: '.$this->dir.'/github/token absent', $runtime->problem);
@@ -206,11 +206,11 @@ class GitHubTokenResolverTest extends TestCase
     {
         $this->writeFileToken('');
 
-        $r = $this->resolver()->resolveFor('owner/repo', ambient: true);
+        $r = $this->resolver()->resolveForCli('owner/repo');
         $this->assertSame('no github token: '.$this->dir.'/github/token is empty, no [git-credential-map] entry for owner/repo, and GH_TOKEN is unset', $r->problem);
 
         putenv('GH_TOKEN=ghp_env');
-        $this->assertSame('ghp_env', $this->resolver()->resolveFor('owner/repo', ambient: true)->token);
+        $this->assertSame('ghp_env', $this->resolver()->resolveForCli('owner/repo')->token);
     }
 
     // ---- leg 2: the coord credential store ----
@@ -332,8 +332,8 @@ class GitHubTokenResolverTest extends TestCase
         putenv('GH_TOKEN=ghp_env');
         $arrange($this->store);
 
-        foreach ([false, true] as $ambient) {
-            $r = $this->resolver()->resolveFor('o/r', $ambient);
+        foreach (['resolveFor', 'resolveForCli'] as $method) {
+            $r = $this->resolver()->{$method}('o/r');
             $this->assertFalse($r->ok(), 'the single file and GH_TOKEN must not stand in for a mapped repo');
             $this->assertSame($fault, $r->fileFault);
             $this->assertSame(TokenSource::Store, $r->sourceKind);
@@ -537,6 +537,42 @@ class GitHubTokenResolverTest extends TestCase
         $this->assertSame("no github token at the write_token_path writeback.json declares for o/r: {$this->dir}/missing absent", $r->problem);
     }
 
+    public function test_a_write_token_path_another_user_owns_is_refused_and_the_single_file_does_not_stand_in(): void
+    {
+        $this->writeFileToken('ghp_single');
+        config(['bridge.config_dir' => $this->dir]);
+        $write = $this->store->tokenFile('write-token', 'ghp_write');
+        $this->ownersAre([$write => 4242]);
+
+        $r = $this->resolver(['o/r' => new WritebackMapping(8, ['merged' => 52], writeTokenPath: $write)])->resolveFor('o/r');
+
+        $this->assertFalse($r->ok());
+        $this->assertSame(TokenFileFault::Misconfigured, $r->fileFault);
+        $this->assertSame(TokenSource::WriteTokenPath, $r->sourceKind);
+        $this->assertStringContainsString("not by the config dir's owner", (string) $r->problem);
+    }
+
+    public function test_a_write_token_path_whose_owner_cannot_be_read_is_undetermined(): void
+    {
+        config(['bridge.config_dir' => $this->dir]);
+        $write = $this->store->tokenFile('write-token', 'ghp_write');
+        $this->ownersAre([$write => null]);
+
+        $r = $this->resolver(['o/r' => new WritebackMapping(8, ['merged' => 52], writeTokenPath: $write)])->resolveFor('o/r');
+
+        $this->assertSame(TokenFileFault::Undetermined, $r->fileFault);
+    }
+
+    public function test_the_single_file_is_not_held_to_an_owner_rule(): void
+    {
+        // The documented `token_path` override is a CENTRALIZED credential another account may own;
+        // the rule covers the legs another account's file names (store, write_token_path) only.
+        $this->writeFileToken('ghp_single');
+        $this->ownersAre([$this->dir.'/github/token' => 4242]);
+
+        $this->assertSame('ghp_single', $this->resolver()->resolveFor('o/r')->token);
+    }
+
     public function test_an_unloadable_writeback_json_resolves_nothing_because_an_override_may_apply(): void
     {
         $this->writeFileToken('ghp_single');
@@ -568,7 +604,7 @@ class GitHubTokenResolverTest extends TestCase
         $this->writeFileToken('ghp_second');
 
         $this->assertSame('ghp_first', $resolver->resolveFor('o/r')->token);
-        $this->assertSame('ghp_second', $resolver->resolveFor('o/r', ambient: true)->token);
+        $this->assertSame('ghp_second', $resolver->resolveForCli('o/r')->token);
     }
 
     /** @param  array<string, ?int>  $owners  path => owner (null: unreadable); every other path its real owner */

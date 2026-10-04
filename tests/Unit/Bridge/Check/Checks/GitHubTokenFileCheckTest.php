@@ -15,6 +15,7 @@ use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CoordCredentialStoreFixture;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
@@ -48,6 +49,7 @@ class GitHubTokenFileCheckTest extends TestCase
         File::ensureDirectoryExists($this->dir.'/github');
         config([
             'bridge.secret_dir' => $this->dir,
+            'bridge.config_dir' => $this->dir,
             'bridge.state_dir' => $this->dir.'/state',
             'bridge.providers.github.token_path' => null,
             'bridge.protocol_invalid_label.repos' => [],
@@ -220,6 +222,41 @@ class GitHubTokenFileCheckTest extends TestCase
         chmod($this->store->path(), 0o600);
         $this->assertSame(Severity::Unvalidated, $finding->severity);
         $this->assertStringContainsString('could not be read by this OS user', $finding->message);
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function retiredHelperValues(): array
+    {
+        return ['empty (it used to keep the store out)' => [''], 'a path' => ['/usr/local/bin/git-credential-coord']];
+    }
+
+    #[DataProvider('retiredHelperValues')]
+    public function test_a_leftover_credential_helper_setting_is_a_warning_and_never_read(string $value): void
+    {
+        $this->runAs($this->realEuid());
+        $this->storeKey('github.com/owner', 'k', 'ghp_from_the_store');
+        config(['bridge.providers.github.credential_helper' => $value]);
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $findings = $this->runCheckOn(['owner/repo' => $this->mapping()]);
+
+        $warns = array_values(array_filter($findings, fn (Finding $f) => $f->severity === Severity::Warn && str_contains($f->message, 'BRIDGE_GITHUB_CREDENTIAL_HELPER')));
+        $this->assertCount(1, $warns);
+        $this->assertStringContainsString('has NO effect', $warns[0]->message);
+        $this->assertStringNotContainsString($value === '' ? "\0" : $value, $warns[0]->message, 'the value is not printed');
+        $this->assertNotEmpty(array_filter($findings, fn (Finding $f) => $f->severity === Severity::Ok), 'the witness: the store still resolved the repo');
+    }
+
+    public function test_an_unset_credential_helper_setting_says_nothing(): void
+    {
+        $this->runAs($this->realEuid());
+        $this->storeKey('github.com/owner', 'k', 'ghp_from_the_store');
+        Http::fake(['https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])]);
+
+        $findings = $this->runCheckOn(['owner/repo' => $this->mapping()]);
+
+        $this->assertSame([], array_filter($findings, fn (Finding $f) => str_contains($f->message, 'BRIDGE_GITHUB_CREDENTIAL_HELPER')));
+        $this->assertNotEmpty($findings);
     }
 
     public function test_a_write_token_path_is_named_as_the_source(): void

@@ -71,6 +71,11 @@ return [
             // store maps (coord_credentials_path below) or that declares a
             // write_token_path in writeback.json never reads it.
             'token_path' => env('BRIDGE_GITHUB_TOKEN_PATH'),
+            // ⛔ RETIRED (DL-456): `BRIDGE_GITHUB_CREDENTIAL_HELPER` ran the framework's helper for
+            // bridge:reconcile and nothing reads it now. Declared (null when unset, '' when set to
+            // empty — which used to keep the store out) only so bridge:check can say a set value
+            // has no effect and the store is read regardless.
+            'credential_helper' => env('BRIDGE_GITHUB_CREDENTIAL_HELPER'),
         ],
     ],
 
