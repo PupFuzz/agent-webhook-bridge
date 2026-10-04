@@ -182,7 +182,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             $this->alerts->warnAndNotify(
                 'move_card.card_id_not_int',
                 'kanban_move_card: payload.card_id is not an integer; ignoring',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'payload' => $payload],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'payload' => $payload],
                 is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', null, 'card_id_not_int',
             );
 
@@ -193,7 +193,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             $this->alerts->warnAndNotify(
                 'move_card.repo_or_outcome_invalid',
                 'kanban_move_card: payload.repo and payload.outcome must be non-empty strings; ignoring',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId],
                 is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', $cardId, 'repo_or_outcome_invalid',
             );
 
@@ -210,7 +210,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             $this->alerts->warnAndNotify(
                 'move_card.writeback_not_configured',
                 'kanban_move_card: writeback is not configured (no writeback.json); ignoring move',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo],
                 $repo, $outcome, $cardId, 'writeback_not_configured',
             );
 
@@ -219,7 +219,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
 
         $mapping = $writeback->mappingFor($repo);
         if ($mapping === null) {
-            Log::info('kanban_move_card: no writeback mapping for repo; ignoring', ['catalog_id' => 'move_card.repo_not_mapped', 'handler' => BoardMoverScope::handler(), 'op' => 'move', 'repo' => $repo, 'card_id' => $cardId]);
+            Log::info('kanban_move_card: no writeback mapping for repo; ignoring', ['catalog_id' => 'move_card.repo_not_mapped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'card_id' => $cardId]);
 
             return;
         }
@@ -234,7 +234,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
         // because WHICH stage this move writes is not knowable until the board the card is
         // actually on has been established below. The sufficient condition is re-asked there.
         if (! $mapping->anyDeclaredBoardMaps($stageOutcome)) {
-            Log::info('kanban_move_card: no stage mapped for outcome; ignoring', ['catalog_id' => 'move_card.no_stage_mapped', 'handler' => BoardMoverScope::handler(), 'op' => 'move', 'repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId]);
+            Log::info('kanban_move_card: no stage mapped for outcome; ignoring', ['catalog_id' => 'move_card.no_stage_mapped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId]);
 
             return;
         }
@@ -251,7 +251,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             $this->alerts->warnAndNotify(
                 'move_card.card_token_near_miss',
                 'kanban_move_card: REFUSED — the subject carries a card-shaped token that does not parse and names a card the DL did not resolve to, so which card this event is about is unknown (near-miss card token)',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome],
                 $repo, $outcome, $cardId, 'card_token_near_miss',
             );
             $this->comments->report($payload, 'card_token_near_miss', $mapping);
@@ -303,6 +303,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             Log::info('kanban_move_card: no stage mapped for this outcome on the declared board the card is on; ignoring', [
                 'catalog_id' => 'move_card.no_stage_mapped_on_card_board',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => 'move',
                 'repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId, 'board' => $mapping->boardId,
             ]);
@@ -346,7 +347,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
                 $this->alerts->warnAndNotifyCardIdWithheld(
                     'move_card.getcard_4xx',
                     $message,
-                    ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId] + $refusal,
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId] + $refusal,
                     $repo, $outcome, RefusalContext::readReason('getcard', $e, foreignIdExcluded: true),
                 );
 
@@ -417,6 +418,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
                 'kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and '.CardTokenCorroboration::refusalCause($storedRef),
                 [
                     'handler' => BoardMoverScope::handler(),
+                    'webhook_event_id' => BoardMoverScope::webhookEventId(),
                     'op' => 'move',
                     'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome,
                     'card_pr_number' => CardTokenCorroboration::cardPr($card),
@@ -440,6 +442,10 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
         if (($card['workflow_stage_id'] ?? null) === $stageId) {
             // Self-heal: the move is a no-op (already here), but a card# fallback card
             // may still be missing its correlation refs — stamp add-if-missing (#3866).
+            // The row says the card was already at the stage, BEFORE the stamp that can throw: a
+            // give-up for this delivery then has an outcome to join to, and is not read as a move
+            // that was abandoned.
+            Log::info('kanban_move_card: card already at the target stage — nothing to move', ['catalog_id' => 'move_card.already_at_stage', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome] + MappedBoardGuard::boardContext($card, $mapping));
             $this->stampCorrelationRefs($card, $storedRef, $mapping, $payload, $cardId, $client, $repo, $outcome);
 
             return;   // idempotent: already in the target stage
@@ -527,6 +533,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
                 Log::info('kanban_move_card: started move skipped — card is not in an allowed promote-from stage (no regression)', [
                     'catalog_id' => 'move_card.started_not_promotable',
                     'handler' => BoardMoverScope::handler(),
+                    'webhook_event_id' => BoardMoverScope::webhookEventId(),
                     'op' => 'move',
                     'card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current,
                     'started_from_stages' => $mapping->startedFromStages, 'unpark_from_stages' => $mapping->unparkFromStages,
@@ -555,6 +562,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
                 Log::info('kanban_move_card: move skipped — would regress the card to an earlier stage (no regression)', [
                     'catalog_id' => 'move_card.would_regress',
                     'handler' => BoardMoverScope::handler(),
+                    'webhook_event_id' => BoardMoverScope::webhookEventId(),
                     'op' => 'move',
                     'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome, 'current_stage' => $current, 'target_stage' => $stageId,
                 ]);
@@ -577,7 +585,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
                 $this->alerts->warnAndNotify(
                     'move_card.move_4xx',
                     'kanban_move_card: kanban refused the move (4xx) — see `body` for the reason kanban gave',
-                    ['handler' => BoardMoverScope::handler(), 'op' => 'move', 'card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId] + RefusalContext::from($e),
                     $repo, $outcome, $cardId, RefusalContext::writeReason('movecard', $e),
                 );
 
@@ -595,7 +603,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
         // the one we intended to write to — so a write that landed on an out-of-mapping
         // card logged identically to a correct one, and "has a cross-board write ever
         // landed?" was unanswerable from the record rather than merely unanswered.
-        Log::info('kanban_move_card: moved', ['catalog_id' => 'move_card.moved', 'handler' => BoardMoverScope::handler(), 'op' => 'move', 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome] + MappedBoardGuard::boardContext($card, $mapping));
+        Log::info('kanban_move_card: moved', ['catalog_id' => 'move_card.moved', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome] + MappedBoardGuard::boardContext($card, $mapping));
         OwnerlessStart::noteAfterMove($this->alerts, $card, $mapping, $isRevive, $cardId, $repo, $outcome, $stageId);
         // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and
         // BEFORE the stamp (which may 5xx-throw), emit the compensating "we overrode a
@@ -611,6 +619,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
                 Log::warning('kanban_move_card: auto-unparked a card from a parked stage', [
                     'catalog_id' => 'move_card.auto_unparked',
                     'handler' => BoardMoverScope::handler(),
+                    'webhook_event_id' => BoardMoverScope::webhookEventId(),
                     'op' => 'move',
                     'card_id' => $cardId, 'repo' => $repo, 'from_stage' => $fromStage, 'hold_signal' => $signal,
                 ]);
@@ -630,6 +639,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
                 Log::warning('kanban_move_card: revived a card from the abandon stage on PR reopen', [
                     'catalog_id' => 'move_card.revived_on_reopen',
                     'handler' => BoardMoverScope::handler(),
+                    'webhook_event_id' => BoardMoverScope::webhookEventId(),
                     'op' => 'move',
                     'card_id' => $cardId, 'repo' => $repo, 'from_stage' => $fromStage, 'hold_signal' => $signal,
                 ]);
@@ -827,6 +837,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
                 'kanban_move_card: a correlation ref this event carries was NOT stamped — the card already answers with a different value, with a pr_number no pr_url confirms, or with a pr_number that names no pull request; a pr_url is withdrawn with its dropped pr_number (a card correlates ONE pull request; first write wins)',
                 [
                     'handler' => BoardMoverScope::handler(),
+                    'webhook_event_id' => BoardMoverScope::webhookEventId(),
                     'op' => 'stamp',
                     'card_id' => $cardId, 'repo' => $repo, 'dropped' => $dropped, 'withheld_pr_number' => $withheldPr,
                     'pr_number_unconfirmed' => isset($dropped['pr_number']) && $storedRef->number === StoredPrNumberKind::SameNumber,
@@ -848,13 +859,13 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
 
         try {
             $client->stampCorrelationRefs($cardId, $refs);
-            Log::info('kanban_move_card: stamped correlation refs', ['catalog_id' => 'move_card.stamped', 'handler' => BoardMoverScope::handler(), 'op' => 'stamp', 'card_id' => $cardId, 'refs' => array_keys($refs)] + MappedBoardGuard::boardContext($card, $mapping));
+            Log::info('kanban_move_card: stamped correlation refs', ['catalog_id' => 'move_card.stamped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'stamp', 'card_id' => $cardId, 'refs' => array_keys($refs)] + MappedBoardGuard::boardContext($card, $mapping));
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
                 $this->alerts->warnAndNotify(
                     'move_card.stamp_4xx',
                     'kanban_move_card: stamp refused by kanban (4xx) — skipping (see `body` for the reason kanban gave)',
-                    ['handler' => BoardMoverScope::handler(), 'op' => 'stamp', 'card_id' => $cardId] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'stamp', 'card_id' => $cardId] + RefusalContext::from($e),
                     $repo, $outcome, $cardId, RefusalContext::writeReason('stamp', $e),
                 );
 
@@ -863,7 +874,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             // The write stays owed and the retry re-stamps; this row is what a reader of stamp failures sees
             // meanwhile (the permanent arm above alerts, this one only logs: the owed-write queue alerts if it
             // gives up).
-            Log::warning('kanban_move_card: stamp failed transiently — the card is at its stage; the stamp stays owed and the retry re-stamps', ['catalog_id' => 'move_card.stamp_transient_failure', 'handler' => BoardMoverScope::handler(), 'op' => 'stamp', 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'card_id' => $cardId] + RefusalContext::from($e));
+            Log::warning('kanban_move_card: stamp failed transiently — the stamp stays owed and the retry re-stamps', ['catalog_id' => 'move_card.stamp_transient_failure', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'stamp', 'card_id' => $cardId] + RefusalContext::from($e));
             throw $e;   // transient → the retry re-stamps (add-if-missing idempotent)
         }
     }
@@ -1012,12 +1023,12 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
 
         try {
             $client->addComment($cardId, $note->content());
-            Log::info('kanban_move_card: recorded a correlation note on the card', ['catalog_id' => 'move_card.note_recorded', 'handler' => BoardMoverScope::handler(), 'op' => 'comment', 'card_id' => $cardId, 'marker' => $note->marker] + MappedBoardGuard::boardContext($card, $mapping));
+            Log::info('kanban_move_card: recorded a correlation note on the card', ['catalog_id' => 'move_card.note_recorded', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment', 'card_id' => $cardId, 'marker' => $note->marker] + MappedBoardGuard::boardContext($card, $mapping));
         } catch (RequestException $e) {
             $this->alerts->warnAndNotify(
                 'move_card.note_refused',
                 'kanban_move_card: the card note was refused by kanban — the dropped correlation leg stays in this log but is NOT visible on the card (see `body` for the reason kanban gave)',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'comment', 'card_id' => $cardId, 'marker' => $note->marker] + RefusalContext::from($e),
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment', 'card_id' => $cardId, 'marker' => $note->marker] + RefusalContext::from($e),
                 $repo, $outcome, $cardId,
                 RefusalContext::isPermanent($e) ? RefusalContext::writeReason('cardnote', $e) : 'cardnote_send_failed',
             );
@@ -1025,7 +1036,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             $this->alerts->warnAndNotify(
                 'move_card.note_send_failed',
                 'kanban_move_card: the card note could not be sent to kanban — the dropped correlation leg stays in this log but is NOT visible on the card',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'comment', 'card_id' => $cardId, 'marker' => $note->marker, 'error' => RedactedErrorText::of($e)],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment', 'card_id' => $cardId, 'marker' => $note->marker, 'error' => RedactedErrorText::of($e)],
                 $repo, $outcome, $cardId, 'cardnote_send_failed',
             );
         }
@@ -1118,6 +1129,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             Log::warning('kanban_move_card: could not read board stage order for the no-regression guard — allowing the move', [
                 'catalog_id' => 'move_card.stage_order_unreadable',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => 'move',
                 'board' => $mapping->boardId, 'error' => RedactedErrorText::of($e),
             ]);
@@ -1134,6 +1146,7 @@ final class KanbanMoveCardHandler implements DeclaresWriteOp, DurableReaction, H
             Log::warning('kanban_move_card: could not place this move in the board stage order for the no-regression guard — allowing the move', [
                 'catalog_id' => 'move_card.stage_order_unplaceable',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => 'move',
                 'board' => $mapping->boardId,
                 // Two keys, two jobs: `catalog_id` names this ARM for docs/board-mover-catalog.json

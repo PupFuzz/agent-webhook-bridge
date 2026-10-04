@@ -5,9 +5,11 @@ namespace App\Bridge\Writeback;
 use Illuminate\Support\Facades\Context;
 
 /**
- * Which handler is running, and which kind of write it is making, for the board-mover log rows
- * written meanwhile — the runtime values of their `handler` and `op` context keys (card#11223,
- * `docs/writeback.md` § *The board-mover catalog*).
+ * Which handler is running, which delivery it runs for, and which kind of write it is making, for
+ * the board-mover log rows written meanwhile — the runtime values of their `handler`,
+ * `webhook_event_id` and `op` context keys (card#11223, `docs/writeback.md` § *The board-mover
+ * catalog*). `webhook_event_id` is the key a give-up shares with the rows that say what landed, so
+ * every site spells it from here and none leaves it to a caller to add.
  *
  * ⭐ HELD IN LARAVEL'S CONTEXT, NOT THREADED THROUGH SIGNATURES. A shared site (a guard, the kanban
  * client, the alert notifier) logs on behalf of whichever handler called it, often several frames
@@ -16,11 +18,13 @@ use Illuminate\Support\Facades\Context;
  * Laravel does not also append it to every log line's `extra`: only the rows that spell the keys
  * carry them, in the same `context` that holds `catalog_id`.
  *
- * Outside any scope — a classifier, `bridge:github-owed`, the board-tools door, `bridge:check` —
- * {@see handler()} is null and {@see op()} is {@see WriteOp::Undeclared}. A component whose write
- * is the same whoever calls it ({@see CardCollapse}, {@see PrCorrelationCommenter},
- * {@see ProtocolInvalidLabeler}) narrows the op with {@see forOp()} so a shared site it calls
- * reports that write and not the caller's.
+ * Outside any scope — `bridge:github-owed`, the board-tools door, `bridge:check` — {@see handler()}
+ * and {@see webhookEventId()} are null and {@see op()} is {@see WriteOp::Undeclared}. A classifier
+ * is outside a handler's scope too, but not outside every scope: its DL correlation reads run under
+ * {@see forOp()} for the write they correlate for, so they say that op with a null handler. A
+ * component whose write is the same whoever calls it ({@see CardCollapse},
+ * {@see PrCorrelationCommenter}, {@see ProtocolInvalidLabeler}) narrows the op with {@see forOp()}
+ * so a shared site it calls reports that write and not the caller's.
  */
 final class BoardMoverScope
 {

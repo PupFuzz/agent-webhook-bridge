@@ -192,6 +192,7 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
             Log::warning('protocol_invalid_label: NOT applied, or not confirmed — an unexpected failure outside the steps below; routing is unchanged', [
                 'catalog_id' => 'protocol_invalid_label.unexpected_failure',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => 'label',
                 'repo' => $payload['repo'] ?? null, 'number' => $payload['number'] ?? null,
                 'reason' => self::REASON_UNEXPECTED, 'error' => RedactedErrorText::of($e),
@@ -215,6 +216,7 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
             Log::warning('protocol_invalid_label: NOT applied — the target does not name a repo and an issue number; routing is unchanged', [
                 'catalog_id' => 'protocol_invalid_label.payload_invalid',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => 'label',
                 'reason' => self::REASON_PAYLOAD_INVALID,
             ]);
@@ -224,7 +226,7 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
         $context = ['repo' => $repo, 'number' => $number, 'comment_id' => $payload['comment_id'] ?? null];
 
         if (! self::enabledFor($repo)) {
-            Log::warning('protocol_invalid_label: NOT applied — this repo is not in BRIDGE_PROTOCOL_INVALID_LABEL_REPOS; routing is unchanged', ['catalog_id' => 'protocol_invalid_label.repo_not_enabled', 'handler' => BoardMoverScope::handler(), 'op' => 'label'] + $context + [
+            Log::warning('protocol_invalid_label: NOT applied — this repo is not in BRIDGE_PROTOCOL_INVALID_LABEL_REPOS; routing is unchanged', ['catalog_id' => 'protocol_invalid_label.repo_not_enabled', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context + [
                 'reason' => self::REASON_REPO_NOT_ENABLED,
             ]);
 
@@ -237,7 +239,7 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
 
         $resolution = $this->tokens->resolveFromFile();
         if (! $resolution->ok()) {
-            Log::warning('protocol_invalid_label: NOT applied — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); routing is unchanged', ['catalog_id' => 'protocol_invalid_label.no_token', 'handler' => BoardMoverScope::handler(), 'op' => 'label'] + $context + [
+            Log::warning('protocol_invalid_label: NOT applied — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); routing is unchanged', ['catalog_id' => 'protocol_invalid_label.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context + [
                 'reason' => self::REASON_TOKEN_UNRESOLVED, 'problem' => $resolution->problem,
             ]);
 
@@ -247,13 +249,13 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
         try {
             $labels = (new GitHubWriteClient((string) $resolution->token, self::TIMEOUT_SECONDS))->addLabels($repo, $number, [self::LABEL]);
         } catch (RequestException $e) {
-            Log::warning('protocol_invalid_label: NOT applied — GitHub answered the label request with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried in this run, and routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_http_error', 'handler' => BoardMoverScope::handler(), 'op' => 'label'] + $context + [
+            Log::warning('protocol_invalid_label: NOT applied — GitHub answered the label request with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried in this run, and routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_http_error', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context + [
                 'reason' => self::REASON_ADD_REFUSED, 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
             return $this->failure($payload, self::REASON_ADD_REFUSED, $e->response->status());
         } catch (Throwable $e) {
-            Log::warning('protocol_invalid_label: NOT applied — the label request could not be sent to GitHub; not retried in this run, and routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_failed', 'handler' => BoardMoverScope::handler(), 'op' => 'label'] + $context + [
+            Log::warning('protocol_invalid_label: NOT applied — the label request could not be sent to GitHub; not retried in this run, and routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_failed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context + [
                 'reason' => self::REASON_ADD_FAILED, 'error' => RedactedErrorText::of($e),
             ]);
 
@@ -263,7 +265,7 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
         // Case-insensitive: a repo already carrying the label under another spelling can answer
         // with THAT spelling, and an exact compare would then keep a landed write owed until expiry.
         if (! in_array(strtolower(self::LABEL), array_map(strtolower(...), $labels), true)) {
-            Log::warning('protocol_invalid_label: NOT applied — GitHub ACCEPTED the label request and its answer does not carry the label, so the write is not confirmed; routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_unconfirmed', 'handler' => BoardMoverScope::handler(), 'op' => 'label'] + $context + [
+            Log::warning('protocol_invalid_label: NOT applied — GitHub ACCEPTED the label request and its answer does not carry the label, so the write is not confirmed; routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_unconfirmed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context + [
                 'reason' => self::REASON_ADD_UNCONFIRMED, 'labels_answered' => count($labels),
             ]);
 
@@ -271,7 +273,7 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
         }
 
         GitHubWriteDebt::forget(GitHubWriteDebt::KIND_LABEL, $repo, $number);
-        Log::info('protocol_invalid_label: applied', ['catalog_id' => 'protocol_invalid_label.applied', 'handler' => BoardMoverScope::handler(), 'op' => 'label'] + $context);
+        Log::info('protocol_invalid_label: applied', ['catalog_id' => 'protocol_invalid_label.applied', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context);
 
         return new GitHubWriteAttempt(self::APPLIED, landed: true, owed: false);
     }

@@ -61,6 +61,7 @@ final class OwnerlessStart
         Log::warning('writeback: moved a card with no owner recorded — no kanban assignee and no owner: tag; the seat working it has not claimed it', [
             'catalog_id' => 'owner.moved_without_owner',
             'handler' => BoardMoverScope::handler(),
+            'webhook_event_id' => BoardMoverScope::webhookEventId(),
             'op' => 'move',
             'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome, 'from_stage' => $fromStage, 'to_stage' => $toStage,
             'tags_readable' => $tags !== null,

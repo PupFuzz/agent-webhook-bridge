@@ -31,7 +31,7 @@ class BoardMoverCatalogTest extends TestCase
     private const FIXTURE_NOTIFIER_METHODS = ['warnAndNotify' => ['reason' => 3, 'context' => 2]];
 
     /** The two runtime keys every fixture site spells unless it is the one rule a leg breaks. */
-    private const KEYS = "'handler' => BoardMoverScope::handler(), 'op' => 'move'";
+    private const KEYS = "'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move'";
 
     public function test_every_board_mover_log_site_carries_an_id_the_catalog_declares_and_back(): void
     {
@@ -204,32 +204,36 @@ class BoardMoverCatalogTest extends TestCase
         );
     }
 
-    public function test_red_leg_5_a_site_that_does_not_spell_handler_or_op(): void
+    public function test_red_leg_5_a_site_that_does_not_spell_handler_event_or_op(): void
     {
         $this->assertFindings(
-            ['SITE_WITHOUT_HANDLER: Handler::handle (Fixture.php:10) — no `handler` key in a literal context array'],
+            [
+                'SITE_WITHOUT_HANDLER: Handler::handle (Fixture.php:10) — no `handler` key in a literal context array',
+                'SITE_WITHOUT_EVENT_ID: Handler::handle (Fixture.php:10) — no `webhook_event_id` key in a literal context array',
+            ],
             "Log::warning('x', ['catalog_id' => 'h.a', 'op' => 'move']);",
             [self::entry('h.a')],
         );
         $this->assertFindings(
             ['SITE_WITHOUT_HANDLER: Handler::handle (Fixture.php:10) — `handler` is not `BoardMoverScope::handler()` — a typed name is wrong at every shared site, so the scope is the only source'],
-            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => 'kanban_move_card', 'op' => 'move']);",
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => 'kanban_move_card', 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move']);",
             [self::entry('h.a')],
         );
         $this->assertFindings(
             ['SITE_WITHOUT_OP: Handler::handle (Fixture.php:10) — no `op` key in a literal context array'],
-            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler()]);",
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId()]);",
             [self::entry('h.a')],
         );
         $this->assertFindings(
             ['SITE_WITHOUT_OP: Handler::handle (Fixture.php:10) — `op` is neither a string literal nor `BoardMoverScope::op()`'],
-            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'op' => \$op]);",
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => \$op]);",
             [self::entry('h.a')],
         );
         // A helper row is held to the same rule through its `$logContext`, wherever the caller passes it.
         $this->assertFindings(
             [
                 'SITE_WITHOUT_HANDLER: Handler::handle (Fixture.php:10) — no `handler` key in a literal context array',
+                'SITE_WITHOUT_EVENT_ID: Handler::handle (Fixture.php:10) — no `webhook_event_id` key in a literal context array',
                 'SITE_WITHOUT_OP: Handler::handle (Fixture.php:10) — no `op` key in a literal context array',
             ],
             "\$this->alerts->warnAndNotify('h.a', 'x', ['card_id' => 1]);",
@@ -239,25 +243,33 @@ class BoardMoverCatalogTest extends TestCase
         $this->assertFindings(
             [
                 'SITE_WITHOUT_HANDLER: Handler::handle (Fixture.php:10) — the call passes no `$logContext`',
+                'SITE_WITHOUT_EVENT_ID: Handler::handle (Fixture.php:10) — the call passes no `$logContext`',
                 'SITE_WITHOUT_OP: Handler::handle (Fixture.php:10) — the call passes no `$logContext`',
             ],
             "\$this->alerts->warnAndNotify('h.a', 'x');",
             [['surface' => ['log', 'alert_channel']] + self::entry('h.a')],
         );
         // The scope read for `op`, and either key in the other operand of a `+` union, are the site spelling them.
-        $this->assertFindings([], "Log::warning('x', ['catalog_id' => 'h.a'] + ['handler' => BoardMoverScope::handler(), 'op' => BoardMoverScope::op()]);", [self::entry('h.a')]);
+        $this->assertFindings([], "Log::warning('x', ['catalog_id' => 'h.a'] + ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op()]);", [self::entry('h.a')]);
+
+        // The delivery is read from the scope like the handler: a typed or computed value, or no key, is the site leaving the join to its caller.
+        $this->assertFindings(
+            ['SITE_WITHOUT_EVENT_ID: Handler::handle (Fixture.php:10) — `webhook_event_id` is not `BoardMoverScope::webhookEventId()` — the delivery is the join key between a give-up and the rows that say what landed, and only the scope knows it at every site'],
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => \$event->id, 'op' => 'move']);",
+            [self::entry('h.a')],
+        );
     }
 
     public function test_red_leg_6_an_op_the_catalog_does_not_declare(): void
     {
         $this->assertFindings(
             ['OP_NOT_IN_CATALOG: `archive` at Handler::handle (Fixture.php:10) is not an op the catalog declares'],
-            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'op' => 'archive']);",
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'archive']);",
             [self::entry('h.a')],
         );
         $this->assertFindings(
             ["OP_LITERAL_UNDECLARED: Handler::handle (Fixture.php:10) — `undeclared` is the scope's value when no write-kind was declared; a site writes the op it is about, or reads the scope"],
-            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'op' => 'undeclared']);",
+            "Log::warning('x', ['catalog_id' => 'h.a', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'undeclared']);",
             [self::entry('h.a')],
         );
 
@@ -283,9 +295,18 @@ class BoardMoverCatalogTest extends TestCase
             'CATALOG_SCHEMA: `context_key` is not `catalog_id`',
             'CATALOG_SCHEMA: `handler_key` is not `handler`',
             'CATALOG_SCHEMA: `op_key` is not `op`',
+            'CATALOG_SCHEMA: `event_key` is not `webhook_event_id`',
             ...array_map(fn (WriteOp $op) => "OPS_MISMATCH: `{$op->value}` is a WriteOp case the catalog's `ops` does not declare", WriteOp::cases()),
+            'OUTCOME_KINDS: `outcome_kinds` must be a non-empty list of kinds the catalog declares',
             'CATALOG_EMPTY: the catalog declares no entries — nothing was checked',
         ], BoardMoverCatalogCheck::findings([], ['context_key' => 'reason', 'entries' => []]));
+
+        // An outcome kind is a kind the catalog declares, so a rename of one cannot silently empty the join's answer.
+        $catalog = ['outcome_kinds' => ['declined', 'vanished', 7], 'kinds' => ['declined' => 'x'], 'entries' => [['retired_since' => '0.80.0'] + self::entry('h.anchor')]] + self::catalogHead();
+        $this->assertSame([
+            'OUTCOME_KINDS: `vanished` is listed in `outcome_kinds` and is not a kind the catalog declares',
+            'OUTCOME_KINDS: `a non-string member` is listed in `outcome_kinds` and is not a kind the catalog declares',
+        ], BoardMoverCatalogCheck::findings([], $catalog));
 
         $this->assertFindings(
             ['SURFACE_MISMATCH: `h.paired` is emitted through the paired log+alert helper, so its surface must include `alert_channel`'],
@@ -377,6 +398,8 @@ class BoardMoverCatalogTest extends TestCase
             'context_key' => 'catalog_id',
             'handler_key' => 'handler',
             'op_key' => 'op',
+            'event_key' => 'webhook_event_id',
+            'outcome_kinds' => ['declined'],
             'ops' => array_fill_keys(array_map(fn (WriteOp $op) => $op->value, WriteOp::cases()), 'described'),
         ];
     }

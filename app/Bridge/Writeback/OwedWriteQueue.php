@@ -309,7 +309,7 @@ final class OwedWriteQueue
         $this->inRowScope($row, fn () => $this->alerts->notifyOwedWriteGaveUp(
             'owed_write.gave_up',
             'bridge owed-write: GAVE UP on a durable write the bridge owed — it was NOT applied (see `reason`; `remedy` re-runs it)',
-            ['handler' => BoardMoverScope::handler(), 'op' => BoardMoverScope::op()] + self::rowContext($row) + ['reason' => $reason, 'retry_sweep_gap' => $gap],
+            ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op()] + self::rowContext($row) + ['reason' => $reason, 'retry_sweep_gap' => $gap],
             self::repoOf($row), $row->handler, $reason, self::withholdsCardId($row),
             [$row->webhook_event_id], $row->attempts, self::remedy($row), $gap,
         ));
@@ -396,6 +396,7 @@ final class OwedWriteQueue
                 Log::warning('bridge owed-write: a durable write was refused as rate-limited — it is queued as OWED and the bridge retries it itself', [
                     'catalog_id' => 'owed_write.rate_limited',
                     'handler' => BoardMoverScope::handler(),
+                    'webhook_event_id' => BoardMoverScope::webhookEventId(),
                     'op' => BoardMoverScope::op(),
                     'status' => $row->last_status,
                     'retry_after' => RefusalContext::retryAfterSeconds($refusal),
@@ -405,6 +406,7 @@ final class OwedWriteQueue
                 Log::warning('bridge owed-write: the agent config could not be read to apply an owed write — left queued, retried later', [
                     'catalog_id' => 'owed_write.agent_config_unreadable',
                     'handler' => BoardMoverScope::handler(),
+                    'webhook_event_id' => BoardMoverScope::webhookEventId(),
                     'op' => BoardMoverScope::op(),
                     'error' => $row->last_error,
                     'not_before' => $notBefore->toIso8601String(),
@@ -431,6 +433,7 @@ final class OwedWriteQueue
             $this->inRowScope($row, fn () => Log::warning('bridge owed-write: could not record a failed apply on its owed write — the failure itself still propagates', [
                 'catalog_id' => 'owed_write.failure_unrecorded',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => BoardMoverScope::op(),
                 'error' => RedactedErrorText::of($e),
                 'cause' => $row->last_error,
@@ -483,7 +486,7 @@ final class OwedWriteQueue
             $this->inRowScope($head, fn () => $this->alerts->notifyOwedWriteGaveUp(
                 'owed_write.overflow_gave_up',
                 'bridge owed-write: GAVE UP on EVERY write one subject owed — it exceeded the per-subject bound, which is itself the defect signal; none of them was applied (`remedy` re-runs each)',
-                ['handler' => BoardMoverScope::handler(), 'op' => BoardMoverScope::op()] + self::rowContext($head) + ['dropped' => count($eventIds), 'webhook_event_ids' => $eventIds, 'retry_sweep_gap' => $gap],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op()] + self::rowContext($head) + ['dropped' => count($eventIds), 'webhook_event_ids' => $eventIds, 'retry_sweep_gap' => $gap],
                 self::repoOf($head), $head->handler, 'overflow', self::withholdsCardId($head),
                 $eventIds, (int) $rows->max('attempts'),
                 implode('; ', $rows->map(fn (WritebackOwedWrite $r): string => self::remedy($r))->all()),
@@ -512,6 +515,7 @@ final class OwedWriteQueue
             Log::warning('bridge owed-write: could not declare the owed-write watchdog job — owed writes will not be aged out or alerted on until it exists', [
                 'catalog_id' => 'owed_write.watchdog_undeclared',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => 'none',
                 'error' => RedactedErrorText::of($e),
                 'remedy' => 'php artisan bridge:jobs add '.OwedWriteWatchdogJob::INSTANCE.' --handler='.OwedWriteWatchdogJob::NAME.' (docs/periodic-jobs.md)',
@@ -532,6 +536,7 @@ final class OwedWriteQueue
             Log::warning('bridge owed-write: could not declare the owed-write retry job — owed writes will not be retried on a clock until it exists (each subject\'s next event still retries it inline)', [
                 'catalog_id' => 'owed_write.retry_undeclared',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => 'none',
                 'error' => RedactedErrorText::of($e),
                 'remedy' => 'php artisan bridge:jobs add '.OwedWriteRetryJob::INSTANCE.' --handler='.OwedWriteRetryJob::NAME.' (docs/periodic-jobs.md)',
@@ -648,7 +653,6 @@ final class OwedWriteQueue
             'provider' => $row->provider,
             'scope_id' => $row->scope_id,
             'agent' => $row->agent_name,
-            'webhook_event_id' => $row->webhook_event_id,
             'attempts' => $row->attempts,
             'queued_at' => $row->queued_at->toIso8601String(),
         ];

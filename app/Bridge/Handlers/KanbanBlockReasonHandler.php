@@ -92,7 +92,7 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
             $this->alerts->warnAndNotify(
                 'block_reason.target_id_not_card_id',
                 'kanban_block_reason: target_id is not a card id; ignoring',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'target_id' => $cardIdRaw],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'target_id' => $cardIdRaw],
                 is_string($repoRaw) ? $repoRaw : '', self::ALERT_OUTCOME, null, 'target_id_not_card_id',
             );
 
@@ -109,7 +109,7 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
             $this->alerts->warnAndNotify(
                 'block_reason.repo_or_action_invalid',
                 'kanban_block_reason: payload.repo must be a non-empty string and payload.action must be set|clear; ignoring',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId, 'payload' => $payload],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'payload' => $payload],
                 is_string($repo) ? $repo : '', self::ALERT_OUTCOME, $cardId, 'repo_or_action_invalid',
             );
 
@@ -123,7 +123,7 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
             $this->alerts->warnAndNotify(
                 'block_reason.writeback_not_configured',
                 'kanban_block_reason: writeback is not configured (no writeback.json); ignoring',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo],
                 $repo, self::ALERT_OUTCOME, $cardId, 'writeback_not_configured',
             );
 
@@ -132,7 +132,7 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
         $mapping = $writeback->mappingFor($repo);
         if ($mapping === null || ! $mapping->draftOverlay) {
             // Unmapped or opt-out: permanent refusal — log + no-op (never 5xx-retry a config gap).
-            Log::info('kanban_block_reason: repo not mapped or draft_overlay off; ignoring', ['catalog_id' => 'block_reason.repo_not_mapped', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo]);
+            Log::info('kanban_block_reason: repo not mapped or draft_overlay off; ignoring', ['catalog_id' => 'block_reason.repo_not_mapped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo]);
 
             return;
         }
@@ -188,7 +188,7 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
                 $this->alerts->warnAndNotifyCardIdWithheld(
                     'block_reason.getcard_4xx',
                     'kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave); the board-scoped check above read this card id back off the mapped board moments earlier, so a foreign install\'s card id is EXCLUDED here and what `body`\'s status leaves is this token\'s own access to this card (403) or a card that went away between the two reads (404); the card id is in this log line only, never in the alert channel',
-                    ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId] + RefusalContext::from($e),
                     $repo, self::ALERT_OUTCOME, RefusalContext::readReason('getcard', $e, foreignIdExcluded: true),
                 );
 
@@ -230,6 +230,7 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
                 'kanban_block_reason: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and '.CardTokenCorroboration::refusalCause(StoredPrRef::of($card, $repo, $payload['pr_number'] ?? null)),
                 [
                     'handler' => BoardMoverScope::handler(),
+                    'webhook_event_id' => BoardMoverScope::webhookEventId(),
                     'op' => 'write',
                     'card_id' => $cardId, 'repo' => $repo,
                     'card_pr_number' => CardTokenCorroboration::cardPr($card),
@@ -250,7 +251,7 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
             // (PinGuard's trim semantics — a whitespace-only value is not a human pin).
             // A human reason, or our marker already present, is left (idempotent no-op).
             if ($current !== null && trim($current) !== '') {
-                Log::info('kanban_block_reason: set skipped — card already has a block_reason (add-if-missing)', ['catalog_id' => 'block_reason.set_skipped_already_set', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo]);
+                Log::info('kanban_block_reason: set skipped — card already has a block_reason (add-if-missing)', ['catalog_id' => 'block_reason.set_skipped_already_set', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo]);
 
                 return;
             }
@@ -259,7 +260,7 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
             // clear-if-ours: null block_reason only when it is EXACTLY our marker; a
             // human-set reason is preserved.
             if ($current !== self::MARKER) {
-                Log::info('kanban_block_reason: clear skipped — block_reason is not the draft marker (clear-if-ours)', ['catalog_id' => 'block_reason.clear_skipped_not_ours', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo]);
+                Log::info('kanban_block_reason: clear skipped — block_reason is not the draft marker (clear-if-ours)', ['catalog_id' => 'block_reason.clear_skipped_not_ours', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo]);
 
                 return;
             }
@@ -273,7 +274,7 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
                 $this->alerts->warnAndNotify(
                     'block_reason.write_4xx',
                     'kanban_block_reason: setBlockReason refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)',
-                    ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId] + RefusalContext::from($e),
                     $repo, self::ALERT_OUTCOME, $cardId, RefusalContext::writeReason('blockreason', $e),
                 );
 
@@ -284,6 +285,6 @@ final class KanbanBlockReasonHandler implements DeclaresWriteOp, DurableReaction
         // Both boards, from the guard's own rendering (card#7212): the old single `board`
         // key was the config's INTENDED board, which is emitted whether or not the card
         // written to was on it.
-        Log::info('kanban_block_reason: '.$action, ['catalog_id' => 'block_reason.written', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo] + MappedBoardGuard::boardContext($card, $mapping));
+        Log::info('kanban_block_reason: '.$action, ['catalog_id' => 'block_reason.written', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo] + MappedBoardGuard::boardContext($card, $mapping));
     }
 }

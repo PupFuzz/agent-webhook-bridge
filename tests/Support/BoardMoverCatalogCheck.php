@@ -47,10 +47,13 @@ use ReflectionParameter;
  * declare `alert_channel`. The check knows the arm by that `reason` literal only; an arm that
  * cannot reach a channel for any other reason is not detected.
  *
- * ⭐ EVERY SITE ALSO SPELLS `handler` AND `op` (card#11223), in the context it logs — the second
+ * ⭐ EVERY SITE ALSO SPELLS `handler`, `webhook_event_id` AND `op` (card#11223), in the context it logs — the second
  * argument of a `Log::` call, the `$logContext` argument of a helper. `handler` is always
  * {@see BoardMoverScope::handler()}, never a typed name: a shared site logs for whichever handler
- * called it, so only the runtime scope knows. `op` is a string literal the catalog's `ops` declares
+ * called it, so only the runtime scope knows. `webhook_event_id` is always
+ * {@see BoardMoverScope::webhookEventId()} for the same reason, and a site that omits it is what
+ * let a landed move's row fail to join to its give-up: the delivery is the join key, so no row may
+ * leave it to a caller to add. `op` is a string literal the catalog's `ops` declares
  * where the site's write is the same on every path, or {@see BoardMoverScope::op()} where it
  * depends on the caller. `undeclared` is the scope's value when nobody declared one, so it is never
  * a literal. The check sees the keys, not the values they take at run time: that the scope is set
@@ -61,7 +64,7 @@ use ReflectionParameter;
  * (`refusing to re-lane`) and a success row (`moved`) share a level, and telling them apart would
  * take a hand-typed list — the drift this whole check exists to remove.
  *
- * @phpstan-type Site array{site: string, where: string, via: string, id: ?string, problem: ?string, handler_problem: ?string, op: ?string, op_problem: ?string}
+ * @phpstan-type Site array{site: string, where: string, via: string, id: ?string, problem: ?string, handler_problem: ?string, event_problem: ?string, op: ?string, op_problem: ?string}
  */
 final class BoardMoverCatalogCheck
 {
@@ -72,6 +75,8 @@ final class BoardMoverCatalogCheck
     public const HANDLER_KEY = 'handler';
 
     public const OP_KEY = 'op';
+
+    public const EVENT_KEY = 'webhook_event_id';
 
     /** A site's `op` when it is read from the scope at run time rather than written as a literal. */
     public const OP_RUNTIME = '<runtime>';
@@ -175,8 +180,8 @@ final class BoardMoverCatalogCheck
     /**
      * The sites in one source file. `site` is the enclosing `ShortClass::method`; a closure's call
      * belongs to the method that contains it. `id` is the literal catalog id, or null with
-     * `problem` naming why there is none. `handler_problem` is null when the context spells
-     * `handler` as the scope read, else why it does not; `op` is the literal, or
+     * `problem` naming why there is none. `handler_problem` and `event_problem` are null when the
+     * context spells `handler` and `webhook_event_id` as the scope read, else why it does not; `op` is the literal, or
      * {@see self::OP_RUNTIME} for the scope read, or null with `op_problem` saying why.
      *
      * @param  callable(string): bool  $inPopulation
@@ -252,6 +257,9 @@ final class BoardMoverCatalogCheck
         if (($catalog['op_key'] ?? null) !== self::OP_KEY) {
             $out[] = 'CATALOG_SCHEMA: `op_key` is not `'.self::OP_KEY.'`';
         }
+        if (($catalog['event_key'] ?? null) !== self::EVENT_KEY) {
+            $out[] = 'CATALOG_SCHEMA: `event_key` is not `'.self::EVENT_KEY.'`';
+        }
         $ops = is_array($catalog['ops'] ?? null) ? $catalog['ops'] : [];
         $declared = array_map(fn (WriteOp $op) => $op->value, WriteOp::cases());
         foreach (array_diff($declared, array_keys($ops)) as $missing) {
@@ -266,6 +274,16 @@ final class BoardMoverCatalogCheck
             }
         }
         $kinds = is_array($catalog['kinds'] ?? null) ? $catalog['kinds'] : [];
+        $outcomeKinds = $catalog['outcome_kinds'] ?? null;
+        if (! is_array($outcomeKinds) || $outcomeKinds === [] || ! array_is_list($outcomeKinds)) {
+            $out[] = 'OUTCOME_KINDS: `outcome_kinds` must be a non-empty list of kinds the catalog declares';
+        } else {
+            foreach ($outcomeKinds as $kind) {
+                if (! is_string($kind) || ! array_key_exists($kind, $kinds)) {
+                    $out[] = 'OUTCOME_KINDS: `'.(is_string($kind) ? $kind : 'a non-string member').'` is listed in `outcome_kinds` and is not a kind the catalog declares';
+                }
+            }
+        }
         $entries = is_array($catalog['entries'] ?? null) ? $catalog['entries'] : [];
         if ($entries === []) {
             $out[] = 'CATALOG_EMPTY: the catalog declares no entries — nothing was checked';
@@ -301,6 +319,9 @@ final class BoardMoverCatalogCheck
         foreach ($sites as $site) {
             if ($site['handler_problem'] !== null) {
                 $out[] = "SITE_WITHOUT_HANDLER: {$site['site']} ({$site['where']}) — {$site['handler_problem']}";
+            }
+            if ($site['event_problem'] !== null) {
+                $out[] = "SITE_WITHOUT_EVENT_ID: {$site['site']} ({$site['where']}) — {$site['event_problem']}";
             }
             if ($site['op'] === null) {
                 $out[] = "SITE_WITHOUT_OP: {$site['site']} ({$site['where']}) — {$site['op_problem']}";
@@ -444,12 +465,12 @@ final class BoardMoverCatalogCheck
     /**
      * Whether the context spells `handler` as the scope read, and what it spells `op` as.
      *
-     * @return array{handler_problem: ?string, op: ?string, op_problem: ?string}
+     * @return array{handler_problem: ?string, event_problem: ?string, op: ?string, op_problem: ?string}
      */
     private static function runtimeKeys(?Node\Arg $context, string $absent): array
     {
         if ($context === null) {
-            return ['handler_problem' => $absent, 'op' => null, 'op_problem' => $absent];
+            return ['handler_problem' => $absent, 'event_problem' => $absent, 'op' => null, 'op_problem' => $absent];
         }
         $handler = self::contextValue($context->value, self::HANDLER_KEY);
         $handlerProblem = match (true) {
@@ -457,19 +478,25 @@ final class BoardMoverCatalogCheck
             ! self::isScopeRead($handler, 'handler') => '`'.self::HANDLER_KEY.'` is not `BoardMoverScope::handler()` — a typed name is wrong at every shared site, so the scope is the only source',
             default => null,
         };
+        $event = self::contextValue($context->value, self::EVENT_KEY);
+        $eventProblem = match (true) {
+            $event === null => 'no `'.self::EVENT_KEY.'` key in a literal context array',
+            ! self::isScopeRead($event, 'webhookEventId') => '`'.self::EVENT_KEY.'` is not `BoardMoverScope::webhookEventId()` — the delivery is the join key between a give-up and the rows that say what landed, and only the scope knows it at every site',
+            default => null,
+        };
 
         $op = self::contextValue($context->value, self::OP_KEY);
         if ($op === null) {
-            return ['handler_problem' => $handlerProblem, 'op' => null, 'op_problem' => 'no `'.self::OP_KEY.'` key in a literal context array'];
+            return ['handler_problem' => $handlerProblem, 'event_problem' => $eventProblem, 'op' => null, 'op_problem' => 'no `'.self::OP_KEY.'` key in a literal context array'];
         }
         if ($op instanceof Node\Scalar\String_) {
-            return ['handler_problem' => $handlerProblem, 'op' => $op->value, 'op_problem' => null];
+            return ['handler_problem' => $handlerProblem, 'event_problem' => $eventProblem, 'op' => $op->value, 'op_problem' => null];
         }
         if (self::isScopeRead($op, 'op')) {
-            return ['handler_problem' => $handlerProblem, 'op' => self::OP_RUNTIME, 'op_problem' => null];
+            return ['handler_problem' => $handlerProblem, 'event_problem' => $eventProblem, 'op' => self::OP_RUNTIME, 'op_problem' => null];
         }
 
-        return ['handler_problem' => $handlerProblem, 'op' => null, 'op_problem' => '`'.self::OP_KEY.'` is neither a string literal nor `BoardMoverScope::op()`'];
+        return ['handler_problem' => $handlerProblem, 'event_problem' => $eventProblem, 'op' => null, 'op_problem' => '`'.self::OP_KEY.'` is neither a string literal nor `BoardMoverScope::op()`'];
     }
 
     private static function isScopeRead(Expr $expr, string $method): bool

@@ -162,7 +162,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
             $this->alerts->warnAndNotify(
                 'coord_card.payload_invalid',
                 'kanban_coord_card: malformed payload (repo/issue_number/itype/title); ignoring',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'payload' => $p],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'payload' => $p],
                 is_string($repo) ? $repo : '', self::ALERT_OUTCOME, null, 'coord_card_payload_invalid',
                 is_numeric($issueNumber) ? (int) $issueNumber : null,
             );
@@ -180,7 +180,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
             $this->alerts->warnAndNotify(
                 'coord_card.writeback_not_configured',
                 'kanban_coord_card: writeback not configured; ignoring',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber],
                 $repo, self::ALERT_OUTCOME, null, 'writeback_not_configured', $issueNumber,
             );
 
@@ -189,7 +189,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
         $mapping = $writeback->mappingFor($repo);
         if ($mapping === null || ! $mapping->createCoordCards || $mapping->coordCardStageId === null) {
             // Opt-out / unmapped: permanent refusal — log + no-op (never 5xx-retry a config gap).
-            Log::info('kanban_coord_card: repo not mapped or opt-out; ignoring', ['catalog_id' => 'coord_card.repo_not_mapped', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber]);
+            Log::info('kanban_coord_card: repo not mapped or opt-out; ignoring', ['catalog_id' => 'coord_card.repo_not_mapped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber]);
 
             return;
         }
@@ -208,7 +208,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
             $this->alerts->warnAndNotify(
                 'coord_card.no_correlation_key',
                 'kanban_coord_card: malformed payload (empty sid with population=prefixed — no correlation key); ignoring',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'payload' => $p],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'payload' => $p],
                 $repo, self::ALERT_OUTCOME, null, 'coord_card_no_correlation_key', $issueNumber,
             );
 
@@ -234,12 +234,12 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
             // the non-prefixed population AND the prefix-change edge (a card first created
             // non-prefixed is dual-discoverable once a later prefixed event stamps the tag).
             if ($tag !== null && $client->cardsByTag($mapping->boardId, $tag) !== []) {
-                Log::info('kanban_coord_card: card already exists for tag; skipping', ['catalog_id' => 'coord_card.exists_for_tag', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag]);
+                Log::info('kanban_coord_card: card already exists for tag; skipping', ['catalog_id' => 'coord_card.exists_for_tag', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag]);
 
                 return;
             }
             if ($byRef && $client->correlateIssue($mapping->boardId, $issueNumber, $repo) !== []) {
-                Log::info('kanban_coord_card: card already exists for issue by-ref; skipping', ['catalog_id' => 'coord_card.exists_for_issue_ref', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber]);
+                Log::info('kanban_coord_card: card already exists for issue by-ref; skipping', ['catalog_id' => 'coord_card.exists_for_issue_ref', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber]);
 
                 return;
             }
@@ -254,7 +254,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
                     $this->alerts->warnAndNotify(
                         'coord_card.archived_twin',
                         'kanban_coord_card: the only card for this thread is ARCHIVED (a deliberate retire, and archival is not the bridge\'s to undo) — NOT creating a replacement; unarchive that card if the thread is live again',
-                        ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag, 'archived_card_ids' => $retired],
+                        ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag, 'archived_card_ids' => $retired],
                         $repo, self::ALERT_OUTCOME, null, 'coord_card_archived_twin', $issueNumber,
                     );
 
@@ -289,7 +289,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
                 $itype === 'brief' ? 1 : 0,
                 "https://github.com/{$repo}/issues/{$issueNumber}",
             );
-            Log::info('kanban_coord_card: created', ['catalog_id' => 'coord_card.created', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'sid' => $sid, 'issue' => $issueNumber, 'population' => $mapping->issuePopulation]);
+            Log::info('kanban_coord_card: created', ['catalog_id' => 'coord_card.created', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'sid' => $sid, 'issue' => $issueNumber, 'population' => $mapping->issuePopulation]);
 
             // Close the check-then-create race (like the dependabot path): re-read by each
             // eligible key and collapse a duplicate a concurrent delivery (or the reconcile)
@@ -330,7 +330,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
                 $this->alerts->warnAndNotify(
                     'coord_card.create_4xx',
                     'kanban_coord_card: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)',
-                    ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e),
                     $repo, self::ALERT_OUTCOME, null, 'coord_card_create_4xx', $issueNumber,
                 );
 
@@ -421,7 +421,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
             $this->alerts->warnAndNotify(
                 'coord_card.rename_payload_invalid',
                 'kanban_coord_card: malformed rename payload (name_from/title/sid); no name written',
-                ['handler' => BoardMoverScope::handler(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber],
                 $repo, self::ALERT_OUTCOME, null, 'coord_card_rename_payload_invalid', $issueNumber,
             );
 
@@ -441,7 +441,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
                 // wrong-but-specific on the redelivery path (DL-314's shape), so the text
                 // reports only what was compared. Info, not warn: on every one of those
                 // histories the no-op is the designed outcome, not a failure.
-                Log::info('kanban_coord_card: card name is not `changes.title.from`; not restamped', ['catalog_id' => 'coord_card.rename_not_ours', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag] + MappedBoardGuard::boardContext($card, $mapping));
+                Log::info('kanban_coord_card: card name is not `changes.title.from`; not restamped', ['catalog_id' => 'coord_card.rename_not_ours', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag] + MappedBoardGuard::boardContext($card, $mapping));
 
                 continue;
             }
@@ -464,7 +464,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
             $client->patchCard($cardId, $fields);
             // Group-B (card#7211/card#7212): the card came out of a board-scoped SEARCH, so
             // its own board is recorded beside the write that landed on it.
-            Log::info('kanban_coord_card: restamped name from the upstream retitle', ['catalog_id' => 'coord_card.renamed', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag] + MappedBoardGuard::boardContext($card, $mapping));
+            Log::info('kanban_coord_card: restamped name from the upstream retitle', ['catalog_id' => 'coord_card.renamed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'card_id' => $cardId, 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag] + MappedBoardGuard::boardContext($card, $mapping));
         }
     }
 
@@ -592,7 +592,7 @@ final class KanbanCoordCardHandler implements DeclaresWriteOp, DurableReaction, 
             // The skipped lanes and the mapped set are CONTEXT, not interpolation: the
             // DL-285 refusal-signal guard keys its accounted-for list on the message
             // literal, and an interpolated message degrades that key to a line number.
-            Log::warning('kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column', ['catalog_id' => 'coord_card.lane_unmapped', 'handler' => BoardMoverScope::handler(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber, 'unmapped_lanes' => $placement['unmapped'], 'created_in_lane' => $placement['lane'], 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds ?? [])]);
+            Log::warning('kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column', ['catalog_id' => 'coord_card.lane_unmapped', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'write', 'repo' => $repo, 'issue' => $issueNumber, 'unmapped_lanes' => $placement['unmapped'], 'created_in_lane' => $placement['lane'], 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds ?? [])]);
         }
 
         return $placement['stage'];

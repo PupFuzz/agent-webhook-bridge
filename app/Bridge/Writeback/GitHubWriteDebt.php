@@ -351,6 +351,7 @@ final class GitHubWriteDebt
             Log::warning('github_write_debt: the record of GitHub writes this install still owes could not be updated and was left exactly as it was — a refused write this was recording is not in it and `bridge:github-owed` will not repair it; routing is unchanged', [
                 'catalog_id' => 'github_write_debt.record_unwritable',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => BoardMoverScope::op(),
                 'path' => $path, 'error' => RedactedErrorText::of($e),
             ]);
@@ -376,6 +377,7 @@ final class GitHubWriteDebt
             Log::warning('github_write_debt: dropped owed GitHub writes from the record — they were past the repair window or over its cap, and those writes will never be made', [
                 'catalog_id' => 'github_write_debt.record_pruned',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => BoardMoverScope::op(),
                 'dropped' => $dropped, 'kept' => count($kept),
                 'expiry_seconds' => self::EXPIRY_SECONDS, 'cap' => self::MAX_ENTRIES,
@@ -401,6 +403,7 @@ final class GitHubWriteDebt
             Log::warning('github_write_debt: the record of GitHub writes this install still owes could not be read — nothing was removed from it; `bridge:github-owed` names the problem', [
                 'catalog_id' => 'github_write_debt.record_unreadable',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => BoardMoverScope::op(),
                 'path' => self::path(), 'problem' => $e->getMessage(),
             ]);

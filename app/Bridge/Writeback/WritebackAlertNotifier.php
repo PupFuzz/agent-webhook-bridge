@@ -286,7 +286,7 @@ final class WritebackAlertNotifier
             // Context is drawn from $body (present on BOTH the notify and notifyUnpark
             // paths), never from a caller's locals — the unpark path has no
             // $outcome/$reason locals to reference.
-            Log::warning('writeback alert push failed', ['catalog_id' => 'alert_notifier.push_failed', 'handler' => BoardMoverScope::handler(), 'op' => BoardMoverScope::op()] + $body + ['error' => RedactedErrorText::of($e)]);
+            Log::warning('writeback alert push failed', ['catalog_id' => 'alert_notifier.push_failed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op()] + $body + ['error' => RedactedErrorText::of($e)]);
         }
     }
 
@@ -326,6 +326,7 @@ final class WritebackAlertNotifier
             Log::warning('writeback alert dedup-dir could not be created — skipping push to avoid a per-event storm', [
                 'catalog_id' => 'alert_notifier.dedup_dir_unavailable',
                 'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => BoardMoverScope::op(),
                 'dir' => $dir, 'error' => error_get_last()['message'] ?? 'unknown',
             ]);
@@ -351,6 +352,7 @@ final class WritebackAlertNotifier
         Log::warning('writeback alert dedup-marker could not be created — skipping push to avoid a per-event storm', [
             'catalog_id' => 'alert_notifier.dedup_marker_unavailable',
             'handler' => BoardMoverScope::handler(),
+            'webhook_event_id' => BoardMoverScope::webhookEventId(),
             'op' => BoardMoverScope::op(),
             'path' => $path,
             'error' => error_get_last()['message'] ?? 'unknown',
