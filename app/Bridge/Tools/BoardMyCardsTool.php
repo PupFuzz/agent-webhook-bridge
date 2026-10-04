@@ -14,9 +14,11 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * board_my_cards (DL-217) — a READ-PROXY returning the calling agent's own cards
- * without ever handing out the kanban token: the agent's own product swimlane
- * (grouped by stage name), the shared cross-system swimlane when configured, and
- * (when coord_board_id + address_tags are set) coordination cards addressed to it.
+ * without ever handing out the kanban token: the cards assigned to its kanban user in
+ * any lane plus the unassigned cards in its own product swimlane ({@see SeatCardScope},
+ * card#11267 / DL-459), grouped by stage name in {@see BoardCardRank}'s order; the shared
+ * cross-system swimlane when configured; and (when coord_board_id + address_tags are set)
+ * coordination cards addressed to it.
  *
  * Read isolation is 100% BRIDGE-ENFORCED. All agents share the one writeback
  * user, and kanban scopes reads by that user's BOARD membership, never by
@@ -25,7 +27,10 @@ use Illuminate\Support\Facades\Log;
  * search term is efficiency + defense-in-depth against an un-upgraded/misbehaving
  * kanban, NOT the boundary. Every returned row is re-checked against the
  * configured swimlane and a non-matching one is DROPPED + logged (a misbehaving
- * upstream must never leak a foreign lane's card into a caller's window).
+ * upstream must never leak a foreign lane's card into a caller's window). ⚠ The ASSIGNED
+ * arm (card#11267) is the second deliberate crossing beside `tag` below: it walks the whole
+ * board and keeps only the rows assigned to the calling seat's own kanban user — a card in
+ * another lane reaches a caller only when it is the caller's by assignment.
  *
  * The BOARD axis is the other half of that sentence, and until DL-302 it was the
  * odd one out in this file: the response stated the CONFIGURED board for a row set
@@ -228,11 +233,24 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             throw new ToolRefusalException("board_my_cards: `stage` {$stageFilter} is a terminal column of board {$boardId} ({$this->basisClause($structure->terminalBasis)}), and the `tag` read leaves terminal columns out unless `include_terminal` is true — so it could only answer an empty tag window. Pass `include_terminal: true`, or name a column that is not terminal.");
         }
 
+        $scope = SeatCardScope::forCallingSeat($this->name());
         try {
             $ownRows = $client->swimlaneCards($boardId, $swimlaneId);
             $sharedRows = $cfg->sharedSwimlaneId === null ? null : $client->swimlaneCards($boardId, $cfg->sharedSwimlaneId);
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'own+shared', BoardReadRoute::Search, "your board {$boardId}");
+        }
+
+        // The ASSIGNED arm (card#11267): kanban's search cannot select by assignee id, so the board
+        // is walked whole and only the rows assigned to this seat are kept — never a row it does not
+        // hold. Only when the roster gave the seat an id: with none there is nothing to match.
+        $assignedRead = null;
+        if ($scope->kanbanUserId !== null) {
+            try {
+                $assignedRead = $client->boardRowsRead($boardId);
+            } catch (RequestException $e) {
+                throw $this->readRefusal($e, $agentName, 'assigned', BoardReadRoute::Search, "the cards assigned to you on your board {$boardId}");
+            }
         }
 
         $tagRead = null;
@@ -246,6 +264,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
 
         $ownRead = $this->filterSwimlane($ownRows, $swimlaneId, $agentName, 'own');
         $sharedRead = $sharedRows === null ? null : $this->filterSwimlane($sharedRows, (int) $cfg->sharedSwimlaneId, $agentName, 'shared');
+        $mine = $this->seatCards($scope, $ownRead, $assignedRead->cards ?? [], $swimlaneId);
 
         // ⛔ THE BOARD AXIS IS READ OVER EVERY ROW THIS CALL READ — before the stage filter
         // and before the cut (r1). DL-302 built it as a defence-in-depth report against a
@@ -257,20 +276,23 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         // population it was before the cap existed. ⚑ Read isolation is a different axis
         // and is unaffected: `filterSwimlane()` above still runs over every row.
         [$observedBoard, $boardObserved] = $this->observedBoard(
-            array_merge($ownRead, $sharedRead ?? [], $tagRead->cards ?? []),
+            array_merge($ownRead, $mine, $sharedRead ?? [], $tagRead->cards ?? []),
             $boardId,
             $agentName,
-            implode('+', array_keys(array_filter(['own' => true, 'shared' => $sharedRead !== null, 'tag' => $tagRead !== null]))),
+            implode('+', array_keys(array_filter(['own' => true, 'assigned' => $assignedRead !== null, 'shared' => $sharedRead !== null, 'tag' => $tagRead !== null]))),
         );
 
-        [$ownCards, $ownWindow] = $this->filteredWindow($this->onStage($ownRead, $stageFilter), $limit, $stageFilter);
+        [$ownCards, $ownWindow] = $this->filteredWindow($this->onStage($mine, $stageFilter), $limit, $stageFilter);
+        $rank = BoardCardRank::forBoard($structure, $boardId, $agentName);
         $result = [
             'board_id' => $observedBoard,
             'board_observed' => $boardObserved,
             'configured_board_id' => $boardId,
             'swimlane_id' => $swimlaneId,
+            'selection' => $scope->block($assignedRead?->truncated),
+            'stage_rank' => $rank->block(),
             'board_stages' => $this->boardStages($stageNames),
-            'cards_by_stage' => $this->groupByStage($ownCards, $stageNames, $descriptionCap),
+            'cards_by_stage' => $this->groupByStage($ownCards, $stageNames, $rank, $descriptionCap),
             'cards_window' => $ownWindow,
         ];
 
@@ -278,7 +300,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             [$sharedCards, $sharedWindow] = $this->filteredWindow($this->onStage($sharedRead, $stageFilter), $limit, $stageFilter);
             $result['shared_swimlane'] = [
                 'swimlane_id' => (int) $cfg->sharedSwimlaneId,
-                'cards_by_stage' => $this->groupByStage($sharedCards, $stageNames, $descriptionCap),
+                'cards_by_stage' => $this->groupByStage($sharedCards, $stageNames, $rank, $descriptionCap),
                 'cards_window' => $sharedWindow,
             ];
         }
@@ -855,10 +877,11 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      *
      * Descending keeps everything that mattered: it is a TOTAL order over a
      * monotonically-allocated key, so it is deterministic, it does not churn when a card
-     * is merely touched, and two identical polls answer the same set. The rows are then
-     * emitted in their ORIGINAL order, so a list that was not cut is byte-identical to
-     * what this tool has always returned. A row carrying no numeric id sorts last (it
-     * cannot be placed, and it must not displace a card that can).
+     * is merely touched, and two identical polls answer the same set. The kept rows are
+     * returned in their ORIGINAL order; the lists that group by stage then emit them in
+     * {@see BoardCardRank}'s order (card#11267), so the claim that an uncut list is
+     * byte-identical to what this tool always returned is retired. A row carrying no
+     * numeric id sorts last (it cannot be placed, and it must not displace a card that can).
      *
      * @param  list<array<string, mixed>>  $rows
      * @return array{0: list<array<string, mixed>>, 1: array{total: int, returned: int, limit: int, truncated: bool}}
@@ -1091,17 +1114,56 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
     }
 
     /**
+     * The seat's own cards (card#11267): the rows of its lane that {@see SeatCardScope} says are its
+     * own, then the rows of the board walk assigned to it in ANY OTHER lane or in none. A home-lane
+     * row from the walk is skipped — the lane read owns that lane, and its read-isolation filter has
+     * already run — and so is an id the lane read already returned.
+     *
+     * @param  list<array<string, mixed>>  $laneRows  the lane read, after {@see filterSwimlane}
+     * @param  list<array<string, mixed>>  $boardRows  the board walk, empty when the arm did not run
+     * @return list<array<string, mixed>>
+     */
+    private function seatCards(SeatCardScope $scope, array $laneRows, array $boardRows, int $swimlaneId): array
+    {
+        $mine = [];
+        $seen = [];
+        foreach ($laneRows as $row) {
+            $seen[(string) ($row['id'] ?? '')] = true;
+            if ($scope->claimsLaneRow($row)) {
+                $mine[] = $row;
+            }
+        }
+        foreach ($boardRows as $row) {
+            $inLane = is_numeric($row['swimlane_id'] ?? null) && (int) $row['swimlane_id'] === $swimlaneId;
+            if ($inLane || isset($seen[(string) ($row['id'] ?? '')]) || ! $scope->claimsAssignedRow($row)) {
+                continue;
+            }
+            $seen[(string) ($row['id'] ?? '')] = true;
+            $mine[] = $row;
+        }
+
+        return $mine;
+    }
+
+    /**
+     * One lane list, keyed by stage name and emitted in {@see BoardCardRank}'s order — stage rank,
+     * then `position`, then id — with each card's `swimlane_id` and `position` (card#11267), so the
+     * order can be read off the cards and a card from another lane says which.
+     *
      * @param  list<array<string, mixed>>  $rows
      * @param  array<int, string>  $stageNames
      * @return array<string, list<array<string, mixed>>>
      */
-    private function groupByStage(array $rows, array $stageNames, ?int $descriptionCap): array
+    private function groupByStage(array $rows, array $stageNames, BoardCardRank $rank, ?int $descriptionCap): array
     {
         $grouped = [];
-        foreach ($rows as $row) {
+        foreach ($rank->sort($rows) as $row) {
             $stageId = is_numeric($row['workflow_stage_id'] ?? null) ? (int) $row['workflow_stage_id'] : null;
             $stageName = $stageId !== null && isset($stageNames[$stageId]) ? $stageNames[$stageId] : ('stage:'.($stageId ?? '?'));
-            $grouped[$stageName][] = BoardCardProjection::project($row, $stageNames, $descriptionCap);
+            $grouped[$stageName][] = BoardCardProjection::withPosition(
+                BoardCardProjection::withSwimlane(BoardCardProjection::project($row, $stageNames, $descriptionCap), $row),
+                $row,
+            );
         }
 
         return $grouped;

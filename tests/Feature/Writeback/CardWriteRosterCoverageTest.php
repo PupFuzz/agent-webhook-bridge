@@ -141,6 +141,7 @@ class CardWriteRosterCoverageTest extends TestCase
         'boardStageOrder' => 'read',
         'boardStructure' => 'read',
         'boardSwimlaneIds' => 'read',
+        'boardRowsRead' => 'read',
         'byRefAvailable' => 'read',
         'cardBoardId' => 'read',
         'cardRowsByRef' => 'read',

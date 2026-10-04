@@ -4,6 +4,7 @@ namespace Tests\Feature\Writeback;
 
 use App\Bridge\Writeback\PinGuard;
 use Tests\Feature\AgentTools\AgentToolsCallTest;
+use Tests\Feature\AgentTools\BoardSeatCardsTest;
 use Tests\Feature\AgentTools\BoardTakeCardStartTest;
 use Tests\Feature\Handlers\KanbanBlockReasonHandlerTest;
 use Tests\Feature\Handlers\KanbanCoordCardHandlerTest;
@@ -188,6 +189,14 @@ class PinnedFieldWriteCoverageTest extends TestCase
         // direction.
         'Bridge/Tools/BoardTakeCardTool.php::call#1' => [
             AgentToolsCallTest::class.'::test_a_take_lands_on_a_pinned_card_because_the_pin_governs_the_name_and_not_the_claim',
+            AgentToolsCallTest::class.'::test_a_name_correction_on_a_pinned_card_is_refused_by_name',
+        ],
+        // UNGOVERNED — the card#11267 / DL-459 assign-at-birth writes the same single field as the
+        // take above (`assigned_user_id`) on the card the call just created, so the same ruling
+        // holds: a card created already carrying `no-automove` is still assigned, and the pin is
+        // still seen to refuse a `name` correction.
+        'Bridge/Tools/BoardCreateCardTool.php::assignAtBirth#1' => [
+            BoardSeatCardsTest::class.'::test_create_assigns_a_card_born_pinned_because_the_pin_governs_the_name_and_not_the_claim',
             AgentToolsCallTest::class.'::test_a_name_correction_on_a_pinned_card_is_refused_by_name',
         ],
         // UNGOVERNED — the card#10869 TAKEOVER writes the same single field as the take above

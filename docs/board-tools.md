@@ -11,10 +11,10 @@ The tools that ship today — the table is held against the bridge's own registr
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
-| `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
-| `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
+| `board_my_cards` | read | Return YOUR own cards — every card ASSIGNED to you in any lane or in none, plus the UNASSIGNED cards in your product swimlane (card#11267 / DL-459), grouped by stage and ordered across lanes by stage rank (In Progress, pull columns, the rest, finished), then board position, then id — and the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured. Read-proxied — the kanban token never leaves the bridge. |
+| `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass, and it is **assigned to you** (card#11267 / DL-459) — or left unassigned, with the response naming why. |
 | `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
-| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
+| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. Scoped to a lane you work, or a card already assigned to you in any lane (card#11267). ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none`) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused; the window says `total`, `truncated` and `total_is_lower_bound`. |
@@ -149,20 +149,33 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
   "board_observed": true,
   "configured_board_id": 10, // the board this agent is configured to read
   "swimlane_id": 4,
+  "selection": {             // which of your cards could be read — see § Which cards are yours
+    "kanban_user_id": 42,            // your seat's kanban user (the roster's), or null
+    "assignee_arm": "applied",       // "applied" | "no_kanban_user" | "unavailable"
+    "unavailable_reason": null,      // when "unavailable": the roster's install_fault.* code
+    "assigned_read_truncated": false // the board walk stopped at its page ceiling; null when not walked
+  },
+  "stage_rank": {            // the columns ranked first — see § Which cards are yours
+    "in_progress_stage_id": 49,      // the mapping's `stages.started`, or null
+    "pull_stage_ids": [54],          // its `started_from_stages`
+    "unmapped_reason": null          // why nothing is ranked first, when it is not
+  },
   "board_stages": [          // EVERY column of your board, in the board's own order —
     { "id": 50, "name": "Backlog" },      // present whether or not a card in it survived
     { "id": 51, "name": "In Review" }     // the cut, so `stage` is always reachable
   ],                       // ordered by kanban's own `position`, not the payload's order
-  "cards_by_stage": {
+  "cards_by_stage": {        // keys and cards in RANK order — see § Which cards are yours
+    "In Review": [ /* ... */ ],
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
                     "assigned_user_id": 42,   // who holds it, or null — see below
                     "dl_number": "DL-1", "pr_number": null,
                     "pr_url": null,           // the card's PR url, or null — see below
                     "source": "owner/repo",   // the card's by-ref repo, or null — see below
                     "updated_at": "...",
+                    "swimlane_id": 9,         // the lane it is in (null: none) — card#11267
+                    "position": 2048.0,       // the board's in-column order — card#11267
                     // the next two keys ONLY when include_description was passed:
-                    "description": "...", "description_truncated": false } ],
-    "In Review": [ /* ... */ ]
+                    "description": "...", "description_truncated": false } ]
   },
   "cards_window": {          // describes cards_by_stage above — ALWAYS present
     "total": 390,            // how many cards matched, BEFORE the cut
@@ -268,6 +281,59 @@ a `board_get_cards` / `board_search`-shaped membership control on this tool too;
 path this tool takes, so it would only cost an extra request. See the class docblock on
 `BoardMembershipControl`.)
 
+### Which cards are yours, and in what order (`selection`, card#11267 / DL-459)
+
+**Your cards are the cards ASSIGNED to your kanban user, in any lane or in none, plus the
+UNASSIGNED cards in your own swimlane** (rt#595). The assignee wins whenever it is set: a card in
+your lane that another user holds is theirs and is **not** in `cards_by_stage`, and a card you hold
+in a topic lane — or in no lane — **is**. Routing a card to you is one act: set its assignee. The
+rule lives in `SeatCardScope`; `board_take_card` takes a card assigned to you wherever it sits by
+the same rule, and `board_create_card` assigns the card it creates to you.
+
+- **Your kanban user is the coord roster's** (DL-450), for the seat the door sealed — never a value
+  from your arguments. `selection` says which of three states answered:
+
+  | `assignee_arm` | Meaning |
+  | --- | --- |
+  | `applied` | The roster gives your seat a kanban user. Your assigned cards are read from every lane, and a lane card another user holds is left out. |
+  | `no_kanban_user` | The roster gives your seat none. No card can be assigned to you, so your cards are the unassigned ones in your lane; the board is not walked. |
+  | `unavailable` | The roster could not say who you are (unreadable, unset, or an id that does not identify one seat — `unavailable_reason` carries the same `install_fault.*` code `board_take_card` would refuse with). ⚠ **Your whole lane is returned, as before this rule**, because whether a card in it that somebody holds is yours cannot be told; nothing outside your lane is. Tell your operator. |
+
+- **What it costs.** kanban's search has no term that selects by assignee id (`@<initials>` matches
+  initials, which do not identify a user), so under `applied` the bridge **walks your whole board** —
+  a request per 200 live cards, and one more when the last page is full — and keeps only the rows assigned to you; your lane read is
+  unchanged beside it. `assigned_read_truncated: true` means that walk stopped at the bridge's page
+  ceiling (`KanbanClient::MAX_PAGES` × `SEARCH_LIMIT` rows), so cards assigned to you past it are
+  missing from the list; it is `null` when the board was not walked.
+- **The order is the same for every list in this response that groups by stage, and it is across
+  lanes:** stage rank, then the board's `position`, then card id (`BoardCardRank`). Stage rank is
+  what this install already declares about your board's columns, never a guess from a column's
+  name: the **In Progress** column (the writeback mapping's `stages.started`), then the **pull**
+  columns (its `started_from_stages` — the columns `board_take_card`'s start form moves a card
+  from), then every other column, then the **finished** ones (the board's terminal declaration
+  together with the mapping's Shipped/Released floor — the same finished set the take refuses to
+  replace an assignee in). Columns of one rank keep the board's column order. `stage_rank` names
+  the columns ranked first (`in_progress_stage_id`, `pull_stage_ids`); when no mapping on your
+  board names exactly one In Progress column, nothing is ranked first and `unmapped_reason` says
+  why (`no_mapping_on_board`, `start_unmapped`, `start_ambiguous`, `writeback_config_unreadable`).
+  ⛔ Not kanban's per-column `lane_type`: kanban creates every column `in_progress` unless told
+  otherwise, and the reference board types Shipped to dev `waiting`, so a rank read off it would
+  list a shipped card above your backlog. `cards_by_stage`'s keys come out in rank order and each
+  card carries its `swimlane_id` and `position`. ⭐ `position` is ONE order per column across every swimlane on kanban — its reorder
+  places a card column-wide (kanban DL-284), so the PM's reorder ranks your home-lane and assigned
+  cards together — and card id breaks ties, because two cards can share a position. Source-read
+  (kanban `BoardPositionService`), not measured against a live board here. A row with no `position`
+  sorts after the positioned rows of its column.
+- ⚠ **The cap still keeps the NEWEST cards** (§ The default is capped) and orders what it kept, so
+  on a truncated list the top of your rank order can be behind the cut — narrow with `stage`.
+- ⚠ **What moved for a lane you already read:** a card in your lane that another user holds has left
+  `cards_by_stage` under `applied` and `no_kanban_user`. To see your whole lane, read it with
+  `board_search` (`lane: "mine"`). `shared_swimlane` still selects its whole lane (only its order
+  and its cards' two new keys changed), so a card assigned to you in the shared lane appears in both.
+- **Not built here:** a `lane=unrouted` read (unassigned and outside every configured home lane, the
+  PM's routing queue — rt#595 ask 4). Which lanes are somebody's home lane is in each agent's own
+  config, and agents run on separate installs, so no one install can answer it.
+
 ### The default is capped (`cards_window`, `stage`, `limit`)
 
 ⚠ **Every card list in this response is cut to a fixed number of CARDS, and the response
@@ -309,9 +375,10 @@ for, and the old response gave no hint it was oversized or partial.
   `total` then reports **that column's** size. Raising `limit` grows the response in
   proportion to the cards it lets through; it is the deliberate escape hatch for a caller
   that genuinely needs a whole lane, not the routine path.
-- **Which cards you get is deterministic: the NEWEST — the highest card ids — emitted in
-  the board's own answer order.** Card ids are allocated globally and monotonically, so
-  the highest ids are your most recent work. ⛔ **The first cut of this kept the OLDEST
+- **Which cards you get is deterministic: the NEWEST — the highest card ids.** They are
+  emitted in your RANK order (stage rank, then `position`, then id — § Which cards are
+  yours), not in the board's answer order (card#11267). Card ids are allocated globally and
+  monotonically, so the highest ids are your most recent work. ⛔ **The first cut of this kept the OLDEST
   and was wrong in a way worth stating**, because a bounded response that answers the
   wrong question is still an unusable tool: on any board with a terminal column the
   default read came back as 52 finished cards, with the live column absent from
@@ -319,8 +386,9 @@ for, and the old response gave no hint it was oversized or partial.
   column existed. Descending keeps every property that mattered: a total order over a
   monotonic key, so two identical polls answer the same set and merely touching a card
   never reshuffles it. A row carrying no readable id sorts **last** (it is still counted
-  in `total`). A list that was *not* cut is byte-identical to what this tool returned
-  before the cap existed.
+  in `total`). ⛔ *A list that was not cut is byte-identical to what this tool returned
+  before the cap existed* is RETIRED (card#11267): every list is now emitted in rank order,
+  so an uncut list carries the same cards in a different order.
 - **`board_stages` names every column of your board, on every response, in the board's own
   column order** (kanban's `position` — not the order the board's workflows happen to be
   assembled in). The escape hatch has to be reachable from the response that advertises
@@ -422,8 +490,9 @@ three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could 
 - **Cost:** a call with `tag` adds the tag read (paged) and one-row searches — the
   `other_swimlanes` count, the free-text disclosure check, and the `no_swimlane` count. The
   board structure read is the one the default call already makes.
-- ⛔ **Without `tag`, nothing changes:** the same keys and values, from the same requests (a coord
-  leg's tag search now also sends `page=1`), and no `swimlane_id` on the lane cards.
+- ⛔ **Without `tag`, nothing the tag read adds is present:** no `tag_cards` block and none of its
+  requests (a coord leg's tag search now also sends `page=1`). The lane cards' own `swimlane_id`
+  and `position` are card#11267's, not the tag read's, and ride every call.
 
 ### Where these cards are (`board_id` vs `configured_board_id`)
 
@@ -502,9 +571,12 @@ membership, never by swimlane — so the boundary keeping you out of another
 agent's lane is your `board_tools.swimlane_id` config plus a fail-closed row
 filter: every returned row is re-checked against your configured swimlane and any
 non-matching row is **dropped and logged**. The upstream `swimlane_id=` search
-term is efficiency + defense-in-depth, not the boundary. ⚠ **The `tag` read is the
-deliberate exception** (DL-383): it lists the cards on your board carrying the one
-tag you name, in any lane — see § Cards carrying a tag, in any lane.
+term is efficiency + defense-in-depth, not the boundary. ⚠ **Two reads cross it
+deliberately.** The `tag` read (DL-383) lists the cards on your board carrying the
+one tag you name, in any lane — see § Cards carrying a tag, in any lane. And the
+**assigned arm** (card#11267) walks your whole board and keeps **only the rows
+assigned to your own kanban user** — a card in another lane reaches you only when
+it is yours by assignment; see § Which cards are yours.
 
 ### An empty window is not always an empty lane
 
@@ -556,6 +628,18 @@ Any other key — a `swimlane_id`, an `assignee` — is **refused** (422) before
 - The card is created at your configured `create_stage_id`, in your configured
   `swimlane_id` (forced — args cannot name a lane or stage), with payload `{}`.
 - The bridge stamps `created-by:<you>` as the audit tag.
+- **The card is ASSIGNED TO YOU** (card#11267 / DL-459): after the create, one PATCH writes your
+  seat's kanban user — the coord roster's, never a value from your arguments, exactly as
+  `board_take_card` writes it — into `assigned_user_id`. It is a **separate write after the
+  create, and it never undoes it**: kanban refuses an assignee who is not a member of the board,
+  and sent inside the create that would refuse the card itself. So the card is created as before,
+  and when the assignment cannot be made the card is left unassigned and the response says why
+  (`assignee_unset_reason`: `no_kanban_user` — the roster gives your seat none; an
+  `install_fault.*` code — the roster could not say who you are; `assign_failed` — the PATCH was
+  refused or got no answer, logged with the cause). An **idempotent hit** assigns nothing: it
+  returns a card an earlier call created, and carries neither key. After a raced-duplicate
+  collapse, the surviving card is the one assigned. ⚠ The PATCH needs `task.update` on your board,
+  the same ability a take or a correction needs; without it every create answers `assign_failed`.
 - **Pass an `idempotency_key`.** With one, the bridge runs the full duplicate-safe
   pattern: it correlates on `idem:<you>:<key>` *before* creating (a repeat returns
   the same **live** card, `"idempotent_hit": true`, no second card), and after
@@ -596,7 +680,9 @@ Any other key — a `swimlane_id`, an `assignee` — is **refused** (422) before
 ```jsonc
 { "created": true, "idempotent_hit": false, "card_id": 123,
   "board_id": 10, "swimlane_id": 4, "placement_observed": true,
-  "configured_board_id": 10, "configured_swimlane_id": 4 }
+  "configured_board_id": 10, "configured_swimlane_id": 4,
+  // card#11267 / DL-459, on a create (never on an idempotent hit):
+  "assigned_user_id": 42, "assignee_unset_reason": null }
 ```
 
 **⚠ `board_id` / `swimlane_id` are WHERE THE CARD IS, read back from the card
@@ -910,9 +996,9 @@ through the one privileged seat, which is the serial hub this door exists to rem
 **⭐ Which cards you can take — the scoping rule, and it is NOT the correction tool's.**
 
 `board_correct_card` scopes on a card being ALREADY yours — minted by you (`created-by:<you>`)
-or, since DL-376, assigned to you. A take is the opposite case: **the work somebody else
-queued for you, and that nobody holds yet, is exactly what you are claiming**, so neither
-relation is consulted. Two independent narrowings are checked instead, and **both** are required:
+or, since DL-376, assigned to you. A take is mostly the opposite case: **the work somebody else
+queued for you, and that nobody holds yet, is exactly what you are claiming**, so the mint stamp
+is never consulted. Two independent narrowings are checked instead, and **both** are required:
 
 1. **The card is on your configured board.** Established through a **board-scoped** search
    (`q=board_id=<yours> id=<n>`), with the verdict read off the returned **rows** — never
@@ -921,11 +1007,16 @@ relation is consulted. Two independent narrowings are checked instead, and **bot
    used: your `card_id` is caller-supplied against an id space that is **global across every
    board on the instance**.
 2. **The card is in a lane you work** — your own `swimlane_id`, or the configured
-   `shared_swimlane_id`. ⚠ That is the same **lane scope** `board_my_cards` reads, but it is
-   **not the same set of cards**, in either direction: `board_my_cards` **caps** its response
-   by card count (card#8985), so a card it did not list can still be takeable; and a card it
-   **does** list can be **refused** here because another user holds it and it is finished. What
-   makes the scope legible is the lane you work, not the listing you got.
+   `shared_swimlane_id` — **or it is already assigned to you**, in any lane or in none
+   (card#11267: a card routed to you in a topic lane is yours to start; the result's
+   `in_scope_by` says `lane` or `assigned`, and `swimlane_id` is then the lane the card is in,
+   `null` for none). ⚠ That is close to the set `board_my_cards` lists, but it is **not the same
+   set of cards**, in either direction: `board_my_cards` **caps** its response by card count
+   (card#8985), so a card it did not list can still be takeable, and a card in your lane that
+   another user holds is takeable here (with the takeover below) while `board_my_cards` leaves it
+   out; and a card it **does** list can still be **refused** — under `assignee_arm: unavailable` it
+   lists your whole lane, held cards included, and a held card in a finished column is refused
+   below. What makes the scope legible is the rule, not the listing you got.
 
 > ⛔ **Coordination cards are OUT of scope.** They live on a separately configured board and
 > are addressed by TAG rather than by lane, and reaching them would put a write on a second
@@ -1020,8 +1111,9 @@ knowing who is looking at a frozen card is useful rather than harmful.
   "taken": true,
   "card_id": 42,
   "board_id": 10,             // observed: the row was accepted only because it carried this
-  "swimlane_id": 4,           // observed: the lane the card was accepted in
-  "assigned_user_id": 815,    // YOUR id, from this bridge's config for your agent
+  "swimlane_id": 4,           // observed: the lane the card is in (null: none, possible under "assigned")
+  "in_scope_by": "lane",      // "lane" (a lane you work) or "assigned" (already yours) — card#11267
+  "assigned_user_id": 815,    // YOUR id, from the coord roster for your seat
   "already_held": false       // true ⇒ you already held it and NOTHING was written
 }
 ```
@@ -1099,7 +1191,7 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `bad_request` | the door, any tool | the request body is not a JSON object, is not labelled JSON (HTTP), names no `tool`, or (ssh) could not be read from stdin |
 | `unknown_tool` | the door, any tool | no such tool |
 | `bad_arguments` | the door and every tool | an undeclared argument, a malformed one (`card_id` not a positive integer, `start` not a boolean, a `ci_await` `repo` not `owner/name`, a `head_sha` not a full 40-hex SHA, `pr` not a positive integer), or a value over kanban's own bound |
-| `out_of_scope` | `board_take_card` | not a card on your board in a lane you work (or a board the writeback token cannot see — one answer) |
+| `out_of_scope` | `board_take_card` | not a card on your board in a lane you work or assigned to you (or a board the writeback token cannot see — one answer) |
 | `archived` | `board_take_card` | the card is archived |
 | `holder_unreadable` | `board_take_card` | the row says nothing readable about who holds the card |
 | `broken_read` | every card-id tool | the board-scoped lookup answered a row that is not this card |

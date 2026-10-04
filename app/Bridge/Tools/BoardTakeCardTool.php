@@ -80,12 +80,14 @@ use Illuminate\Support\Facades\Log;
  *     by {@see BoardScopedRow}, never through the unscoped `getCard()` that DL-323 records
  *     as the defect for a caller-supplied id.
  *  2. THE CARD IS IN A LANE THIS SEAT WORKS — its own `swimlane_id`, or the configured
- *     shared lane. ⚠ That is the same LANE SCOPE {@see BoardMyCardsTool} reads, and
- *     deliberately NOT the same SET — the shorthand "exactly the population `board_my_cards`
- *     reports" was false in BOTH directions and is corrected here rather than repeated: that
- *     tool CAPS its response by card count (card#8985 / DL-365), so a card it did not return
- *     can still be takeable, and a card it DOES show can be refused because another user
- *     holds it. What makes the scope legible is the LANE, not the listing.
+ *     shared lane — OR IT IS ALREADY ASSIGNED TO THIS SEAT, in any lane or in none
+ *     (card#11267, {@see SeatCardScope::isAssignedTo}). ⚠ That is close to the set
+ *     {@see BoardMyCardsTool} lists, and deliberately NOT the same SET — the shorthand
+ *     "exactly the population `board_my_cards` reports" was false in BOTH directions and is
+ *     corrected here rather than repeated: that tool CAPS its response by card count
+ *     (card#8985 / DL-365), so a card it did not return can still be takeable, a lane card
+ *     another user holds is takeable here and not listed there, and a card it DOES show can
+ *     be refused (a finished column). What makes the scope legible is the RULE, not the listing.
  *     ⛔ The COORD board is deliberately OUT: those cards live on a separately
  *     configured board, are addressed by TAG rather than by lane, and reaching them would
  *     put a write on a second board this door has never written to. Narrow first; widening
@@ -219,7 +221,7 @@ final class BoardTakeCardTool implements Tool
         $userId = SeatKanbanUser::forCallingSeat($this->name());
 
         $boardId = (int) $cfg->boardId;
-        [$row, $lane] = $this->takeableRow($client, $cfg, $boardId, $cardId, $agentName);
+        [$row, $lane, $inScopeBy] = $this->takeableRow($client, $cfg, $boardId, $cardId, $userId, $agentName);
         $holder = $this->currentHolder($row, $cardId, $boardId, $agentName);
 
         $result = [
@@ -228,9 +230,11 @@ final class BoardTakeCardTool implements Tool
             // OBSERVED, not restated: the row was accepted only because its OWN `board_id`
             // and `swimlane_id` carried these values, so on any call that reaches here the
             // reading and the configured scope are the same number — a divergence is a
-            // refusal, not a response.
+            // refusal, not a response. A card in scope because it is ASSIGNED to this seat
+            // reports the lane it is in, which may be none (null).
             'board_id' => $boardId,
             'swimlane_id' => $lane,
+            'in_scope_by' => $inScopeBy,
             'assigned_user_id' => $userId,
             'already_held' => $holder === $userId,
         ];
@@ -476,17 +480,8 @@ final class BoardTakeCardTool implements Tool
         }
 
         $mappings = $writeback?->mappingsOnBoard($boardId) ?? [];
-        $stages = [];
-        $from = [];
-        foreach ($mappings as $mapping) {
-            $stage = $mapping->stageFor('started');
-            if ($stage === null) {
-                continue;
-            }
-            $stages[] = $stage;
-            array_push($from, ...($mapping->startedFromStages ?? []));
-        }
-        $stages = array_values(array_unique($stages));
+        $start = StartColumns::of($mappings);
+        $stages = $start->stages;
 
         if ($stages === []) {
             throw new ToolRefusalException("board_take_card: no writeback.json mapping on board {$boardId} maps `started` (the In Progress column), so the bridge does not know where a start moves card {$cardId} — NOTHING WAS WRITTEN. This is an INSTALL fault: map `stages.started` for this board (docs/writeback.md), and report it to your operator. A take without `start` claims the card without moving it.", installFault: true, reason: 'install_fault.start_unmapped');
@@ -495,7 +490,7 @@ final class BoardTakeCardTool implements Tool
             throw new ToolRefusalException("board_take_card: the writeback.json mappings on board {$boardId} map `started` to DIFFERENT columns (".implode(', ', $stages).'), so which one is In Progress cannot be told — NOTHING WAS WRITTEN. This is an INSTALL fault; report it to your operator.', installFault: true, reason: 'install_fault.start_ambiguous');
         }
 
-        return ['stage' => $stages[0], 'from' => array_values(array_unique($from)), 'mappings' => $mappings];
+        return ['stage' => $stages[0], 'from' => $start->from, 'mappings' => $mappings];
     }
 
     /**
@@ -762,9 +757,14 @@ final class BoardTakeCardTool implements Tool
      * seat that a card sitting in its own lane is out of scope, which is a false statement
      * made by a guard.
      *
-     * @return array{0: array<string, mixed>, 1: int} the row, and the lane it was accepted in
+     * ⭐ OR ASSIGNED TO THIS SEAT (card#11267): a card this seat already holds is its own wherever it
+     * sits — a topic lane, or no lane — so it is in scope by its assignee ({@see SeatCardScope}). The
+     * lane rule is unchanged for everything else, the takeover of a card another user holds in a
+     * lane this seat works included.
+     *
+     * @return array{0: array<string, mixed>, 1: ?int, 2: 'lane'|'assigned'} the row, the lane it is in, and which rule put it in scope
      */
-    private function takeableRow(KanbanClient $client, BoardToolsConfig $cfg, int $boardId, int $cardId, string $agentName): array
+    private function takeableRow(KanbanClient $client, BoardToolsConfig $cfg, int $boardId, int $cardId, int $userId, string $agentName): array
     {
         try {
             $found = BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName);
@@ -775,24 +775,26 @@ final class BoardTakeCardTool implements Tool
         if ($found->live !== null) {
             $row = $found->live;
             $lane = $this->workableLane($row, $cfg);
-            if ($lane === null) {
-                Log::warning('board_take_card: refused — the card is on the agent\'s board but not in a lane it works', [
-                    'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
-                    'row_swimlane' => is_scalar($row['swimlane_id'] ?? null) ? $row['swimlane_id'] : null,
-                ]);
-
-                throw new ToolRefusalException($this->outOfScopeMessage($cardId, $boardId, $cfg), reason: 'out_of_scope');
+            if ($lane !== null) {
+                return [$row, $lane, 'lane'];
             }
+            if (SeatCardScope::isAssignedTo($row, $userId)) {
+                return [$row, is_numeric($row['swimlane_id'] ?? null) ? (int) $row['swimlane_id'] : null, 'assigned'];
+            }
+            Log::warning('board_take_card: refused — the card is on the agent\'s board but neither in a lane it works nor assigned to it', [
+                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
+                'row_swimlane' => is_scalar($row['swimlane_id'] ?? null) ? $row['swimlane_id'] : null,
+            ]);
 
-            return [$row, $lane];
+            throw new ToolRefusalException($this->outOfScopeMessage($cardId, $boardId, $cfg), reason: 'out_of_scope');
         }
 
         $retired = $found->archived;
-        if ($retired !== null && $this->workableLane($retired, $cfg) !== null) {
+        if ($retired !== null && ($this->workableLane($retired, $cfg) !== null || SeatCardScope::isAssignedTo($retired, $userId))) {
             throw new ToolRefusalException("board_take_card: card {$cardId} is ARCHIVED — an archived card is a deliberate retire, so there is no work on it to claim and nothing was written. Unarchive it if the work is live again.", reason: 'archived');
         }
 
-        Log::warning('board_take_card: refused — no card with this id is in a lane this agent works', [
+        Log::warning('board_take_card: refused — no card with this id is in a lane this agent works or assigned to it', [
             'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
         ]);
 
@@ -840,7 +842,7 @@ final class BoardTakeCardTool implements Tool
     {
         $lanes = implode(', ', array_map(static fn (int $lane): string => (string) $lane, $this->workableLanes($cfg)));
 
-        return "board_take_card: card {$cardId} is not one you can take — this tool claims only cards on your own board {$boardId} and in a lane you work (swimlane ".$lanes.').'.$this->coordClause($cfg).' Nothing was written. ⚠ A board the bridge\'s writeback token is not a MEMBER of answers exactly the same way: kanban\'s search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe this card is in your lane, have your operator check that token\'s membership of board '.$boardId.'. Use `board_my_cards` to see the cards you can take.';
+        return "board_take_card: card {$cardId} is not one you can take — this tool claims only cards on your own board {$boardId} that are in a lane you work (swimlane ".$lanes.') or already assigned to you.'.$this->coordClause($cfg).' Nothing was written. ⚠ A board the bridge\'s writeback token is not a MEMBER of answers exactly the same way: kanban\'s search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe this card is in your lane, have your operator check that token\'s membership of board '.$boardId.'. Use `board_my_cards` to see the cards you can take.';
     }
 
     /**

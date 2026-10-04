@@ -8,6 +8,7 @@ use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -103,6 +104,7 @@ final class BoardCreateCardTool implements Tool
         $description = $this->optionalDescription($args);
         $callerTags = CallerTagPolicy::sanitize($args, $this->name());
         $idemKey = $this->validateIdempotencyKey($args, $agentName);
+        $scope = SeatCardScope::forCallingSeat($this->name());
 
         $boardId = (int) $cfg->boardId;
         $tags = $callerTags;
@@ -197,7 +199,41 @@ final class BoardCreateCardTool implements Tool
         }
 
         return ['created' => true, 'idempotent_hit' => false, 'card_id' => $newId]
-            + $this->placement($client, $cfg, $newId, $agentName, 'created');
+            + $this->placement($client, $cfg, $newId, $agentName, 'created')
+            + $this->assignAtBirth($client, $scope, $newId, $agentName);
+    }
+
+    /**
+     * The card this call created is assigned to the seat that created it (card#11267, DL-459), so it
+     * is born with an owner — the id is the roster's for the sealed seat ({@see SeatCardScope}), never
+     * a value from the arguments, exactly as `board_take_card` writes it.
+     *
+     * ⚠ A SEPARATE WRITE AFTER THE CREATE, AND IT NEVER UNDOES IT. Sent inside the create, a seat whose
+     * kanban user is not a board member would have the whole create refused (kanban refuses an
+     * assignee who is not a member) — a card this tool used to create, no longer created. So the
+     * card is created exactly as before and the assignee is written after it; a refused or failed
+     * write leaves the card unassigned, as every card was before this, and the response says why.
+     * After the idempotency collapse, so it is the SURVIVING card that is assigned.
+     *
+     * @return array{assigned_user_id: ?int, assignee_unset_reason: ?string}
+     */
+    private function assignAtBirth(KanbanClient $client, SeatCardScope $scope, int $cardId, string $agentName): array
+    {
+        if ($scope->kanbanUserId === null) {
+            return ['assigned_user_id' => null, 'assignee_unset_reason' => $scope->assigneeArm === SeatCardScope::ARM_NO_KANBAN_USER ? SeatCardScope::ARM_NO_KANBAN_USER : $scope->unavailableReason];
+        }
+
+        try {
+            $client->patchCard($cardId, ['assigned_user_id' => $scope->kanbanUserId]);
+        } catch (RequestException|ConnectionException $e) {
+            Log::warning('board_create_card: the card was created, but assigning it to the creating seat failed — it is left unassigned', [
+                'agent' => $agentName, 'card_id' => $cardId, 'assigned_user_id' => $scope->kanbanUserId, 'error' => RedactedErrorText::of($e),
+            ]);
+
+            return ['assigned_user_id' => null, 'assignee_unset_reason' => 'assign_failed'];
+        }
+
+        return ['assigned_user_id' => $scope->kanbanUserId, 'assignee_unset_reason' => null];
     }
 
     public function name(): string
