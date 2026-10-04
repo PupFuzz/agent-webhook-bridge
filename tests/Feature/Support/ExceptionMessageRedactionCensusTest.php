@@ -131,6 +131,8 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Support/ClassifierResolver.php::(file scope)#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Support/CoordConfigFile.php::read#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Support/CoordConfigFile.php::read#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Support/CoordCredentialStore.php::at#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Support/CoordCredentialStore.php::at#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Support/RedactedErrorText.php::of#1' => 'the primitive\'s own non-RequestException branch — the one read that is the redaction, not a relay of it',
         'Bridge/Support/TokenFile.php::readTrimmed#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardCorrectCardTool.php::installHoldTags#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,

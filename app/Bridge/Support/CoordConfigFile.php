@@ -121,15 +121,9 @@ final class CoordConfigFile
                 ? new self($path, self::ABSENT, "there is no file at {$path}")
                 : new self($path, self::UNREADABLE, "a directory above {$path} is not traversable by this OS user, so whether the file exists was not measured");
         }
-        $type = $stat['mode'] & 0o170000;
-        if ($type === 0o120000) {
-            return new self($path, self::NOT_A_FILE, 'it is a symlink, which is refused — point the setting at the file itself');
-        }
-        if ($type !== 0o100000) {
-            return new self($path, self::NOT_A_FILE, 'it is not a regular file (a directory, FIFO, socket or device)');
-        }
-        if ($stat['size'] > UntrustedPathContents::MAX_BYTES) {
-            return new self($path, self::NOT_A_FILE, "it is {$stat['size']} bytes, past the ".UntrustedPathContents::MAX_BYTES.'-byte bound the reader will read');
+        $refusal = UntrustedPathContents::lstatRefusal($stat);
+        if ($refusal !== null) {
+            return new self($path, self::NOT_A_FILE, $refusal);
         }
 
         try {

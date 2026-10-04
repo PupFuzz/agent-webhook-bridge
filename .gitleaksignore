@@ -6,3 +6,15 @@
 # The commit stays in the PR's history (no force-push), so its finding is suppressed here by its
 # exact fingerprint.
 dffa0c3ac1fb9fd1c4c6b2dbdc9a3f9e46d862a3:examples/channel-servers/tests/bridge-board-call.test.mjs:generic-api-key:440
+
+# card#11208 (PR #856): the synthetic pasted-token fixture of the "a token-shaped store name is never
+# printed" tests, a deliberately fake `ghp_`-prefixed literal that authenticates as nothing, committed
+# in 5d9203c7 and replaced in the next commits by a value one shared helper
+# (tests/Support/PastedTokenFixture.php) assembles at runtime, so no committed line matches the rule
+# at HEAD. The commit stays in the PR's history (no force-push), so its five findings are suppressed
+# here by their exact fingerprints.
+5d9203c787515b5ba065199cfff759d02347dc19:tests/Feature/Console/BridgeCommandsTest.php:github-pat:783
+5d9203c787515b5ba065199cfff759d02347dc19:tests/Feature/Handlers/KanbanPromoteReleasedHandlerTest.php:github-pat:158
+5d9203c787515b5ba065199cfff759d02347dc19:tests/Feature/Writeback/ProtocolInvalidLabelTest.php:github-pat:316
+5d9203c787515b5ba065199cfff759d02347dc19:tests/Feature/Writeback/GitHubTokenResolverTest.php:github-pat:368
+5d9203c787515b5ba065199cfff759d02347dc19:tests/Feature/Writeback/TwoOwnerTokenControlTest.php:github-pat:105

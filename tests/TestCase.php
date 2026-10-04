@@ -119,6 +119,11 @@ abstract class TestCase extends BaseTestCase
             // Forced, not defaulted: a dev .env's real kanban host would key every fixture
             // roster under a host the tests never wrote — the BRIDGE_INBOX_LAYOUT leak above.
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            // Every GitHub token resolution reads the coord credential store (DL-456), and its
+            // default sits beside the roster — so a test that has not chosen one must name a
+            // store that is ABSENT (an empty store), never the operator's. A test about the
+            // store writes its own (`Tests\Support\CoordCredentialStoreFixture`).
+            'bridge.coord_credentials_path' => self::NO_INSTALL_DIR.'/credentials.ini',
         ]);
     }
 

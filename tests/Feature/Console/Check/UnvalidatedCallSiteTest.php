@@ -400,15 +400,16 @@ class UnvalidatedCallSiteTest extends TestCase
         'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 2,
         // card#11201, one per arm: the token file is there and THIS process could not read it
         // (limb 2 — the receiver runs as its own user); writeback.json did not load, so which
-        // legs need the file was not determined (limb a — two sites: no file resolves, and one
-        // does); GitHub answered a status that says nothing about the token, or did not answer
+        // legs need the file was not determined (limb a — two sites: with no leg switched on, and
+        // with one); a source that outranks the file could not be read by this process, so which
+        // file applies was not determined (limb 2, card#11208 / DL-456); GitHub answered a status that says nothing about the token, or did not answer
         // (limb a, two sites); the token carries no X-OAuth-Scopes, or an empty one without a
         // classic prefix, so its write access is UNMEASURED (limb 2 — no read reports it); an
         // answer that would pass, where the receiver's user may not read the file (limb 2 — the
         // receiver runs as its own user, PR #854 r1); the owed-writes record could not be read,
         // so the drops were not counted (limb a). The absent-but-unseeable arms go through
         // `PathVisibility` and are counted there.
-        'app/Bridge/Check/Checks/GitHubTokenFileCheck.php' => 8,
+        'app/Bridge/Check/Checks/GitHubTokenFileCheck.php' => 9,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

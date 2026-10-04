@@ -52,11 +52,10 @@ class ReconcileRepoTokensCheckTest extends TestCase
         $this->dir = sys_get_temp_dir().'/reconcile-tokens-check-'.uniqid();
         File::ensureDirectoryExists($this->dir);
         config([
-            // No conventional token file and no store helper on this host, so the token
-            // resolves deterministically from GH_TOKEN (source label 'GH_TOKEN').
+            // No conventional token file and no store (the base TestCase names an absent one),
+            // so the token resolves deterministically from GH_TOKEN (source label 'GH_TOKEN').
             'bridge.secret_dir' => $this->dir,
             'bridge.providers.github.token_path' => null,
-            'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
         ]);
 
         $this->origGhToken = getenv('GH_TOKEN');
@@ -70,7 +69,7 @@ class ReconcileRepoTokensCheckTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_a_401_names_the_shadowing_token_file_as_the_common_upgrade_cause(): void
+    public function test_a_401_names_the_source_to_fix(): void
     {
         Http::fake(['https://api.github.com/*' => Http::response([], 401)]);
 
@@ -83,7 +82,7 @@ class ReconcileRepoTokensCheckTest extends TestCase
             $findings[0]['message'],
         );
         $this->assertStringContainsString('bridge:reconcile will SKIP this repo', $findings[0]['message']);
-        $this->assertStringContainsString('it SHADOWS the [git-credential-map] store', $findings[0]['message']);
+        $this->assertStringContainsString('Fix or replace the token at that source', $findings[0]['message']);
     }
 
     /**

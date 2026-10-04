@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
+use App\Bridge\Support\CoordCredentialStore;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\ProcessIdentity;
@@ -19,15 +20,25 @@ use App\Bridge\Writeback\PrCorrelationCommenter;
 use App\Bridge\Writeback\ProtocolInvalidLabeler;
 use App\Bridge\Writeback\TokenFileFault;
 use App\Bridge\Writeback\TokenResolution;
+use App\Bridge\Writeback\TokenSource;
 use Illuminate\Http\Client\RequestException;
 use Throwable;
 
 /**
- * Can the legs that reach GitHub with ONLY the placed token file actually do so? (card#11201)
+ * Can the legs that reach GitHub with ONLY a token file actually do so — per repo, with the file
+ * each repo resolves? (card#11201, card#11208)
  *
- * ⭐ THE GAP THIS CLOSES. Three runtime legs resolve their GitHub token from
- * `<secret_dir>/github/token` (or `providers.github.token_path`) and from nothing else: under
- * PHP-FPM `GH_TOKEN` is absent and the credential-store helper is CLI-only (DL-184). With no
+ * ⭐ PER REPO, BY SOURCE (DL-456). Each switched-on leg's repos are resolved as the receiver
+ * resolves them ({@see GitHubTokenResolver::resolveFor()}, never `GH_TOKEN`): the repo's
+ * `write_token_path`, else the file the coord credential store names for it, else the single file.
+ * Repos that resolve the SAME source share one finding (and one GitHub read), which names the
+ * source, the file, and every leg and repo it serves; a repo whose source fails gets the finding
+ * its problem earns. A store the bridge cannot parse, or that is outside the shape it reads, is
+ * one named finding over every repo it blocks — it may map them, so the single file never stands
+ * in, and the finding fails rather than passing a token the receiver would not use.
+ *
+ * ⭐ THE GAP THIS CLOSES. The runtime legs resolve their GitHub token from a file and from nothing
+ * else — under PHP-FPM `GH_TOKEN` is absent (DL-184), and the receiver never asks for it. With no
  * usable file each one drops what it decided and logs it — nothing retries on its own, and the
  * delivery's answer does not move. The one leg that probed the file used to sit inside
  * `promote_on_release` in `WritebackMappingConfigCheck`, so an install with that switch off was
@@ -104,6 +115,11 @@ final class GitHubTokenFileCheck implements Check
      */
     public function run(CheckContext $ctx): iterable
     {
+        if (config('bridge.providers.github.credential_helper') !== null) {
+            yield Finding::warn('github token file: BRIDGE_GITHUB_CREDENTIAL_HELPER is set and has NO effect — nothing runs the credential helper since DL-456, and the coord credential store is read in-process for every repo it maps (an empty value no longer keeps it out). '
+                .'Remove it; a repo that must not use its store key declares a write_token_path in writeback.json.');
+        }
+
         /** @var array<string, array{repos: list<string>, writes: bool}> $enabled */
         $enabled = [];
         foreach (self::CONSUMERS as $consumer) {
@@ -113,60 +129,91 @@ final class GitHubTokenFileCheck implements Check
             }
         }
 
-        $resolver = new GitHubTokenResolver;
-        $resolution = $resolver->resolveFromFile();
-        $path = $resolver->tokenPath();
+        $resolver = $ctx->writebackUnread
+            ? GitHubTokenResolver::forUnreadWriteback('see the error above')
+            : GitHubTokenResolver::forWriteback($ctx->writeback);
 
-        if (! $resolution->ok()) {
-            if ($enabled !== []) {
-                yield $this->unresolved($resolution, $path, $enabled);
-            }
+        if ($enabled === []) {
             if ($ctx->writebackUnread) {
-                yield Finding::unvalidated("github token file: {$resolution->problem}, and writeback.json did not load (see the error above), so whether a leg switched on by writeback.json needs this file on this install was NOT determined. Fix writeback.json and re-run bridge:check.");
+                $single = $resolver->resolveFromFile();
+                yield Finding::unvalidated($single->ok()
+                    ? "github token file: a token file resolves ({$single->source}), and writeback.json did not load (see the error above), so whether a leg switched on by writeback.json needs it — and whether it can serve that leg — was NOT determined. Fix writeback.json and re-run bridge:check."
+                    : "github token file: {$single->problem}, and writeback.json did not load (see the error above), so whether a leg switched on by writeback.json needs this file on this install was NOT determined. Fix writeback.json and re-run bridge:check.");
             }
-            yield from $this->dropsOwed($enabled);
-            yield Silence::because('no token file resolves, and no leg that needs one is switched on — nothing on this install would reach GitHub with it');
+            yield Silence::because('no leg that reaches GitHub with a token file is switched on — nothing on this install would put one to use');
 
             return;
         }
 
-        if ($enabled !== []) {
-            yield $this->usability($resolution, $path, $enabled);
+        foreach (self::bySource($resolver, $enabled) as [$resolution, $legs]) {
+            yield $resolution->ok() ? $this->usability($resolution, (string) $resolution->path, $legs) : $this->unresolved($resolution, $legs);
         }
         if ($ctx->writebackUnread) {
-            yield Finding::unvalidated("github token file: a token file resolves ({$resolution->source}), and writeback.json did not load (see the error above), so whether a leg switched on by writeback.json needs it — and whether it can serve that leg — was NOT determined. Fix writeback.json and re-run bridge:check.");
-        }
-        if ($enabled === []) {
-            yield Silence::because('a token file resolves and no leg that uses it is switched on, so there is nothing to put it to');
-
-            return;
+            yield Finding::unvalidated('github token file: writeback.json did not load (see the error above), so whether a leg switched on by writeback.json needs a token file on this install — and which file each of its repos would use — was NOT determined. Fix writeback.json and re-run bridge:check.');
         }
 
         yield from $this->dropsOwed($enabled);
     }
 
     /**
-     * No token file resolved and at least one leg needs it.
+     * Each switched-on repo resolved as the receiver resolves it, grouped by the outcome: repos that
+     * share a source share one finding and one GitHub read, and a problem is grouped by its text,
+     * which names the repo wherever the repo's own source failed.
+     *
+     * @param  array<string, array{repos: list<string>, writes: bool}>  $enabled
+     * @return list<array{0: TokenResolution, 1: array<string, array{repos: list<string>, writes: bool}>}>
+     */
+    private static function bySource(GitHubTokenResolver $resolver, array $enabled): array
+    {
+        $groups = [];
+        foreach ($enabled as $leg => $declared) {
+            foreach ($declared['repos'] as $repo) {
+                $resolution = $resolver->resolveFor($repo);
+                $key = serialize([$resolution->ok(), $resolution->ok() ? $resolution->source : $resolution->problem]);
+                $groups[$key] ??= [$resolution, []];
+                $groups[$key][1][$leg] ??= ['repos' => [], 'writes' => $declared['writes']];
+                $groups[$key][1][$leg]['repos'][] = $repo;
+            }
+        }
+
+        return array_values($groups);
+    }
+
+    /**
+     * No token resolved for these repos and at least one leg needs it.
      *
      * @param  array<string, array{repos: list<string>, writes: bool}>  $enabled
      */
-    private function unresolved(TokenResolution $resolution, string $path, array $enabled): Finding
+    private function unresolved(TokenResolution $resolution, array $enabled): Finding
     {
         $legs = self::describe($enabled);
+        $path = $resolution->path;
+        $shown = CoordCredentialStore::displayPathSetting((string) $path);
         if ($resolution->fileFault === TokenFileFault::Unreadable) {
             return Finding::unvalidated("github token file: {$resolution->problem} — THIS process could not read it, which says nothing about the user the receiver runs as, so whether {$legs} can reach GitHub was NOT determined. Re-run bridge:check as the receiver's user.");
         }
-        if ($resolution->fileFault === TokenFileFault::Absent) {
-            $unseen = PathVisibility::unverifiedUnlessVisible($path, "github token file at {$path}");
+        if ($resolution->fileFault === TokenFileFault::Undetermined) {
+            return Finding::unvalidated("github token file: {$resolution->problem} — so whether {$legs} can reach GitHub was NOT determined.");
+        }
+        if ($resolution->fileFault === TokenFileFault::Absent && $path !== null) {
+            $unseen = PathVisibility::unverifiedUnlessVisible($path, "github token file at {$shown}");
             if ($unseen !== null) {
                 return $unseen;
             }
         }
 
         $writing = self::writing($enabled);
-        $writeClause = $writing === [] ? '' : ' with Issues and Pull requests WRITE for '.self::describe($writing).', then run `php artisan bridge:github-owed --fix` to make the comments and labels already owed';
+        $scope = $writing === [] ? '' : ' with Issues and Pull requests WRITE for '.self::describe($writing);
+        $owed = $writing === [] ? '' : ', then run `php artisan bridge:github-owed --fix` to make the comments and labels already owed';
+        $inert = "so they are INERT on this install: {$legs}. Each GitHub request they decide is dropped and logged, and nothing retries it on its own.";
+        $remedy = match (true) {
+            $resolution->sourceKind === TokenSource::TokenFile => "No write_token_path and no coord credential store entry covers these repos, so they fall back to the single token file. These legs reach GitHub with this file and nothing else, {$inert} Place a token{$scope} at {$shown} (chmod 600, owned by the user the receiver runs as), or map the repos in the coord credential store{$owed}.",
+            $resolution->sourceKind === TokenSource::WriteTokenPath => "These legs reach GitHub with this file and nothing else, {$inert} Place a token{$scope} at {$shown} (chmod 600, owned by the user the receiver runs as), or remove the repo's write_token_path from writeback.json{$owed}.",
+            $resolution->fileFault === TokenFileFault::Misconfigured => "The single token file does not stand in for a repo the store may map; these legs reach GitHub with no token, {$inert} Fix what is named above{$owed}.",
+            default => "The single token file does not stand in for a repo the store maps; these legs reach GitHub with no token, {$inert} Place the token{$scope} at {$shown} (chmod 600, owned by the store's owner, who must be the user the receiver runs as), or correct the pointer in the coord credential store{$owed}.",
+        };
 
-        return Finding::fail("github token file: {$resolution->problem}. These legs reach GitHub with this file and nothing else, so they are INERT on this install: {$legs}. Each GitHub request they decide is dropped and logged, and nothing retries it on its own. Place a token at {$path} (chmod 600, owned by the user the receiver runs as){$writeClause}.");
+        return Finding::fail("github token file: {$resolution->problem}. {$remedy}");
     }
 
     /**
@@ -273,13 +320,14 @@ final class GitHubTokenFileCheck implements Check
         $name = fn (int $uid): string => $identity->accountName($uid) ?? "uid {$uid}";
         $measure = "Run `sudo -u <pool user> php artisan bridge:check` to measure the receiver's PHP-FPM pool user.";
         $tokenOwner = $identity->ownerOf($path);
+        $shown = CoordCredentialStore::displayPathSetting($path);
         $euid = $identity->euid();
 
         if ($tokenOwner === 0) {
-            return [false, "{$path} is owned by root, which the receiver never runs as, and a token file is readable by its owner alone — so the receiver cannot read it: chown it to the user the receiver runs as. {$measure}"];
+            return [false, "{$shown} is owned by root, which the receiver never runs as, and a token file is readable by its owner alone — so the receiver cannot read it: chown it to the user the receiver runs as. {$measure}"];
         }
         if ($tokenOwner === null) {
-            return [false, "this run could not read the owner of {$path}, so whether the receiver's user owns it was NOT measured. {$measure}"];
+            return [false, "this run could not read the owner of {$shown}, so whether the receiver's user owns it was NOT measured. {$measure}"];
         }
         $stateDir = dirname(GitHubWriteDebt::path());
         if (! PathVisibility::ancestorIsTraversable(GitHubWriteDebt::path())) {
@@ -295,7 +343,7 @@ final class GitHubTokenFileCheck implements Check
         if ($kind === 'evidence' && $owner !== $tokenOwner) {
             /** @var string $file */
             /** @var int $owner */
-            return [false, "{$path} is owned by {$name($tokenOwner)}, but {$file} — in a state dir only {$name($owner)} can write, where the receiver must write — is owned by {$name($owner)}, and a token file is readable by its owner alone, so the receiver most likely cannot read it: chown it to {$name($owner)} if that is the user the receiver runs as. {$measure}"];
+            return [false, "{$shown} is owned by {$name($tokenOwner)}, but {$file} — in a state dir only {$name($owner)} can write, where the receiver must write — is owned by {$name($owner)}, and a token file is readable by its owner alone, so the receiver most likely cannot read it: chown it to {$name($owner)} if that is the user the receiver runs as. {$measure}"];
         }
         if ($euid === 0) {
             return [false, "this run is root, which reads any file, so its read says nothing about the user the receiver runs as. {$measure}"];

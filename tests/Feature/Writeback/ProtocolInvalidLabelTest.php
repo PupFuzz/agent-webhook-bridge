@@ -7,10 +7,14 @@ use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Writeback\PrCorrelationComment;
 use App\Models\AgentDispatch;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
+use Tests\Support\CoordCredentialStoreFixture;
+use Tests\Support\PastedTokenFixture;
 use Tests\Support\UnattributableCommentHarness;
 use Tests\TestCase;
 
@@ -307,6 +311,45 @@ class ProtocolInvalidLabelTest extends TestCase
         File::delete($this->dir.'/github/token');
         $this->assertFailureLeavesRoutingAlone(null, 'token_unresolved');
         $this->assertSame([], $this->github);
+    }
+
+    /**
+     * Where a pasted token can sit: the store's map value (round 1), or a path setting the store or
+     * the single file is read from (round 2) — every one must reach no log line.
+     *
+     * @return array<string, array{0: callable(CoordCredentialStoreFixture, string): void}>
+     */
+    public static function pastedTokenPlaces(): array
+    {
+        return [
+            'the store map value' => [fn ($s, $t) => $s->write(['github.com/acme' => $t], [])],
+            'BRIDGE_COORD_CREDENTIALS_PATH' => [fn ($s, $t) => config(['bridge.coord_credentials_path' => $t])],
+            'BRIDGE_GITHUB_TOKEN_PATH' => [function ($s, $t): void {
+                $s->write([], []);
+                config(['bridge.providers.github.token_path' => $t]);
+            }],
+        ];
+    }
+
+    /** @param  callable(CoordCredentialStoreFixture, string): void  $arrange */
+    #[DataProvider('pastedTokenPlaces')]
+    public function test_a_pasted_token_is_in_no_log_line_and_no_push(callable $arrange): void
+    {
+        $pasted = PastedTokenFixture::value();
+        $arrange((new CoordCredentialStoreFixture($this->dir.'/coord'))->use(), $pasted);
+        $this->fakePeers();
+        $logged = [];
+        Log::listen(function (MessageLogged $e) use (&$logged): void {
+            $logged[] = $e->message.' '.json_encode($e->context);
+        });
+
+        $this->dispatch('d1', $this->comment('created', 'no from line here'));
+
+        $this->assertSame([], $this->github);
+        foreach ([...$logged, ...$this->pushes] as $line) {
+            $this->assertStringNotContainsString($pasted, $line);
+        }
+        $this->assertNotEmpty(array_filter($logged, fn (string $line) => str_starts_with($line, 'protocol_invalid_label: NOT applied') && str_contains($line, 'credential-shaped')), 'the witness: the drop is logged, with the elided name');
     }
 
     public function test_a_403_is_logged_with_its_status_and_not_retried(): void
