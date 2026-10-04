@@ -19,12 +19,13 @@ use Tests\TestCase;
  *  - a CARRIER: a variable, optionally followed by `->property` steps, that holds a setting's value
  *    as read:
  *      - a PROPERTY named `path`, or the camelCase of a `…path` / `socket` key the readers
- *        ({@see self::KEY_READERS}) read ({@see self::globalProperties()}), or a `->tokenPath(…)`
+ *        ({@see self::KEY_READERS}) read as `['key']` or `array_key_exists('key', …)`
+ *        ({@see self::globalProperties()}), or a `->tokenPath(…)`
  *        call ({@see self::GLOBAL_METHODS}), in every file;
  *      - `$x['key']` for such a key, in every file;
- *      - inside the readers, a LOCAL assigned (`$a = …`) from `$x['key']` / `array_key_exists('key', …)`
- *        or from an expression naming one of those locals, in the function it is in
- *        ({@see self::localCarriers()}), unless the right-hand side is a `displayPathSetting(…)` call;
+ *      - inside the readers, a LOCAL assigned (`$a = …`) from `$x['key']` or from an expression
+ *        naming one of those locals, in the function it is in ({@see self::localCarriers()}),
+ *        unless the WHOLE right-hand side is one `displayPathSetting(…)` call;
  *      - the per-file locals and parameters in {@see self::CARRIERS}, and the `.env` settings in
  *        {@see self::SETTINGS}, named by hand;
  *  - in MESSAGE POSITION: inside an interpolated string or heredoc, an operand of `.` or `.=`, the
@@ -174,6 +175,15 @@ class PathSettingDisplayCensusTest extends TestCase
                 $p = "at $path now";
                 $q = "at {$cfg['token_path']}";
                 $r = sprintf('%s', $x['socket']);
+                $u .= $path;
+                $v = $path.' is bad';
+                $w = <<<EOT
+                    at $path
+                    EOT;
+                $x1 = implode(',', $path);
+                $x2 = join(',', $path);
+                throw UnreadableFileException::permissionsFault($path, 'r');
+                $y = "at {$file->path}";
             }
             PHP;
         $wrapped = <<<'PHP'
@@ -187,12 +197,22 @@ class PathSettingDisplayCensusTest extends TestCase
                 $q = 'at '.PastedSecretShape::displayPathSetting($cfg['token_path']);
                 $r = sprintf('%s', PastedSecretShape::displayPathSetting($x['socket']));
                 $t = $cfg['token_path'] ?? null;
+                $u .= PastedSecretShape::displayPathSetting($path);
+                $v = PastedSecretShape::displayPathSetting($path).' is bad';
+                $w = <<<EOT
+                    at {$shown}
+                    EOT;
+                $z = $path;
+                $x1 = implode(',', PastedSecretShape::displayPathSetting($path));
+                $x2 = join(',', PastedSecretShape::displayPathSetting($path));
+                throw UnreadableFileException::permissionsFault(PastedSecretShape::displayPathSetting($path), 'r');
+                $y = 'at '.PastedSecretShape::displayPathSetting($file->path);
             }
             PHP;
 
         $at = fn (array $tokens, int $i, int $scopeStart): ?string => self::siteAt($tokens, $i, $scopeStart, ['$path']);
 
-        $this->assertCount(8, SourceScan::sites($raw, 'fixture.php', $at));
+        $this->assertCount(15, SourceScan::sites($raw, 'fixture.php', $at));
         $this->assertSame([], SourceScan::sites($wrapped, 'fixture.php', $at));
     }
 
@@ -207,6 +227,8 @@ class PathSettingDisplayCensusTest extends TestCase
         foreach (['token_path', 'write_token_path', 'socket', 'server_path'] as $known) {
             $this->assertContains($known, $keys, "the derivation no longer finds {$known} in the config readers");
         }
+
+        $this->assertSame(['scratch_ake_path'], self::derivedKeys(['f' => "<?php if (array_key_exists('scratch_ake_path', \$m)) {}"]), 'the array_key_exists alternative of the key derivation');
 
         $scratch = self::readerSources();
         $scratch['Bridge/Support/AgentConfig.php'] .= "\n\$x = \$channel['scratch_new_path'] ?? null;\n";
@@ -272,6 +294,10 @@ class PathSettingDisplayCensusTest extends TestCase
         $shown = str_replace($anchor, $anchor."        \$shown = PastedSecretShape::displayPathSetting(\$channel['log_path'] ?? '');\n        throw new ConfigException(\"channel.log_path {\$shown} is bad\");\n", $sources[$file]);
         $this->assertSame([], self::sitesIn($shown, $file, self::derivedKeys(array_merge($sources, [$file => $shown]))), 'a local holding the displayPathSetting() form is not a carrier');
 
+        // Only the WHOLE right-hand side being the display call exempts: `display(\$x) ?: \$x` is raw.
+        $elvis = str_replace($anchor, $anchor."        \$m = PastedSecretShape::displayPathSetting(\$channel['log_path'] ?? '') ?: \$channel['log_path'];\n        throw new ConfigException(\"channel.log_path {\$m} is bad\");\n", $sources[$file]);
+        $this->assertNotSame([], self::sitesIn($elvis, $file, self::derivedKeys(array_merge($sources, [$file => $elvis]))), 'a display call that is only part of the right-hand side must not exempt the local');
+
         // A copy that is only compared, never printed, is not a site.
         $quiet = str_replace($anchor, $anchor."        \$logPath = \$channel['log_path'] ?? null;\n        \$present = \$logPath !== null;\n", $sources[$file]);
         $this->assertSame([], self::sitesIn($quiet, $file, self::derivedKeys(array_merge($sources, [$file => $quiet]))));
@@ -331,8 +357,7 @@ class PathSettingDisplayCensusTest extends TestCase
 
     /**
      * In a reader, the locals that hold a derived key's value at $upTo, within the function that
-     * began at $scopeStart: a local assigned from a read of a derived key (`$v = $x['key']`,
-     * `array_key_exists('key', …)`), and a local assigned from an expression naming one already
+     * began at $scopeStart: a local assigned from a read of a derived key (`$v = $x['key']`), and a local assigned from an expression naming one already
      * found (`$s = (string) $v`). Assignments only, in source order; a local that is merely
      * compared or passed is not a site until it stands in message position.
      *
@@ -352,7 +377,7 @@ class PathSettingDisplayCensusTest extends TestCase
             while (in_array($tokens[$first][0] ?? null, [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_NS_SEPARATOR, T_DOUBLE_COLON], true)) {
                 $first++;
             }
-            if (($tokens[$first][1] ?? null) === '(' && ($tokens[$first - 1][1] ?? null) === 'displayPathSetting') {
+            if (($tokens[$first][1] ?? null) === '(' && ($tokens[$first - 1][1] ?? null) === 'displayPathSetting' && ($tokens[self::matching($tokens, $first) + 1][1] ?? null) === ';') {
                 continue;
             }
             $depth = 0;
@@ -365,8 +390,7 @@ class PathSettingDisplayCensusTest extends TestCase
                 } elseif ($t[1] === ';' && $depth <= 0) {
                     break;
                 }
-                $keyRead = in_array(trim($t[1], '\'"'), $keys, true) && $t[0] === T_CONSTANT_ENCAPSED_STRING
-                    && (($tokens[$j - 1][1] ?? null) === '[' || (($tokens[$j - 1][1] ?? null) === '(' && strtolower($tokens[$j - 2][1] ?? '') === 'array_key_exists'));
+                $keyRead = in_array(trim($t[1], '\'"'), $keys, true) && $t[0] === T_CONSTANT_ENCAPSED_STRING && ($tokens[$j - 1][1] ?? null) === '[';
                 if ($keyRead || ($t[0] === T_VARIABLE && in_array($t[1], $locals, true))) {
                     $locals[] = $tokens[$k][1];
                     break;

@@ -11,11 +11,10 @@ namespace App\Bridge\Support;
  * Two uses, one shape test:
  *  - {@see displayName()} — a coord credential-store NAME (a `[git-credential-map]` value, a
  *    `[github]` key), where a token pasted as a map value then stands as the key (card#11208);
- *  - {@see displayPathSetting()} — the value of a path-valued SETTING (an `.env` path, an agent-YAML
- *    `token_path` / `channel.socket`, `writeback.json` `alert_channel.auth.token_path` / `alert_channel.socket`), where a token pasted instead of a path would otherwise be
- *    printed by every message naming the setting (card#11261). Every message that prints such a
- *    value goes through it; `Tests\Feature\Support\PathSettingDisplayCensusTest` reds on a raw one
- *    and states what it does not reach.
+ *  - {@see displayPathSetting()} — the value of a path-valued SETTING (an `.env` path or a config-file path), where a token pasted instead of a path would otherwise be
+ *    printed by every message naming the setting (card#11261). A message that prints such a
+ *    value is meant to go through it; `Tests\Feature\Support\PathSettingDisplayCensusTest` is a
+ *    tripwire for the shapes listed in its class docblock, not a completeness guarantee.
  *
  * Its own class rather than `CoordCredentialStore`'s since card#11261: the file-read primitives
  * (`SecretFile`, `ChannelToken`, `UnreadableFileException`, `UntrustedPathContents`), the checks,
