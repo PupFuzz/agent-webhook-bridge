@@ -11,16 +11,22 @@ use Tests\TestCase;
  * belongs is printed as a `sha256:` fingerprint and never as itself (card#11261, after card#11208 /
  * PR #856 applied the rule to two settings).
  *
- * THE POPULATION — exactly {@see self::siteAt()}'s predicate, over every `*.php` under `app/`:
+ * ⚠ THIS IS A TRIPWIRE FOR THE SHAPES BELOW, NOT A COMPLETENESS GUARANTEE. A token scan over PHP
+ * cannot follow every way a value moves, and each time the scan was widened a new way turned up.
+ * A green here means "none of the shapes below prints a path setting raw", not "no message does".
+ *
+ * THE SHAPES IT RECOGNISES — exactly {@see self::siteAt()}'s predicate, over every `*.php` under `app/`:
  *  - a CARRIER: a variable, optionally followed by `->property` steps, that holds a setting's value
- *    as read. {@see self::globalProperties()} and {@see self::GLOBAL_METHODS} are carriers in every
- *    file — `path`, the camelCase of every `…path` / `socket` key the YAML and `writeback.json`
- *    readers ({@see self::KEY_READERS}) read, DERIVED from them, any `$x['key']` of such a key,
- *    and any `->tokenPath(…)` call. Inside the readers, {@see self::localCarriers()} adds the
- *    locals assigned from a read of such a key or from an expression naming one of those locals,
- *    in the function they are in. {@see self::CARRIERS} names the rest per file (locals outside the
- *    readers, parameters, the `.env` settings), derived by reading where each setting in
- *    {@see self::SETTINGS} is read and following its value to the messages;
+ *    as read:
+ *      - a PROPERTY named `path`, or the camelCase of a `…path` / `socket` key the readers
+ *        ({@see self::KEY_READERS}) read ({@see self::globalProperties()}), or a `->tokenPath(…)`
+ *        call ({@see self::GLOBAL_METHODS}), in every file;
+ *      - `$x['key']` for such a key, in every file;
+ *      - inside the readers, a LOCAL assigned (`$a = …`) from `$x['key']` / `array_key_exists('key', …)`
+ *        or from an expression naming one of those locals, in the function it is in
+ *        ({@see self::localCarriers()}), unless the right-hand side is a `displayPathSetting(…)` call;
+ *      - the per-file locals and parameters in {@see self::CARRIERS}, and the `.env` settings in
+ *        {@see self::SETTINGS}, named by hand;
  *  - in MESSAGE POSITION: inside an interpolated string or heredoc, an operand of `.` or `.=`, the
  *    value after `=>` (a log context — and, since the token is the same, a `match` arm or an arrow
  *    function returning a carrier, which a ruling cannot exempt: rename the variable), or an argument of `sprintf` / `implode` / `join` /
@@ -33,10 +39,12 @@ use Tests\TestCase;
  * where its value is printed.
  *
  * ⚠ WHAT THIS DOES NOT REACH, stated so a green is not read as more:
- *  - a setting's value copied into a variable or property this class does not declare or derive —
- *    in a reader, only an ASSIGNMENT (`$a = …`) is followed, not a `foreach`, a `list()` or a
- *    by-reference argument; outside the readers, nothing is followed — or printed from a file it
- *    does not list;
+ *  - a key read through a helper that takes the key as an argument (`optionalString($block, 'x_path')`,
+ *    `idleNudgeString`), and a helper's RETURN VALUE;
+ *  - a copy by `??=`, by a chained assignment (`$a = $b = …`), by `foreach`, `list()` or a by-reference
+ *    argument, or a carrier passed on as a whole argument to another function;
+ *  - any copy outside the three readers that {@see self::CARRIERS} does not name, and anything printed
+ *    from a variable or property this class neither derives nor declares;
  *  - a path DERIVED from a directory setting (`BRIDGE_DIR`, `BRIDGE_CONFIG_DIR`,
  *    `BRIDGE_SECRET_DIR`, `BRIDGE_STATE_DIR`): see {@see self::SETTINGS} — that class is NOT closed
  *    by a display rule at all, and `docs/config-schema.md` § *A token pasted where a path belongs* says why;
@@ -48,9 +56,9 @@ class PathSettingDisplayCensusTest extends TestCase
 {
     /**
      * The readers of the YAML / `writeback.json` settings, relative to `app/`. Every key they read
-     * whose name ends in `path` or is `socket` is a path-valued setting
-     * ({@see self::derivedKeys()}) — derived, not listed, so a key added to a reader is a carrier
-     * here without anyone declaring it.
+     * whose name ends in `path` or is `socket`, read as `['key']` or `array_key_exists('key', …)`, is
+     * treated as a path-valued setting ({@see self::derivedKeys()}). A key read any other way is not
+     * found (see the class docblock).
      */
     private const KEY_READERS = ['Bridge/Support/AgentConfig.php', 'Bridge/Support/BoardToolsConfig.php', 'Bridge/Writeback/WritebackConfig.php'];
 
@@ -164,6 +172,8 @@ class PathSettingDisplayCensusTest extends TestCase
                 $n = sprintf('at %s', $path);
                 $o = "at {$agent->tokenPath($dir, 'p')}";
                 $p = "at $path now";
+                $q = "at {$cfg['token_path']}";
+                $r = sprintf('%s', $x['socket']);
             }
             PHP;
         $wrapped = <<<'PHP'
@@ -174,12 +184,15 @@ class PathSettingDisplayCensusTest extends TestCase
                 $m = 'at '.PastedSecretShape::displayPathSetting($path);
                 if (is_file($path)) { return $cfg->tokenPath; }
                 $o = PastedSecretShape::displayPathSetting($agent->tokenPath($dir, 'p'));
+                $q = 'at '.PastedSecretShape::displayPathSetting($cfg['token_path']);
+                $r = sprintf('%s', PastedSecretShape::displayPathSetting($x['socket']));
+                $t = $cfg['token_path'] ?? null;
             }
             PHP;
 
         $at = fn (array $tokens, int $i, int $scopeStart): ?string => self::siteAt($tokens, $i, $scopeStart, ['$path']);
 
-        $this->assertCount(6, SourceScan::sites($raw, 'fixture.php', $at));
+        $this->assertCount(8, SourceScan::sites($raw, 'fixture.php', $at));
         $this->assertSame([], SourceScan::sites($wrapped, 'fixture.php', $at));
     }
 
@@ -255,6 +268,10 @@ class PathSettingDisplayCensusTest extends TestCase
             $this->assertStringContainsString('resolveChannel', (string) array_key_first($sites));
         }
 
+        // The display form of a key's value is not a carrier: printing it is the rule, not a leak.
+        $shown = str_replace($anchor, $anchor."        \$shown = PastedSecretShape::displayPathSetting(\$channel['log_path'] ?? '');\n        throw new ConfigException(\"channel.log_path {\$shown} is bad\");\n", $sources[$file]);
+        $this->assertSame([], self::sitesIn($shown, $file, self::derivedKeys(array_merge($sources, [$file => $shown]))), 'a local holding the displayPathSetting() form is not a carrier');
+
         // A copy that is only compared, never printed, is not a site.
         $quiet = str_replace($anchor, $anchor."        \$logPath = \$channel['log_path'] ?? null;\n        \$present = \$logPath !== null;\n", $sources[$file]);
         $this->assertSame([], self::sitesIn($quiet, $file, self::derivedKeys(array_merge($sources, [$file => $quiet]))));
@@ -329,6 +346,13 @@ class PathSettingDisplayCensusTest extends TestCase
         $count = count($tokens);
         for ($k = $scopeStart; $k < $upTo; $k++) {
             if ($tokens[$k][0] !== T_VARIABLE || ($tokens[$k + 1][1] ?? null) !== '=' || ! in_array($tokens[$k - 1][1] ?? ';', [';', '{', '}'], true)) {
+                continue;
+            }
+            $first = $k + 2;
+            while (in_array($tokens[$first][0] ?? null, [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_NS_SEPARATOR, T_DOUBLE_COLON], true)) {
+                $first++;
+            }
+            if (($tokens[$first][1] ?? null) === '(' && ($tokens[$first - 1][1] ?? null) === 'displayPathSetting') {
                 continue;
             }
             $depth = 0;
