@@ -15,10 +15,12 @@ use Tests\TestCase;
  *  - a CARRIER: a variable, optionally followed by `->property` steps, that holds a setting's value
  *    as read. {@see self::globalProperties()} and {@see self::GLOBAL_METHODS} are carriers in every
  *    file — `path`, the camelCase of every `…path` / `socket` key the YAML and `writeback.json`
- *    readers ({@see self::KEY_READERS}) read, DERIVED from them, and any `->tokenPath(…)` call;
- *    {@see self::CARRIERS} names the rest per file (the locals the readers copy a value into, the
- *    `.env` settings), derived by reading where each setting in {@see self::SETTINGS} is read and
- *    following its value to the messages;
+ *    readers ({@see self::KEY_READERS}) read, DERIVED from them, any `$x['key']` of such a key,
+ *    and any `->tokenPath(…)` call. Inside the readers, {@see self::localCarriers()} adds the
+ *    locals assigned from a read of such a key or from an expression naming one of those locals,
+ *    in the function they are in. {@see self::CARRIERS} names the rest per file (locals outside the
+ *    readers, parameters, the `.env` settings), derived by reading where each setting in
+ *    {@see self::SETTINGS} is read and following its value to the messages;
  *  - in MESSAGE POSITION: inside an interpolated string or heredoc, an operand of `.` or `.=`, the
  *    value after `=>` (a log context — and, since the token is the same, a `match` arm or an arrow
  *    function returning a carrier, which a ruling cannot exempt: rename the variable), or an argument of `sprintf` / `implode` / `join` /
@@ -31,8 +33,10 @@ use Tests\TestCase;
  * where its value is printed.
  *
  * ⚠ WHAT THIS DOES NOT REACH, stated so a green is not read as more:
- *  - a setting's value copied into a variable or property this class does not declare, or printed
- *    from a file it does not list;
+ *  - a setting's value copied into a variable or property this class does not declare or derive —
+ *    in a reader, only an ASSIGNMENT (`$a = …`) is followed, not a `foreach`, a `list()` or a
+ *    by-reference argument; outside the readers, nothing is followed — or printed from a file it
+ *    does not list;
  *  - a path DERIVED from a directory setting (`BRIDGE_DIR`, `BRIDGE_CONFIG_DIR`,
  *    `BRIDGE_SECRET_DIR`, `BRIDGE_STATE_DIR`): see {@see self::SETTINGS} — that class is NOT closed
  *    by a display rule at all, and `docs/config-schema.md` § *A token pasted where a path belongs* says why;
@@ -53,6 +57,9 @@ class PathSettingDisplayCensusTest extends TestCase
     /** @var list<string>|null */
     private static ?array $globalProperties = null;
 
+    /** @var list<string>|null */
+    private static ?array $globalKeys = null;
+
     /** A method of any receiver that returns a configured token path. */
     private const GLOBAL_METHODS = ['tokenPath'];
 
@@ -70,7 +77,6 @@ class PathSettingDisplayCensusTest extends TestCase
         'Bridge/Handlers/ChannelPushHandler.php' => ['$allowed'],
         'Bridge/Handlers/SpawnDetachedHandler.php' => ['$configured', '$candidates'],
         'Bridge/IdleNudge/FleetSnapshotReader.php' => ['$path'],
-        'Bridge/Support/AgentConfig.php' => ['$socketStr', '$serverPath'],
         'Bridge/Support/ChannelToken.php' => ['$path'],
         'Bridge/Support/FileContents.php' => ['$path'],
         'Bridge/Support/CoordConfigFile.php' => ['$path'],
@@ -115,7 +121,7 @@ class PathSettingDisplayCensusTest extends TestCase
         $sites = [];
         foreach (SourceScan::appFiles() as $path) {
             $file = SourceScan::relativeToApp($path);
-            $sites += SourceScan::sites((string) file_get_contents($path), $file, fn (array $tokens, int $i, int $scopeStart): ?string => self::siteAt($tokens, $i, $scopeStart, self::carriersAt($file, $tokens, $scopeStart)));
+            $sites += self::sitesIn((string) file_get_contents($path), $file, self::derivedKeys(self::readerSources()));
         }
 
         $this->assertSame([], $sites, "these messages print a path setting's raw value; pass it through PastedSecretShape::displayPathSetting() first:\n".print_r($sites, true));
@@ -200,6 +206,60 @@ class PathSettingDisplayCensusTest extends TestCase
         $this->assertSame([], SourceScan::sites($fixture, 'fixture.php', fn (array $tokens, int $i, int $scopeStart): ?string => self::siteAt($tokens, $i, $scopeStart, [], self::propertiesFor($keys))), 'control: without the new key the same line is not a site');
     }
 
+    /**
+     * The sites in $source, read as app/$file, with $keys the derived path keys.
+     *
+     * @param  list<string>  $keys
+     * @return array<string, mixed>
+     */
+    private static function sitesIn(string $source, string $file, array $keys): array
+    {
+        $properties = self::propertiesFor($keys);
+
+        return SourceScan::sites($source, $file, fn (array $tokens, int $i, int $scopeStart): ?string => self::siteAt(
+            $tokens,
+            $i,
+            $scopeStart,
+            array_merge(self::carriersAt($file, $tokens, $scopeStart), in_array($file, self::KEY_READERS, true) ? self::localCarriers($tokens, $scopeStart, $i, $keys) : []),
+            $properties,
+            $keys,
+        ));
+    }
+
+    /**
+     * The control for the local-variable derivation: a key read into a local of a reader, a copy
+     * of that local, and a raw message naming either, added to the real `AgentConfig::resolveChannel`
+     * source, are sites with nothing declared; the same source without them is clean.
+     */
+    public function test_a_local_a_reader_copies_a_new_key_into_is_a_carrier_without_being_declared(): void
+    {
+        $file = 'Bridge/Support/AgentConfig.php';
+        $sources = self::readerSources();
+        $anchor = "        \$socket = \$channel['socket'] ?? null;\n";
+        $this->assertSame(1, substr_count($sources[$file], $anchor), 'the mutation anchor moved in AgentConfig::resolveChannel — re-derive the control, do not delete it');
+
+        $keys = self::derivedKeys($sources);
+        $this->assertSame([], self::sitesIn($sources[$file], $file, $keys), 'control: the unmutated reader has no site');
+
+        $cases = [
+            'read' => "        \$logPath = \$channel['log_path'] ?? null;\n        throw new ConfigException(\"channel.log_path '{\$logPath}' is bad\");\n",
+            'copy' => "        \$logPath = \$channel['log_path'] ?? null;\n        \$shown = (string) \$logPath;\n        throw new ConfigException('channel.log_path '.\$shown.' is bad');\n",
+        ];
+        foreach ($cases as $name => $added) {
+            $mutated = $sources;
+            $mutated[$file] = str_replace($anchor, $anchor.$added, $sources[$file]);
+            $scratchKeys = self::derivedKeys($mutated);
+            $this->assertContains('log_path', $scratchKeys);
+            $sites = self::sitesIn($mutated[$file], $file, $scratchKeys);
+            $this->assertNotSame([], $sites, "the {$name} shape must red: a new key read into a local and printed raw");
+            $this->assertStringContainsString('resolveChannel', (string) array_key_first($sites));
+        }
+
+        // A copy that is only compared, never printed, is not a site.
+        $quiet = str_replace($anchor, $anchor."        \$logPath = \$channel['log_path'] ?? null;\n        \$present = \$logPath !== null;\n", $sources[$file]);
+        $this->assertSame([], self::sitesIn($quiet, $file, self::derivedKeys(array_merge($sources, [$file => $quiet]))));
+    }
+
     /** @return array<string, string> */
     private static function readerSources(): array
     {
@@ -247,6 +307,53 @@ class PathSettingDisplayCensusTest extends TestCase
     }
 
     /** @return list<string> */
+    private static function globalKeys(): array
+    {
+        return self::$globalKeys ??= self::derivedKeys(self::readerSources());
+    }
+
+    /**
+     * In a reader, the locals that hold a derived key's value at $upTo, within the function that
+     * began at $scopeStart: a local assigned from a read of a derived key (`$v = $x['key']`,
+     * `array_key_exists('key', …)`), and a local assigned from an expression naming one already
+     * found (`$s = (string) $v`). Assignments only, in source order; a local that is merely
+     * compared or passed is not a site until it stands in message position.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     * @param  list<string>  $keys
+     * @return list<string>
+     */
+    private static function localCarriers(array $tokens, int $scopeStart, int $upTo, array $keys): array
+    {
+        $locals = [];
+        $count = count($tokens);
+        for ($k = $scopeStart; $k < $upTo; $k++) {
+            if ($tokens[$k][0] !== T_VARIABLE || ($tokens[$k + 1][1] ?? null) !== '=' || ! in_array($tokens[$k - 1][1] ?? ';', [';', '{', '}'], true)) {
+                continue;
+            }
+            $depth = 0;
+            for ($j = $k + 2; $j < $count; $j++) {
+                $t = $tokens[$j];
+                if (in_array($t[1], ['(', '['], true)) {
+                    $depth++;
+                } elseif (in_array($t[1], [')', ']'], true)) {
+                    $depth--;
+                } elseif ($t[1] === ';' && $depth <= 0) {
+                    break;
+                }
+                $keyRead = in_array(trim($t[1], '\'"'), $keys, true) && $t[0] === T_CONSTANT_ENCAPSED_STRING
+                    && (($tokens[$j - 1][1] ?? null) === '[' || (($tokens[$j - 1][1] ?? null) === '(' && strtolower($tokens[$j - 2][1] ?? '') === 'array_key_exists'));
+                if ($keyRead || ($t[0] === T_VARIABLE && in_array($t[1], $locals, true))) {
+                    $locals[] = $tokens[$k][1];
+                    break;
+                }
+            }
+        }
+
+        return array_values(array_unique($locals));
+    }
+
+    /** @return list<string> */
     private static function globalProperties(): array
     {
         return self::$globalProperties ??= self::propertiesFor(self::derivedKeys(self::readerSources()));
@@ -271,13 +378,14 @@ class PathSettingDisplayCensusTest extends TestCase
      * @param  list<array{0: int|string, 1: string}>  $tokens
      * @param  list<string>  $carriers  chains (`$path`, `$this->path`) or bare property names
      * @param  list<string>|null  $properties  the path-holding properties; default {@see self::globalProperties()}
+     * @param  list<string>|null  $keys  the derived path keys; `$var['key']` is a carrier; default {@see self::derivedKeys()}
      */
-    private static function siteAt(array $tokens, int $i, int $scopeStart, array $carriers, ?array $properties = null): ?string
+    private static function siteAt(array $tokens, int $i, int $scopeStart, array $carriers, ?array $properties = null, ?array $keys = null): ?string
     {
         if ($tokens[$i][0] !== T_VARIABLE) {
             return null;
         }
-        [$chain, $end, $isCarrier] = self::chainAt($tokens, $i, $carriers, $properties ?? self::globalProperties());
+        [$chain, $end, $isCarrier] = self::chainAt($tokens, $i, $carriers, $properties ?? self::globalProperties(), $keys ?? self::globalKeys());
         if (! $isCarrier) {
             return null;
         }
@@ -301,9 +409,10 @@ class PathSettingDisplayCensusTest extends TestCase
      * @param  list<array{0: int|string, 1: string}>  $tokens
      * @param  list<string>  $carriers
      * @param  list<string>  $properties
+     * @param  list<string>  $keys
      * @return array{0: string, 1: int, 2: bool}
      */
-    private static function chainAt(array $tokens, int $i, array $carriers, array $properties): array
+    private static function chainAt(array $tokens, int $i, array $carriers, array $properties, array $keys = []): array
     {
         $chain = $tokens[$i][1];
         $last = null;
@@ -319,6 +428,9 @@ class PathSettingDisplayCensusTest extends TestCase
             $chain .= '->'.$name;
             $last = $name;
             $j += 2;
+        }
+        if (($tokens[$j + 1][1] ?? null) === '[' && ($tokens[$j + 3][1] ?? null) === ']' && in_array(trim($tokens[$j + 2][1] ?? '', '\'"'), $keys, true)) {
+            return [$chain."['".trim($tokens[$j + 2][1], '\'"')."']", $j + 3, true];
         }
         if (in_array($tokens[$j + 1][1] ?? null, ['[', '('], true) || ($tokens[$j + 1][0] ?? null) === T_DOUBLE_COLON) {
             return [$chain, $j, false];
