@@ -101,11 +101,7 @@ final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReac
         return 'promote-on-release (DL-207)';
     }
 
-    /**
-     * A token-FILE consumer although it calls `resolveFor()`: under PHP-FPM `GH_TOKEN` is absent
-     * and the credential-store helper is CLI-only (DL-184), so the receiver resolves only the file
-     * — the comment on the resolve below.
-     */
+    /** Every repo whose mapping switches promote-on-release on. */
     public static function fileTokenRepos(?WritebackConfig $writeback): array
     {
         $repos = [];
@@ -184,25 +180,17 @@ final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReac
             return;
         }
 
-        // The first RUNTIME GitHub-read dependency. Under FPM GH_TOKEN is absent and the
-        // store helper is CLI-only (DL-184), so in practice a placed <secret_dir>/github/token
-        // (or a providers.github.token_path) is required. Unresolved ⇒ permanent config gap:
-        // durable alert + loud log + no-op (never 5xx-storm an unfixable event).
-        // ⛔ THE CONFIGURED SPELLING, NOT THE PAYLOAD'S (card#7124 review). The resolver
-        // keys the credential store's `[git-credential-map]`, which is case-SENSITIVE
-        // (DL-185's "raw repo key, not canonical" ruling), while `$repo` is whatever the
-        // payload spelled. Until DL-293 those were the same string BY CONSTRUCTION —
-        // reaching this line required `mappingFor()` to have matched byte-for-byte — and
-        // DL-293 removed that guarantee without restoring it here, so `bridge:check` (which
-        // iterates the configured keys) and this leg would probe DIFFERENT keys and
-        // GitHubTokenResolver's "can never diverge" contract would be false for this
-        // consumer. `?? $repo` is the unmapped case, which the guard above already excludes.
-        $configuredRepo = $writeback->configuredRepoFor($repo) ?? $repo;
-        $resolution = (new GitHubTokenResolver)->resolveFor($configuredRepo);
+        // The first RUNTIME GitHub-read dependency, resolved as every receiver leg resolves
+        // it (DL-456): the repo's write_token_path, the coord credential store, the single
+        // file — never GH_TOKEN, which FPM does not have. The resolver asks the store with
+        // the CONFIGURED spelling (`[git-credential-map]` is case-sensitive, card#7124), so
+        // the payload's spelling is safe to pass. Unresolved ⇒ permanent config gap: durable
+        // alert + loud log + no-op (never 5xx-storm an unfixable event).
+        $resolution = GitHubTokenResolver::forWriteback($writeback)->resolveFor($repo);
         if (! $resolution->ok()) {
             $this->alerts->warnAndNotify(
                 'promote_released.no_github_token',
-                'kanban_promote_released: no GitHub read token for repo — cannot verify commit reachability; skipping (place <secret_dir>/github/token, or set providers.github.token_path)',
+                'kanban_promote_released: no GitHub read token for repo — cannot verify commit reachability; skipping (map the repo in the coord credential store, set its write_token_path, or place <secret_dir>/github/token — `bridge:check` names which source failed)',
                 ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'reason' => $resolution->problem],
                 $repo, 'promote_on_release', null, 'promote_no_github_token',
             );

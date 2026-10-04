@@ -58,8 +58,9 @@ use Throwable;
  * idempotent re-attempt and never a false success.
  *
  * ⛔ ONE POSTING IDENTITY ON EVERY PATH, the {@see PrCorrelationCommenter} rule: the token is the
- * receiver's placed file and nothing else ({@see GitHubTokenResolver::resolveFromFile()}), so a
- * `bridge:replay` or a `bridge:github-owed` from a shell writes as the receiver or not at all.
+ * repo's, from the receiver's sources only ({@see GitHubTokenResolver::resolveFor()} without
+ * `GH_TOKEN`), so a `bridge:replay` or a `bridge:github-owed` from a shell writes as the receiver or
+ * not at all.
  */
 final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
 {
@@ -237,9 +238,9 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
             return new GitHubWriteAttempt(self::DEDUPED, landed: false, owed: self::retriable(self::DEDUPED, null));
         }
 
-        $resolution = $this->tokens->resolveFromFile();
+        $resolution = $this->tokens->resolveFor($repo);
         if (! $resolution->ok()) {
-            Log::warning('protocol_invalid_label: NOT applied — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); routing is unchanged', ['catalog_id' => 'protocol_invalid_label.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context + [
+            Log::warning('protocol_invalid_label: NOT applied — no GitHub token resolves for this repo (its write_token_path, the coord credential store, then the single token file — never GH_TOKEN); routing is unchanged', ['catalog_id' => 'protocol_invalid_label.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context + [
                 'reason' => self::REASON_TOKEN_UNRESOLVED, 'problem' => $resolution->problem,
             ]);
 

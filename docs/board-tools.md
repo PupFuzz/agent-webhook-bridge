@@ -7,7 +7,7 @@ token and no toolkit** can see and capture its own board work directly.
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
-(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381; the by-id read since DL-435; the search since DL-437):
+(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381; the by-id read since DL-435; the search since DL-437; the CI-await pair since DL-452):
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
@@ -18,6 +18,8 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none`) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused; the window says `total`, `truncated` and `total_is_lower_bound`. |
+| `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA is terminal, you get ONE `ci_settled` event on your channel; if that does not happen before the wait expires, ONE `ci_await_expired`. **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
+| `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it. Never touches another seat's. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
 > COUNTS AS EMPTY** (card#9155). The tools are reached through two front doors and only
@@ -64,7 +66,7 @@ The tools that ship today — the table is held against the bridge's own registr
 
 If your channel server advertises tools, your MCP client lists `board_my_cards`,
 `board_create_card`, `board_correct_card`, `board_take_card`, `board_comment_card`,
-`board_get_cards` and `board_search`, and the
+`board_get_cards`, `board_search`, `ci_await` and `ci_await_cancel`, and the
 server's own `instructions` string names them (it derives the names from the same tool list it
 advertises). ⚠ **A tool your seat's copy of the channel server
 predates is invisible to you and reports as missing** — the tool set is restated in that
@@ -1085,7 +1087,7 @@ takeover both refusals name the holder the write was sent over, so it is never l
 }
 ```
 
-**Refusal codes.** A start's refusals carry a machine-readable `reason` beside `error` in the
+**Refusal codes.** A start's refusals — and every `ci_await` / `ci_await_cancel` refusal — carry a machine-readable `reason` beside `error` in the
 `{ok: false, error, reason}` body — branch on it, never on the wording. Which refusal sites a test
 holds to carrying a code, and that check's bounds, are stated in ONE place:
 `BoardTakeCardRefusalReasonCoverageTest`'s class docblock — read it there; it is not restated here.
@@ -1096,7 +1098,7 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | --- | --- | --- |
 | `bad_request` | the door, any tool | the request body is not a JSON object, is not labelled JSON (HTTP), names no `tool`, or (ssh) could not be read from stdin |
 | `unknown_tool` | the door, any tool | no such tool |
-| `bad_arguments` | the door and every tool | an undeclared argument, a malformed one (`card_id` not a positive integer, `start` not a boolean), or a value over kanban's own bound |
+| `bad_arguments` | the door and every tool | an undeclared argument, a malformed one (`card_id` not a positive integer, `start` not a boolean, a `ci_await` `repo` not `owner/name`, a `head_sha` not a full 40-hex SHA, `pr` not a positive integer), or a value over kanban's own bound |
 | `out_of_scope` | `board_take_card` | not a card on your board in a lane you work (or a board the writeback token cannot see — one answer) |
 | `archived` | `board_take_card` | the card is archived |
 | `holder_unreadable` | `board_take_card` | the row says nothing readable about who holds the card |
@@ -1121,7 +1123,11 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `install_fault.roster_seat_absent` | `board_take_card` | the roster has no seat named your agent's seat (`identity.coord_seat`, else the agent name) |
 | `install_fault.no_kanban_user` | `board_take_card` | your seat carries no kanban user id for this kanban host (or the install's kanban API base names no host), so a seat with no id is refused by name, never moved unassigned |
 | `install_fault.no_agent` | the ssh door (exit 1) | the forced command passed no `--agent` |
-| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
+| `repo_not_received` | `ci_await` | no agent on this install subscribes to that GitHub repo, so no `workflow_run` delivery would ever settle the await; nothing was stored |
+| `too_many_awaits` | `ci_await` | a NEW await would take you past `BRIDGE_CI_AWAIT_MAX_PER_SEAT`; nothing was stored (a refresh is never refused for it) |
+| `install_fault.ci_await_config_invalid` | `ci_await` | a `BRIDGE_CI_AWAIT_*` setting (`TTL`, `MAX_PER_SEAT`, `READ_COOLDOWN`) is outside its range |
+| `install_fault.ci_await_store_unavailable` | `ci_await`, `ci_await_cancel` | the `ci_awaits` table is missing (`php artisan migrate`) or the database did not answer |
+| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` (and `ci_await`, `install_fault.agent_config_unreadable` only: an agent config that will not load, so whether the repo is received cannot be told) | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
 
 A failure whose STATUS is the answer carries no code: the 502 `upstream board error` stays one
 body byte for byte for every cause (DL-387); the HTTP door's 401 (bearer) and 503 (install) answers
@@ -1133,7 +1139,9 @@ every status from 500 up to exit 2). ⚠ **Exit 1 is not "your own fault"**: eve
 maps to it, so the `install_fault.*` 422s above exit 1 as well — branch on `reason`, not on the exit
 code. A missing `--agent` (set by the pinned forced command) is the ssh door's own exit-1 install
 answer, coded `install_fault.no_agent`. Other tools' own refusals (`board_create_card`, `board_correct_card`,
-`board_comment_card`, …) are not all coded; a refusal with no code carries no `reason` key.
+`board_comment_card`, …) are not all coded; a refusal with no code carries no `reason` key. Every
+refusal `ci_await` and `ci_await_cancel` build carries one — `CiAwaitRefusalReasonCoverageTest`
+holds that, and states what it scans.
 
 **Permissions.** The combined PATCH carries more than `workflow_stage_id`, so kanban authorizes it
 as **`task.update`**, the same as the plain take; a start on a card you already hold sends the
@@ -1493,6 +1501,197 @@ search. The ceiling is **borrowed**, not chosen:
 it is `board_get_cards`' worst case, `3 × MAX_IDS + 1`, the per-call ceiling this door already accepted
 against that shared budget (DL-435 bound (d)). Nothing is ever walked page by page: `limit` never
 exceeds one page, and every count is kanban's.
+
+## `ci_await` and `ci_await_cancel`
+
+**Wait for CI on one commit without polling GitHub** (card#11200 / DL-452; rt#590). A seat that
+needs "CI is finished on head X" used to poll — a Monitor loop or repeated `ci-read` — and every
+tick spent the one shared GitHub REST quota. The bridge already receives `workflow_run.completed`
+for the repos it serves, so it can tell the seat instead: register the head once with `ci_await`,
+and the bridge sends **one** event when it is done. A hook reaches it through any board-tools
+door, including the `bridge-board-call` CLI card#11151 adds.
+
+**`ci_await` arguments:**
+
+| Arg | Required | Notes |
+| --- | --- | --- |
+| `repo` | yes | The GitHub repository as `owner/name`. Matched case-insensitively, as GitHub matches repo names: `Octo/Widgets` and `octo/widgets` name ONE await, here and in `ci_await_cancel`. The answer and the events carry the spelling this install's subscription is configured with. |
+| `head_sha` | yes | The **full** 40-hex commit SHA (`git rev-parse <ref>`), case-insensitive, stored lower-case. ⛔ An **abbreviated** SHA is refused (`bad_arguments`): GitHub's run list filters on the exact SHA and answers an abbreviation with an empty list, so the wait would never settle. |
+| `pr` | no | The pull-request number, a positive integer no larger than 4294967295 (or `null`), carried back in the events. A re-registration that omits it keeps the one already recorded. |
+
+**`ci_await_cancel` arguments:** `repo` and `head_sha`, with the same rules. It removes **your own**
+await on that head and answers `cancelled: true`, or `cancelled: false` when you had none there —
+never registered, already settled or expired, or only another seat awaits it — so a hook may call it
+unconditionally.
+
+That is the whole accepted set for each; any other key is refused, and a key that tries to name a
+seat (`agent`, `seat`, `user`, …) is told the await is always yours. ⛔ **No argument names a seat**:
+the await belongs to the agent your call authenticated as, resolved by the front door like every
+tool here — so it works on a solo install with no coordination repo, and one seat can neither
+register nor cancel another's.
+
+**What `ci_await` does, in order:**
+
+1. Refuses a repo **this install receives no GitHub events for** — no agent on this install
+   subscribes to it — as `repo_not_received`, because no completed-run delivery would ever arrive for it. Poll
+   with `ci-read` there.
+2. Refuses a NEW await past the per-seat cap, `BRIDGE_CI_AWAIT_MAX_PER_SEAT` (default 50), as
+   `too_many_awaits`. Refreshing a head you already await is never capped. The count and the store
+   are two statements, so two concurrent registrations by one seat can each pass at the cap — it
+   bounds a seat that forgets to cancel, not a race.
+3. Stores the await, or **refreshes** yours on the same head (its expiry restarts; `refreshed: true`).
+   One await per seat per head. A database failure here is the only answer that says nothing was
+   stored (`install_fault.ci_await_store_unavailable`); anything that fails after it answers
+   `state: unmeasured` with the await kept.
+4. **Reads the head's runs once**, so CI that already finished settles now — unless:
+   - a read of the same head ANSWERED within `BRIDGE_CI_AWAIT_READ_COOLDOWN` seconds (default 60;
+     `0` always reads): it answers `waiting` with `read_skipped: "cooldown"` and sends no request.
+     That is a cost knob only: the sweep reads your head like any other (*The sweep* below);
+   - the head is **rate limited** until a known instant (see *Read failures*): it answers `waiting`
+     with `read_skipped: "rate_limited"` and `retry_not_before`, sends no request, and never answers
+     `settled`. Your await carries the limit's error and reset like the rest of the head's, so the
+     sweep reads it after the reset.
+
+   Whatever this read answers, nothing depends on it: an await it leaves `waiting` is settled by a
+   later delivery's read or by the sweep.
+
+The answer:
+
+```jsonc
+{
+  "repo": "octo-org/widgets",
+  "head_sha": "<40 hex>",
+  "pr": 12,                  // or null
+  "state": "waiting",        // waiting | settled | unmeasured
+  "refreshed": false,
+  "expires_at": "2026-10-03T16:00:00.000Z",   // null once settled, or when evaluating failed
+  "runs_total": 3,           // null when the read failed
+  "runs_completed": 1,
+  "read_error": "…",         // only on state: unmeasured
+  "read_skipped": "cooldown", // only when no read was made: "cooldown" or "rate_limited"
+  "retry_not_before": "…",   // only when the head is rate limited (skipped, or your own read was) — when it is read again
+  "warning": "…"             // only when this bridge holds no stored workflow_run delivery from the repo
+}
+```
+
+- **`settled`** — every run was already terminal, or a concurrent read settled your await while you
+  registered: `ci_settled` has been sent to you and nothing is stored.
+- **`waiting`** — stored; at least one run is not finished, **or there are no runs yet** (CI not
+  queued yet looks exactly like that, so an empty list is never treated as settled).
+- **`unmeasured`** — stored, but the read failed (with `retry_not_before` when GitHub rate limited
+  it), every run is terminal but `ci_settled` could not be written to your inbox, or evaluating the
+  stored await failed (a database error after the store); `read_error` says which. Nothing is sent
+  yet; the sweep reads the head again (see *Read failures* and *The sweep* below).
+- **`warning`** — this bridge has no stored `workflow_run` delivery from that repo. If the repo's
+  webhook does not send **Workflow runs** to this bridge, only the sweep's own reads settle the
+  await — at least one sweep interval after CI finishes, and only while the sweep runs. None stored is not proof — retention prunes old deliveries and a new webhook has
+  sent none yet. `bridge:check`'s `ci_await.awaits` leg reports the same per awaited repo.
+
+**How it settles.** On each `workflow_run.completed` delivery whose repo and `head_sha` match at
+least one await, the bridge makes **one** read — `GET /repos/{repo}/actions/runs?head_sha=<sha>`,
+walked page by page to the end of the list — after the delivery has been answered. The run that
+delivery reports is counted as completed, with its conclusion, even when the list still shows it
+running or does not show it yet: the list API can lag the webhook, and a last run lost that way
+would strand the wait until it expired. ⚠ **Except a later attempt:** a re-run keeps the run's id
+and raises its `run_attempt`, so when the list shows a LATER attempt than the delivery reports (a
+late delivery, or one an operator redelivered by hand from the webhook's settings), or either
+attempt is unknown, the list's row stands. When every run on the list has `status: completed`, every
+seat awaiting that head gets **one** `ci_settled` and its await is deleted. ⛔ **A list that moved
+while it was read is not an answer:** pages are separate requests, and a run created or deleted
+between them shifts rows across a page boundary (a duplicate can fill the count while a new,
+unfinished run is never seen). Runs are keyed by id, and the read fails unless every page reported
+the same `total_count` and the distinct runs equal it. One run created AND another deleted between
+pages keep both of those intact, so after a walk of more than one page the bridge **reads page 1
+again** and fails the read unless it lists the same runs: GitHub lists runs newest first, so a run
+created during the walk lands there. ⭐ **No await, no read:** a run completing on a head nobody awaits costs one
+indexed query and no GitHub request, so a green push to `dev` wakes nobody. ⭐ **Once per await,
+under concurrency:** two deliveries for a head's last two runs can both read "all terminal"; each
+emit first deletes its await row in a transaction and only the one whose delete removed it emits.
+The same claim decides between a settle and an expiry, so an await gets one or the other, never both.
+⚠ **A delivery's read settles only the awaits it loaded before reading**, so an await stored while it
+read — or one whose own registration read saw a list that still lagged — is left for the sweep.
+
+**The verdict is `ci-read`'s, never the bridge's.** `ci_settled` means only *every listed run has
+finished*. It carries each run's conclusion as data, and **it does not say green or red**: a verdict
+needs the base branch's required contexts and the latest run per workflow, which is `ci-read`'s
+definition, and the bridge does not restate it. On `ci_settled`, run `ci-read` **once** on the head.
+
+**Read failures.** A read that fails — a rate limit (a 429, or a 403 with `X-RateLimit-Remaining: 0`
+or with `Retry-After`, GitHub's secondary limit), a 5xx, no answer, no GitHub read
+token, a 200 whose body is not a run list, a list that does not end within the read's page bound, or
+a list that changed between pages — **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
+logged naming it, and the head is read again on its next completed run and by the sweep. A
+rate-limited read that names when its quota returns records that instant on every await on the head, and **no read of that head is made before it** — not
+by a delivery, a registration or the sweep; the error says until when, and a registration in that
+window answers `read_skipped: "rate_limited"`. The instant is `Retry-After` when the refusal carries
+one (seconds or an HTTP date — GitHub's secondary limit, which can also carry a primary reset an hour
+out), else `X-RateLimit-Reset` only when `X-RateLimit-Remaining` is `0`. If no read ever answers, the
+await ends in `ci_await_expired` carrying the last error.
+
+**Expiry.** An await lives `BRIDGE_CI_AWAIT_TTL` seconds (default 21600, 6 h; 60 to 604800 accepted —
+anything else refuses every `ci_await` as `install_fault.ci_await_config_invalid` and fails `bridge:check`,
+as does a cap, cooldown or sweep read cap outside its range). `ci_await_expired` is emitted by the
+sweep, at the first pass after `expires_at`.
+
+**The sweep — what every await relies on.** A delivery settles only the awaits its read loaded, a
+registration's read can see a list that lags, a final delivery can be lost, and CI may never finish:
+in each case no further event touches the await. So the `ci-await-sweep` periodic job, declared at
+the first registration, is **level-triggered** — each pass first reads up to
+`BRIDGE_CI_AWAIT_SWEEP_READS` (default 10) unexpired heads whose **oldest** read is at least one sweep
+interval old (or that were never read), oldest first, skipping a head that is rate limited, and
+settles every await on a head it finds all terminal; then it emits `ci_await_expired` once per await
+past its expiry. A head is read once per pass however many seats await it. Deliveries, the read
+cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
+⚠ **The sweep runs only when a job pass runs**: on the job registry's two ingresses
+([`periodic-jobs.md`](periodic-jobs.md)) — with the next webhook this install receives, or with
+`bridge:tick` on a silent one. With no pass, nothing here is read or expired.
+
+**What a seat can rely on.** One terminal event per await — `ci_settled` or `ci_await_expired`, never
+both. It is written to your inbox **at least once**, idempotent by its line id
+(its line id is `ci_await:<uuid>` for BOTH kinds — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
+written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
+it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the
+wake on each. Once every run on a head is terminal, `ci_settled` comes at the latest from the first
+sweep pass that starts at least one sweep interval after the head's oldest read (at once, when no await on it was ever read) — later by one pass
+for every `BRIDGE_CI_AWAIT_SWEEP_READS` eligible heads ahead of it — provided the sweep runs. An event
+that cannot be written to your inbox keeps the await, logged naming you and shown by `bridge:check`,
+and is tried again on later passes; an expiry that still cannot be written
+`CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS` past `expires_at` is dropped undelivered, logged as an
+error.
+
+**The events.** Both are bridge-authored intents (`provider: "bridge"`, null actor), **staged to the
+inbox and pushed live** — the await is gone once emitted, so the inbox line is what reaches a seat
+whose channel was down (*What a seat can rely on* above). `subject_id` is `ci:<repo>@<head_sha>`. The payloads and the inbox shape are
+[`consumer-guide.md`](consumer-guide.md) § *Bridge-authored intents*'s to state.
+
+**Limits, named:**
+
+- ⚠ **Late runs.** A workflow that starts only after others finish (`on: workflow_run`) may not be
+  on the list when the others complete, so `ci_settled` can arrive before it exists; `ci-read` then
+  reports the head pending, and the seat re-registers. The payload carries no `late_runs_possible`
+  hint: telling whether a repo has such a workflow would need a read of its workflow files on every
+  settle, which is not cheap, so it is omitted rather than guessed. Whether such a run reports the
+  awaited head's SHA at all is **not measured here**.
+- ⚠ **Runs not yet created.** A registration made before GitHub has created every run for the push
+  can see some runs finished and others absent; it settles only when what is listed is all terminal.
+- ⚠ **A list that keeps moving.** On a head whose runs are created or deleted during every read, each
+  read fails as inconsistent and the await waits for the next delivery or sweep read. No case of it is
+  measured. Taken from GitHub's REST documentation, not checked: that `total_count` counts exactly
+  what the pages carry, and that a new run is listed first (newest first), which is what the page-1
+  re-read relies on. A single-page list is checked only against its own `total_count`, and a run
+  created after the page-1 re-read is one the read did not see, like one created just after it.
+- ⚠ **The per-seat cap is soft under concurrency** (step 2 above).
+- ⚠ **Only a rate limit that names its reset is waited out.** One without either header is read
+  again at the next delivery or sweep pass.
+- ⚠ **Installs with several bridges.** An await lives on the bridge the seat called; only that
+  bridge's deliveries settle it.
+
+**Cost:** one read of the head at registration (none inside the read cooldown or a rate limit), one
+per completed run on an awaited head, and the sweep's: at most `BRIDGE_CI_AWAIT_SWEEP_READS` × 3600 /
+the `ci-await-sweep` interval (seconds) head reads per hour, install-wide — a head counts once however
+many seats await it, and one read within the interval is not repeated. Each read is one request per
+100 runs, plus one more for the page-1 re-read when the list spans more than one page. Nothing for
+heads nobody awaits.
 
 ## Errors
 

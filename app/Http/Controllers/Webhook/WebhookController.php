@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Webhook;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
+use App\Bridge\CiAwait\CiAwaitGate;
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Exceptions\InvalidEnvelopeException;
 use App\Bridge\Http\PlainTextResponse;
@@ -51,6 +52,7 @@ class WebhookController extends Controller
         private RetentionGate $retentionGate,
         private StandupGate $standupGate,
         private JobSchedulerGate $jobGate,
+        private CiAwaitGate $ciAwaitGate,
     ) {}
 
     public function receive(Request $request): Response
@@ -98,6 +100,10 @@ class WebhookController extends Controller
         /** @var array<mixed> $payload */
         $payload = json_decode($body, true);
         $this->dispatcher->dispatch($provider, $scopeId, $event, $payload);
+
+        // A seat awaiting CI on this run's head is told once every run there is terminal
+        // (card#11200 / DL-452). Install-wide, after the response, and only for an awaited head.
+        $this->ciAwaitGate->schedule($provider, $event->eventType, $scopeId, $payload);
 
         // Only this path stores an event, so only this path can have grown the
         // stores. The pass itself runs after the response below is sent.

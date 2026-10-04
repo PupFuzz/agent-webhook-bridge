@@ -43,10 +43,11 @@ use Throwable;
  * `post_unconfirmed`: owed, never `posted`. A body the client cannot read reads as unconfirmed, and
  * costs the repair one dedupe read that then finds the comment.
  *
- * ⛔ ONE POSTING IDENTITY ON EVERY PATH. The token is the receiver's placed file and nothing else
- * ({@see GitHubTokenResolver::resolveFromFile()}). `bridge:replay` runs these handlers from a shell,
- * where the credential store and `GH_TOKEN` would otherwise resolve, and a comment posted from there
- * would carry an identity the receiver never uses. With no readable file, nothing posts.
+ * ⛔ ONE POSTING IDENTITY ON EVERY PATH. The token is the repo's, from the receiver's sources only
+ * ({@see GitHubTokenResolver::resolveFor()} without `GH_TOKEN`: the repo's `write_token_path`, the
+ * coord credential store read in-process, the single file — DL-456). `bridge:replay` runs these
+ * handlers from a shell, where `GH_TOKEN` would otherwise resolve, and a comment posted from there
+ * would carry an identity the receiver never uses. With no token for the repo, nothing posts.
  *
  * ⭐ THE DEDUPE IS A READ OF THE PULL REQUEST ITSELF, not a row of ours: a comment STARTING WITH the
  * marker is looked for before posting. That keeps the record where the harm is, needs no migration,
@@ -283,9 +284,9 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
             return new GitHubWriteAttempt(self::DEDUPED, landed: false, owed: self::retriable(self::DEDUPED, null));
         }
 
-        $resolution = $this->tokens->resolveFromFile();
+        $resolution = $this->tokens->resolveFor($repo);
         if (! $resolution->ok()) {
-            Log::warning('pr_correlation_comment: NOT posted — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — no GitHub token resolves for this repo (its write_token_path, the coord credential store, then the single token file — never GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_TOKEN_UNRESOLVED, 'problem' => $resolution->problem,
             ]);
 

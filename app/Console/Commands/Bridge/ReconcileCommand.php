@@ -12,6 +12,7 @@ use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\BoardMoverScope;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
+use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerlessStart;
@@ -160,7 +161,7 @@ class ReconcileCommand extends BridgeCommand
 
             return self::FAILURE;
         }
-        $probe = new GitHubRepoProbe;
+        $probe = new GitHubRepoProbe(GitHubTokenResolver::forWriteback($writeback));
 
         $this->info($fix ? 'bridge:reconcile --fix (applying forward moves)' : 'bridge:reconcile (report-only; pass --fix to apply)');
 

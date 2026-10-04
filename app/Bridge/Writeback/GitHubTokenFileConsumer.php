@@ -3,8 +3,10 @@
 namespace App\Bridge\Writeback;
 
 /**
- * A runtime leg that reaches GitHub with the placed token FILE and nothing else — the receiver's
- * `<secret_dir>/github/token`, or `providers.github.token_path` (card#11201).
+ * A runtime leg that reaches GitHub with a token FILE and nothing else — the file
+ * `GitHubTokenResolver::resolveFor()` gives each repo without `GH_TOKEN`: the repo's
+ * `write_token_path`, else the file the coord credential store names for it, else the single
+ * `<secret_dir>/github/token` / `providers.github.token_path` (card#11201, DL-456).
  *
  * WHY A LEG DECLARES ITSELF. With no readable file such a leg drops every GitHub request it
  * decides on, and logs it, and that is all: nothing retries on its own and nothing in the
@@ -17,7 +19,10 @@ namespace App\Bridge\Writeback;
  * `App\Bridge\Check\Checks\GitHubTokenFileCheck::CONSUMERS` (NAMED, not `{@see}`-linked: pint
  * turns a docblock FQCN into a real `use`, and this namespace depends on no check), and
  * `GitHubTokenFileConsumerRegistryTest` reds when a class under `app/` calls `->resolveFromFile(`
- * or `->resolveFor(` without being registered there or ruled CLI-only in that test.
+ * or `->resolveFor(` without being registered there or ruled, in that test, CLI-only or
+ * receiver-and-CLI (a leg whose repos are registered at runtime, so this interface's
+ * `writeback.json`-based answer cannot list them, reported by its own check); and when one calls
+ * `->resolveForCli(` without being ruled CLI-only.
  *
  * The methods are STATIC because each answers from config alone: the check must not construct a
  * handler, with its clients and its alert channel, to ask whether it is switched on.

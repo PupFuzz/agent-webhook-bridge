@@ -2,6 +2,9 @@
 
 namespace App\Bridge\Scheduling;
 
+use App\Bridge\CiAwait\CiAwaitService;
+use App\Bridge\Dispatch\IntentLog;
+use App\Bridge\Scheduling\Handlers\CiAwaitSweepJob;
 use App\Bridge\Scheduling\Handlers\IdleNudgeJob;
 use App\Bridge\Scheduling\Handlers\OwedWriteRetryJob;
 use App\Bridge\Scheduling\Handlers\OwedWriteWatchdogJob;
@@ -54,6 +57,7 @@ final class JobHandlerRegistry
         $this->register(new IdleNudgeJob($handlers));
         $this->register(new OwedWriteRetryJob($handlers));
         $this->register(new OwedWriteWatchdogJob($handlers));
+        $this->register(new CiAwaitSweepJob(new CiAwaitService($handlers, new IntentLog)));
     }
 
     /**

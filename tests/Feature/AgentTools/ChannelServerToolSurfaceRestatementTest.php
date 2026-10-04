@@ -268,7 +268,7 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         $doc = (string) file_get_contents(base_path('docs/board-tools.md'));
         $this->assertGreaterThan(
             0,
-            preg_match_all('/^\| `(board_[a-z_]+)` \| (?:read|write) \|/m', $doc, $matches),
+            preg_match_all('/^\| `([a-z][a-z_]*)` \| (?:read|write) \|/m', $doc, $matches),
             'docs/board-tools.md no longer carries a tool table this test can read — re-anchor it rather '
             .'than deleting the assertion: an extraction that matches nothing reports every doc complete',
         );

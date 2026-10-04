@@ -55,11 +55,11 @@ final class GoldenInstall
                 'github' => [
                     'api_base_url' => 'https://api.github.com',
                     'token_path' => null,
-                    // A path that cannot exist: the real helper IS on PATH on an operator
-                    // box, and it would resolve a live store credential mid-capture.
-                    'credential_helper' => $this->root.'/no-store-helper',
                 ],
             ],
+            // A store that cannot exist: the real one IS on an operator box, and the GitHub
+            // token legs would resolve a live store credential mid-capture (DL-456).
+            'bridge.coord_credentials_path' => $this->root.'/no-credentials.ini',
             'bridge.default_agent' => null,
             'bridge.writeback.correlation' => 'ref',
             'bridge.coord_config_path' => null,

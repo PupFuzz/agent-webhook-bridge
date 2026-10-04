@@ -794,6 +794,43 @@ class WritebackConfigTest extends TestCase
         WritebackConfig::load($this->dir);
     }
 
+    // ---- card#11208 / DL-456: write_token_path ----
+
+    public function test_loads_an_absolute_write_token_path_and_defaults_it_to_null(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'write_token_path' => '/abs/write-token'],
+            'o/s' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+        $config = WritebackConfig::load($this->dir);
+
+        $this->assertSame('/abs/write-token', $config->mappingFor('O/R')->writeTokenPath);
+        $this->assertNull($config->mappingFor('o/s')->writeTokenPath);
+    }
+
+    /** @return array<string, array{0: mixed}> */
+    public static function unusableWriteTokenPaths(): array
+    {
+        return [
+            'relative' => ['tokens/write'],
+            'home-relative (FPM has another HOME)' => ['~/write-token'],
+            'empty' => [''],
+            'not a string' => [123],
+        ];
+    }
+
+    #[DataProvider('unusableWriteTokenPaths')]
+    public function test_a_write_token_path_that_is_not_an_absolute_path_throws(mixed $value): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'write_token_path' => $value],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('write_token_path must be an absolute path to a token file');
+        WritebackConfig::load($this->dir);
+    }
+
     // loadDefault() — the shared config('bridge.config_dir') → load() resolve every
     // event-time caller repeats (handlers + writeback classifiers). Each caller keeps
     // its own fail branch; loadDefault only folds the resolve.

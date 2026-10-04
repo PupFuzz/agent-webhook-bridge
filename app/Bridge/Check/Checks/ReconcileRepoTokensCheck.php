@@ -8,6 +8,7 @@ use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
+use App\Bridge\Writeback\GitHubTokenResolver;
 
 /**
  * The per-repo GitHub read-token reconcile probe (DL-185/186), migrated out of
@@ -19,10 +20,10 @@ use App\Bridge\Writeback\GitHubRepoProbeKind;
  * postures (reconcile errors + skips; this reports without ever failing the run).
  *
  * NEVER FAIL (DL-026): the event-driven writeback is unaffected by a reconcile token
- * problem. A resolved-but-invalid token (DL-186) — classically a stale
- * `<secret_dir>/github/token` that SHADOWS the store map — resolves but 401s every repo
- * at reconcile time, so probing here `warn`s at preflight, naming the resolved leg,
- * rather than surfacing on the first run.
+ * problem. A resolved-but-invalid token (DL-186) resolves but 401s at reconcile time, so
+ * probing here `warn`s at preflight, naming the resolved leg, rather than surfacing on the
+ * first run. (Since DL-456 a placed single file no longer shadows the store map: a repo the
+ * store maps reads its own key's file, so the leg named is the one to fix.)
  *
  * A NETWORK BLIP IS `unvalidated`, NOT SILENCE, AND THAT IS THE POINT OF THE SPLIT
  * (DL-251). It shared the `Ok` arm until then, so a token this run could not reach GitHub
@@ -62,7 +63,7 @@ final class ReconcileRepoTokensCheck implements Check
             return;
         }
 
-        $probe = new GitHubRepoProbe;
+        $probe = new GitHubRepoProbe(GitHubTokenResolver::forWriteback($ctx->writeback));
         foreach (array_keys($ctx->writeback->mappings) as $repo) {
             $result = $probe->probe((string) $repo);
             switch ($result->kind) {
@@ -70,7 +71,7 @@ final class ReconcileRepoTokensCheck implements Check
                     yield Finding::warn("reconcile: {$repo}: {$result->problem} — bridge:reconcile will FAIL for this repo until you place a read-only token (chmod 600), map it in the coordination store's [git-credential-map], or export GH_TOKEN; the event-driven writeback is unaffected");
                     break;
                 case GitHubRepoProbeKind::Http:
-                    yield Finding::warn("reconcile: {$repo}: token from {$result->source} → HTTP {$result->status}{$result->hint} — bridge:reconcile will SKIP this repo. If the source is a <secret_dir>/github/token or BRIDGE_GITHUB_TOKEN_PATH file, it SHADOWS the [git-credential-map] store (a stale single-token-era file is the common upgrade cause) — remove it so each repo resolves its own store token.");
+                    yield Finding::warn("reconcile: {$repo}: token from {$result->source} → HTTP {$result->status}{$result->hint} — bridge:reconcile will SKIP this repo. Fix or replace the token at that source: it is the one this repo resolves (a write_token_path in writeback.json, then the coord credential store's key for the repo, then the single token file, then GH_TOKEN).");
                     break;
                 case GitHubRepoProbeKind::Network:
                     // DL-251: this arm shared `Ok`'s silence, so "the token is valid" and
