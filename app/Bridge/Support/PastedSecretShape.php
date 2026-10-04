@@ -14,7 +14,8 @@ namespace App\Bridge\Support;
  *  - {@see displayPathSetting()} — the value of a path-valued SETTING (an `.env` path or a config-file path), where a token pasted instead of a path would otherwise be
  *    printed by every message naming the setting (card#11261). A message that prints such a
  *    value is meant to go through it; `Tests\Feature\Support\PathSettingDisplayCensusTest` is a
- *    tripwire for the shapes listed in its class docblock, not a completeness guarantee.
+ *    tripwire, not a completeness guarantee: it recognises only the shapes its controls
+ *    exercise, which its class docblock names.
  *
  * Its own class rather than `CoordCredentialStore`'s since card#11261: the file-read primitives
  * (`SecretFile`, `ChannelToken`, `UnreadableFileException`, `UntrustedPathContents`), the checks,
