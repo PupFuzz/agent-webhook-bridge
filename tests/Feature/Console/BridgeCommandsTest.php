@@ -28,6 +28,7 @@ use Tests\Support\AssertsSeatToolRemedy;
 use Tests\Support\ConsoleTable;
 use Tests\Support\CoordCredentialStoreFixture;
 use Tests\Support\CoordRosterFixture;
+use Tests\Support\PastedTokenFixture;
 use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
@@ -780,7 +781,7 @@ class BridgeCommandsTest extends TestCase
     #[DataProvider('pastedTokenStores')]
     public function test_check_never_prints_a_token_pasted_into_the_coord_credential_store(callable $arrange, string $witness): void
     {
-        $pasted = 'ghp_SyntheticPastedToken0123456789abcdef';
+        $pasted = PastedTokenFixture::value();
         $this->writeWritebackWithToken();
         $arrange((new CoordCredentialStoreFixture($this->dir.'/coord'))->use(), $pasted);
         Http::fake([

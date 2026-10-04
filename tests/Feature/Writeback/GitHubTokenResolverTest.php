@@ -12,6 +12,7 @@ use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Support\Facades\File;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CoordCredentialStoreFixture;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 /**
@@ -364,9 +365,6 @@ class GitHubTokenResolverTest extends TestCase
         $this->assertStringNotContainsString('ghp_pasted', (string) $r->problem);
     }
 
-    /** A synthetic token: a known GitHub prefix, the shape the framework's heuristic flags. */
-    private const PASTED = 'ghp_SyntheticPastedToken0123456789abcdef';
-
     /**
      * ⛔ A STORE NAME OR VALUE WITH A CREDENTIAL'S SHAPE IS NEVER RENDERED (round-1 review, MF 1):
      * every problem below is logged on each delivery and printed by `bridge:check`.
@@ -375,7 +373,7 @@ class GitHubTokenResolverTest extends TestCase
      */
     public static function pastedTokenShapes(): array
     {
-        $t = self::PASTED;
+        $t = PastedTokenFixture::value();
 
         return [
             'the token as the map value' => [fn ($s) => $s->write(['github.com/o/r' => $t], []), 'credential-shaped'],
@@ -395,8 +393,8 @@ class GitHubTokenResolverTest extends TestCase
         $r = $this->resolver()->resolveFor('o/r');
 
         $this->assertFalse($r->ok());
-        $this->assertStringNotContainsString(self::PASTED, (string) $r->problem);
-        $this->assertStringNotContainsString(substr(self::PASTED, 0, 12), (string) $r->problem);
+        $this->assertStringNotContainsString(PastedTokenFixture::value(), (string) $r->problem);
+        $this->assertStringNotContainsString(substr(PastedTokenFixture::value(), 0, 12), (string) $r->problem);
         $this->assertStringContainsString($says, (string) $r->problem, 'the witness: the problem is the one this shape raises');
     }
 

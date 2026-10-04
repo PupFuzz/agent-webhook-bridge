@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Log;
 use Tests\Support\CoordCredentialStoreFixture;
 use Tests\Support\KanbanCardStub;
 use Tests\Support\KanbanSearchSim;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 /**
@@ -155,7 +156,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
     public function test_a_token_pasted_as_the_map_value_is_in_no_log_line_and_no_alert(): void
     {
-        $pasted = 'ghp_SyntheticPastedToken0123456789abcdef';
+        $pasted = PastedTokenFixture::value();
         $this->writeWritebackWithAlert(['promote_on_release' => true, 'stages' => ['merged' => 52, 'merged_to_main' => 53]]);
         $store = (new CoordCredentialStoreFixture($this->dir.'/coord'))->use();
         $store->write(['github.com/owner/repo' => $pasted], []);

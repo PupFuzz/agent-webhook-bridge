@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Tests\Support\CoordCredentialStoreFixture;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 /**
@@ -102,7 +103,7 @@ class TwoOwnerTokenControlTest extends TestCase
 
     public function test_a_token_pasted_as_the_map_value_is_in_no_log_line_the_dropped_comment_writes(): void
     {
-        $pasted = 'ghp_SyntheticPastedToken0123456789abcdef';
+        $pasted = PastedTokenFixture::value();
         $store = (new CoordCredentialStoreFixture($this->dir.'/coord'))->use();
         $store->write(['github.com/alpha-org' => $pasted], []);
         $logged = [];
