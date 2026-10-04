@@ -570,7 +570,7 @@ class GitHubPrCardMoveClassifierTest extends TestCase
      * @param  array<string, mixed>  $payload
      */
     #[DataProvider('correlationSurfaces')]
-    public function test_a_board_another_mapping_declares_in_boards_is_shared_so_a_colliding_dl_does_not_resolve_to_its_card(string $eventType, array $payload): void
+    public function test_a_board_another_mapping_declares_in_boards_is_shared_so_a_colliding_dl_does_not_resolve_to_its_card(string $eventType, array $payload, string $op): void
     {
         $this->useRefCorrelation([
             'owner/a' => ['board_id' => 8, 'stages' => ['started' => 51, 'opened' => 50], 'started_from_stages' => [49], 'draft_overlay' => true],
