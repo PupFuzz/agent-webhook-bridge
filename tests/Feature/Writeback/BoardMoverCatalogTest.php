@@ -288,12 +288,16 @@ class BoardMoverCatalogTest extends TestCase
         ], BoardMoverCatalogCheck::findings([], $catalog));
     }
 
-    public function test_the_catalog_states_what_a_give_up_and_a_delivery_id_do_and_do_not_say(): void
+    public function test_the_catalog_states_what_a_give_up_row_says_and_makes_no_count_claim(): void
     {
         $about = $this->catalog()['about'];
         $this->assertIsString($about);
-        $this->assertStringContainsString('NOT CONFIRMED', $about, 'a give-up with op: move is an upper bound on failed moves');
+        $this->assertStringContainsString('NOT CONFIRMED', $about, 'a give-up with op: move says one of its moves was not confirmed');
         $this->assertStringContainsString('DELIVERY id', $about, 'webhook_event_id does not decide whether a given move landed');
+        $this->assertStringContainsString('docs/writeback.md § The board-mover catalog states what each give-up row can and cannot say', $about, 'the full statement lives there');
+        foreach (['upper bound', 'lower bound', 'never under-report'] as $claim) {
+            $this->assertStringNotContainsStringIgnoringCase($claim, $about, "a give-up row is per owed write, not per card, so `about` makes no count claim ({$claim})");
+        }
     }
 
     public function test_the_surface_and_schema_are_checked_against_the_site(): void
