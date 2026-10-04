@@ -51,8 +51,8 @@ class CoordCredentialStoreTest extends TestCase
             'a value in [DEFAULT]' => ["[DEFAULT]\nk = v\n[github]\n", 'line 2 sets a value in [DEFAULT]'],
             'a continuation in [github]' => ["[github]\na_file = /x\n  /y\n", 'line 3 continues a value onto an indented line in [github]'],
             'a continuation in the map' => ["[git-credential-map]\ngithub.com/o = a\n  b\n", 'line 3 continues a value onto an indented line in [git-credential-map]'],
-            'a non-ASCII name in the map' => ["[git-credential-map]\ngithub.com/ö = a\n", 'holds a name that is not printable ASCII'],
-            'a name with a space in [github]' => ["[github]\nmy key_file = /x\n", 'holds a name that is not printable ASCII'],
+            'a non-ASCII name in the map' => ["[git-credential-map]\ngithub.com/ö = a\n", 'line 2 sets a name in [git-credential-map] that is not printable ASCII'],
+            'a name with a space in [github]' => ["[github]\nmy key_file = /x\n", 'line 2 sets a name in [github] that is not printable ASCII'],
             'a map value with a space' => ["[git-credential-map]\ngithub.com/o = a b\n", 'to a key name that is not printable ASCII'],
             'a map value with %%' => ["[git-credential-map]\ngithub.com/o = a%%b\n", 'holding `%%` or `%(`'],
             'invalid UTF-8' => ["[github]\nk_file = /\xff\n", 'it is not valid UTF-8'],
@@ -67,6 +67,47 @@ class CoordCredentialStoreTest extends TestCase
         $this->assertSame(CoordCredentialStore::MALFORMED, $store->fault);
         $this->assertStringContainsString($why, $store->faultClause());
         $this->assertStringContainsString('the offending text is not shown', $store->faultClause());
+    }
+
+    /**
+     * The framework's `looks_like_pasted_secret` examples, plus each prefix and the length edge.
+     * Agreement with `coord_credentials.py` was measured once by feeding these same values to it;
+     * nothing here re-measures the far end.
+     *
+     * @return array<string, array{0: string, 1: bool}>
+     */
+    public static function pastedSecretShapes(): array
+    {
+        return [
+            'a classic PAT' => ['ghp_abc', true],
+            'a fine-grained PAT' => ['github_pat_abc', true],
+            'an upper-cased prefix' => ['GHP_abc', true],
+            'a GitLab token' => ['glpat-abc', true],
+            'a Slack bot token' => ['xoxb-abc', true],
+            'a 24-character blob' => [str_repeat('a', 24), true],
+            'a 23-character blob' => [str_repeat('a', 23), false],
+            'a 24-character name with a dot' => [str_repeat('a', 20).'.txt', false],
+            'the placeholder' => ['REPLACE_ME', false],
+            'a home-relative path' => ['~/.config/coord/tok', false],
+            'a Windows path' => ['C:\\creds\\tok', false],
+            'a file name' => ['tok.txt', false],
+            'a prefixed path' => ['/ghp_abc', false],
+            'a short key name' => ['coordination', false],
+            'blank' => ['  ', false],
+        ];
+    }
+
+    #[DataProvider('pastedSecretShapes')]
+    public function test_a_credential_shaped_name_is_recognised_as_the_framework_recognises_it(string $value, bool $flagged): void
+    {
+        $this->assertSame($flagged, CoordCredentialStore::looksLikePastedSecret($value));
+        $this->assertSame($flagged ? '<a credential-shaped name, '.CoordCredentialStore::fingerprint($value).'>' : $value, CoordCredentialStore::displayName($value));
+    }
+
+    public function test_the_fingerprint_is_the_frameworks(): void
+    {
+        // pointer_fingerprint('ghp_abc') in coord_credentials.py
+        $this->assertSame('sha256:'.substr(hash('sha256', 'ghp_abc'), 0, 8), CoordCredentialStore::fingerprint('ghp_abc'));
     }
 
     public function test_the_shapes_the_framework_accepts_route_as_the_helper_routes(): void

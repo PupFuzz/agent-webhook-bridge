@@ -364,6 +364,54 @@ class GitHubTokenResolverTest extends TestCase
         $this->assertStringNotContainsString('ghp_pasted', (string) $r->problem);
     }
 
+    /** A synthetic token: a known GitHub prefix, the shape the framework's heuristic flags. */
+    private const PASTED = 'ghp_SyntheticPastedToken0123456789abcdef';
+
+    /**
+     * ⛔ A STORE NAME OR VALUE WITH A CREDENTIAL'S SHAPE IS NEVER RENDERED (round-1 review, MF 1):
+     * every problem below is logged on each delivery and printed by `bridge:check`.
+     *
+     * @return array<string, array{0: callable(CoordCredentialStoreFixture): void, 1: string}>
+     */
+    public static function pastedTokenShapes(): array
+    {
+        $t = self::PASTED;
+
+        return [
+            'the token as the map value' => [fn ($s) => $s->write(['github.com/o/r' => $t], []), 'credential-shaped'],
+            'the token as the map value, with a _file under it' => [fn ($s) => $s->write(['github.com/o/r' => $t], ["{$t}_file" => $s->dir.'/nope']), 'credential-shaped'],
+            'the token as the map value, with an inline value under it' => [fn ($s) => $s->write(['github.com/o/r' => $t], [$t => 'x']), 'credential-shaped'],
+            'the token as a map name, with a value holding a space' => [fn ($s) => $s->raw("[git-credential-map]\n{$t} = two words\n"), 'line 2'],
+            'the token as a map name, with a value holding %%' => [fn ($s) => $s->raw("[git-credential-map]\n{$t} = a%%b\n"), 'line 2'],
+        ];
+    }
+
+    /** @param  callable(CoordCredentialStoreFixture): void  $arrange */
+    #[DataProvider('pastedTokenShapes')]
+    public function test_a_store_name_or_value_shaped_like_a_token_is_never_printed(callable $arrange, string $says): void
+    {
+        $arrange($this->store);
+
+        $r = $this->resolver()->resolveFor('o/r');
+
+        $this->assertFalse($r->ok());
+        $this->assertStringNotContainsString(self::PASTED, (string) $r->problem);
+        $this->assertStringNotContainsString(substr(self::PASTED, 0, 12), (string) $r->problem);
+        $this->assertStringContainsString($says, (string) $r->problem, 'the witness: the problem is the one this shape raises');
+    }
+
+    public function test_a_long_key_name_is_elided_from_messages_but_still_serves_its_repo(): void
+    {
+        // The framework's heuristic flags any separator-free name of 24+ characters without a dot;
+        // a key like this is legitimate, so it is elided where printed, never refused.
+        $path = $this->storeMapping('github.com/o', 'agent_webhook_bridge_writer', 'ghp_long_key');
+
+        $r = $this->resolver()->resolveFor('o/r');
+
+        $this->assertSame('ghp_long_key', $r->token);
+        $this->assertSame($path, $r->path);
+    }
+
     public function test_a_token_file_another_user_owns_is_refused(): void
     {
         $path = $this->storeMapping('github.com/o', 'k', 'ghp_x');

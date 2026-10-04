@@ -158,7 +158,7 @@ final class GitHubTokenResolver
      */
     private function resolveStoreKey(CoordCredentialStore $store, string $repo, string $key, string $matched): TokenResolution
     {
-        $label = "store key {$key} ([git-credential-map] {$matched})";
+        $label = 'store key '.CoordCredentialStore::displayName($key)." ([git-credential-map] {$matched})";
         [$path, $why] = $store->tokenFileFor($key);
         if ($path === null) {
             return TokenResolution::problem("{$label} for {$repo}: {$why}. Fix the coord credential store at {$store->path}; the single token file does not stand in for a repo the store maps", TokenFileFault::Misconfigured, TokenSource::Store, $store->path);

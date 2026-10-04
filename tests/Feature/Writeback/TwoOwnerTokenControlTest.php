@@ -8,6 +8,7 @@ use App\Bridge\Writeback\PrCorrelationCommenter;
 use App\Bridge\Writeback\PrOutcome;
 use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Http\Client\Request;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -97,6 +98,25 @@ class TwoOwnerTokenControlTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => str_starts_with($message, 'pr_correlation_comment: NOT posted')
             && ($context['repo'] ?? null) === self::BETA
             && ($context['status'] ?? null) === 404);
+    }
+
+    public function test_a_token_pasted_as_the_map_value_is_in_no_log_line_the_dropped_comment_writes(): void
+    {
+        $pasted = 'ghp_SyntheticPastedToken0123456789abcdef';
+        $store = (new CoordCredentialStoreFixture($this->dir.'/coord'))->use();
+        $store->write(['github.com/alpha-org' => $pasted], []);
+        $logged = [];
+        Log::listen(function (MessageLogged $e) use (&$logged): void {
+            $logged[] = $e->message.' '.json_encode($e->context);
+        });
+
+        $alpha = $this->comment(self::ALPHA, 11);
+
+        $this->assertFalse($alpha->landed);
+        foreach ($logged as $line) {
+            $this->assertStringNotContainsString($pasted, $line);
+        }
+        $this->assertNotEmpty(array_filter($logged, fn (string $line) => str_contains($line, 'token_unresolved') && str_contains($line, 'credential-shaped')), 'the witness: the drop is logged, with the elided name');
     }
 
     private function comment(string $repo, int $number): GitHubWriteAttempt

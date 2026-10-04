@@ -26,6 +26,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\UnreadableDeclarationClassifier;
 use Tests\Support\AssertsSeatToolRemedy;
 use Tests\Support\ConsoleTable;
+use Tests\Support\CoordCredentialStoreFixture;
 use Tests\Support\CoordRosterFixture;
 use Tests\Support\PreloadStub;
 use Tests\TestCase;
@@ -764,6 +765,36 @@ class BridgeCommandsTest extends TestCase
         $out = Artisan::output();
         $this->assertMatchesRegularExpression('/^WARN: reconcile: owner\/repo: token from token file \(/m', $out);
         $this->assertMatchesRegularExpression('/^FAIL: github token file: GitHub REFUSES the token in token file/m', $out);
+    }
+
+    /** @return array<string, array{0: callable(CoordCredentialStoreFixture, string): void, 1: string}> */
+    public static function pastedTokenStores(): array
+    {
+        return [
+            'as the map value' => [fn ($s, $t) => $s->write(['github.com/owner/repo' => $t], []), '/^FAIL: github token file: .*credential-shaped/m'],
+            'as a map name' => [fn ($s, $t) => $s->raw("[git-credential-map]\n{$t} = two words\n"), '/^FAIL: github token file: .*line 2 maps a \[git-credential-map\] name/m'],
+        ];
+    }
+
+    /** @param  callable(CoordCredentialStoreFixture, string): void  $arrange */
+    #[DataProvider('pastedTokenStores')]
+    public function test_check_never_prints_a_token_pasted_into_the_coord_credential_store(callable $arrange, string $witness): void
+    {
+        $pasted = 'ghp_SyntheticPastedToken0123456789abcdef';
+        $this->writeWritebackWithToken();
+        $arrange((new CoordCredentialStoreFixture($this->dir.'/coord'))->use(), $pasted);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            'https://api.github.com/*' => Http::response([], 200),
+        ] + $this->fakePreload());
+
+        $this->assertSame(1, Artisan::call('bridge:check'));
+        $out = Artisan::output();
+
+        $this->assertStringNotContainsString($pasted, $out);
+        $this->assertMatchesRegularExpression($witness, $out);
+        $this->assertSame(1, Artisan::call('bridge:check', ['--format' => 'json']));
+        $this->assertStringNotContainsString($pasted, Artisan::output());
     }
 
     public function test_check_classifies_the_reconcile_token_probe_status_into_a_hint(): void

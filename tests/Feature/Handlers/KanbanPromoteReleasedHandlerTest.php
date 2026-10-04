@@ -10,6 +10,7 @@ use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -150,6 +151,32 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     private function assertNotMoved(int $cardId): void
     {
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), "/tasks/{$cardId}.json"));
+    }
+
+    public function test_a_token_pasted_as_the_map_value_is_in_no_log_line_and_no_alert(): void
+    {
+        $pasted = 'ghp_SyntheticPastedToken0123456789abcdef';
+        $this->writeWritebackWithAlert(['promote_on_release' => true, 'stages' => ['merged' => 52, 'merged_to_main' => 53]]);
+        $store = (new CoordCredentialStoreFixture($this->dir.'/coord'))->use();
+        $store->write(['github.com/owner/repo' => $pasted], []);
+        $this->fakeBoard(
+            [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']]],
+            [self::ALERT_URL.'*' => Http::response('ok')],
+        );
+        $logged = [];
+        Log::listen(function (MessageLogged $e) use (&$logged): void {
+            $logged[] = $e->message.' '.json_encode($e->context);
+        });
+
+        $this->handle();
+
+        Http::assertNotSent(fn (Request $r) => str_starts_with($r->url(), 'https://api.github.com/'));
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r));
+        foreach ($logged as $line) {
+            $this->assertStringNotContainsString($pasted, $line);
+        }
+        $this->assertNotEmpty(array_filter($logged, fn (string $line) => str_contains($line, 'no GitHub read token') && str_contains($line, 'credential-shaped')), 'the witness: the skip is logged, with the elided name');
+        Http::assertNotSent(fn (Request $r) => str_contains($r->body(), $pasted) || str_contains(json_encode($r->headers()) ?: '', $pasted));
     }
 
     public function test_the_github_token_is_resolved_with_the_configured_repo_spelling(): void

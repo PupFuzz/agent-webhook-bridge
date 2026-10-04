@@ -42,6 +42,11 @@ use App\Bridge\Exceptions\UnreadableFileException;
  * pointer expands against the home of the STORE'S OWNER, who is the user the helper runs as, not the
  * home of whichever process asks; `~user/` is refused.
  *
+ * ⛔ NO STORE TEXT THAT COULD BE A TOKEN REACHES A MESSAGE: a malformed store is named by line
+ * number, and a name with a credential's shape (a token pasted as a map value, which then stands as
+ * the `[github]` key) is printed through {@see self::displayName()} — the framework's
+ * `_safe_coordinate`. These messages are logged on every delivery and printed by `bridge:check`.
+ *
  * ⚑ A MISSING STORE IS AN EMPTY STORE (every repo unmapped), as for the framework's reader — but
  * only where this process can see that it is missing: under a directory it cannot traverse that is
  * UNREADABLE, and a store that is present and cannot be read or parsed is a fault. The caller must
@@ -82,6 +87,12 @@ final class CoordCredentialStore
 
     /** A name (and a map value) the subset reads: printable ASCII, no whitespace. */
     private const NAME = '/\A[\x21-\x7e]+\z/';
+
+    /**
+     * The framework's `TOKEN_PREFIXES` (`coord_credentials.py`): the credential formats its store
+     * holds. Mirrored, not imported — the bridge cannot import the framework's Python.
+     */
+    private const TOKEN_PREFIXES = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'glpat-', 'xoxb-', 'xoxp-'];
 
     /** Python's `str.isspace()` set, near enough: ASCII whitespace, the C0 separators, NEL and Unicode space separators. */
     private const SPACE = '[\s\x{1c}-\x{1f}\x{85}\p{Zs}\x{2028}\x{2029}]';
@@ -169,6 +180,44 @@ final class CoordCredentialStore
     }
 
     /**
+     * A store name (a map value, a `[github]` key) as a message may print it: as written, or — when
+     * it has the shape of a credential — a non-reversible fingerprint. The framework's
+     * `_safe_coordinate`: a token pasted where a name belongs must not be printed by every message
+     * that names it. Elided, never refused, as the framework does: a long key name has the shape too.
+     */
+    public static function displayName(string $name): string
+    {
+        return self::looksLikePastedSecret($name)
+            ? '<a credential-shaped name, '.self::fingerprint($name).'>'
+            : $name;
+    }
+
+    /**
+     * The framework's `looks_like_pasted_secret`, line for line: no separator, no leading `~`, and
+     * either a known token prefix or 24+ characters with no dot.
+     */
+    public static function looksLikePastedSecret(string $value): bool
+    {
+        $v = trim($value);
+        if ($v === '' || str_starts_with($v, '~') || str_contains($v, '/') || str_contains($v, '\\')) {
+            return false;
+        }
+        foreach (self::TOKEN_PREFIXES as $prefix) {
+            if (str_starts_with(strtolower($v), $prefix)) {
+                return true;
+            }
+        }
+
+        return strlen($v) >= 24 && ! str_contains($v, '.');
+    }
+
+    /** The framework's `pointer_fingerprint`: `sha256:` and 8 hex characters. */
+    public static function fingerprint(string $value): string
+    {
+        return 'sha256:'.substr(hash('sha256', $value), 0, 8);
+    }
+
+    /**
      * The `[github]` key a repo routes to and the map name that matched, or null when the store maps
      * it nowhere (or there is no store). Only a readable store may be asked.
      *
@@ -218,27 +267,32 @@ final class CoordCredentialStore
     {
         $this->assertReadable();
         $github = $this->sections[self::GITHUB_SECTION] ?? [];
+        $name = self::displayName($key);
+        $file = self::displayName($key.'_file');
         $inline = self::lookup($github, $key);
         if ($inline !== null && $inline !== '') {
-            return [null, "[github] {$key} holds an INLINE value, and the bridge reads only a `{$key}_file` pointer — move the token into a file (chmod 600) and point `{$key}_file` at it (the framework's `/coord:update --area credential-indirection` does this); the value is not shown"];
+            return [null, "[github] {$name} holds an INLINE value, and the bridge reads only a `{$file}` pointer — move the token into a file (chmod 600) and point `{$file}` at it (the framework's `/coord:update --area credential-indirection` does this); the value is not shown"];
         }
         $pointer = self::lookup($github, $key.'_file');
+        if (($pointer === null || $pointer === '') && self::looksLikePastedSecret($key)) {
+            return [null, "[git-credential-map] maps this repo to {$name}, which has the shape of a CREDENTIAL rather than a key name, and [github] has no pointer for it — a map value names a [github] key whose `<key>_file` holds the token's path, never the token; its text is not shown"];
+        }
         if ($pointer === null || $pointer === '') {
-            return [null, "[github] has no `{$key}_file` pointer, so the key [git-credential-map] names has no token file"];
+            return [null, "[github] has no `{$file}` pointer, so the key [git-credential-map] names has no token file"];
         }
         if (str_contains($pointer, '%%') || str_contains($pointer, '%(')) {
-            return [null, "[github] {$key}_file holds `%%` or `%(`, which the store's own reader refuses"];
+            return [null, "[github] {$file} holds `%%` or `%(`, which the store's own reader refuses"];
         }
         if ($pointer === '~' || str_starts_with($pointer, '~/')) {
             $home = $this->ownerHome();
             if ($home === null) {
-                return [null, "[github] {$key}_file starts with `~`, and the home directory of the store's owner could not be read (no posix extension, or an owner this process could not identify)"];
+                return [null, "[github] {$file} starts with `~`, and the home directory of the store's owner could not be read (no posix extension, or an owner this process could not identify)"];
             }
 
             return [rtrim($home, '/').substr($pointer, 1), null];
         }
         if (! str_starts_with($pointer, '/')) {
-            return [null, "[github] {$key}_file is not an absolute path (nor `~/…`): a relative path resolves against whatever directory the reader runs in"];
+            return [null, "[github] {$file} is not an absolute path (nor `~/…`): a relative path resolves against whatever directory the reader runs in"];
         }
 
         return [$pointer, null];
@@ -302,6 +356,7 @@ final class CoordCredentialStore
         $sections = [];
         $seenSections = [];
         $seenNames = [];
+        $lineOf = [];
         $unparsed = [];
         $current = null;
         $name = null;
@@ -356,6 +411,7 @@ final class CoordCredentialStore
             }
             if (in_array($current, self::READ_SECTIONS, true)) {
                 $sections[$current][$option] = self::strip($m[3]);
+                $lineOf[$current][$option] = $n;
             }
         }
         if ($unparsed !== []) {
@@ -363,17 +419,18 @@ final class CoordCredentialStore
         }
         foreach ($sections as $section => $values) {
             foreach ($values as $option => $value) {
+                $n = $lineOf[$section][$option];
                 if (preg_match(self::NAME, (string) $option) !== 1) {
-                    return [[], "[{$section}] holds a name that is not printable ASCII without spaces"];
+                    return [[], "line {$n} sets a name in [{$section}] that is not printable ASCII without spaces"];
                 }
                 if ($section !== self::MAP_SECTION || $value === '') {
                     continue;
                 }
                 if (preg_match(self::NAME, $value) !== 1) {
-                    return [[], "[git-credential-map] maps {$option} to a key name that is not printable ASCII without spaces"];
+                    return [[], "line {$n} maps a [git-credential-map] name to a key name that is not printable ASCII without spaces"];
                 }
                 if (str_contains($value, '%%') || str_contains($value, '%(')) {
-                    return [[], "[git-credential-map] maps {$option} to a value holding `%%` or `%(`, which the store's own reader refuses"];
+                    return [[], "line {$n} maps a [git-credential-map] name to a value holding `%%` or `%(`, which the store's own reader refuses"];
                 }
             }
         }
