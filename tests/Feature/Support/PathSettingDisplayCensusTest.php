@@ -13,10 +13,12 @@ use Tests\TestCase;
  *
  * THE POPULATION — exactly {@see self::siteAt()}'s predicate, over every `*.php` under `app/`:
  *  - a CARRIER: a variable, optionally followed by `->property` steps, that holds a setting's value
- *    as read. {@see self::GLOBAL_PROPERTIES} and {@see self::GLOBAL_METHODS} are carriers in every
- *    file (the YAML / `writeback.json` / `IdleNudgeConfig` `token_path` fields, `path`, and any
- *    `->tokenPath(…)` call); {@see self::CARRIERS} names the rest per file, derived by reading
- *    where each setting in {@see self::SETTINGS} is read and following its value to the messages;
+ *    as read. {@see self::globalProperties()} and {@see self::GLOBAL_METHODS} are carriers in every
+ *    file — `path`, the camelCase of every `…path` / `socket` key the YAML and `writeback.json`
+ *    readers ({@see self::KEY_READERS}) read, DERIVED from them, and any `->tokenPath(…)` call;
+ *    {@see self::CARRIERS} names the rest per file (the locals the readers copy a value into, the
+ *    `.env` settings), derived by reading where each setting in {@see self::SETTINGS} is read and
+ *    following its value to the messages;
  *  - in MESSAGE POSITION: inside an interpolated string or heredoc, an operand of `.` or `.=`, the
  *    value after `=>` (a log context — and, since the token is the same, a `match` arm or an arrow
  *    function returning a carrier, which a ruling cannot exempt: rename the variable), or an argument of `sprintf` / `implode` / `join` /
@@ -41,11 +43,15 @@ use Tests\TestCase;
 class PathSettingDisplayCensusTest extends TestCase
 {
     /**
-     * A property of any receiver whose value is a configured path: the `token_path` fields, and
-     * `path` — `CoordConfigFile` / `CoordCredentialStore` / `TokenResolution` hold the setting's value
-     * as read there (the first two print it through their `shownPath()`).
+     * The readers of the YAML / `writeback.json` settings, relative to `app/`. Every key they read
+     * whose name ends in `path` or is `socket` is a path-valued setting
+     * ({@see self::derivedKeys()}) — derived, not listed, so a key added to a reader is a carrier
+     * here without anyone declaring it.
      */
-    private const GLOBAL_PROPERTIES = ['path', 'tokenPath', 'writeTokenPath'];
+    private const KEY_READERS = ['Bridge/Support/AgentConfig.php', 'Bridge/Support/BoardToolsConfig.php', 'Bridge/Writeback/WritebackConfig.php'];
+
+    /** @var list<string>|null */
+    private static ?array $globalProperties = null;
 
     /** A method of any receiver that returns a configured token path. */
     private const GLOBAL_METHODS = ['tokenPath'];
@@ -58,11 +64,13 @@ class PathSettingDisplayCensusTest extends TestCase
      */
     private const CARRIERS = [
         'Bridge/Check/Checks/AgentApiTokenCheck.php' => ['$tokenPath'],
+        'Bridge/Check/Checks/WritebackAlertChannelCheck.php' => ['$socket'],
         'Bridge/Check/Checks/ChannelTokenPathCheck.php' => ['$tokenPath'],
         'Bridge/Check/Checks/GitHubTokenFileCheck.php' => ['$path'],
         'Bridge/Handlers/ChannelPushHandler.php' => ['$allowed'],
         'Bridge/Handlers/SpawnDetachedHandler.php' => ['$configured', '$candidates'],
         'Bridge/IdleNudge/FleetSnapshotReader.php' => ['$path'],
+        'Bridge/Support/AgentConfig.php' => ['$socketStr', '$serverPath'],
         'Bridge/Support/ChannelToken.php' => ['$path'],
         'Bridge/Support/FileContents.php' => ['$path'],
         'Bridge/Support/CoordConfigFile.php' => ['$path'],
@@ -71,6 +79,7 @@ class PathSettingDisplayCensusTest extends TestCase
         'Bridge/Support/UntrustedPathContents.php' => ['$path'],
         'Bridge/Tools/BoardToolAgentResolver.php' => ['$path'],
         'Bridge/Writeback/GitHubTokenResolver.php' => ['$path', '$override'],
+        'Bridge/Writeback/WritebackAlertNotifier.php::validateSocketPath' => ['$path'],
         'Console/Commands/Bridge/ProvisionToolsCommand.php::handle' => ['$path'],
     ];
 
@@ -169,6 +178,81 @@ class PathSettingDisplayCensusTest extends TestCase
     }
 
     /**
+     * The key derivation finds the settings the readers read today (a positive control — an empty
+     * result would make every property check below vacuous) and a key added to a reader, which is
+     * then a carrier: printed raw it is a site, with nobody having declared it.
+     */
+    public function test_a_new_reader_key_becomes_a_carrier_without_being_declared(): void
+    {
+        $keys = self::derivedKeys(self::readerSources());
+        foreach (['token_path', 'write_token_path', 'socket', 'server_path'] as $known) {
+            $this->assertContains($known, $keys, "the derivation no longer finds {$known} in the config readers");
+        }
+
+        $scratch = self::readerSources();
+        $scratch['Bridge/Support/AgentConfig.php'] .= "\n\$x = \$channel['scratch_new_path'] ?? null;\n";
+        $derived = self::derivedKeys($scratch);
+        $this->assertSame(['scratch_new_path'], array_values(array_diff($derived, $keys)));
+
+        $at = fn (array $tokens, int $i, int $scopeStart): ?string => self::siteAt($tokens, $i, $scopeStart, [], self::propertiesFor($derived));
+        $fixture = '<?php function a($cfg) { throw new X("bad {$cfg->scratchNewPath}"); }';
+        $this->assertCount(1, SourceScan::sites($fixture, 'fixture.php', $at));
+        $this->assertSame([], SourceScan::sites($fixture, 'fixture.php', fn (array $tokens, int $i, int $scopeStart): ?string => self::siteAt($tokens, $i, $scopeStart, [], self::propertiesFor($keys))), 'control: without the new key the same line is not a site');
+    }
+
+    /** @return array<string, string> */
+    private static function readerSources(): array
+    {
+        $sources = [];
+        foreach (self::KEY_READERS as $file) {
+            $sources[$file] = (string) file_get_contents(base_path('app/'.$file));
+        }
+
+        return $sources;
+    }
+
+    /**
+     * Every key the readers read that is path-valued: `…path` or `socket`, as `['key']` or
+     * `array_key_exists('key', …)`.
+     *
+     * @param  array<string, string>  $sources
+     * @return list<string>
+     */
+    private static function derivedKeys(array $sources): array
+    {
+        $keys = [];
+        foreach ($sources as $source) {
+            preg_match_all("/(?:\\[|array_key_exists\\()\\s*'([a-z0-9_]*(?:path|socket))'/", $source, $m);
+            $keys = array_merge($keys, $m[1]);
+        }
+        $keys = array_values(array_unique($keys));
+        sort($keys);
+
+        return $keys;
+    }
+
+    /**
+     * The properties of any receiver that hold a path setting's value: `path` — `CoordConfigFile` /
+     * `CoordCredentialStore` / `TokenResolution` hold the value as read there (the first two print
+     * it through their `shownPath()`) — and the camelCase of every derived key (`token_path` →
+     * `tokenPath`, `socket` → `socket`). The camelCase is the convention the config value objects
+     * follow; a key a value object stores under another name is outside this derivation.
+     *
+     * @param  list<string>  $keys
+     * @return list<string>
+     */
+    private static function propertiesFor(array $keys): array
+    {
+        return array_values(array_unique(array_merge(['path'], array_map(fn (string $k): string => lcfirst(str_replace('_', '', ucwords($k, '_'))), $keys))));
+    }
+
+    /** @return list<string> */
+    private static function globalProperties(): array
+    {
+        return self::$globalProperties ??= self::propertiesFor(self::derivedKeys(self::readerSources()));
+    }
+
+    /**
      * The carriers declared for $file, plus those declared for the function the walk is in.
      *
      * @param  list<array{0: int|string, 1: string}>  $tokens
@@ -186,13 +270,14 @@ class PathSettingDisplayCensusTest extends TestCase
      *
      * @param  list<array{0: int|string, 1: string}>  $tokens
      * @param  list<string>  $carriers  chains (`$path`, `$this->path`) or bare property names
+     * @param  list<string>|null  $properties  the path-holding properties; default {@see self::globalProperties()}
      */
-    private static function siteAt(array $tokens, int $i, int $scopeStart, array $carriers): ?string
+    private static function siteAt(array $tokens, int $i, int $scopeStart, array $carriers, ?array $properties = null): ?string
     {
         if ($tokens[$i][0] !== T_VARIABLE) {
             return null;
         }
-        [$chain, $end, $isCarrier] = self::chainAt($tokens, $i, $carriers);
+        [$chain, $end, $isCarrier] = self::chainAt($tokens, $i, $carriers, $properties ?? self::globalProperties());
         if (! $isCarrier) {
             return null;
         }
@@ -215,9 +300,10 @@ class PathSettingDisplayCensusTest extends TestCase
      *
      * @param  list<array{0: int|string, 1: string}>  $tokens
      * @param  list<string>  $carriers
+     * @param  list<string>  $properties
      * @return array{0: string, 1: int, 2: bool}
      */
-    private static function chainAt(array $tokens, int $i, array $carriers): array
+    private static function chainAt(array $tokens, int $i, array $carriers, array $properties): array
     {
         $chain = $tokens[$i][1];
         $last = null;
@@ -238,7 +324,7 @@ class PathSettingDisplayCensusTest extends TestCase
             return [$chain, $j, false];
         }
 
-        return [$chain, $j, in_array($chain, $carriers, true) || in_array($last, self::GLOBAL_PROPERTIES, true)];
+        return [$chain, $j, in_array($chain, $carriers, true) || in_array($last, $properties, true)];
     }
 
     /** @param  list<array{0: int|string, 1: string}>  $tokens */
