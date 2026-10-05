@@ -1291,15 +1291,6 @@ CLIENT_LAUNCHER_SHIM = {"posix": "start-claude", "nt": "start-claude.cmd"}
 LAUNCHER_SHIM_MARKER = "agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)"
 
 
-def launcher_shim_home(environ=None, os_name=os.name) -> str:
-    """Where the seat's launcher shim lives: $HOME on POSIX, %USERPROFILE% on Windows. Pure."""
-    env = os.environ if environ is None else environ
-    home = env.get("USERPROFILE" if os_name == "nt" else "HOME") or ""
-    if not home:
-        raise ValueError("%USERPROFILE% is not set" if os_name == "nt" else "$HOME is not set")
-    return home
-
-
 def client_launcher_shim(root: str, os_name=os.name) -> str:
     """`<root>/bin/start-claude` (`start-claude.cmd` on Windows): the client updater's launcher shim."""
     if os_name == "nt":
@@ -1379,31 +1370,62 @@ def _write_text_atomically(path: str, text: str, mode: int) -> None:
     os.replace(tmp, path)
 
 
+_SHIM_CHANNEL_RE = re.compile(
+    r"^(?:BRIDGE_CHANNEL_NAME='([a-z0-9_-]+)'; export|set \"BRIDGE_CHANNEL_NAME=([a-z0-9_-]+)\"|\$env:BRIDGE_CHANNEL_NAME = '([a-z0-9_-]+)')",
+    re.MULTILINE,
+)
+
+
+def shim_channel(text: str):
+    """The channel a launcher shim's text sets, or None when it sets none this provisioner writes."""
+    m = _SHIM_CHANNEL_RE.search(text)
+    return next((g for g in m.groups() if g), None) if m else None
+
+
 def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.name) -> list:
     """Write the seat's launcher shim into `home`; idempotent. Returns one line per file, saying
     what happened to it. A file at a shim path that is not a shim (no marker line) is renamed to
     `<name>.pre-shim-<UTC>` first and the line says so; a shim already up to date is not rewritten.
 
+    Raises ValueError, writing nothing, when a shim path is a directory or holds the shim of
+    ANOTHER channel: one home has one `start-claude`, and a seat running two channels as one OS
+    user must not have the first silently retargeted at the second.
+
     The caller has already established that the client root's launcher shim exists.
     """
-    report = []
-    for name, body in launcher_shims(channel_name, root, os_name):
+    shims = launcher_shims(channel_name, root, os_name)
+    current = {}
+    for name, _body in shims:
         path = os.path.join(home, name)
-        mode = 0o755 if os_name != "nt" else 0o644
-        if os.path.lexists(path):
-            if os.path.isdir(path) and not os.path.islink(path):
-                _fail(f"{path} is a directory, so the launcher shim cannot be written there — move it, then re-run.")
-            try:
-                with open(path, encoding="utf-8", newline="") as fh:
-                    current = fh.read()
-            except (OSError, UnicodeDecodeError):
-                current = None  # a dangling link, or not text: not ours
-            if current is not None and is_launcher_shim(current):
-                if current == body:
+        if not os.path.lexists(path):
+            continue
+        if os.path.isdir(path) and not os.path.islink(path):
+            raise ValueError(f"{path} is a directory, so the launcher shim cannot be written there — move it, then re-run")
+        try:
+            with open(path, encoding="utf-8", newline="") as fh:
+                text = fh.read()
+        except (OSError, UnicodeDecodeError):
+            text = None  # a dangling link, or not text: not ours
+        current[name] = text
+        if text is not None and is_launcher_shim(text):
+            other = shim_channel(text)
+            if other is not None and other != channel_name:
+                raise ValueError(
+                    f"{path} is the launcher shim for channel {other}, not {channel_name} — one home holds one; "
+                    f"remove it (or start channel {channel_name} with `{path} --channel {channel_name}`) and re-run"
+                )
+    report = []
+    mode = 0o755 if os_name != "nt" else 0o644
+    for name, body in shims:
+        path = os.path.join(home, name)
+        if name in current:
+            text = current[name]
+            if text is not None and is_launcher_shim(text):
+                if text == body:
                     report.append(f"launcher shim: {path} is up to date.")
                     continue
                 _write_text_atomically(path, body, mode)
-                report.append(f"launcher shim: {path} rewritten for channel {channel_name}.")
+                report.append(f"launcher shim: {path} rewritten.")
                 continue
             backup = f"{path}.pre-shim-{_utc_stamp()}"
             if os.path.lexists(backup):
@@ -1417,8 +1439,8 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
 
 
 def _launcher_shim_unavailable(channel_name: str):
-    """Why the seat's launcher shim cannot be written now, or None when it can (the client root's own
-    launcher shim exists — never a shim whose target does not)."""
+    """`(root, why)`: `why` says why the seat's launcher shim cannot be written now, and is None only
+    when the client root's own launcher shim exists — a shim is never written over a missing target."""
     try:
         root = client_root(channel_name)
     except ValueError as e:
@@ -1444,11 +1466,11 @@ def _offer_launcher_shim(channel_name: str) -> None:
         print(f"launcher shim: not written — {why}")
         return
     try:
-        home = launcher_shim_home()
+        lines = install_launcher_shims(channel_name, root, _host_b_home())
     except ValueError as e:
         print(f"launcher shim: not written — {e}.")
         return
-    for line in install_launcher_shims(channel_name, root, home):
+    for line in lines:
         print(line)
 
 
@@ -1474,10 +1496,10 @@ def run_write_launcher_shim(args) -> int:
     if why is not None:
         _fail(f"launcher shim NOT written — {why.replace('<agent>', args.agent)}")
     try:
-        home = launcher_shim_home()
+        lines = install_launcher_shims(args.channel_name, root, _host_b_home())
     except ValueError as e:
         _fail(f"launcher shim NOT written — {e}.")
-    for line in install_launcher_shims(args.channel_name, root, home):
+    for line in lines:
         print(line)
     return 0
 

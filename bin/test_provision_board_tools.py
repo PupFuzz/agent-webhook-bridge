@@ -3586,15 +3586,35 @@ class LauncherShim(unittest.TestCase):
         self.assertFalse(pbt.is_launcher_shim(f"echo '{pbt.LAUNCHER_SHIM_MARKER}'\n"))
         self.assertFalse(pbt.is_launcher_shim(f"# not quite: {pbt.LAUNCHER_SHIM_MARKER}\n"))
 
-    def test_a_shim_for_another_channel_is_rewritten_in_place_without_a_backup(self):
+    def test_a_changed_shim_of_this_channel_is_rewritten_in_place_without_a_backup(self):
+        self._root()
+        [(_, body)] = pbt.launcher_shims("chan", self.root, "posix")
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(body.replace("exec ", "exec  "))
+        rc, out = self._write()
+        self.assertEqual(rc, 0)
+        self.assertIn(f"launcher shim: {self.shim} rewritten.", out)
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), body)
+        self.assertEqual(self._home_files(), ["start-claude.sh"])
+
+    def test_the_shim_of_another_channel_is_refused_never_retargeted(self):
+        # One home, two channels as one OS user: the second must not silently take the first's launcher.
         self._root()
         [(_, other)] = pbt.launcher_shims("other", self.root, "posix")
         with open(self.shim, "w", encoding="utf-8") as fh:
             fh.write(other)
-        rc, out = self._write()
-        self.assertEqual(rc, 0)
-        self.assertIn("rewritten for channel chan", out)
+        with self.assertRaises(SystemExit) as cm:
+            self._write()
+        self.assertIn("is the launcher shim for channel other, not chan", str(cm.exception))
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), other)
         self.assertEqual(self._home_files(), ["start-claude.sh"])
+
+    def test_shim_channel_reads_each_platforms_shim(self):
+        for os_name in ("posix", "nt"):
+            for _name, body in pbt.launcher_shims("kb-x_1", "/r", os_name):
+                self.assertEqual(pbt.shim_channel(body), "kb-x_1", (os_name, _name))
 
     def test_no_client_root_is_refused_naming_the_bootstrap_and_writes_nothing(self):
         with self.assertRaises(SystemExit) as cm:
