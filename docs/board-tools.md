@@ -5,7 +5,8 @@ agent gets a small, channel-identity-scoped **request/response** surface over th
 same channel that already delivers wake events — so a seat with **no kanban token and
 no toolkit** can see and capture its own board work directly. Which seats get it is a
 deployment default: every pm and solo seat, while an impl seat uses kbcard for its board
-work (`CLAUDE_DEPLOYMENT.md` § Fresh install, DL-460).
+work (`CLAUDE_DEPLOYMENT.md` § Fresh install, DL-460) and gets `ci_await` from a **scope-less**
+block — no board tool at all ([§ Scope-less agents](#scope-less-agents-the-ci-tools-without-a-board-card11283--dl-461), DL-461).
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
@@ -1678,6 +1679,99 @@ against that shared budget (DL-435 bound (d)). Nothing is ever walked page by pa
 exceeds one page, and every count is kanban's (under `lane: "unrouted"` every search reads exactly one
 whole page).
 
+## Scope-less agents: the CI tools without a board (card#11283 / DL-461)
+
+An enabled `board_tools` block with **no board scope** — `board_id`, `swimlane_id`,
+`create_stage_id`, `shared_swimlane_id`, `coord_board_id` and `address_tags` all ABSENT (by key: a
+key written with an empty value counts as present and is parsed, and refused, as a scoped block's) —
+is a valid **CI-only** agent:
+
+```yaml
+board_tools:
+  enabled: true            # EXPLICIT — a default-class block with no scope is still suppressed
+  # transport / auth / ssh_account / client_update: as for any block
+  # ci_tools: false        # opt out of the CI tools (a non-bool value also means OFF, and bridge:check FAILs)
+```
+
+It is an enabled board-tools agent in every other respect — the same doors and transports, the
+same ssh pin and its certification, the client-update door and the fleet — but it is **served only
+`ci_await` and `ci_await_cancel`**. `App\Bridge\Tools\ServedTools` is the one answer to "what does
+this agent get", and three readers use it: the dispatcher refuses any other registered tool with
+`reason: not_served` (422, ssh exit 1) **before** a writeback client is built or a board is read —
+an unknown name still answers `unknown_tool`; the update door's `served_tools` op (and the
+`served_tools` field of `client_manifest`) tells the seat's channel server what to advertise; and
+"may this agent take cards" (`board_take_card`) is that same set. So a scope-less agent gains **no
+board read or write**. `fleet_view` and `description_max_bytes` are refused on a scope-less block
+(load-time error), because each only means something to a scoped agent.
+
+**This is the implementation-seat setup.** Impl seats use `kbcard` and no board tools; a
+scope-less block serves no board tool, so that rule holds, and gives the seat `ci_await` instead
+of polling GitHub. The coordination framework's onboarding writes it.
+
+**⛔ THE CROSS-REPO CONTRACT — DECLARED HERE, for the framework that writes these blocks:**
+
+- **Minimum bridge.** A scope-less block **throws at load on a bridge that predates DL-461**,
+  and a config that throws takes the whole install's receiver down. Before writing one, send
+  `{"op": "served_tools"}` to the client-update door (ssh: the forced command's stdin; http:
+  `POST /agent-tools/client`). **The test is POSITIVE-ONLY — write the block on exactly these two
+  answers, and on NO other:**
+  - **`ok: true`**, asked with an already-enabled agent's credential (e.g. the PM's pinned key or
+    bearer). The answer is `{ok, op, agent, served: [...]}`, `agent` being the identity the door
+    resolved.
+  - **exit 2 with `reason: "door_closed"`**, asked with the would-be seat's own pinned key before its
+    block exists (ssh only). The door refuses that agent because it has no enabled block, and the
+    `door_closed` reason was added with DL-461, so its presence proves the bridge is new enough.
+
+  ⛔ **Each positive counts only for the install it came FROM.** One host can run several
+  installs (`CLAUDE_DEPLOYMENT.md` runs a prod and a dev side by side), each with its own
+  agent-config directory. A positive certifies the install the credential reached, and that
+  install is identified by the **`artisan` path in the pinned key's forced command** (ssh) or
+  the **vhost of the endpoint** (http). It licenses a block only in THAT install's agent-config
+  directory. A PM key pinned to an upgraded dev install answers `ok: true` whatever prod runs;
+  writing prod's block on it takes prod's receiver down. The same binding holds for
+  `door_closed`: the seat's key must be pinned to the forced command of the install that will
+  hold the block.
+
+  ⛔ **Ask only after the bridge update has COMPLETED, including its PHP-FPM reload.** The ssh
+  door runs the CLI from the checkout, so it serves new code as soon as the code is pulled; the
+  http door is served by FPM, which can keep serving the old code until it reloads. An answer
+  taken mid-update can be positive on one door while the other still runs the old release.
+
+  **Every other answer means do not write the block** — it is not a negative verdict to be
+  matched, it is the absence of a positive one. Known shapes, as examples and not as the
+  definition:
+  - ssh exit 1, no `reason`, error ``request must carry a non-empty `tool` `` — a bridge older
+    than the update door, which reads the body as a board-tools call. (Over http the same bridge
+    has no door route and answers 404, below. Later bridges add `reason: "bad_request"` to this
+    refusal, but every one of them already routes an `op` body to the door, so that variant
+    cannot come back from this ask.)
+  - exit 1 / HTTP 422, no `reason`, error starting `unknown client-update` — a bridge with the
+    door but without this op;
+  - HTTP **404** with no envelope — a bridge with no `/agent-tools/client` route;
+  - HTTP **401** — a bearer the door does not accept, which is what a seat with no enabled block
+    has over http, so it learns nothing;
+  - exit 2 with **no** `reason` — not a positive answer. Causes include an older bridge, an agent
+    name the bridge has no YAML for (`unknown agent`), a malformed agent YAML
+    (`agent config error`), or any 5xx.
+
+  `provision-board-tools.py`'s `predates_served_tools()` recognises a superset of the two
+  exit-1 refusal shapes above, for a different decision: whether `--self-cert` may fall back to
+  `board_my_cards`. It is not this test, and it is never a licence to write a block.
+- **Rollback.** Remove every scope-less block BEFORE rolling a bridge back below DL-461.
+- **What it serves:** `ci_await` and `ci_await_cancel` only, checked bridge-side by the dispatcher
+  gate (`BoardToolDispatcher`) and pinned by `ServedToolsTest` / `ScopelessDispatchTest`.
+- **What the bridge CANNOT verify:** that a scope-less block is written only on an implementation
+  seat. It cannot tell an impl seat from a PM or solo seat. `bridge:check`'s `ci_tools.agent` line
+  shows every enabled agent's block shape and served set, so a misplaced block is visible, not
+  refused.
+- **Seat side:** the ssh transport (`BRIDGE_TOOLS_SSH_TARGET`, optional `_KEY`/`_PORT`) and a key
+  pinned by `provision-board-tools.py --role a` (add `--from 127.0.0.1,::1` on a same-box seat;
+  re-runs must pass the same `--from`). The pin is an operator step. An existing impl seat needs
+  that pin once, then `--role b --bootstrap-client` once, to get onto the self-updating client.
+- **Advertisement:** until the channel server reads `served_tools` (a later slice), a scope-less
+  seat's server advertises every board tool, and each refuses `not_served` with nothing read or
+  written. Listing only `ci_*` depends on that slice.
+
 ## `ci_await` and `ci_await_cancel`
 
 **Wait for CI on one commit without polling GitHub** (card#11200 / DL-452; rt#590). A seat that
@@ -1726,7 +1820,16 @@ register nor cancel another's.
    - the head is **rate limited** until a known instant (see *Read failures*): it answers `waiting`
      with `read_skipped: "rate_limited"` and `retry_not_before`, sends no request, and never answers
      `settled`. Your await carries the limit's error and reset like the rest of the head's, so the
-     sweep reads it after the reset.
+     sweep reads it after the reset;
+   - **your agent's registrations have already caused `BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR` reads in
+     the current window** (default 60; card#11283 / DL-461) — a FIXED one-hour window opened by the
+     agent's first counted read, not a rolling hour, so up to twice the value can land around a
+     window boundary: it answers `waiting` with `read_skipped: "seat_read_limited"` and
+     `retry_not_before` (when the window closes; the key is **omitted** when the limiter itself
+     could not be read, which also skips the read and is logged), and sends no request. ⛔ The await **is stored** — it is never refused for this — and the instant is in the
+     ANSWER only: it is not written to the head, so deliveries and the sweep read and settle it as
+     usual. The bound exists so a seat looping register/cancel, or registering fresh SHAs, cannot
+     spend the install's GitHub quota; a refusal would have sent that seat back to polling.
 
    Whatever this read answers, nothing depends on it: an await it leaves `waiting` is settled by a
    later delivery's read or by the sweep.
@@ -1744,8 +1847,8 @@ The answer:
   "runs_total": 3,           // null when the read failed
   "runs_completed": 1,
   "read_error": "…",         // only on state: unmeasured
-  "read_skipped": "cooldown", // only when no read was made: "cooldown" or "rate_limited"
-  "retry_not_before": "…",   // only when the head is rate limited (skipped, or your own read was) — when it is read again
+  "read_skipped": "cooldown", // only when no read was made: "cooldown", "rate_limited" or "seat_read_limited"
+  "retry_not_before": "…",   // when the head is rate limited (skipped, or your own read was), or your seat's read budget is spent — when a read is possible again
   "warning": "…"             // only when this bridge holds no stored workflow_run delivery from the repo
 }
 ```
@@ -2129,7 +2232,7 @@ bridge-board-call board_take_card '{"card_id":123,"start":true}'
 
 A seat's channel server updates itself from its own bridge at launch (card#10568, DL-434) — the seat half is `examples/channel-servers/entry.mjs` and `client-update.mjs`, described in that directory's README § *Installed and updated by the bridge*. The bridge half is a separate door, **not a board tool**: `POST /agent-tools/client` behind the same loopback gate and bearer as `/agent-tools/call`, and, on the ssh transport, the same pinned `bridge:tools-call` forced command given a body carrying `op` instead of `tool`. Both transports answer the same bytes. It never goes through the board-tools dispatcher, so no tool refusal, board outage or client-version rule can stand between a seat and the pack that fixes it.
 
-It serves `client_manifest` (what this bridge publishes, the release a seat should install, whether an approval is owed, and the last install-log entry this bridge holds for the seat), `client_pack` (that release's pack, base64), `client_report` (the seat's install-log lines, chain-checked) and `client_fleet` (every seat's reported client and state — only to an agent with `board_tools.fleet_view: true`). The request and response shapes, and every refusal, are owned by `App\Bridge\ClientUpdate\ClientUpdateDoor`'s class docblock; this section deliberately does not restate them. What it serves is whatever `php artisan bridge:client-pack:install` last published (CLAUDE_DEPLOYMENT.md § Commands); until that has run, `client_manifest` and `client_pack` answer `503` and a seat keeps its installed client. Each release's pack is attached to its GitHub release by the release workflow (DL-442), and `bridge:check`'s `board_tools.client_pack_source` leg warns until this checkout's release is the published one.
+It serves `client_manifest` (what this bridge publishes, the release a seat should install, whether an approval is owed, and the last install-log entry this bridge holds for the seat), `client_pack` (that release's pack, base64), `client_report` (the seat's install-log lines, chain-checked) `client_fleet` (every seat's reported client and state — only to an agent with `board_tools.fleet_view: true`) and `served_tools` (the tools this bridge serves the calling agent — § *Scope-less agents*; `client_manifest` carries the same list). The request and response shapes, and every refusal, are owned by `App\Bridge\ClientUpdate\ClientUpdateDoor`'s class docblock; this section deliberately does not restate them. What it serves is whatever `php artisan bridge:client-pack:install` last published (CLAUDE_DEPLOYMENT.md § Commands); until that has run, `client_manifest` and `client_pack` answer `503` and a seat keeps its installed client. Each release's pack is attached to its GitHub release by the release workflow (DL-442), and `bridge:check`'s `board_tools.client_pack_source` leg warns until this checkout's release is the published one.
 
 **The fleet ledger (DL-432) and approval (DL-433).** What each seat reports — through `client_report`, and through two optional keys on every board-tools call, `caller` (a caller that is not the seat's channel server declares one of `App\Bridge\ClientUpdate\ExemptCaller`'s cases — the enum is the list — and then never overwrites the seat's own report) and `launch` (`{id, bridge_release}`, sent by a client the updater started) — lands in one row per agent. `php artisan bridge:client-fleet` prints each seat's state, and `bridge:check`'s `board_tools.client_fleet` leg warns on the seats that need you. For an agent with `board_tools.client_update.approval_required: true`, `client_manifest` offers nothing until `php artisan bridge:client-approve` has approved the published pack's content for it; a seat that installs without that approval is reported, never blocked. **Client 0.9.29 sends both** (card#10568, DL-434), but only once it is started through its updater's entry point, `<root>/entry.mjs` — getting a seat there is the bootstrap, `provision-board-tools.py --role b --bootstrap-client` (DL-444; below). Until a seat is bootstrapped it sends neither, and a calling seat reads `off_update_path`.
 
@@ -2570,7 +2673,8 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 > be cleared with `--probe-tools`** — step 6 explains why: that probe stamps the very
 > ledger row the state is read from, *from this box*, so it would silence the line without
 > the seat ever having called. **Board tools are the default for a pm or solo seat; an impl
-> seat uses kbcard for its board work** (`CLAUDE_DEPLOYMENT.md` § Fresh install). **An agent
+> seat uses kbcard for its board work** (`CLAUDE_DEPLOYMENT.md` § Fresh install), **and gets
+> `ci_await` from a scope-less block** (§ *Scope-less agents*). **An agent
 > that needs no `board_tools:` block at all declares one with `enabled: false` — while the
 > block is present**; that is a decision and the line stops printing. ⚠ **Deleting
 > that YAML is a different act.** An `enabled: false` block is a decision only while something
@@ -2703,7 +2807,7 @@ spelling the responder answered the header under, which is how a version skew st
 an identity fault — see **Which spelling the probe read** above.
 
 ⚠ **This step STAMPS the client-half ledger (DL-313), and step 7 has not run yet.**
-`--probe-tools` POSTs a real `board_my_cards` with that agent's own bearer, so it reaches
+`--probe-tools` POSTs a real `board_my_cards` (`ci_await_cancel` for a scope-less agent) with that agent's own bearer, so it reaches
 `BoardToolDispatcher`'s success point exactly as the seat would and writes the same row.
 `bridge:check` will therefore print `client half REPORTED` for the agent from here on —
 **including for a seat whose channel server is not running and whose `.mcp.json` has no

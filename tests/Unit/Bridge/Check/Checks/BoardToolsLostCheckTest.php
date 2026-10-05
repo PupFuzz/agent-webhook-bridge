@@ -69,6 +69,24 @@ class BoardToolsLostCheckTest extends TestCase
         $this->assertSame(['impl'], $ctx->boardToolsLost);
     }
 
+    /**
+     * card#11283: a SCOPE-LESS block is recorded — by the real writer — with no board and no lane,
+     * and its LOST line says so instead of printing an empty board and swimlane.
+     */
+    public function test_a_lost_scope_less_block_is_named_as_such(): void
+    {
+        $scopeless = $this->agent('impl', ['enabled' => true, 'transport' => 'ssh'])->boardTools;
+        $this->assertNotNull($scopeless);
+        ConfigSeenLedger::recordEnabled('impl', $scopeless);
+        $ctx = $this->ctx([$this->agent('impl', null)], ['impl']);
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $ctx);
+
+        $this->assertCount(1, $findings);
+        $this->assertStringContainsString('(transport ssh, scope-less — CI tools only)', $findings[0]->message);
+        $this->assertStringNotContainsString('board , swimlane', $findings[0]->message);
+    }
+
     public function test_a_recorded_seat_with_no_yaml_at_all_gains_the_recreate_run_delete_cure(): void
     {
         $this->recordSeen('impl');

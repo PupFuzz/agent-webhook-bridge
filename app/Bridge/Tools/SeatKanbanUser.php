@@ -271,12 +271,10 @@ final class SeatKanbanUser
         // ONE seat, but more than one agent here that can take cards as it — a copied
         // `identity.coord_seat`, typically. The id then names the seat and not WHICH agent holds
         // the card: the same unanswerable claim as one id on two seats, refused the same way.
-        $takers = [];
-        foreach ($configs as $config) {
-            if ($config->boardTools?->enabled === true && $config->identity->seatName($config->agentName) === $seatName) {
-                $takers[] = $config->agentName;
-            }
-        }
+        // card#11283: a taker is an agent SERVED the take — {@see ServedToolsRule::takersBySeat()}, the
+        // one derivation `AgentKanbanUserRosterCheck` reads too — so a scope-less agent sharing the
+        // seat is not counted against the scoped one that can actually take.
+        $takers = ServedToolsRule::takersBySeat($configs)[$seatName] ?? [];
         if (count($takers) > 1) {
             sort($takers);
             Log::warning('board tools: more than one board-tools agent serves the calling seat, so its kanban user id does not identify the caller', [

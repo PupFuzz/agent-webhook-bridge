@@ -7,6 +7,7 @@ use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolDispatcher;
+use App\Bridge\Tools\ServedTools;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -29,7 +30,8 @@ use Throwable;
  *                     is true and whose approvals do not cover the published pack's content — then
  *                     `approval.owed` names that release (card#10567 B4). `log_head` is the last
  *                     install-log entry this bridge holds for the agent ({install_id, seq, sha256})
- *                     or null. 503 when nothing is published.
+ *                     or null. `served_tools` is the {@see ServedTools} answer for the caller (card#11283).
+ *                     503 when nothing is published.
  *   client_pack       {op, bridge_release}  →  {ok, op, bridge_release, sha256, size,
  *                     encoding: "base64", data}
  *                     404 naming the published release when asked for any other; 422 when
@@ -44,6 +46,11 @@ use Throwable;
  *                     {@see SeatClientLedger::MAX_REPORT_BYTES} bytes of lines — the byte bound is
  *                     derived from the ssh door's stdin cap, so any report within both fits either
  *                     door; a seat splits its backlog by whichever it reaches first.
+ *   served_tools      {op}  →  {ok, op, agent, served: [<tool name>, …]} (card#11283) — what the
+ *                     bridge serves the calling agent, from {@see ServedTools}, the same answer the
+ *                     dispatcher enforces; `agent` echoes the identity the door resolved. Never a 422
+ *                     on a bridge that knows the op: a seat reads `422` + `unknown client-update`
+ *                     as "this bridge predates scope-less blocks".
  *   client_fleet      {op}  →  {ok, op, published, published_error, spread, seats} —
  *                     {@see ClientFleet::toArray()}. 403 unless the calling agent's
  *                     `board_tools.fleet_view` is true.
@@ -52,7 +59,7 @@ use Throwable;
  */
 final class ClientUpdateDoor
 {
-    public const OPS = ['client_manifest', 'client_pack', 'client_report', 'client_fleet'];
+    public const OPS = ['client_manifest', 'client_pack', 'client_report', 'client_fleet', 'served_tools'];
 
     public function __construct(private readonly ClientPackStore $store) {}
 
@@ -68,6 +75,7 @@ final class ClientUpdateDoor
             'client_pack' => $this->pack($body['bridge_release'] ?? null),
             'client_report' => $this->report($agentName, $body),
             'client_fleet' => $this->fleet($cfg),
+            'served_tools' => ClientUpdateOutcome::success('served_tools', ['agent' => $agentName, 'served' => ServedTools::make()->namesFor($cfg)]),
             default => ClientUpdateOutcome::failure(422, 'unknown client-update `op` '.json_encode($op).' — this bridge serves '.implode(', ', self::OPS)),
         };
         Log::info('agent-tools: client-update', ['agent' => $agentName, 'op' => is_string($op) ? $op : null, 'transport' => $transport, 'status' => $outcome->status]);
@@ -113,6 +121,9 @@ final class ClientUpdateDoor
             'offer' => $approved ? $published->bridgeRelease : null,
             'approval' => ['required' => $cfg->clientUpdateApprovalRequired, 'owed' => $approved ? null : $published->bridgeRelease],
             'log_head' => $logHead,
+            // card#11283: the same answer as the `served_tools` op, carried here because the seat's
+            // updater already makes this call at every new launch.
+            'served_tools' => ServedTools::make()->namesFor($cfg),
         ]);
     }
 

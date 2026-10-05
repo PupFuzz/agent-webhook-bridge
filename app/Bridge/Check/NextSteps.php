@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\SshPinnedLineCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Tools\ServedTools;
 
 /**
  * WHAT TO RUN NEXT to finish wiring this install, per agent (card#8959, DL-352 — widened
@@ -171,6 +172,7 @@ final class NextSteps
                 state: $state,
                 command: self::commandFor($state, $name),
                 doc: self::DOC,
+                seatCall: $state === NextStepState::SeatSideUnreported ? ServedTools::make()->reportingCall($cfg->boardTools) : null,
             );
         }
 

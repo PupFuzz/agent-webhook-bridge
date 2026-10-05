@@ -45,11 +45,15 @@ final class GitHubWebhookProbeResult
          * because no other kind counted the whole list.
          */
         public readonly ?int $hookCount = null,
+        /** {@see GitHubWebhookProbeKind::Present} only (card#11283): is a matching hook active? Null = unread. */
+        public readonly ?bool $active = null,
+        /** Present only (card#11283): does an active matching hook send `workflow_run` (or `*`)? Null = unread. */
+        public readonly ?bool $workflowRun = null,
     ) {}
 
-    public static function present(string $source): self
+    public static function present(string $source, ?bool $active = null, ?bool $workflowRun = null): self
     {
-        return new self(GitHubWebhookProbeKind::Present, source: $source);
+        return new self(GitHubWebhookProbeKind::Present, source: $source, active: $active, workflowRun: $workflowRun);
     }
 
     /**

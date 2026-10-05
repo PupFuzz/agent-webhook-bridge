@@ -97,7 +97,7 @@ final class GitHubWebhookProbe
         }
 
         return match ($answer->found) {
-            true => GitHubWebhookProbeResult::present($source),
+            true => GitHubWebhookProbeResult::present($source, $answer->active, $answer->workflowRun),
             // ⚠ THE COUNT RIDES ONLY THIS ARM, and it is the client that decides so: it is
             // populated exactly where the enumeration ran to the end, which is the same
             // condition that earns `Absent`. Passing it here rather than re-deriving it keeps

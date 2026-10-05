@@ -21,12 +21,13 @@ use Throwable;
  *
  * ⛔ SELF-SCOPED. The await belongs to the agent the front door resolved; no argument names a
  * seat ({@see CiAwaitArgs::identityReason()} only picks the refusal's message). It reads no board
- * and writes none, so it works on any install whose seat has board tools, coordination repo or not.
+ * and writes none, so it is served to every enabled `board_tools` agent, scoped or scope-less (card#11283;
+ * {@see ServedTools}), coordination repo or not.
  *
  * ⛔ A REPO THIS INSTALL RECEIVES NO GITHUB EVENTS FOR IS REFUSED (`repo_not_received`): no agent
  * here subscribes to it, so no `workflow_run.completed` would ever arrive for it.
  */
-final class CiAwaitTool implements Tool
+final class CiAwaitTool implements SelfScopedTool
 {
     public function name(): string
     {
@@ -46,7 +47,13 @@ final class CiAwaitTool implements Tool
     /** The `pr` column is an unsigned 32-bit integer; a larger number cannot be stored. */
     public const PR_MAX = 4294967295;
 
+    /** The board scope and the kanban client are never read: {@see SelfScopedTool}. */
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
+    {
+        return $this->callAsSeat($args, $agentName);
+    }
+
+    public function callAsSeat(array $args, string $agentName): array
     {
         $repo = CiAwaitArgs::repo($args, $this->name());
         $headSha = CiAwaitArgs::headSha($args, $this->name());
@@ -59,6 +66,7 @@ final class CiAwaitTool implements Tool
             $ttl = CiAwaitConfig::ttlSeconds();
             $maxPerSeat = CiAwaitConfig::maxPerSeat();
             $cooldown = CiAwaitConfig::readCooldownSeconds();
+            $seatReads = CiAwaitConfig::seatReadsPerHour();
         } catch (ConfigException $e) {
             throw new ToolRefusalException('ci_await: this bridge cannot store an await — '.$e->getMessage().'. Nothing was stored. This is an INSTALL fault; tell your operator.', installFault: true, reason: 'install_fault.ci_await_config_invalid');
         }
@@ -89,7 +97,7 @@ final class CiAwaitTool implements Tool
             throw new ToolRefusalException('ci_await: this bridge could not store the await (its `ci_awaits` table is missing or the database did not answer). Nothing was stored. This is an INSTALL fault — `php artisan migrate` creates the table; tell your operator.', installFault: true, reason: 'install_fault.ci_await_store_unavailable');
         }
 
-        $result = $service->evaluateRegistration($agentName, $configured, $headSha, $pr, $cooldown);
+        $result = $service->evaluateRegistration($agentName, $configured, $headSha, $pr, $cooldown, $seatReads);
         try {
             $deliveryKnown = CiAwaitService::hasRecordedWorkflowRun($configured);
         } catch (Throwable $e) {

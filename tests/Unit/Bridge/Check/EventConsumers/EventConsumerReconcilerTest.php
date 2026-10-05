@@ -223,7 +223,20 @@ class EventConsumerReconcilerTest extends TestCase
         $this->assertSame([], EventConsumerReconciler::installWideConsumed([]));
         $this->assertSame(
             [CiAwaitGate::CONSUMED_EVENT_TYPE],
-            EventConsumerReconciler::installWideConsumed([AgentConfig::fromArray('pm', [])]),
+            EventConsumerReconciler::installWideConsumed([AgentConfig::fromArray('pm', ['board_tools' => ['enabled' => true, 'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]])]),
+        );
+    }
+
+    /** card#11283 / DL-461: a SCOPE-LESS agent is served ci_await, so it counts; an opted-out one does not. */
+    public function test_a_scope_less_agent_counts_as_a_ci_await_caller_and_an_opted_out_one_does_not(): void
+    {
+        $this->assertSame(
+            [CiAwaitGate::CONSUMED_EVENT_TYPE],
+            EventConsumerReconciler::installWideConsumed([AgentConfig::fromArray('impl', ['board_tools' => ['enabled' => true, 'transport' => 'ssh']])]),
+        );
+        $this->assertSame(
+            [],
+            EventConsumerReconciler::installWideConsumed([AgentConfig::fromArray('impl', ['board_tools' => ['enabled' => true, 'transport' => 'ssh', 'ci_tools' => false]])]),
         );
     }
 

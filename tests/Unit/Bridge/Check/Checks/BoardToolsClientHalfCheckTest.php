@@ -272,6 +272,19 @@ class BoardToolsClientHalfCheckTest extends TestCase
         $this->assertStringNotContainsString('client chain', $message);
     }
 
+    /** card#11283: the remedy names a call the agent is SERVED — a scope-less seat is refused board_my_cards. */
+    public function test_a_scope_less_seat_is_asked_for_a_ci_call_and_one_served_nothing_for_none(): void
+    {
+        $scopeless = AgentConfig::fromArray('prod-agent', ['subscriptions' => [], 'board_tools' => ['enabled' => true, 'transport' => 'ssh']]);
+        $message = $this->findingsOfFor(new BoardToolsClientHalfCheck($this->bundledDir()), $scopeless)[0]->message;
+        $this->assertStringContainsString('make one board-tools call (ci_await_cancel)', $message);
+        $this->assertStringNotContainsString('board_my_cards', $message);
+
+        $nothing = AgentConfig::fromArray('prod-agent', ['subscriptions' => [], 'board_tools' => ['enabled' => true, 'transport' => 'ssh', 'ci_tools' => false]]);
+        $message = $this->findingsOfFor(new BoardToolsClientHalfCheck($this->bundledDir()), $nothing)[0]->message;
+        $this->assertStringContainsString('served NO tool', $message);
+    }
+
     public function test_no_record_is_unvalidated_and_says_it_is_not_evidence_of_unwired(): void
     {
         $this->assertSame(0, BoardToolsClientCall::query()->count());

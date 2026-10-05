@@ -479,6 +479,16 @@ return [
     | read is at least one sweep interval old, oldest first, so its GitHub cost
     | is at most sweep_reads × 3600 / the sweep's interval head reads per hour.
     |
+    | seat_reads_per_hour — how many GitHub runs reads ONE agent's registrations
+    | may cause per FIXED one-hour window, which opens at that agent's first
+    | counted read (RateLimiter::hit, 3600s decay) — not a rolling hour, so up to
+    | twice this can land around a window boundary (default 60, 1..10000;
+    | card#11283). Past it the
+    | await is still STORED and its own read is skipped (`read_skipped:
+    | seat_read_limited`, with the instant the budget frees) — the sweep and a
+    | workflow_run delivery settle it. A register/cancel loop, or a stream of
+    | fresh SHAs, cannot spend the install's GitHub quota.
+    |
     | A value outside its range is REFUSED, not clamped: `ci_await` refuses as
     | `install_fault.ci_await_config_invalid` and `bridge:check`
     | (`ci_await.awaits`) fails, naming the key and the value.
@@ -490,6 +500,7 @@ return [
         'max_per_seat' => env('BRIDGE_CI_AWAIT_MAX_PER_SEAT', 50),
         'read_cooldown' => env('BRIDGE_CI_AWAIT_READ_COOLDOWN', 60),
         'sweep_reads' => env('BRIDGE_CI_AWAIT_SWEEP_READS', 10),
+        'seat_reads_per_hour' => env('BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR', 60),
     ],
 
     /*

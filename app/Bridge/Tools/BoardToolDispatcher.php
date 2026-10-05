@@ -9,6 +9,7 @@ use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Writeback\BoardReadRefused;
+use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -130,16 +131,33 @@ final class BoardToolDispatcher
             return DispatchOutcome::failure(422, "unknown tool `{$toolName}` (known: ".implode(', ', $this->tools->known()).')', 'unknown_tool');
         }
 
+        // card#11283: THE SERVED-SET GATE, after the name is known to the registry (an unknown
+        // name keeps `unknown_tool`) and BEFORE anything is built or called. A scope-less agent's
+        // config carries a null board scope, and every board tool casts it to an int — board 0 —
+        // so this refusal is what keeps such an agent off every board, not a courtesy.
+        if (! (new ServedTools($this->tools))->serves($cfg, $tool)) {
+            $refusal = self::notServedMessage($toolName, $tool, $cfg, $agentName);
+            Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => 'not_served']);
+
+            return DispatchOutcome::failure(422, $refusal, 'not_served');
+        }
+
         if (! is_array($rawArgs)) {
             return DispatchOutcome::failure(422, '`args` must be an object', 'bad_arguments');
         }
 
-        try {
-            $client = WritebackClientFactory::make();   // ConfigException on a missing/insecure writeback token
-        } catch (ConfigException $e) {
-            Log::warning('agent-tools: writeback client unavailable', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'error' => $e->getMessage()]);
+        // A self-scoped tool never reads a board, so it is not made to wait on the writeback
+        // token: an install with none still serves the CI tools (card#11283).
+        $callee = $tool instanceof ReadsCallerClientVersion ? $tool->forCallerClientVersion($clientVersion) : $tool;
+        $client = null;
+        if (! $callee instanceof SelfScopedTool) {
+            try {
+                $client = WritebackClientFactory::make();   // ConfigException on a missing/insecure writeback token
+            } catch (ConfigException $e) {
+                Log::warning('agent-tools: writeback client unavailable', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'error' => $e->getMessage()]);
 
-            return DispatchOutcome::failure(503, 'board tools are not fully configured on this bridge (writeback token)');
+                return DispatchOutcome::failure(503, 'board tools are not fully configured on this bridge (writeback token)');
+            }
         }
 
         $refusal = $this->undeclaredArgumentsRefusal($tool, $rawArgs);
@@ -151,7 +169,12 @@ final class BoardToolDispatcher
         }
 
         try {
-            $result = ($tool instanceof ReadsCallerClientVersion ? $tool->forCallerClientVersion($clientVersion) : $tool)->call($rawArgs, $cfg, $client, $agentName);
+            if ($callee instanceof SelfScopedTool) {
+                $result = $callee->callAsSeat($rawArgs, $agentName);
+            } else {
+                /** @var KanbanClient $client built above for every tool that is not self-scoped */
+                $result = $callee->call($rawArgs, $cfg, $client, $agentName);
+            }
         } catch (ToolRefusalException $e) {
             // An install-fault read refusal names an argument only to say which read failed;
             // "update your channel client" is the wrong fix for it (DL-426).
@@ -186,6 +209,19 @@ final class BoardToolDispatcher
         ClientHalfLedger::record($agentName, $transport, $provenance, $clientVersion);
 
         return DispatchOutcome::success($toolName, $result);
+    }
+
+    /**
+     * Why `$tool` is not served to this agent — named by the cause {@see ServedTools::serves()}
+     * refused on, so the seat is told what its block is and the operator what to change.
+     */
+    private static function notServedMessage(string $toolName, Tool $tool, BoardToolsConfig $cfg, string $agentName): string
+    {
+        if ($tool instanceof SelfScopedTool) {
+            return "{$toolName}: not served to agent `{$agentName}` — its board_tools block opts out of the CI tools (board_tools.ci_tools".($cfg->ciToolsProblem !== null ? ', which is not true or false' : ': false').'). Nothing was stored.';
+        }
+
+        return "{$toolName}: not served to agent `{$agentName}` — its board_tools block has no board scope (board_id, swimlane_id, create_stage_id), so it is served the CI tools only. Nothing was sent to the board — no card was read or written.";
     }
 
     /**

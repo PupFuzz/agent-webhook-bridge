@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Log;
  * answers `cancelled: false` — whether nothing was registered, it already settled or expired, or
  * only ANOTHER seat awaits it — so a hook may cancel unconditionally.
  */
-final class CiAwaitCancelTool implements Tool
+final class CiAwaitCancelTool implements SelfScopedTool
 {
     public function name(): string
     {
@@ -36,7 +36,13 @@ final class CiAwaitCancelTool implements Tool
         return CiAwaitArgs::identityReason($key);
     }
 
+    /** The board scope and the kanban client are never read: {@see SelfScopedTool}. */
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
+    {
+        return $this->callAsSeat($args, $agentName);
+    }
+
+    public function callAsSeat(array $args, string $agentName): array
     {
         $repo = CiAwaitArgs::repo($args, $this->name());
         $headSha = CiAwaitArgs::headSha($args, $this->name());

@@ -5,6 +5,7 @@ namespace App\Bridge\Check\EventConsumers;
 use App\Bridge\CiAwait\CiAwaitGate;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Tools\ServedToolsRule;
 use App\Models\WebhookEvent;
 use Throwable;
 
@@ -47,8 +48,9 @@ final class EventConsumerReconciler
     /**
      * What the install consumes on EVERY github scope, outside any classifier.
      *
-     * `CiAwaitGate` counts only where some agent has an ENABLED `board_tools` block: that is
-     * the population that can call `ci_await`, so with none the gate has no await to settle
+     * `CiAwaitGate` counts only where some agent is SERVED `ci_await` — an ENABLED `board_tools`
+     * block, scoped or scope-less, that has not opted out (DL-461): that is the population that
+     * can call it, so with none the gate has no await to settle
      * and the event really is dropped. Qualified on purpose — the gate acts on the
      * `completed` action only, so the other `workflow_run` actions stay in the INFO
      * action inventory rather than reading as consumed.
@@ -58,7 +60,15 @@ final class EventConsumerReconciler
      */
     public static function installWideConsumed(array $boardToolsEnabled): array
     {
-        return $boardToolsEnabled === [] ? [] : [CiAwaitGate::CONSUMED_EVENT_TYPE];
+        // card#11283 / DL-461: the population is the agents SERVED `ci_await` — every enabled
+        // block, scoped or scope-less, except one that opted out (`board_tools.ci_tools`).
+        foreach ($boardToolsEnabled as $agent) {
+            if (ServedToolsRule::servesCiTools($agent->boardTools)) {
+                return [CiAwaitGate::CONSUMED_EVENT_TYPE];
+            }
+        }
+
+        return [];
     }
 
     /**

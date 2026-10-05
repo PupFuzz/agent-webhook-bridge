@@ -288,7 +288,12 @@ final class BoardToolsLostCheck implements Check
             ? "was seen at {$row['last']}"
             : "was seen from {$row['first']} to {$row['last']}";
 
-        $message = "board_tools: agent {$name}: block LOST — an enabled board_tools block {$window} (transport {$row['transport']}, board {$row['board']}, swimlane {$row['swimlane']})";
+        // card#11283: a scope-less block (CI tools only) is recorded with no board and no lane;
+        // printing "board , swimlane " would read as a corrupt row rather than as what it was.
+        $scope = $row['board'] === null && $row['swimlane'] === null
+            ? 'scope-less — CI tools only'
+            : "board {$row['board']}, swimlane {$row['swimlane']}";
+        $message = "board_tools: agent {$name}: block LOST — an enabled board_tools block {$window} (transport {$row['transport']}, {$scope})";
 
         if ($call !== null) {
             $message .= '; last successful tools call '.$call->lastSuccessAt->toIso8601String().' over '.$call->transport;

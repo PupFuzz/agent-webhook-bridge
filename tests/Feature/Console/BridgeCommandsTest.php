@@ -1278,6 +1278,24 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString("has received 'workflow_run'", $out);
     }
 
+    /**
+     * card#11283 / DL-461: a SCOPE-LESS-only install (CI tools, no board scope) can call
+     * `ci_await`, so `workflow_run` is consumed and the drop warning must not print.
+     */
+    public function test_check_event_consumer_counts_ci_await_for_a_scope_less_only_install(): void
+    {
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        File::append($this->dir.'/wb.yml', "board_tools:\n  enabled: true\n  transport: ssh\n");
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('workflow_run.completed', 'e2');
+
+        Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString('ci_tools: agent wb: block is scope-less', $out, 'the fixture must reach an enabled scope-less block');
+        $this->assertStringNotContainsString("has received 'workflow_run'", $out);
+    }
+
     public function test_check_event_consumer_still_warns_on_workflow_run_when_the_only_board_tools_block_is_disabled(): void
     {
         // The other side of the gate above: an `enabled: false` block cannot call

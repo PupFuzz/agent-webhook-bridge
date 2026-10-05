@@ -20,8 +20,9 @@ use Throwable;
  *
  * ⛔ WHAT A RECORD DOES NOT MEAN, and this row cannot tell the two apart. A seat is not the
  * only thing that reaches that success point: `bridge:check --probe-tools` POSTs a real
- * `board_my_cards` with the agent's own bearer, `bin/provision-board-tools.py --self-cert`
- * fires a real ssh round-trip, and an operator can run `bridge:tools-call --agent=X` on the
+ * `board_my_cards` with the agent's own bearer (`ci_await_cancel` for a scope-less agent,
+ * card#11283), `--probe-tools-ssh` does the same over ssh, `bin/provision-board-tools.py
+ * --self-cert` fires a real round-trip with a tool the agent is served, and an operator can run `bridge:tools-call --agent=X` on the
  * bridge host. Each stamps this row indistinguishably. The row therefore says the DOOR
  * opened for that agent — never that the SEAT opened it — and the reading check's `ok` line
  * carries that bound to the operator rather than letting the row imply more than it holds.
