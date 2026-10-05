@@ -1245,6 +1245,7 @@ def run_certify_only(args) -> int:
     rc = _self_cert(str(target), key_path, port)
     if _bootstrap_after_certify(args.agent, mcp_path, args.channel_name):
         _print_activation_block(args.channel_name)
+    _offer_launcher_shim(args.channel_name)
     return rc
 
 
@@ -1273,6 +1274,212 @@ def client_root(channel_name: str, environ=None, os_name=os.name) -> str:
             raise ValueError("neither XDG_DATA_HOME nor HOME is an absolute path, so this seat's client root cannot be placed")
         base = os.path.join(home, ".local", "share")
     return os.path.join(base, *CLIENT_ROOT_PARENT, channel_name)
+
+
+# --------------------------------------------------------------------------- #
+# The seat's launcher shim (card#11328) — `~/start-claude.sh`, or `%USERPROFILE%\\start-claude.bat`
+# + `.ps1` on Windows. It sets the channel identity and runs the launcher the client root's own
+# shim names, so the launcher updates with every pack the client installs. The contract (paths,
+# env, marker line, refusals) is declared in examples/channel-servers/README.md § The seat's
+# launcher, which the coord framework builds against.
+# --------------------------------------------------------------------------- #
+# The client root's launcher shim, per platform: `LAUNCHER[..].name` in client-update.mjs, which
+# writes it (bin/test_provision_board_tools.py holds the two equal).
+CLIENT_LAUNCHER_SHIM = {"posix": "start-claude", "nt": "start-claude.cmd"}
+# The line that makes a file at the seat's launcher path OURS: present, the file is rewritten in
+# place; absent, the file is the operator's and is backed up before the shim replaces it.
+LAUNCHER_SHIM_MARKER = "agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)"
+
+
+def launcher_shim_home(environ=None, os_name=os.name) -> str:
+    """Where the seat's launcher shim lives: $HOME on POSIX, %USERPROFILE% on Windows. Pure."""
+    env = os.environ if environ is None else environ
+    home = env.get("USERPROFILE" if os_name == "nt" else "HOME") or ""
+    if not home:
+        raise ValueError("%USERPROFILE% is not set" if os_name == "nt" else "$HOME is not set")
+    return home
+
+
+def client_launcher_shim(root: str, os_name=os.name) -> str:
+    """`<root>/bin/start-claude` (`start-claude.cmd` on Windows): the client updater's launcher shim."""
+    if os_name == "nt":
+        import ntpath
+
+        return ntpath.join(root, "bin", CLIENT_LAUNCHER_SHIM["nt"])
+    return os.path.join(root, "bin", CLIENT_LAUNCHER_SHIM["posix"])
+
+
+def _sh_quote(text: str) -> str:
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def launcher_shims(channel_name: str, root: str, os_name=os.name) -> list:
+    """`[(file name, body)]` the seat's launcher shim is made of, for one channel. Pure.
+
+    Every body carries `LAUNCHER_SHIM_MARKER` on a line of its own, sets BRIDGE_CHANNEL_NAME (the
+    launcher's identity input, which wins over settings.local.json), and runs the client root's
+    launcher shim with the arguments it was given; when that shim is gone it exits 2 naming the
+    bootstrap, rather than starting a session with no guards.
+    """
+    if not _CHANNEL_RE.fullmatch(channel_name or ""):
+        raise ValueError(f"channel name {channel_name!r} must match ^[a-z0-9_-]+$")
+    target = client_launcher_shim(root, os_name)
+    missing = (f"{target} is missing: this seat's channel client is not installed, or predates the launcher it "
+               f"ships. Run provision-board-tools.py --role b --bootstrap-client for channel {channel_name}.")
+    if os_name == "nt":
+        bat = (
+            "@echo off\r\n"
+            f"rem {LAUNCHER_SHIM_MARKER}\r\n"
+            "rem Runs the channel launcher of the release this seat's client root has installed.\r\n"
+            f'set "BRIDGE_CHANNEL_NAME={channel_name}"\r\n'
+            f'if not exist "{target}" (echo {missing} 1>&2 & exit /b 2)\r\n'
+            f'call "{target}" %*\r\n'
+            "exit /b %ERRORLEVEL%\r\n"
+        )
+        quoted = target.replace("'", "''")
+        ps1 = (
+            f"# {LAUNCHER_SHIM_MARKER}\r\n"
+            "# Runs the channel launcher of the release this seat's client root has installed.\r\n"
+            f"$env:BRIDGE_CHANNEL_NAME = '{channel_name}'\r\n"
+            f"$launcher = '{quoted}'\r\n"
+            f"if (-not (Test-Path -LiteralPath $launcher)) {{ [Console]::Error.WriteLine('{missing.replace(chr(39), chr(39) * 2)}'); exit 2 }}\r\n"
+            "& $launcher @args\r\n"
+            "exit $LASTEXITCODE\r\n"
+        )
+        return [("start-claude.bat", bat), ("start-claude.ps1", ps1)]
+    sh = (
+        "#!/bin/sh\n"
+        f"# {LAUNCHER_SHIM_MARKER}\n"
+        "# Runs the channel launcher of the release this seat's client root has installed; rewritten, never edited.\n"
+        f"BRIDGE_CHANNEL_NAME={_sh_quote(channel_name)}; export BRIDGE_CHANNEL_NAME\n"
+        f"launcher={_sh_quote(target)}\n"
+        f'[ -x "$launcher" ] || {{ echo {_sh_quote(missing)} >&2; exit 2; }}\n'
+        'exec "$launcher" "$@"\n'
+    )
+    return [("start-claude.sh", sh)]
+
+
+def is_launcher_shim(text: str) -> bool:
+    """Does this file's text carry the marker LINE (a comment line holding exactly the marker)?"""
+    for line in text.splitlines():
+        stripped = line.strip()
+        for lead in ("#", "rem", "REM"):
+            if stripped.startswith(lead) and stripped[len(lead):].strip() == LAUNCHER_SHIM_MARKER:
+                return True
+    return False
+
+
+def _write_text_atomically(path: str, text: str, mode: int) -> None:
+    tmp = f"{path}.tmp-{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.name) -> list:
+    """Write the seat's launcher shim into `home`; idempotent. Returns one line per file, saying
+    what happened to it. A file at a shim path that is not a shim (no marker line) is renamed to
+    `<name>.pre-shim-<UTC>` first and the line says so; a shim already up to date is not rewritten.
+
+    The caller has already established that the client root's launcher shim exists.
+    """
+    report = []
+    for name, body in launcher_shims(channel_name, root, os_name):
+        path = os.path.join(home, name)
+        mode = 0o755 if os_name != "nt" else 0o644
+        if os.path.lexists(path):
+            if os.path.isdir(path) and not os.path.islink(path):
+                _fail(f"{path} is a directory, so the launcher shim cannot be written there — move it, then re-run.")
+            try:
+                with open(path, encoding="utf-8", newline="") as fh:
+                    current = fh.read()
+            except (OSError, UnicodeDecodeError):
+                current = None  # a dangling link, or not text: not ours
+            if current is not None and is_launcher_shim(current):
+                if current == body:
+                    report.append(f"launcher shim: {path} is up to date.")
+                    continue
+                _write_text_atomically(path, body, mode)
+                report.append(f"launcher shim: {path} rewritten for channel {channel_name}.")
+                continue
+            backup = f"{path}.pre-shim-{_utc_stamp()}"
+            if os.path.lexists(backup):
+                backup = f"{backup}-{os.getpid()}"
+            os.rename(path, backup)
+            report.append(f"launcher shim: {path} was not a launcher shim — BACKED UP to {backup} (nothing deleted); "
+                          f"port any edit of your own into the environment, since the shim is rewritten on every run.")
+        _write_text_atomically(path, body, mode)
+        report.append(f"launcher shim: wrote {path} — it runs {client_launcher_shim(root, os_name)} as channel {channel_name}.")
+    return report
+
+
+def _launcher_shim_unavailable(channel_name: str):
+    """Why the seat's launcher shim cannot be written now, or None when it can (the client root's own
+    launcher shim exists — never a shim whose target does not)."""
+    try:
+        root = client_root(channel_name)
+    except ValueError as e:
+        return None, f"{e}."
+    if not os.path.isfile(os.path.join(root, CLIENT_ENTRY_BASENAME)):
+        return root, (f"channel {channel_name} has no client root at {root} — bootstrap it first: "
+                      f"provision-board-tools.py --role b --bootstrap-client --agent <agent> --project-dir <dir> "
+                      f"--channel-name {channel_name}")
+    target = client_launcher_shim(root)
+    if not os.path.isfile(target):
+        return root, (f"the client installed at {root} has no launcher shim at {target} — its release predates the "
+                      f"launcher it ships, or no updater that knows it has settled the root yet. Run "
+                      f"provision-board-tools.py --role b --bootstrap-client for channel {channel_name} (it repairs the "
+                      f"root), or start one session so the client updates itself; then re-run.")
+    return root, None
+
+
+def _offer_launcher_shim(channel_name: str) -> None:
+    """The onboarding entry points' launcher-shim step: write it when the client root can serve it,
+    else say why not and carry on — the seat's channel works without it."""
+    root, why = _launcher_shim_unavailable(channel_name)
+    if why is not None:
+        print(f"launcher shim: not written — {why}")
+        return
+    try:
+        home = launcher_shim_home()
+    except ValueError as e:
+        print(f"launcher shim: not written — {e}.")
+        return
+    for line in install_launcher_shims(channel_name, root, home):
+        print(line)
+
+
+def run_write_launcher_shim(args) -> int:
+    """`--role b --write-launcher-shim`: write (or refresh) the seat's launcher shim, and nothing else.
+
+    No certification, no bootstrap and no `.mcp.json` read: the client root this channel's name
+    derives (`client_root`) is the only input, and a root that cannot serve the shim is REFUSED,
+    exit 1, naming the step to run — a shim is never written over a target that does not exist.
+    """
+    if not _AGENT_RE.fullmatch(args.agent):
+        _fail(f"--agent {args.agent!r} must match ^[a-z0-9_-]+$")
+    if args.channel_name is None:
+        _fail("--role b --write-launcher-shim requires --channel-name")
+    supplied = [
+        f"--{n.replace('_', '-')}"
+        for n in ("ssh_target", "ssh_key", "ssh_port", "expect_fingerprint")
+        if getattr(args, n) is not None
+    ]
+    if supplied:
+        _fail(f"{' and '.join(supplied)} cannot be given with --write-launcher-shim: it writes the launcher shim only.")
+    root, why = _launcher_shim_unavailable(args.channel_name)
+    if why is not None:
+        _fail(f"launcher shim NOT written — {why.replace('<agent>', args.agent)}")
+    try:
+        home = launcher_shim_home()
+    except ValueError as e:
+        _fail(f"launcher shim NOT written — {e}.")
+    for line in install_launcher_shims(args.channel_name, root, home):
+        print(line)
+    return 0
 
 
 # Claude Code's `.mcp.json` expansion, read from its 2.1.284 Linux binary (the MCP config expander):
@@ -1487,6 +1694,7 @@ def run_bootstrap_client(args) -> int:
         existing_text = fh.read()
     if _bootstrap_client(mcp_path, existing_text, args.channel_name, args.agent):
         _print_activation_block(args.channel_name)
+    _offer_launcher_shim(args.channel_name)
     print(f"--bootstrap-client: OK — channel {args.channel_name} now starts from its client root and updates "
           f"itself from the bridge at each launch.")
     return 0
@@ -1616,6 +1824,7 @@ def run_role_b(args) -> int:
         # fails here until host A pins the key, and bootstrap must not ask a door that refused it.
         if _bootstrap_after_certify(args.agent, mcp_path, args.channel_name) and not activation_printed:
             _print_activation_block(args.channel_name)
+        _offer_launcher_shim(args.channel_name)
         return rc
     return 0
 
@@ -2422,6 +2631,14 @@ def build_parser() -> argparse.ArgumentParser:
         "transport (ssh or HTTP) its .mcp.json records, then point .mcp.json at it; after that the client "
         "updates itself at each launch. Needs --agent --project-dir --channel-name; transport flags are refused",
     )
+    cert.add_argument(
+        "--write-launcher-shim",
+        action="store_true",
+        help="[role b] write (or refresh) this seat's launcher shim — ~/start-claude.sh, or %%USERPROFILE%%\\start-claude.bat "
+        "+ .ps1 on Windows — which runs the launcher of the release its client root installed; nothing else. A "
+        "non-shim file there is backed up first. Refused, exit 1, when the channel has no client root carrying the "
+        "launcher. Needs --agent --channel-name. The --bootstrap-client / --certify-only / --self-cert runs write it too",
+    )
     return p
 
 
@@ -2441,7 +2658,11 @@ def main(argv=None) -> int:
                 "--bootstrap-client is a --role b flag: it installs the client on the SEAT, from the seat. "
                 "Run it there."
             )
+        if args.write_launcher_shim:
+            _fail("--write-launcher-shim is a --role b flag: it writes the SEAT's launcher shim. Run it there.")
         return run_role_a(args)
+    if args.write_launcher_shim:
+        return run_write_launcher_shim(args)
     if args.bootstrap_client:
         return run_bootstrap_client(args)
     if args.certify_only:

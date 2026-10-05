@@ -233,6 +233,36 @@ test('a client bin gets a shim named without .mjs that runs the current release\
   assert.ok(!fs.existsSync(path.join(root, 'bin', 'bridge-board-call.mjs')), 'no shim under the file\'s own name');
 });
 
+test('the launcher is shimmed at the fixed <root>/bin/start-claude and runs the copy of the release current.json names, so an update moves it (card#11328)', { skip: process.platform === 'win32' && 'the .cmd shim is validated on Windows by its device agent' }, async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const shim = path.join(root, 'bin', 'start-claude');
+  const run = () => spawnSync(shim, ['--channel', 'x'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+
+  let out = run();
+  assert.equal(out.status, 0, out.stderr);
+  assert.equal(out.stdout.trim(), `launcher of 1.0.0 root=${root} channel= args=--channel x`, 'pack N\'s launcher, told it runs from the client root');
+
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0', { launcherMarker: ' (changed)' }) });
+  const launched = await launch(root, seatEnv(t, bridge));
+  assert.equal(launched.code, 0, launched.stderr);
+  assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
+
+  out = run();
+  assert.equal(out.status, 0, out.stderr);
+  assert.equal(out.stdout.trim(), `launcher of 2.0.0 (changed) root=${root} channel= args=--channel x`, 'the same path now runs pack N+1\'s launcher');
+});
+
+test('a release that carries no launcher leaves no launcher shim behind (card#11328)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const name = process.platform === 'win32' ? 'start-claude.cmd' : 'start-claude';
+  assert.ok(fs.existsSync(path.join(root, 'bin', name)), 'written for a release that carries one');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0', { omit: ['client/bin/start-claude.sh', 'client/bin/start-claude.ps1'] }) });
+  const launched = await launch(root, seatEnv(t, bridge));
+  assert.equal(launched.code, 0, launched.stderr);
+  assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
+  assert.ok(!fs.existsSync(path.join(root, 'bin', name)), 'removed: it would run a launcher the installed release does not have');
+});
+
 test('a launch on the published release starts it, writes state current, and reports the log', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
@@ -869,6 +899,14 @@ test('Windows: a client bin\'s shim is a .cmd that runs the release\'s copy with
   assert.equal(shim.name, 'bridge-board-call.cmd');
   assert.match(shim.body, /current\.json/);
   assert.match(shim.body, /node "C:\\r\\versions\\%AWB_RELEASE%\\client\\bin\\bridge-board-call\.mjs" %\*/);
+});
+
+test('Windows: the launcher\'s shim is start-claude.cmd, running the release\'s start-claude.ps1 under powershell from the client root (card#11328)', () => {
+  const shim = shimFor('C:\\r', 'start-claude.ps1', 'win32', 'launcher');
+  assert.equal(shim.name, 'start-claude.cmd');
+  assert.match(shim.body, /current\.json/);
+  assert.match(shim.body, /set "AWB_LAUNCHER_CLIENT_ROOT=C:\\r"/);
+  assert.match(shim.body, /powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\versions\\%AWB_RELEASE%\\client\\bin\\start-claude\.ps1" %\*/);
 });
 
 test('Windows: the shim is a .cmd that resolves current.json at run time', () => {

@@ -40,6 +40,19 @@ sbx = importlib.util.module_from_spec(_sb_spec)
 sys.modules.setdefault("provision_board_tools_samebox", sbx)
 _sb_spec.loader.exec_module(sbx)
 
+
+def setUpModule():
+    """No case in this file may read or write the running user's real home: the launcher shim
+    lands in $HOME / %USERPROFILE%, and a client root derives from $HOME (card#11328). Cases that
+    need their own still patch over this."""
+    home = tempfile.TemporaryDirectory(prefix="pbt-home-")
+    unittest.addModuleCleanup(home.cleanup)
+    patch = mock.patch.dict(os.environ, {"HOME": home.name, "USERPROFILE": home.name,
+                                         "XDG_DATA_HOME": os.path.join(home.name, "data")})
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
+
+
 # A real single-line ECDSA P-256 public key (blob is valid base64, arbitrary content).
 _REAL_ECDSA = (
     "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBABC"
@@ -3357,6 +3370,11 @@ class BootstrapClientEndToEnd(unittest.TestCase):
         with open(os.path.join(self.root, "current.json"), encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["bridge_release"], "1.0.0")
         self.assertEqual(requests(), ["client_manifest", "client_pack"])
+        # card#11328: the seat's launcher shim runs the launcher the installed pack carries.
+        shim = os.path.join(os.environ["HOME"], "start-claude.sh")
+        if os.name != "nt":
+            run = subprocess.run([shim, "--x"], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+            self.assertEqual(run.stdout.strip(), f"launcher of 1.0.0 root={self.root} channel=cu-test args=--x", run.stderr)
 
     def test_approval_owed_installs_nothing_and_leaves_mcp_json_untouched(self):
         info, requests = self._bridge(release="1.0.0", offer=None, owed="1.0.0")
@@ -3451,6 +3469,179 @@ class CertifyOnlyBootstrapEndToEnd(unittest.TestCase):
         self.assertIn("did not complete", str(cm.exception))
         with open(self.mcp_path, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), self.before)
+
+
+class LauncherShim(unittest.TestCase):
+    """The seat's launcher shim (card#11328): `--write-launcher-shim`, and the pure pieces under it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.join(self.tmp.name, "home")
+        os.makedirs(self.home)
+        self.data = os.path.join(self.tmp.name, "data")
+        self.root = os.path.join(self.data, "agent-webhook-bridge", "client", "chan")
+        self.shim = os.path.join(self.home, "start-claude.sh")
+
+    def _root(self, entry=True, launcher=True, says="launcher of 1.0.0"):
+        os.makedirs(os.path.join(self.root, "bin"), exist_ok=True)
+        if entry:
+            open(os.path.join(self.root, "entry.mjs"), "w").close()
+        if launcher:
+            path = os.path.join(self.root, "bin", "start-claude")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(f'#!/bin/sh\necho "{says} channel=$BRIDGE_CHANNEL_NAME args=$*"\n')
+            os.chmod(path, 0o755)
+
+    def _write(self, *extra):
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home, "XDG_DATA_HOME": self.data}), \
+             contextlib.redirect_stdout(out):
+            rc = pbt.main(["--role", "b", "--agent", "a", "--write-launcher-shim", "--channel-name", "chan", *extra])
+        return rc, out.getvalue()
+
+    def _home_files(self):
+        return sorted(os.listdir(self.home))
+
+    def test_the_root_shim_name_is_the_one_the_client_updater_writes(self):
+        # Lockstep with client-update.mjs LAUNCHER: a rename on either side reds here.
+        with open(os.path.join(pbt._bundled_snapshot_dir(), "client-update.mjs"), encoding="utf-8") as fh:
+            js = fh.read()
+        import re
+        self.assertRegex(js, r"posix: \{ file: 'start-claude\.sh', name: '" + re.escape(pbt.CLIENT_LAUNCHER_SHIM["posix"]) + "' \}")
+        self.assertRegex(js, r"win32: \{ file: 'start-claude\.ps1', name: '" + re.escape(pbt.CLIENT_LAUNCHER_SHIM["nt"]) + "' \}")
+
+    def test_posix_shim_sets_the_channel_and_execs_the_root_launcher_with_its_arguments(self):
+        [(name, body)] = pbt.launcher_shims("chan", "/r o'ot", "posix")
+        self.assertEqual(name, "start-claude.sh")
+        self.assertIn(f"# {pbt.LAUNCHER_SHIM_MARKER}\n", body)
+        self.assertIn("BRIDGE_CHANNEL_NAME='chan'; export BRIDGE_CHANNEL_NAME\n", body)
+        self.assertIn("launcher='/r o'\\''ot/bin/start-claude'\n", body)
+        self.assertTrue(body.endswith('exec "$launcher" "$@"\n'))
+
+    def test_windows_shims_are_a_bat_and_a_ps1_running_the_root_cmd(self):
+        files = dict(pbt.launcher_shims("chan", "C:\\Users\\o'b\\AppData\\Local\\awb\\chan", "nt"))
+        self.assertEqual(sorted(files), ["start-claude.bat", "start-claude.ps1"])
+        target = "C:\\Users\\o'b\\AppData\\Local\\awb\\chan\\bin\\start-claude.cmd"
+        self.assertIn(f"rem {pbt.LAUNCHER_SHIM_MARKER}\r\n", files["start-claude.bat"])
+        self.assertIn('set "BRIDGE_CHANNEL_NAME=chan"\r\n', files["start-claude.bat"])
+        self.assertIn(f'call "{target}" %*\r\n', files["start-claude.bat"])
+        self.assertIn(f"# {pbt.LAUNCHER_SHIM_MARKER}\r\n", files["start-claude.ps1"])
+        self.assertIn("$launcher = '" + target.replace("'", "''") + "'\r\n", files["start-claude.ps1"])
+        for body in files.values():
+            self.assertTrue(pbt.is_launcher_shim(body))
+            self.assertNotIn("\n", body.replace("\r\n", ""), "CRLF throughout")
+
+    @unittest.skipIf(os.name == "nt", "runs the POSIX shim")
+    def test_the_shim_runs_whatever_launcher_the_root_holds_now(self):
+        self._root(says="launcher of 1.0.0")
+        rc, out = self._write()
+        self.assertEqual(rc, 0)
+        self.assertIn(f"launcher shim: wrote {self.shim}", out)
+        run = subprocess.run([self.shim, "--x", "y"], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual((run.returncode, run.stdout.strip()), (0, "launcher of 1.0.0 channel=chan args=--x y"))
+        # The client updater rewrites the root's shim at the next pack install; the seat's shim is untouched.
+        self._root(says="launcher of 2.0.0")
+        run = subprocess.run([self.shim], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual(run.stdout.strip(), "launcher of 2.0.0 channel=chan args=")
+
+    @unittest.skipIf(os.name == "nt", "runs the POSIX shim")
+    def test_the_shim_refuses_to_start_when_the_root_launcher_is_gone(self):
+        self._root()
+        self._write()
+        os.remove(os.path.join(self.root, "bin", "start-claude"))
+        run = subprocess.run([self.shim], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("--bootstrap-client", run.stderr)
+
+    def test_a_second_run_rewrites_nothing(self):
+        self._root()
+        self._write()
+        with open(self.shim, "rb") as fh:
+            first = fh.read()
+        first_stat = os.stat(self.shim)
+        rc, out = self._write()
+        self.assertEqual(rc, 0)
+        self.assertIn(f"launcher shim: {self.shim} is up to date.", out)
+        with open(self.shim, "rb") as fh:
+            self.assertEqual(fh.read(), first)
+        self.assertEqual(os.stat(self.shim).st_ino, first_stat.st_ino, "not replaced")
+        self.assertEqual(self._home_files(), ["start-claude.sh"], "no backup of our own shim")
+
+    def test_a_non_shim_file_is_backed_up_said_and_replaced(self):
+        self._root()
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n# my hand-copied launcher\nexec claude\n")
+        rc, out = self._write()
+        self.assertEqual(rc, 0)
+        backups = [n for n in self._home_files() if n.startswith("start-claude.sh.pre-shim-")]
+        self.assertEqual(len(backups), 1, self._home_files())
+        with open(os.path.join(self.home, backups[0]), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "#!/bin/sh\n# my hand-copied launcher\nexec claude\n")
+        self.assertIn(f"was not a launcher shim — BACKED UP to {os.path.join(self.home, backups[0])}", out)
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertTrue(pbt.is_launcher_shim(fh.read()))
+
+    def test_a_marker_quoted_inside_a_file_of_ones_own_is_not_the_marker_line(self):
+        self.assertFalse(pbt.is_launcher_shim(f"echo '{pbt.LAUNCHER_SHIM_MARKER}'\n"))
+        self.assertFalse(pbt.is_launcher_shim(f"# not quite: {pbt.LAUNCHER_SHIM_MARKER}\n"))
+
+    def test_a_shim_for_another_channel_is_rewritten_in_place_without_a_backup(self):
+        self._root()
+        [(_, other)] = pbt.launcher_shims("other", self.root, "posix")
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(other)
+        rc, out = self._write()
+        self.assertEqual(rc, 0)
+        self.assertIn("rewritten for channel chan", out)
+        self.assertEqual(self._home_files(), ["start-claude.sh"])
+
+    def test_no_client_root_is_refused_naming_the_bootstrap_and_writes_nothing(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._write()
+        self.assertIn("launcher shim NOT written", str(cm.exception))
+        self.assertIn("--role b --bootstrap-client --agent a", str(cm.exception))
+        self.assertEqual(self._home_files(), [])
+
+    def test_a_root_without_its_launcher_shim_is_refused_and_writes_nothing(self):
+        self._root(launcher=False)
+        with self.assertRaises(SystemExit) as cm:
+            self._write()
+        self.assertIn("has no launcher shim at", str(cm.exception))
+        self.assertIn("--bootstrap-client", str(cm.exception))
+        self.assertEqual(self._home_files(), [])
+
+    def test_transport_flags_are_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._write("--ssh-target", "u@h")
+        self.assertIn("--ssh-target cannot be given with --write-launcher-shim", str(cm.exception))
+
+    def test_it_is_a_role_b_flag(self):
+        with self.assertRaises(SystemExit) as cm:
+            pbt.main(["--role", "a", "--agent", "a", "--write-launcher-shim"])
+        self.assertIn("--write-launcher-shim is a --role b flag", str(cm.exception))
+
+    def test_bootstrap_client_writes_the_shim_once_the_root_carries_the_launcher(self):
+        # The stubbed bootstrap of BootstrapClientEntryPoint, with the root's launcher shim present.
+        project = os.path.join(self.tmp.name, "project")
+        os.makedirs(project)
+        with open(os.path.join(project, ".mcp.json"), "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"chan": {"command": "node", "args": [os.path.join(project, ".channel-server", pbt.CHANNEL_MJS_BASENAME)],
+                                               "env": {"BRIDGE_TOOLS_ENDPOINT": "http://127.0.0.1:9/agent-tools/call"}}}}, fh)
+
+        def fake_run(cmd, env=None, cwd=None, check=False):
+            self._root()
+            return mock.Mock(returncode=0)
+
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": self.data}), \
+             mock.patch.object(pbt, "_require_node_20"), \
+             mock.patch.object(pbt.subprocess, "run", side_effect=fake_run), \
+             contextlib.redirect_stdout(out):
+            rc = pbt.main(["--role", "b", "--agent", "a", "--bootstrap-client", "--project-dir", project, "--channel-name", "chan"])
+        self.assertEqual(rc, 0)
+        self.assertIn(f"launcher shim: wrote {self.shim}", out.getvalue())
+        self.assertTrue(os.path.isfile(self.shim))
 
 
 def pathlib_uri(path):

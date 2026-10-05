@@ -2417,6 +2417,14 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `<root>/entry.mjs` (no snapshot is deployed); when that file is established gone (an
   absolute recorded path with no `${…}`) it deploys the legacy
   snapshot, points the channel at it and says the seat will not update itself.
+  **`--role b --write-launcher-shim`** (card#11328, DL-463) writes the seat's launcher shim
+  — `~/start-claude.sh`, or `%USERPROFILE%\start-claude.bat` + `.ps1` — and nothing else; it
+  needs `--agent --channel-name`, refuses the transport flags, and exits 1 writing nothing
+  when the channel's client root is missing or does not yet carry the launcher.
+  `--bootstrap-client`, `--certify-only` and `--self-cert` write the same shim after their
+  own work when the root carries the launcher, and otherwise say why not and carry on.
+  [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0947-and-later)
+  owns the paths, env, marker line and backup rule.
   For a bootstrapped seat, point `channel.server_path` at its client root (or leave it
   unset across hosts, as for any seat): `bridge:check`'s snapshot legs check the release its
   `current.json` names (DL-445; `docs/config-schema.md` owns the verdicts).

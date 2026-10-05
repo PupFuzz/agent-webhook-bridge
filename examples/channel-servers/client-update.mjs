@@ -1041,6 +1041,27 @@ function writeFileAtomic(file, bytes, mode) {
   fsyncDirectory(path.dirname(file));
 }
 
+/**
+ * The channel launcher a release carries (card#11328): `client/bin/<file>`, shimmed at the FIXED
+ * path `<root>/bin/<name>` for this platform. The seat's `~/start-claude.sh` (or its Windows pair),
+ * written by the provisioner, execs that shim, so every pack install moves the launcher with the
+ * channel server it guards. `examples/channel-servers/README.md` § The seat's launcher declares it.
+ */
+export const LAUNCHER = {
+  posix: { file: 'start-claude.sh', name: 'start-claude' },
+  win32: { file: 'start-claude.ps1', name: 'start-claude.cmd' },
+};
+
+export function launcherFor(platform = process.platform) {
+  return platform === 'win32' ? LAUNCHER.win32 : LAUNCHER.posix;
+}
+
+/** node -e program printing the release `current.json` names (exit 3 when it names none) — every shim's run-time resolve. */
+const RELEASE_RESOLVER =
+  'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));' +
+  'if(!/^[0-9]{1,9}\\.[0-9]{1,9}\\.[0-9]{1,9}$/.test(c.bridge_release))process.exit(3);' +
+  'process.stdout.write(c.bridge_release)';
+
 function shellQuote(text) {
   return `'${String(text).replace(/'/g, `'\\''`)}'`;
 }
@@ -1049,25 +1070,37 @@ function shellQuote(text) {
  * The shim for one program a release carries: resolve current.json at RUN time, then run that
  * release's copy. A `seat-tool` is `seat-tools/bin/<tool>`, run as itself (python on Windows); a
  * `client-bin` is `client/bin/<tool>`, a node program beside the client it imports from, run with
- * node and shimmed under its name without `.mjs` (bridge-board-call, card#11151 / DL-451).
+ * node and shimmed under its name without `.mjs` (bridge-board-call, card#11151 / DL-451); the
+ * `launcher` is `client/bin/<LAUNCHER file>`, run with bash (powershell on Windows) under the fixed
+ * name {@link launcherFor} gives, with AWB_LAUNCHER_CLIENT_ROOT set — its pack already carries the
+ * channel server's node_modules, so the launcher installs nothing and reads no copied server dir
+ * (card#11328).
  */
 export function shimFor(root, tool, platform = process.platform, kind = 'seat-tool') {
-  const resolver =
-    'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));' +
-    'if(!/^[0-9]{1,9}\\.[0-9]{1,9}\\.[0-9]{1,9}$/.test(c.bridge_release))process.exit(3);' +
-    'process.stdout.write(c.bridge_release)';
-  const clientBin = kind === 'client-bin';
-  const name = clientBin ? tool.replace(/\.mjs$/, '') : tool;
-  if (platform === 'win32') {
+  const win = platform === 'win32';
+  let name;
+  let run;
+  if (kind === 'launcher') {
+    name = launcherFor(platform).name;
+    run = win
+      ? `set "AWB_LAUNCHER_CLIENT_ROOT=${root}"\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "${root}\\versions\\%AWB_RELEASE%\\client\\bin\\${tool}" %*\r\n`
+      : `AWB_LAUNCHER_CLIENT_ROOT="$root"; export AWB_LAUNCHER_CLIENT_ROOT\nexec bash "$root/versions/$release/client/bin/${tool}" "$@"\n`;
+  } else if (kind === 'client-bin') {
+    const bare = tool.replace(/\.mjs$/, '');
+    name = win ? `${bare}.cmd` : bare;
+    run = win ? `node "${root}\\versions\\%AWB_RELEASE%\\client\\bin\\${tool}" %*\r\n` : `exec node "$root/versions/$release/client/bin/${tool}" "$@"\n`;
+  } else {
+    name = win ? `${tool}.cmd` : tool;
+    run = win ? `python "${root}\\versions\\%AWB_RELEASE%\\seat-tools\\bin\\${tool}" %*\r\n` : `exec "$root/versions/$release/seat-tools/bin/${tool}" "$@"\n`;
+  }
+  if (win) {
     return {
-      name: `${name}.cmd`,
+      name,
       body:
         `@echo off\r\nrem ${SHIM_MARKER}\r\n` +
-        `for /f "usebackq delims=" %%r in (\`node -e "${resolver.replace(/"/g, '\\"')}" "${root}\\current.json"\`) do set "AWB_RELEASE=%%r"\r\n` +
+        `for /f "usebackq delims=" %%r in (\`node -e "${RELEASE_RESOLVER.replace(/"/g, '\\"')}" "${root}\\current.json"\`) do set "AWB_RELEASE=%%r"\r\n` +
         'if not defined AWB_RELEASE (echo the agent-webhook-bridge client root has no readable current.json 1>&2 & exit /b 2)\r\n' +
-        (clientBin
-          ? `node "${root}\\versions\\%AWB_RELEASE%\\client\\bin\\${tool}" %*\r\n`
-          : `python "${root}\\versions\\%AWB_RELEASE%\\seat-tools\\bin\\${tool}" %*\r\n`),
+        run,
     };
   }
   return {
@@ -1075,16 +1108,14 @@ export function shimFor(root, tool, platform = process.platform, kind = 'seat-to
     body:
       `#!/bin/sh\n# ${SHIM_MARKER} — runs ${tool} from the release ${root}/current.json names.\n` +
       `root=${shellQuote(root)}\n` +
-      `release=$(node -e ${shellQuote(resolver)} "$root/current.json") || { echo "$root/current.json is unreadable or names no release; this seat's client needs re-bootstrapping" >&2; exit 2; }\n` +
-      (clientBin
-        ? `exec node "$root/versions/$release/client/bin/${tool}" "$@"\n`
-        : `exec "$root/versions/$release/seat-tools/bin/${tool}" "$@"\n`),
+      `release=$(node -e ${shellQuote(RELEASE_RESOLVER)} "$root/current.json") || { echo "$root/current.json is unreadable or names no release; this seat's client needs re-bootstrapping" >&2; exit 2; }\n` +
+      run,
   };
 }
 
 /**
  * Bring the root's release-independent files in line with the installed release — `entry.mjs`,
- * the shims (seat tools and client programs), and the prune — each budget-checked, each logged when it changed anything.
+ * the shims (seat tools, client programs and the launcher), and the prune — each budget-checked, each logged when it changed anything.
  * Run after an install AND on a current launch, so a launch the budget cut off between the pointer
  * switch and these steps is completed by the next one.
  */
@@ -1127,6 +1158,7 @@ function settleRoot(ctx, release) {
     const programs = [
       ...listed('seat-tools/bin/').map((tool) => [tool, 'seat-tool']),
       ...listed('client/bin/', '.mjs').map((tool) => [tool, 'client-bin']),
+      ...listed('client/bin/').filter((file) => file === launcherFor().file).map((file) => [file, 'launcher']),
     ];
     const wanted = new Set();
     for (const [tool, kind] of programs) {

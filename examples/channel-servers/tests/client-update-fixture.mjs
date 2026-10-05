@@ -107,7 +107,7 @@ export function buildPack({ release, clientVersion = '0.9.29', files, extraEntri
 }
 
 /** The client files of a good pack for `release`: the real updater, a stub (or real) server. */
-export function clientFiles(release, { clientVersion = '0.9.29', realServer = false, marker = '', entryMarker = '', updaterData, serverData, omit = [] } = {}) {
+export function clientFiles(release, { clientVersion = '0.9.29', realServer = false, marker = '', entryMarker = '', launcherMarker = '', updaterData, serverData, omit = [] } = {}) {
   const read = (name) => fs.readFileSync(path.join(SOURCE_DIR, name));
   const files = [
     { path: 'client/entry.mjs', data: Buffer.concat([read('entry.mjs'), Buffer.from(entryMarker)]), mode: 0o755 },
@@ -121,6 +121,13 @@ export function clientFiles(release, { clientVersion = '0.9.29', realServer = fa
     },
     { path: 'seat-tools/bin/check-channel-snapshot.py', data: Buffer.from(`#!/bin/sh\necho "seat tool of ${release}"\n`), mode: 0o755 },
     { path: 'client/bin/bridge-board-call.mjs', data: Buffer.from(`console.log(JSON.stringify({ bin: 'client bin of ${release}', argv: process.argv.slice(2) }));\n`), mode: 0o755 },
+    // A stub launcher (card#11328): says which release's copy ran, with what root and arguments.
+    {
+      path: 'client/bin/start-claude.sh',
+      data: Buffer.from(`#!/usr/bin/env bash\necho "launcher of ${release}${launcherMarker} root=\${AWB_LAUNCHER_CLIENT_ROOT:-} channel=\${BRIDGE_CHANNEL_NAME:-} args=$*"\n`),
+      mode: 0o755,
+    },
+    { path: 'client/bin/start-claude.ps1', data: Buffer.from(`Write-Output "launcher of ${release}${launcherMarker}"\r\n`) },
   ];
   return files.filter((f) => !omit.includes(f.path));
 }
