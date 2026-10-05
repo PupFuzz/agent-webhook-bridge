@@ -532,5 +532,15 @@ class ProvisionToolsCommand extends BridgeCommand
         ] as $line) {
             $this->line($line);
         }
+        // card#11283: the implementation-seat variant. Scope-less means CI tools only — no board
+        // read or write — and only an EXPLICIT `enabled: true` block may omit the scope.
+        $this->line('# For an IMPLEMENTATION seat (CI tools only, no board access), use instead:');
+        foreach ([
+            'board_tools:',
+            '  enabled: true',
+            '  # no board_id / swimlane_id / create_stage_id: served ci_await + ci_await_cancel only',
+        ] as $line) {
+            $this->line($line);
+        }
     }
 }

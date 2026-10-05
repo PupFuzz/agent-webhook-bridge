@@ -21,6 +21,8 @@ final class CiAwaitConfig
 
     public const SWEEP_READS_MAX = 100;
 
+    public const SEAT_READS_PER_HOUR_MAX = 10000;
+
     /** @throws ConfigException naming the value read */
     public static function ttlSeconds(): int
     {
@@ -49,6 +51,17 @@ final class CiAwaitConfig
     public static function sweepReads(): int
     {
         return self::int('sweep_reads', 'BRIDGE_CI_AWAIT_SWEEP_READS', 1, self::SWEEP_READS_MAX, '10');
+    }
+
+    /**
+     * How many GitHub runs reads ONE seat's registrations may cause per rolling hour (card#11283).
+     * Past it a registration is still stored — only its own read is skipped, the sweep and a
+     * `workflow_run` delivery settle it — so a seat looping register/cancel, or registering fresh
+     * SHAs, cannot spend the install's GitHub quota. @throws ConfigException naming the value read
+     */
+    public static function seatReadsPerHour(): int
+    {
+        return self::int('seat_reads_per_hour', 'BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR', 1, self::SEAT_READS_PER_HOUR_MAX, '60');
     }
 
     private static function int(string $key, string $env, int $min, int $max, string $default): int

@@ -29,6 +29,7 @@ use App\Bridge\Check\Checks\ChannelTokenPathCheck;
 use App\Bridge\Check\Checks\ChannelTransportCheck;
 use App\Bridge\Check\Checks\CiAwaitsCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
+use App\Bridge\Check\Checks\CiToolsStateCheck;
 use App\Bridge\Check\Checks\ClientFleetCheck;
 use App\Bridge\Check\Checks\ClientPackSourceCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
@@ -656,11 +657,21 @@ class CheckCommand extends BridgeCommand
             // forced-command line exits 1 with the token present, and USED TO exit 0,
             // saying nothing, without it. The skip set is now exactly this client's
             // dependents.
-            try {
-                $ctx->boardToolsClient = WritebackClientFactory::make();
-            } catch (Throwable $e) {
-                $runner->noteNotRun(CheckSlot::BoardToolsState, 'the board-tools kanban client is unavailable (see the warning above)');
-                $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.RedactedErrorText::of($e).') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
+            //
+            // card#11283: ONLY A SCOPED AGENT NEEDS THIS CLIENT. A scope-less block is served the
+            // CI tools, which never build it, so an install whose enabled agents are all
+            // scope-less is not told its tools "will fail at call time" for want of a token they
+            // never use, and the count names the agents that would.
+            $scopedAgents = array_values(array_filter($ctx->boardToolsEnabled, static fn (AgentConfig $c): bool => $c->boardTools?->isScopeless() === false));
+            if ($scopedAgents === []) {
+                $runner->noteNotRun(CheckSlot::BoardToolsState, 'every enabled board_tools agent is scope-less (CI tools only), so there is no board to read');
+            } else {
+                try {
+                    $ctx->boardToolsClient = WritebackClientFactory::make();
+                } catch (Throwable $e) {
+                    $runner->noteNotRun(CheckSlot::BoardToolsState, 'the board-tools kanban client is unavailable (see the warning above)');
+                    $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($scopedAgents).' agent(s) with a board scope but the kanban writeback client is unavailable ('.RedactedErrorText::of($e).') — the board tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
+                }
             }
 
             if ($ctx->boardToolsClient !== null) {
@@ -959,7 +970,7 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::BoardToolsLost, new BoardToolsLostCheck)
             ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
             ->registerPerAgent(CheckSlot::BoardToolsState, new BoardToolsBoardStateCheck)
-            ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck(base_path('examples/channel-servers')))
+            ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck(base_path('examples/channel-servers')), new CiToolsStateCheck)
             ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
             ->registerPerAgent(CheckSlot::BoardToolsSshAdvisory, new BoardToolsSshDefaultAdvisoryCheck)
             ->register(CheckSlot::ClientFleet, new ClientPackSourceCheck(base_path('VERSION')), new ClientFleetCheck)
@@ -1233,7 +1244,7 @@ class CheckCommand extends BridgeCommand
 
             // The bound is PRINTED, not merely known, because this is the one state whose
             // remedy an operator can get wrong in a way that looks like success.
-            NextStepState::SeatSideUnreported => "the bridge half is wired and the CALLING SEAT's half is NOT VERIFIABLE FROM HERE — the bridge may not read the seat's own .mcp.json or keypair (DL-229, an account may only read its own files) — and this install has recorded no successful board-tools call for this agent. Wire the seat, then ask the seat to make ONE board_my_cards call and re-run `{$step->command}`. Do NOT clear this line with --probe-tools: that probe stamps the same ledger row from THIS box, so it would report the seat as reporting without the seat ever having called. {$doc}",
+            NextStepState::SeatSideUnreported => "the bridge half is wired and the CALLING SEAT's half is NOT VERIFIABLE FROM HERE — the bridge may not read the seat's own .mcp.json or keypair (DL-229, an account may only read its own files) — and this install has recorded no successful board-tools call for this agent. Wire the seat, then ask the seat to make ".($step->seatCall !== null ? "ONE {$step->seatCall} call" : 'ONE call (but this agent is served NO tool — its ci_tools line says why)')." and re-run `{$step->command}`. Do NOT clear this line with --probe-tools: that probe stamps the same ledger row from THIS box, so it would report the seat as reporting without the seat ever having called. {$doc}",
 
             // ⛔ THE ONLY ARM WHOSE FAULT IS A `fail` ABOVE IT, and the sentence says so
             // rather than reading like the board-tools advisories it sits with. It also says what

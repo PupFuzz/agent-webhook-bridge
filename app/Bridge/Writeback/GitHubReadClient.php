@@ -6,6 +6,7 @@ use App\Bridge\Support\ForeignText;
 use App\Bridge\Support\ReceiverUrl;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 use UnexpectedValueException;
 
 /**
@@ -164,13 +165,30 @@ final class GitHubReadClient
         // PAGE BELOW — the one place this is read. Every other exit abandons it rather than
         // reporting a partial walk as a total (card#9717).
         $hooksSeen = 0;
-
+        // card#11283: a MATCH no longer ends the walk, because every matching hook's `active` and
+        // `events` are wanted, not the first one's. ⛔ `found` keeps exactly its old meaning: once
+        // a hook has matched, NOTHING later in the walk — a failed page, a body that is not a list,
+        // an unreadable entry, the page bound — takes the verdict away; it only makes the two new
+        // facts unknown (null). Walking past the match costs a request only on a repo whose
+        // matching hook sits on a FULL page.
+        $match = null;
         for ($page = 1; $page <= self::HOOK_PAGE_LIMIT; $page++) {
-            $body = $this->http()->get(self::API_BASE."/repos/{$repo}/hooks", [
-                'per_page' => self::HOOK_PAGE_SIZE,
-                'page' => $page,
-            ])->throw()->json();
+            try {
+                $body = $this->http()->get(self::API_BASE."/repos/{$repo}/hooks", [
+                    'per_page' => self::HOOK_PAGE_SIZE,
+                    'page' => $page,
+                ])->throw()->json();
+            } catch (Throwable $e) {
+                if ($match !== null) {
+                    return GitHubHookListAnswer::found(null, null);
+                }
 
+                throw $e;
+            }
+
+            if ($match !== null && (! is_array($body) || ! array_is_list($body))) {
+                return GitHubHookListAnswer::found(null, null);
+            }
             if (! is_array($body) || ! array_is_list($body)) {
                 self::warnUnreadableBody(
                     "the webhook-list read for {$repo} returned a 200 whose body is not a JSON list of hooks — whether a hook points at this install is UNKNOWN, not false, and a consumer that reads it as \"no such hook\" would convict a healthy install",
@@ -205,7 +223,7 @@ final class GitHubReadClient
                 // `ReceiverUrl` owns why the two predicates differ and why provision keeps
                 // the exact one.
                 if (ReceiverUrl::deliversTo($url, $receiverUrl)) {
-                    return GitHubHookListAnswer::found();
+                    $match = HookDeliverySettings::fold($match, $hook);
                 }
             }
 
@@ -217,6 +235,9 @@ final class GitHubReadClient
             // place an ABSENCE is about to be asserted, so an unreadable entry anywhere in
             // the walk unmakes that absence while never pre-empting a later page's match.
             if (count($body) < self::HOOK_PAGE_SIZE) {
+                if ($match !== null) {
+                    return GitHubHookListAnswer::found($match->active, $match->workflowRun);
+                }
                 if ($unreadableElement) {
                     self::warnUnreadableBody(
                         "the webhook-list read for {$repo} returned a 200 carrying at least one hook entry with no readable `config.url` — this run could not enumerate the repo's hooks, so whether one points at this install is UNKNOWN, not false",
@@ -230,7 +251,7 @@ final class GitHubReadClient
             }
         }
 
-        return GitHubHookListAnswer::undetermined();
+        return $match !== null ? GitHubHookListAnswer::found(null, null) : GitHubHookListAnswer::undetermined();
     }
 
     /**

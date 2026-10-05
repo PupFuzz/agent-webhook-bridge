@@ -20,6 +20,7 @@ use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Bridge\Tools\ClientVersion;
+use App\Bridge\Tools\ServedTools;
 use Closure;
 use Throwable;
 
@@ -205,7 +206,12 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         // A golden fixture is captured under the test path, so it would keep a glyph the
         // agent reading this line never receives: the emphasis would be asserted and absent
         // on exactly the surface that matters most here. Uppercase survives both readers.
-        $remedy = 'ASK THE SEAT to make one board-tools call (board_my_cards) and re-run bridge:check — do NOT re-provision the seat on the strength of this line.';
+        // card#11283: the call named is one the bridge SERVES this agent — a scope-less (CI-only)
+        // seat told to call board_my_cards would be refused `not_served` and report nothing.
+        $call = ServedTools::make()->reportingCall($bt);
+        $remedy = $call === null
+            ? 'This agent is served NO tool (its ci_tools line says why), so the seat has no call to report with — fix the block, then ask the seat to make one call.'
+            : "ASK THE SEAT to make one board-tools call ({$call}) and re-run bridge:check — do NOT re-provision the seat on the strength of this line.";
         $blind = 'the bridge cannot tell a seat that was never wired from one that is simply idle — it may not read the seat\'s own keypair or .mcp.json (an account may only read its own files), so the seat has to tell it, and calling IS the telling.';
 
         if ($record === null) {

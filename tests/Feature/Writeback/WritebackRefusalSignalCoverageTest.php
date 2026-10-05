@@ -153,6 +153,7 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         'Bridge/Writeback/CoordConfigTerminals.php::terminalNamesForBoardId#2' => 'CONFIG: the compare that picks that block',
         'Bridge/Writeback/CoordConfigTerminals.php::issuePopulationsForBoardId#1' => 'CONFIG: the same block selection for the issue-population axis',
         'Bridge/Writeback/CoordConfigTerminals.php::issuePopulationsForBoardId#2' => 'CONFIG: the compare that picks that block',
+        'Bridge/Support/BoardToolsConfig.php::(file scope)#1' => 'CONFIG: the per-agent YAML scope keys whose PRESENCE makes a board_tools block scoped (card#11283) — a key name, never a card',
         'Bridge/Support/BoardToolsConfig.php::build#1' => 'CONFIG: the per-agent YAML key naming the board this agent writes to',
         // card#8973 / DL-360 — the same CONFIG value as the line above, on its way into and out of a
         // durable row. Neither site READS anything: both are the COLUMN NAME in a list (an upsert's
@@ -164,7 +165,8 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         'Bridge/Classifiers/InboxOnlyClassifier.php::newCardIntent#1' => 'WEBHOOK PAYLOAD: copies the envelope\'s board onto the staged intent; nothing is compared and nothing is written',
         'Bridge/Classifiers/InboxOnlyClassifier.php::lifecycleIntent#1' => 'WEBHOOK PAYLOAD: the same copy on the lifecycle families',
         'Bridge/Tools/BoardToolsScopeHeader.php::read#1' => 'RESPONSE HEADER: the LEGACY spelling of another install\'s scope echo, read newest-first behind `configured_board_id` (DL-302/DL-304). It describes a responder, not a card',
-        'Bridge/Tools/SshTransportProbe.php::probeLive#1' => 'PROBE EXPECTATION: the board an operator\'s expected-scope entry declares, compared to that header echo — config against config, on a diagnostic that writes nothing',
+        'Bridge/Tools/SshTransportProbe.php::probeLive#1' => 'PROBE EXPECTATION: whether an operator\'s expected-scope entry declares a board at all (a scope-less agent, card#11283) — config, on a diagnostic that writes nothing',
+        'Bridge/Tools/SshTransportProbe.php::probeLive#2' => 'PROBE EXPECTATION: the board an operator\'s expected-scope entry declares, compared to that header echo — config against config, on a diagnostic that writes nothing',
     ];
 
     public function test_every_bare_log_call_in_a_writeback_handler_is_accounted_for(): void

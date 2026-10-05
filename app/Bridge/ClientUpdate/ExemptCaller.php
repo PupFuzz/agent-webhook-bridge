@@ -2,6 +2,8 @@
 
 namespace App\Bridge\ClientUpdate;
 
+use App\Bridge\Tools\ClientHalfLedger;
+
 /**
  * A board-tools caller that is NOT a seat's channel server, declared by the call's optional
  * `caller` key (card#10567 B4). Such a call proves the door opens, and says nothing about which
@@ -42,5 +44,24 @@ enum ExemptCaller: string
     public static function probeBody(): array
     {
         return ['tool' => 'board_my_cards', 'args' => (object) [], 'caller' => self::Probe->value];
+    }
+
+    /** The repo a scope-less probe names: shaped like a repo, and owned by nobody. */
+    public const SCOPELESS_PROBE_REPO = 'bridge-probe/no-such-repo';
+
+    /**
+     * The probe body for a SCOPE-LESS agent (card#11283), which is refused `board_my_cards`: a
+     * real `ci_await_cancel` through the dispatcher, on a head no seat can await (the all-zero
+     * SHA of a repo nobody owns), declared as a probe. It WRITES NOTHING to the await store —
+     * cancelling an absent await answers `cancelled: false` — and leaves exactly what any
+     * successful call leaves: the client-half row ({@see ClientHalfLedger}),
+     * the config-seen sighting, and this caller's own probe column in the fleet ledger, never the
+     * seat's report of its client.
+     *
+     * @return array{tool: string, args: array{repo: string, head_sha: string}, caller: string}
+     */
+    public static function scopelessProbeBody(): array
+    {
+        return ['tool' => 'ci_await_cancel', 'args' => ['repo' => self::SCOPELESS_PROBE_REPO, 'head_sha' => str_repeat('0', 40)], 'caller' => self::Probe->value];
     }
 }

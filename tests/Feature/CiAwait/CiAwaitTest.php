@@ -24,6 +24,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use RuntimeException;
@@ -119,6 +120,76 @@ class CiAwaitTest extends TestCase
         $this->assertSame(0, CiAwait::query()->count(), 'a settled await is forgotten');
         $this->assertSame(['ci_settled'], array_column($this->inbox(), 'kind'));
         $this->assertChannelPushes(['seat-a' => ['ci_settled']]);
+    }
+
+    /**
+     * card#11283 / DL-461: a seat that loops register/cancel spends no GitHub quota past its
+     * budget. The cooldown cannot stop it — it keys on stored rows, and cancel deletes the row —
+     * so the per-seat bound does, and it STORES the await rather than refusing it.
+     */
+    public function test_a_register_cancel_loop_past_the_seat_budget_is_stored_and_not_read(): void
+    {
+        config(['bridge.ci_await.seat_reads_per_hour' => 1]);
+        $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null]])]]);
+
+        $first = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->assertTrue($first->ok);
+        $this->assertArrayNotHasKey('read_skipped', $first->body()['result']);
+        $this->callTool('seat-a', 'ci_await_cancel', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $again = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertTrue($again->ok, json_encode($again->body()) ?: '');
+        $result = $again->body()['result'];
+        $this->assertSame('waiting', $result['state']);
+        $this->assertSame('seat_read_limited', $result['read_skipped']);
+        $this->assertNotNull($result['retry_not_before']);
+        $this->assertSame(1, CiAwait::query()->count(), 'the await is stored, never refused');
+        $this->assertNull(CiAwait::query()->firstOrFail()->retry_not_before, 'the seat budget is never written to the head');
+        $this->assertSentRunsReads(1);
+    }
+
+    public function test_fresh_shas_past_the_seat_budget_are_stored_and_not_read_and_another_seat_is_unaffected(): void
+    {
+        config(['bridge.ci_await.seat_reads_per_hour' => 1]);
+        $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null]])], [$this->runs([['CI', 'in_progress', null]])]]);
+
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $second = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::OTHER_SHA]);
+        $other = $this->callTool('seat-b', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::OTHER_SHA]);
+
+        $this->assertSame('seat_read_limited', $second->body()['result']['read_skipped']);
+        $this->assertArrayNotHasKey('read_skipped', $other->body()['result'], 'the budget is per seat');
+        $this->assertSame(3, CiAwait::query()->count());
+        $this->assertSentRunsReads(2);
+    }
+
+    public function test_a_limiter_that_does_not_answer_skips_the_read_and_still_stores(): void
+    {
+        RateLimiter::shouldReceive('tooManyAttempts')->andThrow(new RuntimeException('cache store down'));
+        Http::fake(['127.0.0.1:*' => Http::response('ok', 200)]);
+        Log::spy();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertTrue($out->ok);
+        $this->assertSame('seat_read_limited', $out->body()['result']['read_skipped']);
+        $this->assertArrayNotHasKey('retry_not_before', $out->body()['result'], 'no instant is known when the limiter did not answer');
+        $this->assertSame(1, CiAwait::query()->count());
+        $this->assertSentRunsReads(0);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m): bool => str_contains($m, 'per-seat read limiter could not be read'))->once();
+    }
+
+    public function test_an_out_of_range_seat_budget_is_an_install_fault(): void
+    {
+        config(['bridge.ci_await.seat_reads_per_hour' => 0]);
+        Http::fake();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertFalse($out->ok);
+        $this->assertSame('install_fault.ci_await_config_invalid', $out->body()['reason']);
+        $this->assertSame(0, CiAwait::query()->count());
     }
 
     public function test_a_head_with_no_runs_yet_is_not_settled(): void

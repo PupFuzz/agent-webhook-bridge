@@ -143,6 +143,28 @@ class CheckNextStepsTest extends TestCase
         $this->assertStringContainsString('Do NOT clear this line with --probe-tools', $lines[2]);
     }
 
+    /**
+     * card#11283: a SCOPE-LESS seat (CI tools only) is told to make a call it is SERVED — a
+     * `board_my_cards` would be refused `not_served` and report nothing.
+     */
+    public function test_the_seat_side_entry_names_a_served_call_for_a_scope_less_seat(): void
+    {
+        $this->bootGoldenInstall('next-steps-scopeless', function (GoldenInstall $i) {
+            $i->boot()
+                ->roster(self::SEATS)
+                ->agent('agent-b', $this->kanbanOnlyAgentYaml()
+                    ."board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$i->path('bearer-b')}\n")
+                ->secret('bearer-b', self::BEARER_B);
+        });
+        Artisan::call('bridge:check');
+        $lines = $this->nextStepLines(Artisan::output());
+
+        $this->assertCount(2, $lines, implode("\n", $lines));
+        $this->assertStringContainsString("the CALLING SEAT's half is NOT VERIFIABLE FROM HERE", $lines[1]);
+        $this->assertStringContainsString('make ONE ci_await_cancel call', $lines[1]);
+        $this->assertStringNotContainsString('board_my_cards', $lines[1]);
+    }
+
     public function test_the_json_document_carries_the_same_four_entries_with_their_states(): void
     {
         $doc = $this->runCheckAsJson();

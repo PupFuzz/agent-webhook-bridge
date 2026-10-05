@@ -146,7 +146,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
             try {
                 $resp = Http::withToken($token)->acceptJson()->timeout(10)
-                    ->post($endpoint, ExemptCaller::probeBody());
+                    ->post($endpoint, $bt->isScopeless() ? ExemptCaller::scopelessProbeBody() : ExemptCaller::probeBody());
             } catch (ConnectionException $e) {
                 // ESCAPED PRECAUTIONARILY (card#9200, DL-366), and the reason is stated
                 // rather than claimed: this message is composed by the HTTP client, but
@@ -177,8 +177,16 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
             }
 
             $result = $resp->json('result');
+            $probed = $bt->isScopeless() ? 'ci_await_cancel' : 'board_my_cards';
             if (! is_array($result)) {
-                yield Finding::fail("board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm board_my_cards ran ({$this->probeErrorDetail($resp)}).");
+                yield Finding::fail("board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm {$probed} ran ({$this->probeErrorDetail($resp)}).");
+
+                continue;
+            }
+            if ($bt->isScopeless()) {
+                // card#11283: a scope-less agent has no board window to echo; the bearer is
+                // per-agent, so a 200 from the dispatcher's CI-tool path IS this agent's door.
+                yield Finding::ok("board_tools probe: agent {$name}: {$endpoint} → 200; scope-less (CI tools only) — ci_await_cancel answered through this agent's bearer and wrote nothing (no await existed on the probe head). There is no board window to match.");
 
                 continue;
             }

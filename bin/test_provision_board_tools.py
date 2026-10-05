@@ -676,10 +676,61 @@ class SelfCert(unittest.TestCase):
     cases below stop raising SystemExit.
     """
 
+    # card#11283: the first round-trip asks `served_tools`; a scoped agent's answer, so the
+    # cases below keep certifying the board_my_cards round-trip they were written for.
+    SERVED = json.dumps({"ok": True, "op": "served_tools", "agent": "me", "served": ["board_my_cards", "ci_await", "ci_await_cancel"]})
+
     def _run(self, stdout, returncode):
         completed = mock.Mock(stdout=stdout, stderr="", returncode=returncode)
-        with mock.patch.object(pbt.subprocess, "run", return_value=completed):
+        served = mock.Mock(stdout=self.SERVED, stderr="", returncode=0)
+
+        def answer(cmd, *a, **kw):
+            return served if '"op"' in kw.get("input", "") else completed
+
+        with mock.patch.object(pbt.subprocess, "run", side_effect=answer):
             return pbt._self_cert("agent@host", None, None)
+
+    def _run_seq(self, answers):
+        """Each ssh round-trip answers the next (stdout, returncode); returns the bodies sent."""
+        procs = [mock.Mock(stdout=o, stderr="", returncode=r) for o, r in answers]
+        with mock.patch.object(pbt.subprocess, "run", side_effect=procs) as run:
+            pbt._self_cert("agent@host", None, None)
+        return [json.loads(c.kwargs["input"]) for c in run.call_args_list]
+
+    def test_a_current_bridge_is_asked_served_tools_then_certified_with_a_served_tool(self):
+        # card#11283: a scope-less (CI-only) agent is refused board_my_cards, so the certifying
+        # call is chosen from what the bridge says it serves.
+        sent = self._run_seq([
+            (json.dumps({"ok": True, "op": "served_tools", "agent": "impl", "served": ["ci_await", "ci_await_cancel"]}), 0),
+            (json.dumps({"ok": True, "tool": "ci_await_cancel", "result": {"cancelled": False}}), 0),
+        ])
+        self.assertEqual(sent[0], {"op": "served_tools"})
+        self.assertEqual(sent[1]["tool"], "ci_await_cancel")
+        self.assertEqual(sent[1]["caller"], "self-cert")
+        self.assertEqual(sent[1]["args"], {"repo": "bridge-probe/no-such-repo", "head_sha": "0" * 40})
+
+    def test_a_scoped_agent_is_certified_with_board_my_cards(self):
+        sent = self._run_seq([
+            (json.dumps({"ok": True, "op": "served_tools", "agent": "pm", "served": ["board_my_cards", "ci_await"]}), 0),
+            (json.dumps({"ok": True, "tool": "board_my_cards", "result": {}}), 0),
+        ])
+        self.assertEqual(sent[1]["tool"], "board_my_cards")
+
+    def test_a_bridge_that_predates_served_tools_falls_back_to_board_my_cards(self):
+        for old in (
+            {"ok": False, "error": "unknown client-update `op` \"served_tools\" — this bridge serves client_manifest"},
+            {"ok": False, "error": "request must carry a non-empty `tool`", "reason": "bad_request"},
+        ):
+            sent = self._run_seq([(json.dumps(old), 1), (json.dumps({"ok": True, "result": {}}), 0)])
+            self.assertEqual(sent[1]["tool"], "board_my_cards")
+
+    def test_a_closed_door_is_never_read_as_an_old_bridge(self):
+        with self.assertRaises(SystemExit):
+            self._run_seq([(json.dumps({"ok": False, "error": "unknown client-update `op` (a door_closed answer whose text looks old)", "reason": "door_closed"}), 2)])
+
+    def test_an_agent_served_nothing_fails_without_a_second_call(self):
+        with self.assertRaises(SystemExit):
+            self._run_seq([(json.dumps({"ok": True, "op": "served_tools", "agent": "x", "served": []}), 0)])
 
     def test_error_envelope_at_nonzero_exit_fails(self):
         with self.assertRaises(SystemExit):
@@ -697,7 +748,8 @@ class SelfCert(unittest.TestCase):
         # card#10567 B4: without `caller`, the bridge's fleet ledger would record this probe as the
         # seat's own channel server — with no version — over what the seat reported.
         completed = mock.Mock(stdout=json.dumps({"ok": True}), stderr="", returncode=0)
-        with mock.patch.object(pbt.subprocess, "run", return_value=completed) as run:
+        served = mock.Mock(stdout=self.SERVED, stderr="", returncode=0)
+        with mock.patch.object(pbt.subprocess, "run", side_effect=[served, completed]) as run:
             pbt._self_cert("agent@host", None, None)
         body = json.loads(run.call_args.kwargs["input"])
         self.assertEqual(body["caller"], "self-cert")
@@ -1199,17 +1251,22 @@ class RoleBHostBLeg(unittest.TestCase):
 
         # Only the `ssh` call is stubbed: the `ssh-keygen -y` pair check stays REAL, so
         # this case is also a witness that the two legs do not fight over one key.
+        served = mock.Mock(stdout=SelfCert.SERVED, stderr="", returncode=0)
+
         def dispatch(cmd, *a, **kw):
-            return completed if cmd[0] == "ssh" else real_run(cmd, *a, **kw)
+            if cmd[0] != "ssh":
+                return real_run(cmd, *a, **kw)
+            return served if '"op"' in kw.get("input", "") else completed
 
         with mock.patch.object(pbt.subprocess, "run", side_effect=dispatch) as run:
             rc, _ = self._run(["--self-cert"])
         self.assertEqual(rc, 0)
         ssh_calls = [c.args[0] for c in run.call_args_list if c.args[0][0] == "ssh"]
-        self.assertEqual(len(ssh_calls), 1)
-        argv = ssh_calls[0]
-        self.assertIn("-i", argv)
-        self.assertEqual(argv[argv.index("-i") + 1], derived)
+        # card#11283: the identity call (served_tools) and the certifying tool call, both with the key.
+        self.assertEqual(len(ssh_calls), 2)
+        for argv in ssh_calls:
+            self.assertIn("-i", argv)
+            self.assertEqual(argv[argv.index("-i") + 1], derived)
         self.assertEqual(self._recorded_env()["BRIDGE_TOOLS_SSH_KEY"], derived)
 
     def test_the_samebox_wrapper_parses_the_pub_path_out_of_this_legs_real_stdout(self):
@@ -1735,6 +1792,29 @@ class RoleASelfAccountArm(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len(self._authz_lines()), 1)
         self.assertIn("already present (same key)", out)
+
+    # --- card#11283: `--from` --------------------------------------------- #
+
+    def test_from_pins_the_key_to_the_given_addresses(self):
+        rc, _ = self._run(extra_argv=["--from", "127.0.0.1,::1"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(self._authz_lines()[0].startswith('from="127.0.0.1,::1",command="'))
+
+    def test_a_rerun_with_the_same_from_is_idempotent_and_without_it_is_refused(self):
+        self._run(extra_argv=["--from", "127.0.0.1,::1"])
+        rc, out = self._run(extra_argv=["--from", "127.0.0.1,::1"])
+        self.assertEqual(rc, 0)
+        self.assertIn("already present (same key)", out)
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+        self.assertIn("different options", str(cm.exception))
+        self.assertEqual(len(self._authz_lines()), 1)
+
+    def test_a_from_value_that_could_close_the_option_is_refused(self):
+        for bad in ['127.0.0.1",no-pty', "127.0.0.1 ::1", ""]:
+            with self.assertRaises(SystemExit):
+                self._run(extra_argv=["--from", bad])
+        self.assertFalse(os.path.exists(self.authz))
 
     def test_a_different_key_for_the_same_agent_is_still_refused(self):
         self._run()

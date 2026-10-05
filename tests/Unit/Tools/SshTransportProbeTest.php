@@ -831,6 +831,53 @@ class SshTransportProbeTest extends TestCase
 
     // ─── live probe ───────────────────────────────────────────────────────────
 
+    /** card#11283 SF-1: a target whose expected agents are all scope-less gets the write-nothing CI probe. */
+    public function test_live_probe_of_scope_less_agents_sends_the_write_nothing_ci_call(): void
+    {
+        $env = new FakeSshProbeEnvironment(sshStdout: (string) json_encode(['ok' => true, 'tool' => 'ci_await_cancel', 'result' => ['cancelled' => false]]));
+
+        $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'impl', 'board_id' => null, 'swimlane_id' => null]]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('ci_await_cancel ok (scope-less', $findings[0]->message);
+        $this->assertStringContainsString('not which of [impl]', $findings[0]->message);
+        $this->assertCount(1, $env->sentStdins);
+        $this->assertSame('ci_await_cancel', json_decode($env->sentStdins[0], true)['tool']);
+    }
+
+    /** A mixed set sends board_my_cards first; a `not_served` answer means the key reached a scope-less agent. */
+    public function test_live_probe_follows_a_not_served_answer_with_the_ci_call(): void
+    {
+        $env = new FakeSshProbeEnvironment;
+        $env->stdoutQueue = [
+            (string) json_encode(['ok' => false, 'error' => 'board_my_cards: not served', 'reason' => 'not_served']),
+            (string) json_encode(['ok' => true, 'tool' => 'ci_await_cancel', 'result' => ['cancelled' => false]]),
+        ];
+
+        $findings = (new SshTransportProbe($env))->probeLive('me@host', [
+            ['agent' => 'pm', 'board_id' => 10, 'swimlane_id' => 4],
+            ['agent' => 'impl', 'board_id' => null, 'swimlane_id' => null],
+        ]);
+
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertSame(['board_my_cards', 'ci_await_cancel'], array_map(static fn (string $in): string => json_decode($in, true)['tool'], $env->sentStdins));
+    }
+
+    /** Control: a board_my_cards refusal that is NOT `not_served` stays a failure and is not followed up. */
+    public function test_live_probe_does_not_follow_up_any_other_refusal(): void
+    {
+        $env = new FakeSshProbeEnvironment(sshStdout: (string) json_encode(['ok' => false, 'error' => 'upstream board error']));
+
+        $findings = (new SshTransportProbe($env))->probeLive('me@host', [
+            ['agent' => 'pm', 'board_id' => 10, 'swimlane_id' => 4],
+            ['agent' => 'impl', 'board_id' => null, 'swimlane_id' => null],
+        ]);
+
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertCount(1, $env->sentStdins);
+    }
+
     public function test_live_probe_clean_matching_scope_passes(): void
     {
         $env = new FakeSshProbeEnvironment(
@@ -1085,8 +1132,16 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         return $this->fileIdentities[$path] ?? $path;
     }
 
+    /** @var list<string> every stdin a round-trip sent, in order (card#11283) */
+    public array $sentStdins = [];
+
+    /** @var list<string> stdouts consumed one per round-trip before falling back to `$sshStdout` (card#11283) */
+    public array $stdoutQueue = [];
+
     public function sshRoundTrip(string $target, string $stdin): array
     {
-        return ['exit' => $this->sshExit, 'stdout' => $this->sshStdout, 'stderr' => $this->sshStderr];
+        $this->sentStdins[] = $stdin;
+
+        return ['exit' => $this->sshExit, 'stdout' => array_shift($this->stdoutQueue) ?? $this->sshStdout, 'stderr' => $this->sshStderr];
     }
 }

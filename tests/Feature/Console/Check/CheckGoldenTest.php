@@ -1290,7 +1290,7 @@ class CheckGoldenTest extends TestCase
         // (every not-run check names its cause) does not.
         $minimal = $this->goldenFor('minimal');
 
-        $this->assertStringContainsString('16 did not run', $minimal);
+        $this->assertStringContainsString('17 did not run', $minimal);
         $this->assertStringContainsString('no readable writeback.json', $minimal);
         $this->assertStringContainsString('no agent has an enabled board_tools block', $minimal);
         // And never the internal-defect line: every not-run check here has a reason.

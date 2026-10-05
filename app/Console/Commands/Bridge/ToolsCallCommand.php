@@ -118,7 +118,11 @@ class ToolsCallCommand extends BridgeCommand
         // for the bridge's misconfiguration).
         $bt = $agent->boardTools;
         if ($bt === null || ! $bt->enabled || $bt->transport !== 'ssh') {
-            return $this->emit($io, ['ok' => false, 'error' => "agent `{$agentName}` is not a live ssh board-tools agent (transport must be ssh, enabled)"], 2);
+            // card#11283: `door_closed` lets a seat's channel server tell "this door will not serve
+            // you" (advertise nothing) from the other exit-2 answers — a config error, an unknown
+            // agent, a 5xx — which say nothing about what it is served. Additive: the exit code and
+            // the error text are unchanged.
+            return $this->emit($io, ['ok' => false, 'error' => "agent `{$agentName}` is not a live ssh board-tools agent (transport must be ssh, enabled)", 'reason' => 'door_closed'], 2);
         }
 
         [$raw, $stdinError] = $this->readStdin($io);

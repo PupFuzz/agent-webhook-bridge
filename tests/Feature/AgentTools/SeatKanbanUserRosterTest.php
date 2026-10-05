@@ -278,6 +278,20 @@ class SeatKanbanUserRosterTest extends TestCase
     }
 
     /**
+     * card#11283 MF-1: a SCOPE-LESS board_tools agent on the same seat is not a second taker — it
+     * is served no board tool — so the take still names one agent and goes through. Control: the
+     * next test, where the second agent is scoped and the take refuses.
+     */
+    public function test_a_scope_less_board_tools_agent_on_the_same_seat_does_not_refuse_the_take(): void
+    {
+        File::put($this->dir.'/me-ci.yml', "identity:\n  coord_seat: me\nsubscriptions: []\nboard_tools:\n  enabled: true\n  transport: ssh\n");
+        $this->board();
+
+        $this->take()->assertStatus(200);
+        $this->assertSame([['assigned_user_id' => self::ROSTER_ID]], $this->patches);
+    }
+
+    /**
      * Round-1 ruling 4: a SECOND board-tools agent on the same seat (a copied coord_seat) can
      * claim as that seat too, so the id no longer names which agent holds a card — refused.
      */
