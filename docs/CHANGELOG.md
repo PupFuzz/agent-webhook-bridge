@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dependabot PR #869** — **npm/@modelcontextprotocol/sdk 1.30.1 → 1.31.0 in examples/channel-servers** (GHSA-6qxp-vccf-f47h, OAuth client credentials not bound to the authorization server that issued them). The channel server uses only the SDK's stdio `Server`/`Client` and their transports, never its OAuth client, so the advisory does not reach it; bumped because it is in-range and freely available. Reference channel-server snapshot 0.9.45 → 0.9.46.
+
 ### Changed
 
 - **card#11282 / DL-460** — **Board tools are the install default for every pm and solo seat; an impl seat uses kbcard.** `CLAUDE_DEPLOYMENT.md` § Fresh install, `README.md` § Quick start step 6 and `bridge:check`'s NEXT STEPS line for an agent with no `board_tools:` block no longer put board tools to the operator as a per-agent yes/no question. They say: a pm or solo seat always runs `bridge:provision-tools --agent=<name>` (that is where `ci_await` comes from); an impl seat uses kbcard for its board work, and an agent that needs no block at all silences the line with `board_tools:` `enabled: false`. The line names both roles because the bridge cannot read a seat's role from its YAML. `docs/writeback.md` § 4 now has every GitHub repo webhook on the install send **Workflow runs** beside **Pushes**: a pm or solo seat can `ci_await` any repo the install receives, and without the delivery an await settles only on its sweep, and only while the sweep runs. Docs that named the impl seat as the one board tools are for (DL-217's original target) are made role-neutral.
