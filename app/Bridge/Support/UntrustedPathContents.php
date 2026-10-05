@@ -134,6 +134,30 @@ final class UntrustedPathContents
     public const MAX_BYTES = 1_048_576;
 
     /**
+     * Why the entry an `lstat` describes is one no caller of {@see read()} takes, or null when it is
+     * a regular file within the bound — the refusals that are the same for EVERY reader (a symlink,
+     * a directory/FIFO/socket/device, a file past {@see MAX_BYTES}), judged off the `lstat` a caller
+     * already took, so it is not measured twice.
+     *
+     * @param  array<int|string, int>  $stat
+     */
+    public static function lstatRefusal(array $stat): ?string
+    {
+        $type = $stat['mode'] & 0o170000;
+        if ($type === 0o120000) {
+            return 'it is a symlink, which is refused — point the setting at the file itself';
+        }
+        if ($type !== 0o100000) {
+            return 'it is not a regular file (a directory, FIFO, socket or device)';
+        }
+        if ($stat['size'] > self::MAX_BYTES) {
+            return "it is {$stat['size']} bytes, past the ".self::MAX_BYTES.'-byte bound the reader will read';
+        }
+
+        return null;
+    }
+
+    /**
      * The file's bytes; null when the path is ABSENT. Throws when this process did not read
      * it — see the class docblock for the two kinds of refusal and which type carries which.
      *
@@ -167,7 +191,7 @@ final class UntrustedPathContents
 
         $handle = @fopen($path, 'rb');
         if ($handle === false) {
-            throw UnreadableFileException::permissionsFault($subject, $path);
+            throw UnreadableFileException::permissionsFault($subject, PastedSecretShape::displayPathSetting($path));
         }
 
         try {
@@ -216,7 +240,7 @@ final class UntrustedPathContents
             $raw = $size > 0 ? @fread($handle, $size) : '';
             if ($raw === false) {
                 throw new UnreadableFileException(
-                    "{$subject} at {$path} was opened but could not be read from by this process"
+                    "{$subject} at ".PastedSecretShape::displayPathSetting($path).' was opened but could not be read from by this process'
                 );
             }
 
@@ -452,7 +476,9 @@ final class UntrustedPathContents
      */
     private static function refusal(string $subject, string $path, string $because): string
     {
-        return "{$subject} at {$path} was NOT read: {$because}. This read is taken over a path "
+        $shown = PastedSecretShape::displayPathSetting($path);
+
+        return "{$subject} at {$shown} was NOT read: {$because}. This read is taken over a path "
             .'whose directory is controlled by an account other than the one running this process, '
             .'so what the path resolves to is that account\'s choice rather than a fact about the '
             .'file this process meant to read — the contents of the intended file are not a '

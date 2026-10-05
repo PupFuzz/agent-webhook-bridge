@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\PathVisibility;
 use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
@@ -60,7 +61,7 @@ final class WritebackAlertChannelCheck implements Check
                 yield PathVisibility::unverifiedUnlessVisible($dir, "writeback.json alert_channel: socket parent dir {$dir}")
                     ?? Finding::warn("writeback.json alert_channel: socket parent dir {$dir} does not exist — the alert push will fail (caught) until the channel server creates the socket");
             } else {
-                yield Finding::ok("writeback.json alert_channel: socket {$socket} (parent dir present)");
+                yield Finding::ok('writeback.json alert_channel: socket '.PastedSecretShape::displayPathSetting($socket).' (parent dir present)');
             }
 
             return;

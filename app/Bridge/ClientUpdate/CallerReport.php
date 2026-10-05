@@ -8,7 +8,7 @@ use App\Bridge\Tools\BoardToolDispatcher;
  * What a board-tools call says about WHO made it (card#10567 B4): the optional `caller` and
  * `launch` keys of the request body, reduced to values the fleet ledger may store.
  *
- *   caller   one of {@see ExemptCaller}'s values — a probe, a self-certification, an operator.
+ *   caller   one of {@see ExemptCaller}'s values — the enum's cases are the list, not restated here.
  *   launch   {id, bridge_release}: sent by a client started through the updater's entry point,
  *            naming the launch it belongs to and the bridge release that launch runs (design
  *            review r3-M4 — without it nothing on the wire says which release is running).

@@ -6,6 +6,7 @@ use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelPushTransport;
 use App\Bridge\Support\ChannelToken;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Validation\SocketEndpoint;
@@ -286,7 +287,7 @@ final class WritebackAlertNotifier
             // Context is drawn from $body (present on BOTH the notify and notifyUnpark
             // paths), never from a caller's locals — the unpark path has no
             // $outcome/$reason locals to reference.
-            Log::warning('writeback alert push failed', ['catalog_id' => 'alert_notifier.push_failed'] + $body + ['error' => RedactedErrorText::of($e)]);
+            Log::warning('writeback alert push failed', ['catalog_id' => 'alert_notifier.push_failed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op()] + $body + ['error' => RedactedErrorText::of($e)]);
         }
     }
 
@@ -325,6 +326,9 @@ final class WritebackAlertNotifier
         if (! BridgePaths::tryEnsureDir($dir)) {
             Log::warning('writeback alert dedup-dir could not be created — skipping push to avoid a per-event storm', [
                 'catalog_id' => 'alert_notifier.dedup_dir_unavailable',
+                'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
+                'op' => BoardMoverScope::op(),
                 'dir' => $dir, 'error' => error_get_last()['message'] ?? 'unknown',
             ]);
 
@@ -348,6 +352,9 @@ final class WritebackAlertNotifier
 
         Log::warning('writeback alert dedup-marker could not be created — skipping push to avoid a per-event storm', [
             'catalog_id' => 'alert_notifier.dedup_marker_unavailable',
+            'handler' => BoardMoverScope::handler(),
+            'webhook_event_id' => BoardMoverScope::webhookEventId(),
+            'op' => BoardMoverScope::op(),
             'path' => $path,
             'error' => error_get_last()['message'] ?? 'unknown',
         ]);
@@ -396,7 +403,7 @@ final class WritebackAlertNotifier
     private function validateSocketPath(string $path): void
     {
         if (! SocketPath::isValid($path)) {
-            throw new \RuntimeException("writeback alert socket is not a valid absolute path (no '..'): {$path}");
+            throw new \RuntimeException("writeback alert socket is not a valid absolute path (no '..'): ".PastedSecretShape::displayPathSetting($path));
         }
         SocketEndpoint::assertValid(
             $path,

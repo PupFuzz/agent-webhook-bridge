@@ -47,7 +47,6 @@ class ClientPackInstallCommandTest extends TestCase
             'bridge.secret_dir' => $this->dir,
             'bridge.state_dir' => $this->dir.'/state',
             'bridge.providers.github.token_path' => null,
-            'bridge.providers.github.credential_helper' => '',
             'bridge.client_pack.repo' => self::REPO,
         ]);
         $this->release = trim((string) file_get_contents(base_path('VERSION')));

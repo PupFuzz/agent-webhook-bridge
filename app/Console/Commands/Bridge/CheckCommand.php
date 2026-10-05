@@ -27,12 +27,14 @@ use App\Bridge\Check\Checks\BoardToolsSuppressedCheck;
 use App\Bridge\Check\Checks\ChannelSnapshotCheck;
 use App\Bridge\Check\Checks\ChannelTokenPathCheck;
 use App\Bridge\Check\Checks\ChannelTransportCheck;
+use App\Bridge\Check\Checks\CiAwaitsCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\ClientFleetCheck;
 use App\Bridge\Check\Checks\ClientPackSourceCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
 use App\Bridge\Check\Checks\GitHubDeliveryHistoryCheck;
+use App\Bridge\Check\Checks\GitHubTokenFileCheck;
 use App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck;
 use App\Bridge\Check\Checks\IdleNudgePostureCheck;
 use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
@@ -68,6 +70,7 @@ use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Retention\RetentionStoreProbe;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\AgentKanbanUsers;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
@@ -429,7 +432,10 @@ class CheckCommand extends BridgeCommand
             $shared = AgentRegistry::readSharedIdentities($ctx->configDir);
             $ctx->sharedIdentities = $shared;
             if ($configs !== []) {
-                $ctx->registry = AgentRegistry::fromAgentConfigs($configs, $shared->identities);
+                // The kanban ids this run COULD read: the roster leg reports a roster it
+                // could not, so the registry here must not throw on one (DL-450).
+                $kanban = AgentKanbanUsers::of($configs);
+                $ctx->registry = AgentRegistry::fromAgentConfigs($configs, $shared->identities, $kanban->readable() ? $kanban->ids() : []);
             }
         }
 
@@ -515,6 +521,7 @@ class CheckCommand extends BridgeCommand
                 // could not be loaded" would be a confident diagnosis for any check that
                 // threw after it parsed — contradicting the error line printed below it.
                 $wbAborted = 'the writeback checks could not be completed (see the error above)';
+                $ctx->writebackUnread = $ctx->writeback === null;
                 $runner
                     ->noteNotRun(CheckSlot::Writeback, $wbAborted)
                     ->noteNotRun(CheckSlot::WritebackProbe, $wbAborted);
@@ -526,6 +533,14 @@ class CheckCommand extends BridgeCommand
             $runner
                 ->noteNotRun(CheckSlot::Writeback, $noWriteback)
                 ->noteNotRun(CheckSlot::WritebackProbe, $noWriteback);
+        }
+
+        // card#11201: the legs that reach GitHub with the placed token file and nothing else.
+        // OUTSIDE the writeback envelope because the `protocol:invalid` label needs no
+        // writeback.json; it reads the envelope's outcome (`writeback`, `writebackUnread`), so
+        // it runs after it.
+        if (! $this->emitReport($runner->run(CheckSlot::GithubTokenFile, $ctx))) {
+            $ok = false;
         }
 
         // card#4183 (DL-196): event-follows-consumer — WARN (never fail) when a github
@@ -896,7 +911,7 @@ class CheckCommand extends BridgeCommand
     {
         return (new CheckRunner)
             ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck, new InstallFlagValuesCheck)
-            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck, new WritebackOwedWritesTableCheck)
+            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck, new WritebackOwedWritesTableCheck, new CiAwaitsCheck)
             ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
             ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))
             ->register(CheckSlot::Jobs, new JobsPostureCheck)
@@ -937,6 +952,7 @@ class CheckCommand extends BridgeCommand
                 new WritebackBoardStateCheck,
                 new WritebackSourceCoverageCheck,
             )
+            ->register(CheckSlot::GithubTokenFile, new GitHubTokenFileCheck)
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
             ->register(CheckSlot::GithubWebhook, new GitHubWebhookSubscriptionCheck, new GitHubDeliveryHistoryCheck)
             ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)

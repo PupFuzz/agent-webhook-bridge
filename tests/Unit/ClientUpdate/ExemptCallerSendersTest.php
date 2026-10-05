@@ -96,4 +96,20 @@ class ExemptCallerSendersTest extends TestCase
         $this->assertSame('probe', ExemptCaller::probeBody()['caller']);
         $this->assertSame([], self::undeclared('x', "return ['tool' => 'board_my_cards', 'args' => (object) [], 'caller' => self::Probe->value];"));
     }
+
+    /**
+     * The one non-server sender that ships IN the client pack: `bridge-board-call` builds its body
+     * from a variable tool name, so it is outside the literal-body population above and is held here
+     * by name. Its `caller` must be a value this bridge reads as exempt — anything else is read as
+     * absent, i.e. as the seat's channel server, and a hook's call would then report the seat off
+     * the update path in `bridge:client-fleet`.
+     */
+    public function test_the_client_pack_cli_declares_a_caller_this_bridge_reads_as_exempt(): void
+    {
+        $source = (string) file_get_contents(dirname(__DIR__, 3).'/examples/channel-servers/bin/bridge-board-call.mjs');
+
+        $this->assertSame(1, preg_match("/^const CALLER = '([^']*)';$/m", $source, $m), 'bridge-board-call.mjs no longer declares `const CALLER = \'…\';` — this check has stopped measuring');
+        $this->assertNotNull(ExemptCaller::tryFrom($m[1]), "bridge-board-call.mjs sends caller `{$m[1]}`, which is not an ExemptCaller value");
+        $this->assertMatchesRegularExpression('/\bcaller: CALLER\b/', $source, 'bridge-board-call.mjs declares CALLER but does not send it');
+    }
 }

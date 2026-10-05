@@ -108,15 +108,16 @@ final class AgentConfig
             }
         }
 
-        // Self echo-suppression is DERIVED — the agent's own identity ids are
+        // Self echo-suppression is DERIVED — the agent's own github id is
         // auto-seeded into the echo-id set (no hand-listed treat_as_echo_ids of
-        // self, which drifts), and self-by-name is the filename (agentName).
+        // self, which drifts), and self-by-name is the filename (agentName). Its
+        // kanban id is seeded at dispatch from the coord roster (DL-450).
         // treat_as_echo / treat_as_signal name OTHER agents only.
         $echoRaw = EchoSuppressionConfig::fromArray(self::section($raw, 'echo_suppression'));
         $echo = new EchoSuppressionConfig(
             treatAsEcho: $echoRaw->treatAsEcho,
             treatAsSignal: $echoRaw->treatAsSignal,
-            treatAsEchoIds: array_values(array_unique([...$echoRaw->treatAsEchoIds, ...$identity->selfIds()])),
+            treatAsEchoIds: array_values(array_unique([...$echoRaw->treatAsEchoIds, ...$identity->selfGithubIds()])),
         );
 
         $surface = self::requireMapping($raw, 'surface');
@@ -268,7 +269,7 @@ final class AgentConfig
             // host/uid restore. Throws on an unresolvable token (fail-closed).
             $socketStr = PathHelper::expandRuntimeTokens($socketStr);
             if (! SocketPath::isValid($socketStr)) {
-                throw new ConfigException("channel.socket '{$socketStr}' must be an absolute path with no '..' segment or null byte");
+                throw new ConfigException("channel.socket '".PastedSecretShape::displayPathSetting($socketStr)."' must be an absolute path with no '..' segment or null byte");
             }
         }
 
@@ -343,7 +344,7 @@ final class AgentConfig
         if ($rawServerPath !== null) {
             $serverPath = is_scalar($rawServerPath) ? (string) $rawServerPath : '';
             if (! SocketPath::isValid($serverPath)) {
-                throw new ConfigException("channel.server_path '{$serverPath}' must be an absolute path with no '..' segment or null byte");
+                throw new ConfigException("channel.server_path '".PastedSecretShape::displayPathSetting($serverPath)."' must be an absolute path with no '..' segment or null byte");
             }
             if (str_ends_with($serverPath, '.mjs')) {
                 $serverPath = dirname($serverPath);

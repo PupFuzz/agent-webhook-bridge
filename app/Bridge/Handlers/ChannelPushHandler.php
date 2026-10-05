@@ -9,6 +9,7 @@ use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelPushTransport;
 use App\Bridge\Support\ChannelToken;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
@@ -288,7 +289,7 @@ final class ChannelPushHandler implements Handler
         }
         $prefix = rtrim($allowed, '/').'/';
         if (! str_starts_with($socket, $prefix)) {
-            throw new HandlerException("channel_push: classifier-supplied socket {$socket} is outside the allowed dir {$allowed}");
+            throw new HandlerException("channel_push: classifier-supplied socket {$socket} is outside the allowed dir ".PastedSecretShape::displayPathSetting($allowed));
         }
     }
 

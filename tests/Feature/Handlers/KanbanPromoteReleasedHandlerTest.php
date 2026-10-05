@@ -10,11 +10,15 @@ use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CoordCredentialStoreFixture;
 use Tests\Support\KanbanCardStub;
 use Tests\Support\KanbanSearchSim;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 /**
@@ -151,6 +155,51 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), "/tasks/{$cardId}.json"));
     }
 
+    /**
+     * Where a pasted token can sit: the store's map value (round 1), or a path setting the store or
+     * the single file is read from (round 2) — every one must reach no log line.
+     *
+     * @return array<string, array{0: callable(CoordCredentialStoreFixture, string): void}>
+     */
+    public static function pastedTokenPlaces(): array
+    {
+        return [
+            'the store map value' => [fn ($s, $t) => $s->write(['github.com/owner/repo' => $t], [])],
+            'BRIDGE_COORD_CREDENTIALS_PATH' => [fn ($s, $t) => config(['bridge.coord_credentials_path' => $t])],
+            'BRIDGE_GITHUB_TOKEN_PATH' => [function ($s, $t): void {
+                $s->write([], []);
+                config(['bridge.providers.github.token_path' => $t]);
+            }],
+        ];
+    }
+
+    /** @param  callable(CoordCredentialStoreFixture, string): void  $arrange */
+    #[DataProvider('pastedTokenPlaces')]
+    public function test_a_pasted_token_is_in_no_log_line_and_no_alert(callable $arrange): void
+    {
+        $pasted = PastedTokenFixture::value();
+        $this->writeWritebackWithAlert(['promote_on_release' => true, 'stages' => ['merged' => 52, 'merged_to_main' => 53]]);
+        $arrange((new CoordCredentialStoreFixture($this->dir.'/coord'))->use(), $pasted);
+        $this->fakeBoard(
+            [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']]],
+            [self::ALERT_URL.'*' => Http::response('ok')],
+        );
+        $logged = [];
+        Log::listen(function (MessageLogged $e) use (&$logged): void {
+            $logged[] = $e->message.' '.json_encode($e->context);
+        });
+
+        $this->handle();
+
+        Http::assertNotSent(fn (Request $r) => str_starts_with($r->url(), 'https://api.github.com/'));
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r));
+        foreach ($logged as $line) {
+            $this->assertStringNotContainsString($pasted, $line);
+        }
+        $this->assertNotEmpty(array_filter($logged, fn (string $line) => str_contains($line, 'no GitHub read token') && str_contains($line, 'credential-shaped')), 'the witness: the skip is logged, with the elided name');
+        Http::assertNotSent(fn (Request $r) => str_contains($r->body(), $pasted) || str_contains(json_encode($r->headers()) ?: '', $pasted));
+    }
+
     public function test_the_github_token_is_resolved_with_the_configured_repo_spelling(): void
     {
         // ⛔ card#7124 review — MAJOR 1. Until DL-293, reaching the resolver required
@@ -161,16 +210,15 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         // payload spelling resolves a DIFFERENT credential (in practice: none) from the one
         // `bridge:check` verifies, which iterates the configured keys.
         //
-        // Proven on the REAL exec surface, not a mock: a stub helper echoes the requested
-        // `path=` back as the token, so the Bearer the GitHub read carries IS the string
-        // handed to the case-sensitive store.
+        // Proven on a REAL store (DL-456): the configured spelling and the payload spelling
+        // are each mapped to their own key, so the Bearer the GitHub read carries names which
+        // spelling the case-sensitive store was asked with.
         $this->writeWritebackKeyed('owner/Repo', ['promote_on_release' => true]);
-        File::delete($this->dir.'/github/token');   // drop leg 2 so the store leg is reached
-        $stub = $this->dir.'/stub-credential-helper';
-        File::put($stub, "#!/bin/sh\npath=\$(sed -n 's/^path=//p')\n"
-            ."printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=tok:%s\\n' \"\$path\"\n");
-        chmod($stub, 0o755);
-        config(['bridge.providers.github.credential_helper' => $stub]);
+        $store = (new CoordCredentialStoreFixture($this->dir.'/coord'))->use();
+        $store->write(
+            ['github.com/owner/Repo' => 'configured', 'github.com/Owner/repo' => 'payload'],
+            ['configured_file' => $store->tokenFile('configured', 'tok:owner/Repo'), 'payload_file' => $store->tokenFile('payload', 'tok:Owner/repo')],
+        );
         // ⚑ The GitHub read is addressed with the PAYLOAD spelling, so `fakeBoard`'s
         // `…/repos/owner/repo/…` defaults do not answer it — `Str::is` is case-SENSITIVE.
         // Until card#7300 that left the request UNSTUBBED, and `Http::fake()` does not block

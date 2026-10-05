@@ -2,6 +2,7 @@
 
 namespace Tests\Support\CheckGolden;
 
+use App\Bridge\Support\ProcessIdentity;
 use Illuminate\Support\Facades\File;
 
 /**
@@ -54,25 +55,53 @@ final class GoldenInstall
                 'github' => [
                     'api_base_url' => 'https://api.github.com',
                     'token_path' => null,
-                    // A path that cannot exist: the real helper IS on PATH on an operator
-                    // box, and it would resolve a live store credential mid-capture.
-                    'credential_helper' => $this->root.'/no-store-helper',
                 ],
             ],
+            // A store that cannot exist: the real one IS on an operator box, and the GitHub
+            // token legs would resolve a live store credential mid-capture (DL-456).
+            'bridge.coord_credentials_path' => $this->root.'/no-credentials.ini',
             'bridge.default_agent' => null,
             'bridge.writeback.correlation' => 'ref',
-            'bridge.writeback.coord_config_path' => null,
+            'bridge.coord_config_path' => null,
             'bridge.retention.enabled' => true,
             'bridge.retention.interval' => 86400,
             'bridge.retention.older_than' => '30d',
             'bridge.retention.null_payloads_older_than' => '7d',
             'bridge.retention.batch' => 500,
             'bridge.inbox_layout' => 'shared',
+            // Taken from the HOST's env at config load (`BRIDGE_PROTOCOL_INVALID_LABEL_REPOS`):
+            // a box that lists a repo would switch on a GitHub token-file consumer and add a
+            // `github.token_file` line to every capture (card#11201).
+            'bridge.protocol_invalid_label.repos' => [],
             'bridge.state_dir' => null,
             // Taken from the HOST's env at config load: a box exporting an unreadable
             // `BRIDGE_SPAWN_ENABLED` would otherwise add a FAIL line to every capture.
             'bridge.unreadable_flags' => [],
         ]);
+
+        // The run's OS identity is a host input too: pinned non-root, owning every fixture file.
+        app()->instance(ProcessIdentity::class, new GoldenProcessIdentity);
+
+        // A CONFIGURED install: the coord roster every kanban user id is read from (DL-450),
+        // giving the fixtures' one agent, `prod-agent`, a kanban user on the pinned host. A
+        // fixture about an unset or unreadable roster overrides `bridge.coord_config_path`.
+        return $this->roster(['prod-agent' => 137]);
+    }
+
+    /**
+     * Replace the coord roster with these seats, each given its id on the pinned kanban host,
+     * and point the bridge at it.
+     *
+     * @param  array<string, int>  $seats
+     */
+    public function roster(array $seats): self
+    {
+        $entries = [];
+        foreach ($seats as $seat => $id) {
+            $entries[] = ['name' => $seat, 'kanban_user_id' => ['kanban.example.com' => $id]];
+        }
+        $this->json('coordination.config.json', ['roster' => $entries]);
+        config(['bridge.coord_config_path' => $this->path('coordination.config.json')]);
 
         return $this;
     }

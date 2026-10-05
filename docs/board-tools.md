@@ -7,17 +7,19 @@ token and no toolkit** can see and capture its own board work directly.
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
-(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381; the by-id read since DL-435; the search since DL-437):
+(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381; the by-id read since DL-435; the search since DL-437; the CI-await pair since DL-452):
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
 | `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
 | `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
-| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⛔ **It takes `card_id` and nothing else:** the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
+| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none`) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused; the window says `total`, `truncated` and `total_is_lower_bound`. |
+| `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA is terminal, you get ONE `ci_settled` event on your channel; if that does not happen before the wait expires, ONE `ci_await_expired`. **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
+| `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it. Never touches another seat's. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
 > COUNTS AS EMPTY** (card#9155). The tools are reached through two front doors and only
@@ -64,7 +66,7 @@ The tools that ship today — the table is held against the bridge's own registr
 
 If your channel server advertises tools, your MCP client lists `board_my_cards`,
 `board_create_card`, `board_correct_card`, `board_take_card`, `board_comment_card`,
-`board_get_cards` and `board_search`, and the
+`board_get_cards`, `board_search`, `ci_await` and `ci_await_cancel`, and the
 server's own `instructions` string names them (it derives the names from the same tool list it
 advertises). ⚠ **A tool your seat's copy of the channel server
 predates is invisible to you and reports as missing** — the tool set is restated in that
@@ -694,8 +696,8 @@ can forge** (DL-376, operator-approved 2026-09-13; before it, only the first exi
    neither can answer *which seat filed this*.
 2. **It is ASSIGNED to you** — the card's own `assigned_user_id` is **identical, as an
    integer**, to your own kanban user, which the bridge resolves from **your bridge
-   identity** (`identity.kanban_user_id` for the agent the door authenticated) exactly as
-   [`board_take_card`](#board_take_card) does. **No argument can influence which user is
+   identity** — the coord roster's id for the seat of the agent the door authenticated
+   (DL-450) — exactly as [`board_take_card`](#board_take_card) does. **No argument can influence which user is
    compared** — this tool accepts no user id, and the resolver takes none.
 
 **Which relation authorized the write is recorded** — `authorized_by` in the response and in
@@ -703,7 +705,7 @@ the bridge's `board_correct_card: corrected` log line — because *who filed a c
 holds it now* are different facts and an audit must be able to tell them apart. ⚠ **When
 both hold, it records `minted`**: the stamp is checked first, and the assignee is not
 consulted at all for a card you minted, so a correction you could make before DL-376 does
-not start depending on your `identity.kanban_user_id` being configured. `minted` therefore
+not start depending on the coord roster being readable. `minted` therefore
 says nothing about who the card is assigned to.
 
 - ⛔ **A row that says nothing readable about its assignee is never yours by assignment.**
@@ -711,13 +713,14 @@ says nothing about who the card is assigned to.
   integer (a digit string, a float, `""`), is a degraded read — it does not authorize, and
   the call gets the ordinary *"not one of yours"* refusal (it may still pass on the mint
   stamp).
-- **If your agent's YAML declares no `identity.kanban_user_id`, the assignee relation is simply
-  off** — no card can be assigned to a user you do not have — and the tool behaves as it did
+- **If the coord roster gives your seat no kanban user id** (the seat is absent from it, or has
+  no id for this kanban host), **the assignee relation is simply off** — no card can be assigned
+  to a user you do not have — and the tool behaves as it did
   before DL-376 **except** that the *"not one of yours"* wording now names both relations and
   the tag-list rule below applies: cards you minted are corrected, everything else gets
   *"not one of yours"*.
-- ⛔ **If the bridge cannot establish WHICH kanban user you are** — another agent declares the
-  same `identity.kanban_user_id`, or the roster cannot be read — every correction that is not
+- ⛔ **If the bridge cannot establish WHICH kanban user you are** — the roster gives your id to
+  another seat this install serves, or the roster cannot be read — every correction that is not
   authorized by your mint stamp is refused with that **install fault**, including a call naming
   a card that does not exist, so the refusal says nothing about whether the card exists.
   Corrections of cards you minted are unaffected.
@@ -839,7 +842,7 @@ rejects outright.
 | State | Refusal |
 | --- | --- |
 | The card is not on your board, or is on it but neither carries your stamp nor is assigned to you (including an assignee the board did not return readably) | *"card N is not one of yours"* — **one message for every one of those**: you are never told whether a card you do not own exists. The message names both relations that would have made it yours. ⚠ It names a **further** cause too, because kanban's search FLOORS a caller to the boards its token is a member of and answers **200 with zero rows** for the rest: an unreadable board and an empty one are one answer here (DL-323's `mapped_board_unreadable_to_this_token`), so the message tells you to have the token's board membership checked if you believe you filed or hold the card. |
-| Your own kanban user cannot be established, and the card is not one you minted | The resolver's **install fault** (an `identity.kanban_user_id` shared with another agent, or an unreadable roster) — the same sentence whether or not the card exists, so it discloses nothing. An agent that declares **no** `identity.kanban_user_id` is not in this row: it gets the ordinary *"not one of yours"*. See the scoping rule above. |
+| Your own kanban user cannot be established, and the card is not one you minted | The resolver's **install fault** (an id the roster gives another seat this install serves, or a roster that cannot be read) — the same sentence whether or not the card exists, so it discloses nothing. A seat the roster gives **no** id is not in this row: it gets the ordinary *"not one of yours"*. See the scoping rule above. |
 | The card is yours and **ARCHIVED** | Named as the retire it is (*"unarchive it first"*) — the stamp or the assignment proves the card is yours, so naming it discloses nothing, and the alternative is a guard telling you a card you demonstrably filed or hold is not yours. The archive side is read **only when the live lookup misses**, so a successful call never pays for it. |
 | You are correcting `tags` and the board's tag list for the card cannot be read in full | *"no readable tag list"* — **install fault**; a wholesale replace would delete tags the bridge cannot read (above). `name`/`description` are unaffected. |
 | The lookup answered a row that is not that card on your board | *"a BROKEN READ, not a verdict"* (DL-323 Decision 2) — report it; it is not a statement about the card. |
@@ -877,11 +880,12 @@ through the one privileged seat, which is the serial hub this door exists to rem
 
 | Arg | Required | Notes |
 | --- | --- | --- |
-| `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced. **This is the only argument this tool has.** |
+| `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced. |
+| `start` | no | A **boolean**. `true` STARTS the card — moves it to In Progress and assigns it to you in one write (§ [The start form](#the-start-form-start-true-card11150--dl-449) below). `false` or omitted is the plain claim, which never moves the card. A string, number or `null` is refused, never coerced. |
 
 > ⛔⭐ **THERE IS NO ARGUMENT FOR THE USER, AND THERE NEVER WILL BE.** The assignee is
-> resolved **server-side** from the agent registry — your own `identity.kanban_user_id`,
-> keyed on the agent name the DOOR derived from your bearer (HTTP) or from the pinned
+> resolved **server-side** from the coord roster — the kanban user id of YOUR seat
+> (DL-450), for the agent name the DOOR derived from your bearer (HTTP) or from the pinned
 > forced command (ssh). Nothing that travelled in your request can influence it.
 >
 > That is a **construction**, not a validation, and the difference is the point: this door
@@ -890,14 +894,14 @@ through the one privileged seat, which is the serial hub this door exists to rem
 > away from false, and one seat could assign work to another or impersonate a take. Here
 > there is no expressible call that writes another seat's id.
 >
-> `card_id` is the whole accepted set, so **every** other key is refused (422) **before any
+> `card_id` and `start` are the whole accepted set, so **every** other key is refused (422) **before any
 > board request is made** — never silently ignored, which would leave you believing you had
 > assigned somebody. The user-naming spellings the tool enumerates (`assigned_user_id`,
 > `assignee`, `user_id`, `kanban_user_id`, `agent`, and the rest of `USER_NAMING_ARGS`) are
 > refused in a sentence that **names the key** and says why it will never exist; anything else
 > — `owner`, `assigned_to`, a padded spelling — is refused as an unknown argument, with the
 > reminder that the assignee is resolved from your bridge identity, never from your arguments,
-> and `card_id` named as the whole accepted set. The list changes the message, not the
+> and the accepted set named. The list changes the message, not the
 > outcome (§ [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379)).
 >
 > **Assigning work to a DIFFERENT seat is not something any board tool can do.** That is
@@ -979,19 +983,29 @@ real value meaning *unassigned* and is the ordinary case. An **absent** or unrea
 means this call cannot tell an unclaimed card from one another seat is working, so it
 refuses rather than risk overwriting a claim — an install fault, named as one.
 
-**⛔ Your `identity.kanban_user_id` must be YOURS ALONE, and this tool is where a shared one
-stops.** If two agent YAMLs in this bridge's config dir declare the same `kanban_user_id`,
-every `board_take_card` call from either seat is **refused (422) before any board request**,
-naming the colliding agents and the config key — because an id that names two seats does not
-say WHICH seat holds the card, and a claim recorded under it tells every other seat that
-*somebody* holds the work without saying who, which is the one question this tool exists to
-answer. ⚠ **Sharing a `kanban_user_id` is an install fault with no supported form** — unlike
-`github_user_id`, it cannot be declared deliberate, and the collision already makes the id
-resolve to nobody everywhere else in the bridge. `bridge:check` warns on it ahead of time (at
-exit 0). [`config-schema.md` § `identity:`](config-schema.md#identity-optional-mapping--the-agents-own-immutable-upstream-ids)
-owns that rule and the reasoning; it is not restated here. ⭐ **That key is the bridge's copy of
-the coord roster's `roster[].kanban_user_id`**, the single store of each seat's id (card#10869),
-and `bridge:check` holds the two against each other — the same section owns how.
+**⭐ Your kanban user id has ONE source: the coord roster** (card#11172 / DL-450) — the
+`roster[].kanban_user_id` of your seat, for this install's kanban host, in the file
+`BRIDGE_COORD_CONFIG_PATH` names. `identity.kanban_user_id` in an agent YAML is retired and is
+never read, not even when the roster cannot answer. Every state in which the roster cannot name
+your id is refused (422) **before any board request**, as a named install fault with its own
+`reason` (the codes table under [the start form](#the-start-form-start-true-card11150--dl-449)):
+the setting unset or relative, no file there or one the receiver may not read, a path that is not
+a file the bridge will read (a symlink, a directory, past the size bound), a file that is not
+JSON, your seat absent from it, or no id for this host. ⛔ `identity.peer_kanban_user_id` — the
+attribution-only id of an agent that is no seat of this roster — is NEVER take, start or
+correction authority. **⛔ The id must also be YOUR SEAT'S ALONE, and this tool is where a shared
+one stops.** If the roster gives your id to another seat this install serves, every call from
+either seat is refused (`install_fault.shared_kanban_user`) — because an id that names two
+seats does not say WHICH seat holds the card, and a claim recorded under it tells every other
+seat that *somebody* holds the work without saying who, which is the one question this tool
+exists to answer. Two bridge agents serving ONE seat are not that fault while only one of them
+has board tools; when MORE than one board-tools agent serves the same seat (a copied
+`identity.coord_seat`, typically) every take from each of them is refused the same way, because
+the id then cannot say which agent holds the card. ⚠ **Sharing a kanban
+user between seats is an install fault with no supported form** — unlike `github_user_id`, it
+cannot be declared deliberate. [`config-schema.md` § `identity:`](config-schema.md#identity-optional-mapping--the-agents-own-immutable-github-ids-and-its-coord-seat)
+owns the roster shape, the seat rule and the reasoning; it is not restated here. `bridge:check`'s
+`agent.kanban_user_roster` leg reports every one of these ahead of time.
 
 **⚠ A PINNED card still takes a claim, and that is a ruling.** The DL-178 hold governs a
 card's stage, its lifecycle and the fields `PinGuard::PINNED_FIELDS` names — which is
@@ -1011,6 +1025,135 @@ knowing who is looking at a frozen card is useful rather than harmful.
   "already_held": false       // true ⇒ you already held it and NOTHING was written
 }
 ```
+
+### The start form (`start: true`, card#11150 / DL-449)
+
+**Start a card: one write moves it into In Progress AND assigns it to you.** A card your branch
+push moves is moved by the writeback, which names no seat (the push comes from one shared GitHub
+account), so it lands In Progress with nobody on it and the bridge can only alert
+(`owner.moved_without_owner`, [`writeback.md`](writeback.md)). You know you are starting, so the
+start is where the owner is recorded: kanban v0.49.0 and later applies a column change and the
+assignee in **one transaction**, so this never leaves a card moved but unowned. The later push
+finds the card already In Progress and assigned, which is the writeback's existing no-op.
+
+**Which columns.** Both come from this install's `writeback.json` mapping(s) on your board — no
+new configuration:
+
+- **In Progress** is the mapping's `stages.started`. No mapping on your board maps `started` (or
+  `writeback.json` is missing or will not parse, or two mappings name different `started`
+  columns) ⇒ **refused, nothing written**, as an INSTALL fault.
+- A card is **start-eligible** in a `started_from_stages` column — exactly the columns the
+  writeback's own `started` move promotes a card from (DL-160). One write: `workflow_stage_id` +
+  `assigned_user_id`.
+- A card **already In Progress** is assigned with no move (`moved: false`); one you already hold
+  there writes nothing.
+- **Every other column is refused, nothing written** — a finished one by name (the same
+  finished set the takeover uses, below), and any other (Backlog when it is not a
+  `started_from_stages` column, In Review, …) because the writeback refuses to drag a card
+  there too. ⛔ `unpark_from_stages` is **not** start-eligible: the writeback moves a parked card
+  only by overriding a human hold and alerting (DL-194), and this door does not override.
+- A row naming **no readable column** is refused, nothing written.
+- ⛔ **A PINNED card is not moved.** A `block_reason` or `no-automove` holds the card's column,
+  and the writeback's `started` move is refused on it, so a start from a `started_from_stages`
+  column is refused. A take **without** `start` still claims it where it is, and a pinned card
+  already In Progress is still assigned (the pin holds the column, not the claim).
+- ⛔ **A `program` parent is not moved either** (`program_parent`): the writeback writes nothing to
+  a parent card (DL-403), its `started` move included.
+
+**Another holder** is handled exactly as the plain take handles one (the takeover rules above):
+named in the log before the write, an assignee replaced only outside a finished column, and a
+card comment naming them once the read-back confirms the start.
+
+**⛔ A 2xx is not a start.** After the write the bridge reads the card back and answers success
+only when the board now says **In Progress AND you**. Anything else is **refused** (`not_stored`)
+naming what the board stored. A read-back that does not answer — the read failed, answered a row
+that is not this card, or the card is no longer live — is **refused** too (`not_confirmed`): whether
+the start landed is unknown, and a start is never answered `ok` on an unverified write. Calling
+again is safe, because a start that landed answers `already_held: true` with nothing written. On a
+takeover both refusals name the holder the write was sent over, so it is never lost.
+
+**Returns** (beside the plain take's keys):
+
+```jsonc
+{
+  "moved": true,          // THIS call moved the card into In Progress (false: it was already there)
+  "assigned": true,       // THIS call wrote you as assignee (false: you already held it)
+  "replaced": null,       // or {assigned_user_id, owner_tags}: whom this call took the card from
+  "from_stage_id": 47,    // the column the card was read in
+  "stage_id": 49          // In Progress: the column the read-back confirmed (or, when nothing
+                          // was written, the column the card was already in)
+  // on a takeover, also: warning, takeover_confirmed (always true on a start — an unconfirmed
+  // start is refused), takeover_comment
+}
+```
+
+**Refusal codes.** A start's refusals — and every `ci_await` / `ci_await_cancel` refusal — carry a machine-readable `reason` beside `error` in the
+`{ok: false, error, reason}` body — branch on it, never on the wording. Which refusal sites a test
+holds to carrying a code, and that check's bounds, are stated in ONE place:
+`BoardTakeCardRefusalReasonCoverageTest`'s class docblock — read it there; it is not restated here.
+The table below is the source of the codes' VALUES: the same test reads it and fails on a code no
+`app/` literal spells.
+
+| `reason` | Where | Means |
+| --- | --- | --- |
+| `bad_request` | the door, any tool | the request body is not a JSON object, is not labelled JSON (HTTP), names no `tool`, or (ssh) could not be read from stdin |
+| `unknown_tool` | the door, any tool | no such tool |
+| `bad_arguments` | the door and every tool | an undeclared argument, a malformed one (`card_id` not a positive integer, `start` not a boolean, a `ci_await` `repo` not `owner/name`, a `head_sha` not a full 40-hex SHA, `pr` not a positive integer), or a value over kanban's own bound |
+| `out_of_scope` | `board_take_card` | not a card on your board in a lane you work (or a board the writeback token cannot see — one answer) |
+| `archived` | `board_take_card` | the card is archived |
+| `holder_unreadable` | `board_take_card` | the row says nothing readable about who holds the card |
+| `broken_read` | every card-id tool | the board-scoped lookup answered a row that is not this card |
+| `board_read_failed` | every tool | the board refused a read permanently (401/403/404); an INSTALL fault |
+| `column_unknown` | `board_take_card` | the card's column cannot be read, or cannot be shown not to be finished |
+| `finished_column` | `board_take_card` | the card is in a finished column |
+| `not_start_eligible` | start | the column is neither a `started_from_stages` column nor In Progress |
+| `pinned` | start | a pinned card would have to move |
+| `program_parent` | start | a `program` parent card would have to move |
+| `not_stored` | start | the board answered 2xx and the read-back shows something else |
+| `not_confirmed` | start | the board answered 2xx and the read-back did not answer (it failed, was a broken read, or the card is no longer live): whether it landed is unknown (calling again is safe); a takeover's names the displaced holder |
+| `card_gone` | `board_take_card` write | the card was removed between the check and the write |
+| `board_rejected` | `board_take_card` write | a board 422 (an enforced WIP limit on In Progress is one) |
+| `install_fault.write_forbidden` | `board_take_card` write | 403 on the write |
+| `install_fault.token_rejected` | `board_take_card` write | 401 on the write |
+| `install_fault.start_unmapped` / `install_fault.start_ambiguous` | start | no mapping on the board maps `started`, or mappings name different columns |
+| `install_fault.writeback_config_unreadable` | `board_take_card` | writeback.json will not parse (a start, or a takeover of an assignee) |
+| `install_fault.coord_config_unset` / `install_fault.coord_config_not_absolute` | `board_take_card` and `board_correct_card` | `BRIDGE_COORD_CONFIG_PATH` — where the bridge reads every seat's kanban user id (DL-450) — is not set, or is not an absolute path |
+| `install_fault.coord_config_unreadable` / `install_fault.coord_config_malformed` | `board_take_card` and `board_correct_card` | there is no coord roster at that path, or the receiver's OS user may not read it, or it is not a JSON object; the message names the path |
+| `install_fault.coord_config_not_a_file` | `board_take_card` and `board_correct_card` | the path names something no reader will read: a symlink (point the setting at the file itself), a directory, FIFO, socket or device, or a file past the reader's size bound |
+| `install_fault.roster_seat_absent` | `board_take_card` | the roster has no seat named your agent's seat (`identity.coord_seat`, else the agent name) |
+| `install_fault.no_kanban_user` | `board_take_card` | your seat carries no kanban user id for this kanban host (or the install's kanban API base names no host), so a seat with no id is refused by name, never moved unassigned |
+| `install_fault.no_agent` | the ssh door (exit 1) | the forced command passed no `--agent` |
+| `repo_not_received` | `ci_await` | no agent on this install subscribes to that GitHub repo, so no `workflow_run` delivery would ever settle the await; nothing was stored |
+| `too_many_awaits` | `ci_await` | a NEW await would take you past `BRIDGE_CI_AWAIT_MAX_PER_SEAT`; nothing was stored (a refresh is never refused for it) |
+| `install_fault.ci_await_config_invalid` | `ci_await` | a `BRIDGE_CI_AWAIT_*` setting (`TTL`, `MAX_PER_SEAT`, `READ_COOLDOWN`) is outside its range |
+| `install_fault.ci_await_store_unavailable` | `ci_await`, `ci_await_cancel` | the `ci_awaits` table is missing (`php artisan migrate`) or the database did not answer |
+| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` (and `ci_await`, `install_fault.agent_config_unreadable` only: an agent config that will not load, so whether the repo is received cannot be told) | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
+
+A failure whose STATUS is the answer carries no code: the 502 `upstream board error` stays one
+body byte for byte for every cause (DL-387); the HTTP door's 401 (bearer) and 503 (install) answers
+are told apart by status; and the ssh door's answers that exit **2** carry no code — an agent
+config that will not load, an unknown `--agent`, an agent that is not a live ssh board-tools agent,
+the dispatcher's 503 when the writeback token is unusable, and the 502 itself, which over ssh shares
+that exit code with the install answers and so is not told apart from them (`DispatchOutcome::exitCodeFor` maps
+every status from 500 up to exit 2). ⚠ **Exit 1 is not "your own fault"**: every status below 500
+maps to it, so the `install_fault.*` 422s above exit 1 as well — branch on `reason`, not on the exit
+code. A missing `--agent` (set by the pinned forced command) is the ssh door's own exit-1 install
+answer, coded `install_fault.no_agent`. Other tools' own refusals (`board_create_card`, `board_correct_card`,
+`board_comment_card`, …) are not all coded; a refusal with no code carries no `reason` key. Every
+refusal `ci_await` and `ci_await_cancel` build carries one — `CiAwaitRefusalReasonCoverageTest`
+holds that, and states what it scans.
+
+**Permissions.** The combined PATCH carries more than `workflow_stage_id`, so kanban authorizes it
+as **`task.update`**, the same as the plain take; a start on a card you already hold sends the
+column alone and needs `task.move`. `bridge:check`'s `board_tools.board_state` leg reads whether
+the writeback user's role on your board grants `task.update` and **warns** when it does not; when
+the board's answer carries no permissions list it says **UNMEASURED**, never a pass. ⚠ It reads
+the ROLE only: the token's own `write` ability and an archived board's write gate are the other
+two sources of the same 403, and no read shows them.
+
+**Cost:** a start from an eligible column is the lookup, the PATCH and the read-back (three
+requests), plus the takeover's two column reads and comment when another user holds the card; a
+refusal for the column costs the lookup and two column reads, and writes nothing.
 
 **⚠ It needs `task.update` on your board, and a narrowed role gets a permanent 403.**
 `assigned_user_id` is not `workflow_stage_id`, so kanban authorizes this PATCH as
@@ -1359,13 +1502,204 @@ it is `board_get_cards`' worst case, `3 × MAX_IDS + 1`, the per-call ceiling th
 against that shared budget (DL-435 bound (d)). Nothing is ever walked page by page: `limit` never
 exceeds one page, and every count is kanban's.
 
+## `ci_await` and `ci_await_cancel`
+
+**Wait for CI on one commit without polling GitHub** (card#11200 / DL-452; rt#590). A seat that
+needs "CI is finished on head X" used to poll — a Monitor loop or repeated `ci-read` — and every
+tick spent the one shared GitHub REST quota. The bridge already receives `workflow_run.completed`
+for the repos it serves, so it can tell the seat instead: register the head once with `ci_await`,
+and the bridge sends **one** event when it is done. A hook reaches it through any board-tools
+door, including the `bridge-board-call` CLI card#11151 adds.
+
+**`ci_await` arguments:**
+
+| Arg | Required | Notes |
+| --- | --- | --- |
+| `repo` | yes | The GitHub repository as `owner/name`. Matched case-insensitively, as GitHub matches repo names: `Octo/Widgets` and `octo/widgets` name ONE await, here and in `ci_await_cancel`. The answer and the events carry the spelling this install's subscription is configured with. |
+| `head_sha` | yes | The **full** 40-hex commit SHA (`git rev-parse <ref>`), case-insensitive, stored lower-case. ⛔ An **abbreviated** SHA is refused (`bad_arguments`): GitHub's run list filters on the exact SHA and answers an abbreviation with an empty list, so the wait would never settle. |
+| `pr` | no | The pull-request number, a positive integer no larger than 4294967295 (or `null`), carried back in the events. A re-registration that omits it keeps the one already recorded. |
+
+**`ci_await_cancel` arguments:** `repo` and `head_sha`, with the same rules. It removes **your own**
+await on that head and answers `cancelled: true`, or `cancelled: false` when you had none there —
+never registered, already settled or expired, or only another seat awaits it — so a hook may call it
+unconditionally.
+
+That is the whole accepted set for each; any other key is refused, and a key that tries to name a
+seat (`agent`, `seat`, `user`, …) is told the await is always yours. ⛔ **No argument names a seat**:
+the await belongs to the agent your call authenticated as, resolved by the front door like every
+tool here — so it works on a solo install with no coordination repo, and one seat can neither
+register nor cancel another's.
+
+**What `ci_await` does, in order:**
+
+1. Refuses a repo **this install receives no GitHub events for** — no agent on this install
+   subscribes to it — as `repo_not_received`, because no completed-run delivery would ever arrive for it. Poll
+   with `ci-read` there.
+2. Refuses a NEW await past the per-seat cap, `BRIDGE_CI_AWAIT_MAX_PER_SEAT` (default 50), as
+   `too_many_awaits`. Refreshing a head you already await is never capped. The count and the store
+   are two statements, so two concurrent registrations by one seat can each pass at the cap — it
+   bounds a seat that forgets to cancel, not a race.
+3. Stores the await, or **refreshes** yours on the same head (its expiry restarts; `refreshed: true`).
+   One await per seat per head. A database failure here is the only answer that says nothing was
+   stored (`install_fault.ci_await_store_unavailable`); anything that fails after it answers
+   `state: unmeasured` with the await kept.
+4. **Reads the head's runs once**, so CI that already finished settles now — unless:
+   - a read of the same head ANSWERED within `BRIDGE_CI_AWAIT_READ_COOLDOWN` seconds (default 60;
+     `0` always reads): it answers `waiting` with `read_skipped: "cooldown"` and sends no request.
+     That is a cost knob only: the sweep reads your head like any other (*The sweep* below);
+   - the head is **rate limited** until a known instant (see *Read failures*): it answers `waiting`
+     with `read_skipped: "rate_limited"` and `retry_not_before`, sends no request, and never answers
+     `settled`. Your await carries the limit's error and reset like the rest of the head's, so the
+     sweep reads it after the reset.
+
+   Whatever this read answers, nothing depends on it: an await it leaves `waiting` is settled by a
+   later delivery's read or by the sweep.
+
+The answer:
+
+```jsonc
+{
+  "repo": "octo-org/widgets",
+  "head_sha": "<40 hex>",
+  "pr": 12,                  // or null
+  "state": "waiting",        // waiting | settled | unmeasured
+  "refreshed": false,
+  "expires_at": "2026-10-03T16:00:00.000Z",   // null once settled, or when evaluating failed
+  "runs_total": 3,           // null when the read failed
+  "runs_completed": 1,
+  "read_error": "…",         // only on state: unmeasured
+  "read_skipped": "cooldown", // only when no read was made: "cooldown" or "rate_limited"
+  "retry_not_before": "…",   // only when the head is rate limited (skipped, or your own read was) — when it is read again
+  "warning": "…"             // only when this bridge holds no stored workflow_run delivery from the repo
+}
+```
+
+- **`settled`** — every run was already terminal, or a concurrent read settled your await while you
+  registered: `ci_settled` has been sent to you and nothing is stored.
+- **`waiting`** — stored; at least one run is not finished, **or there are no runs yet** (CI not
+  queued yet looks exactly like that, so an empty list is never treated as settled).
+- **`unmeasured`** — stored, but the read failed (with `retry_not_before` when GitHub rate limited
+  it), every run is terminal but `ci_settled` could not be written to your inbox, or evaluating the
+  stored await failed (a database error after the store); `read_error` says which. Nothing is sent
+  yet; the sweep reads the head again (see *Read failures* and *The sweep* below).
+- **`warning`** — this bridge has no stored `workflow_run` delivery from that repo. If the repo's
+  webhook does not send **Workflow runs** to this bridge, only the sweep's own reads settle the
+  await — at least one sweep interval after CI finishes, and only while the sweep runs. None stored is not proof — retention prunes old deliveries and a new webhook has
+  sent none yet. `bridge:check`'s `ci_await.awaits` leg reports the same per awaited repo.
+
+**How it settles.** On each `workflow_run.completed` delivery whose repo and `head_sha` match at
+least one await, the bridge makes **one** read — `GET /repos/{repo}/actions/runs?head_sha=<sha>`,
+walked page by page to the end of the list — after the delivery has been answered. The run that
+delivery reports is counted as completed, with its conclusion, even when the list still shows it
+running or does not show it yet: the list API can lag the webhook, and a last run lost that way
+would strand the wait until it expired. ⚠ **Except a later attempt:** a re-run keeps the run's id
+and raises its `run_attempt`, so when the list shows a LATER attempt than the delivery reports (a
+late delivery, or one an operator redelivered by hand from the webhook's settings), or either
+attempt is unknown, the list's row stands. When every run on the list has `status: completed`, every
+seat awaiting that head gets **one** `ci_settled` and its await is deleted. ⛔ **A list that moved
+while it was read is not an answer:** pages are separate requests, and a run created or deleted
+between them shifts rows across a page boundary (a duplicate can fill the count while a new,
+unfinished run is never seen). Runs are keyed by id, and the read fails unless every page reported
+the same `total_count` and the distinct runs equal it. One run created AND another deleted between
+pages keep both of those intact, so after a walk of more than one page the bridge **reads page 1
+again** and fails the read unless it lists the same runs: GitHub lists runs newest first, so a run
+created during the walk lands there. ⭐ **No await, no read:** a run completing on a head nobody awaits costs one
+indexed query and no GitHub request, so a green push to `dev` wakes nobody. ⭐ **Once per await,
+under concurrency:** two deliveries for a head's last two runs can both read "all terminal"; each
+emit first deletes its await row in a transaction and only the one whose delete removed it emits.
+The same claim decides between a settle and an expiry, so an await gets one or the other, never both.
+⚠ **A delivery's read settles only the awaits it loaded before reading**, so an await stored while it
+read — or one whose own registration read saw a list that still lagged — is left for the sweep.
+
+**The verdict is `ci-read`'s, never the bridge's.** `ci_settled` means only *every listed run has
+finished*. It carries each run's conclusion as data, and **it does not say green or red**: a verdict
+needs the base branch's required contexts and the latest run per workflow, which is `ci-read`'s
+definition, and the bridge does not restate it. On `ci_settled`, run `ci-read` **once** on the head.
+
+**Read failures.** A read that fails — a rate limit (a 429, or a 403 with `X-RateLimit-Remaining: 0`
+or with `Retry-After`, GitHub's secondary limit), a 5xx, no answer, no GitHub read
+token, a 200 whose body is not a run list, a list that does not end within the read's page bound, or
+a list that changed between pages — **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
+logged naming it, and the head is read again on its next completed run and by the sweep. A
+rate-limited read that names when its quota returns records that instant on every await on the head, and **no read of that head is made before it** — not
+by a delivery, a registration or the sweep; the error says until when, and a registration in that
+window answers `read_skipped: "rate_limited"`. The instant is `Retry-After` when the refusal carries
+one (seconds or an HTTP date — GitHub's secondary limit, which can also carry a primary reset an hour
+out), else `X-RateLimit-Reset` only when `X-RateLimit-Remaining` is `0`. If no read ever answers, the
+await ends in `ci_await_expired` carrying the last error.
+
+**Expiry.** An await lives `BRIDGE_CI_AWAIT_TTL` seconds (default 21600, 6 h; 60 to 604800 accepted —
+anything else refuses every `ci_await` as `install_fault.ci_await_config_invalid` and fails `bridge:check`,
+as does a cap, cooldown or sweep read cap outside its range). `ci_await_expired` is emitted by the
+sweep, at the first pass after `expires_at`.
+
+**The sweep — what every await relies on.** A delivery settles only the awaits its read loaded, a
+registration's read can see a list that lags, a final delivery can be lost, and CI may never finish:
+in each case no further event touches the await. So the `ci-await-sweep` periodic job, declared at
+the first registration, is **level-triggered** — each pass first reads up to
+`BRIDGE_CI_AWAIT_SWEEP_READS` (default 10) unexpired heads whose **oldest** read is at least one sweep
+interval old (or that were never read), oldest first, skipping a head that is rate limited, and
+settles every await on a head it finds all terminal; then it emits `ci_await_expired` once per await
+past its expiry. A head is read once per pass however many seats await it. Deliveries, the read
+cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
+⚠ **The sweep runs only when a job pass runs**: on the job registry's two ingresses
+([`periodic-jobs.md`](periodic-jobs.md)) — with the next webhook this install receives, or with
+`bridge:tick` on a silent one. With no pass, nothing here is read or expired.
+
+**What a seat can rely on.** One terminal event per await — `ci_settled` or `ci_await_expired`, never
+both. It is written to your inbox **at least once**, idempotent by its line id
+(its line id is `ci_await:<uuid>` for BOTH kinds — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
+written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
+it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the
+wake on each. Once every run on a head is terminal, `ci_settled` comes at the latest from the first
+sweep pass that starts at least one sweep interval after the head's oldest read (at once, when no await on it was ever read) — later by one pass
+for every `BRIDGE_CI_AWAIT_SWEEP_READS` eligible heads ahead of it — provided the sweep runs. An event
+that cannot be written to your inbox keeps the await, logged naming you and shown by `bridge:check`,
+and is tried again on later passes; an expiry that still cannot be written
+`CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS` past `expires_at` is dropped undelivered, logged as an
+error.
+
+**The events.** Both are bridge-authored intents (`provider: "bridge"`, null actor), **staged to the
+inbox and pushed live** — the await is gone once emitted, so the inbox line is what reaches a seat
+whose channel was down (*What a seat can rely on* above). `subject_id` is `ci:<repo>@<head_sha>`. The payloads and the inbox shape are
+[`consumer-guide.md`](consumer-guide.md) § *Bridge-authored intents*'s to state.
+
+**Limits, named:**
+
+- ⚠ **Late runs.** A workflow that starts only after others finish (`on: workflow_run`) may not be
+  on the list when the others complete, so `ci_settled` can arrive before it exists; `ci-read` then
+  reports the head pending, and the seat re-registers. The payload carries no `late_runs_possible`
+  hint: telling whether a repo has such a workflow would need a read of its workflow files on every
+  settle, which is not cheap, so it is omitted rather than guessed. Whether such a run reports the
+  awaited head's SHA at all is **not measured here**.
+- ⚠ **Runs not yet created.** A registration made before GitHub has created every run for the push
+  can see some runs finished and others absent; it settles only when what is listed is all terminal.
+- ⚠ **A list that keeps moving.** On a head whose runs are created or deleted during every read, each
+  read fails as inconsistent and the await waits for the next delivery or sweep read. No case of it is
+  measured. Taken from GitHub's REST documentation, not checked: that `total_count` counts exactly
+  what the pages carry, and that a new run is listed first (newest first), which is what the page-1
+  re-read relies on. A single-page list is checked only against its own `total_count`, and a run
+  created after the page-1 re-read is one the read did not see, like one created just after it.
+- ⚠ **The per-seat cap is soft under concurrency** (step 2 above).
+- ⚠ **Only a rate limit that names its reset is waited out.** One without either header is read
+  again at the next delivery or sweep pass.
+- ⚠ **Installs with several bridges.** An await lives on the bridge the seat called; only that
+  bridge's deliveries settle it.
+
+**Cost:** one read of the head at registration (none inside the read cooldown or a rate limit), one
+per completed run on an awaited head, and the sweep's: at most `BRIDGE_CI_AWAIT_SWEEP_READS` × 3600 /
+the `ci-await-sweep` interval (seconds) head reads per hour, install-wide — a head counts once however
+many seats await it, and one read within the interval is not repeated. Each read is one request per
+100 runs, plus one more for the page-1 re-read when the list spans more than one page. Nothing for
+heads nobody awaits.
+
 ## Errors
 
 | Status | Meaning |
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
-| 422 | A caller-fixable bad request (a request body that is not a JSON object — empty, not valid JSON, or valid JSON of another type — which is refused **for the body, in the same words on both doors**, and never as a missing `tool` (card#10106); over HTTP, a body sent without a JSON `Content-Type`; an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
+| 422 | A caller-fixable bad request (a request body that is not a JSON object — empty, not valid JSON, or valid JSON of another type — which is refused **for the body, in the same words on both doors**, and never as a missing `tool` (card#10106); over HTTP, a body sent without a JSON `Content-Type`; an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). A refusal that carries a machine-readable code adds `reason` beside `error` (`{ok: false, error, reason}`); the codes are listed in [`board_take_card`'s start form](#the-start-form-start-true-card11150--dl-449). |
 | 502 | Upstream kanban error (may be retryable) — a kanban 5xx or another non-permanent status, **or a call kanban never answered** (a timeout or a failed connection, DL-387), **or a paged board read kanban answered `2xx` that the bridge could not report complete** (card#10653; see the **2xx, read refused** row of the mapping table below). The body is the same for all of them. ⚠ On a WRITE a 502 may follow a write that landed: read the tool's own section before re-sending. |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 
@@ -1600,13 +1934,28 @@ A seat on a snapshot older than 0.9.8 gets the second message for **both** of th
 rows — see § Staying in sync in [`examples/channel-servers/README.md`](../examples/channel-servers/README.md)
 for reading the deployed version.
 
+## Calling a tool from a script
+
+A hook or a script cannot call these tools through the channel server — they are MCP tools, and only the session speaks MCP to it. From client **0.9.41** the client pack carries **`bridge-board-call`**, which makes ONE call as the seat, over the seat's own configured transport and credential (card#11151, DL-451):
+
+```bash
+bridge-board-call board_take_card '{"card_id":123,"start":true}'
+```
+
+- **No identity argument, and no new credential.** It reads the transport the seat's channel server is configured with — its `.mcp.json` `env` block over the calling environment — and the bridge resolves the seat from that transport's credential exactly as for the channel server: the pinned forced command's `--agent`, or the bearer. A script can therefore act only as its own seat.
+- **One-shot on both doors.** The ssh door's forced command (`bridge:tools-call`) takes one request body on stdin and writes one JSON envelope; the HTTP door is one `POST /agent-tools/call`. Neither speaks MCP, so the CLI sends the channel server's request body — `{tool, args, client_version}`, plus `caller` (below) — over the channel server's own round trip.
+- **It prints the door's answer and exits on a contract** that tells a tool's answer (ok, or a refusal whose `reason` — [tabled above](#the-start-form-start-true-card11150--dl-449) — is what a caller branches on) from a call that reached no tool and from one whose outcome is unmeasured. [`examples/channel-servers/README.md`](../examples/channel-servers/README.md) § *Calling a board tool from a script* owns the exit codes, where the CLI reads its configuration from, and its bounds; they are not restated here.
+- ⭐ **A coded install fault is a refusal, never a success.** Every `install_fault.*` code above arrives as a 422 (exit 1 over ssh) — the door's refusal shape — so the CLI reports it as the tool's refusal, code and text intact: a seat with no kanban user gets `install_fault.no_kanban_user`, printed and non-zero, never an unassigned move. The door's UNCODED install answers are not refusals; the README section above owns how the CLI reports them.
+- ⚠ **What the CLI cannot tell apart over ssh:** the ssh door renders the `502` (which may follow a write that landed) and its own install answers alike as exit 2 with no code (the paragraph under the codes table), so the CLI reports either as unmeasured, never as "reached no tool".
+- **It is not the channel server, and says so:** it sends `caller: "script"` and no `launch`, so the call does not overwrite what the seat's channel server last reported to the fleet ledger (below).
+
 ## The client-update door (DL-430)
 
 A seat's channel server updates itself from its own bridge at launch (card#10568, DL-434) — the seat half is `examples/channel-servers/entry.mjs` and `client-update.mjs`, described in that directory's README § *Installed and updated by the bridge*. The bridge half is a separate door, **not a board tool**: `POST /agent-tools/client` behind the same loopback gate and bearer as `/agent-tools/call`, and, on the ssh transport, the same pinned `bridge:tools-call` forced command given a body carrying `op` instead of `tool`. Both transports answer the same bytes. It never goes through the board-tools dispatcher, so no tool refusal, board outage or client-version rule can stand between a seat and the pack that fixes it.
 
 It serves `client_manifest` (what this bridge publishes, the release a seat should install, whether an approval is owed, and the last install-log entry this bridge holds for the seat), `client_pack` (that release's pack, base64), `client_report` (the seat's install-log lines, chain-checked) and `client_fleet` (every seat's reported client and state — only to an agent with `board_tools.fleet_view: true`). The request and response shapes, and every refusal, are owned by `App\Bridge\ClientUpdate\ClientUpdateDoor`'s class docblock; this section deliberately does not restate them. What it serves is whatever `php artisan bridge:client-pack:install` last published (CLAUDE_DEPLOYMENT.md § Commands); until that has run, `client_manifest` and `client_pack` answer `503` and a seat keeps its installed client. Each release's pack is attached to its GitHub release by the release workflow (DL-442), and `bridge:check`'s `board_tools.client_pack_source` leg warns until this checkout's release is the published one.
 
-**The fleet ledger (DL-432) and approval (DL-433).** What each seat reports — through `client_report`, and through two optional keys on every board-tools call, `caller` (a probe or self-certification says so, and then never overwrites the seat's own report) and `launch` (`{id, bridge_release}`, sent by a client the updater started) — lands in one row per agent. `php artisan bridge:client-fleet` prints each seat's state, and `bridge:check`'s `board_tools.client_fleet` leg warns on the seats that need you. For an agent with `board_tools.client_update.approval_required: true`, `client_manifest` offers nothing until `php artisan bridge:client-approve` has approved the published pack's content for it; a seat that installs without that approval is reported, never blocked. **Client 0.9.29 sends both** (card#10568, DL-434), but only once it is started through its updater's entry point, `<root>/entry.mjs` — getting a seat there is the bootstrap, `provision-board-tools.py --role b --bootstrap-client` (DL-444; below). Until a seat is bootstrapped it sends neither, and a calling seat reads `off_update_path`.
+**The fleet ledger (DL-432) and approval (DL-433).** What each seat reports — through `client_report`, and through two optional keys on every board-tools call, `caller` (a caller that is not the seat's channel server declares one of `App\Bridge\ClientUpdate\ExemptCaller`'s cases — the enum is the list — and then never overwrites the seat's own report) and `launch` (`{id, bridge_release}`, sent by a client the updater started) — lands in one row per agent. `php artisan bridge:client-fleet` prints each seat's state, and `bridge:check`'s `board_tools.client_fleet` leg warns on the seats that need you. For an agent with `board_tools.client_update.approval_required: true`, `client_manifest` offers nothing until `php artisan bridge:client-approve` has approved the published pack's content for it; a seat that installs without that approval is reported, never blocked. **Client 0.9.29 sends both** (card#10568, DL-434), but only once it is started through its updater's entry point, `<root>/entry.mjs` — getting a seat there is the bootstrap, `provision-board-tools.py --role b --bootstrap-client` (DL-444; below). Until a seat is bootstrapped it sends neither, and a calling seat reads `off_update_path`.
 
 ## How it is wired (operator view)
 

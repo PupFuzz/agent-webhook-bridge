@@ -7,6 +7,7 @@ use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\SecretFile;
 
 /**
@@ -49,7 +50,7 @@ final class AgentApiTokenCheck implements PerAgentCheck
         foreach (array_unique(array_map(fn ($s) => $s->provider, $config->subscriptions)) as $provider) {
             $tokenPath = $config->tokenPath($secretDir, $provider);
             if (! is_file($tokenPath) || ! is_readable($tokenPath)) {
-                yield Finding::warn("agent {$name}: {$provider} API token not readable at {$tokenPath} — bridge:provision will SKIP {$provider} scopes");
+                yield Finding::warn("agent {$name}: {$provider} API token not readable at ".PastedSecretShape::displayPathSetting($tokenPath)." — bridge:provision will SKIP {$provider} scopes");
             } elseif (SecretFile::isInsecure($tokenPath)) {
                 yield Finding::warn("agent {$name}: ".SecretFile::permsMessage($tokenPath).' — bridge:provision will FAIL until fixed');
             }

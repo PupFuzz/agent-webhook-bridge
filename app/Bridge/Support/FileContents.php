@@ -77,7 +77,7 @@ final class FileContents
             // file, and asserting it is still there would be a claim about a moment this
             // process never measured (the file can be unlinked in between). The permissions
             // reading is what the operator needs and it holds either way.
-            throw UnreadableFileException::permissionsFault($subject, $path);
+            throw UnreadableFileException::permissionsFault($subject, PastedSecretShape::displayPathSetting($path));
         }
 
         return $raw;

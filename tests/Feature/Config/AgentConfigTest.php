@@ -6,6 +6,8 @@ use App\Bridge\Classifiers\EventDrivenClassifier;
 use App\Bridge\Classifiers\InboxOnlyClassifier;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\PastedSecretShape;
+use App\Bridge\Support\RedactedErrorText;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -24,9 +26,50 @@ class AgentConfigTest extends TestCase
     private function raw(array $overrides = []): array
     {
         return array_replace_recursive([
-            'identity' => ['kanban_user_id' => 137],
+            'identity' => ['github_user_id' => 137],
             'subscriptions' => [['provider' => 'kanban', 'scopes' => [5], 'event_filter' => ['task.*']]],
         ], $overrides);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function pastedPathSettings(): array
+    {
+        return [
+            'channel.socket' => ['socket'],
+            'channel.server_path' => ['server_path'],
+        ];
+    }
+
+    /**
+     * card#11261 — a bearer-shaped value pasted where a path belongs is refused (it is not an
+     * absolute path) and the refusal prints a fingerprint of it, not the value. The positive
+     * assertion is the fingerprint: an absence check alone would also pass a message that dropped
+     * the value entirely.
+     */
+    #[DataProvider('pastedPathSettings')]
+    public function test_a_token_pasted_as_a_channel_path_is_refused_as_a_fingerprint(string $key): void
+    {
+        $pasted = str_repeat('ab12', 16);
+
+        try {
+            AgentConfig::fromArray('prod-agent', $this->raw(['channel' => [$key => $pasted]]));
+            $this->fail("channel.{$key} accepted a value that is not an absolute path");
+        } catch (ConfigException $e) {
+            $this->assertStringNotContainsString($pasted, $e->getMessage());
+            $this->assertStringContainsString("channel.{$key} '".PastedSecretShape::displayPathSetting($pasted)."' must be an absolute path", $e->getMessage());
+            $this->assertStringContainsString(PastedSecretShape::fingerprint($pasted), $e->getMessage());
+            $this->assertStringNotContainsString($pasted, RedactedErrorText::of($e));
+        }
+    }
+
+    public function test_a_real_channel_path_is_still_printed_as_written(): void
+    {
+        try {
+            AgentConfig::fromArray('prod-agent', $this->raw(['channel' => ['socket' => 'rel/chan.sock']]));
+            $this->fail('a relative socket was accepted');
+        } catch (ConfigException $e) {
+            $this->assertStringContainsString("channel.socket 'rel/chan.sock' must be an absolute path", $e->getMessage());
+        }
     }
 
     public function test_parses_a_valid_config(): void
@@ -34,12 +77,12 @@ class AgentConfigTest extends TestCase
         $cfg = AgentConfig::fromArray('prod-agent', $this->raw());
 
         $this->assertSame('prod-agent', $cfg->agentName);
-        $this->assertSame(137, $cfg->identity->kanbanUserId);
-        $this->assertNull($cfg->identity->githubUserId);
+        $this->assertSame(137, $cfg->identity->githubUserId);
+        $this->assertNull($cfg->identity->retiredKanbanUserId);
         $this->assertCount(1, $cfg->subscriptions);
         $this->assertSame('kanban', $cfg->subscriptions[0]->provider);
         $this->assertSame('5', $cfg->subscriptions[0]->scopeId);
-        $this->assertSame(['137'], $cfg->echoSuppression->treatAsEchoIds);   // auto-seeded from identity
+        $this->assertSame(['137'], $cfg->echoSuppression->treatAsEchoIds);   // auto-seeded from identity.github_user_id
         $this->assertSame(InboxOnlyClassifier::class, $cfg->classifierClass);  // default
         $this->assertNull($cfg->channel->socket);
         $this->assertNull($cfg->channel->url);
@@ -54,27 +97,29 @@ class AgentConfigTest extends TestCase
             'identity' => ['kanban_user_id' => 100, 'github_user_id' => 9001, 'github_login' => 'pm-bot'],
         ]));
 
-        $this->assertSame(100, $cfg->identity->kanbanUserId);
+        $this->assertSame(100, $cfg->identity->retiredKanbanUserId, 'parsed for bridge:check\'s migration rows alone (DL-450)');
         $this->assertSame(9001, $cfg->identity->githubUserId);
         $this->assertSame('pm-bot', $cfg->identity->githubLogin);
     }
 
     public function test_self_echo_ids_are_auto_seeded_from_identity(): void
     {
-        // No echo_suppression block at all — the agent's own ids are still
-        // suppressed (the operator never hand-lists self ids).
+        // No echo_suppression block at all — the agent's own github id is still
+        // suppressed (the operator never hand-lists self ids). The RETIRED kanban id is
+        // not seeded: the agent's kanban id is the coord roster's, seeded at dispatch
+        // for kanban events (DL-450; RosterAttributionTest).
         $cfg = AgentConfig::fromArray('pm', [
             'identity' => ['kanban_user_id' => 100, 'github_user_id' => 9001],
             'subscriptions' => [],
         ]);
 
-        $this->assertEqualsCanonicalizing(['100', '9001'], $cfg->echoSuppression->treatAsEchoIds);
+        $this->assertEqualsCanonicalizing(['9001'], $cfg->echoSuppression->treatAsEchoIds);
     }
 
     public function test_explicit_echo_ids_union_with_self_ids(): void
     {
         $cfg = AgentConfig::fromArray('pm', $this->raw([
-            'identity' => ['kanban_user_id' => 137],
+            'identity' => ['github_user_id' => 137],
             'echo_suppression' => ['treat_as_echo_ids' => ['50']],
         ]));
 
@@ -517,7 +562,7 @@ class AgentConfigTest extends TestCase
 
         $cfg = AgentConfig::load('prod-agent', $dir);
         $this->assertSame('prod-agent', $cfg->agentName);
-        $this->assertSame(137, $cfg->identity->kanbanUserId);
+        $this->assertSame(137, $cfg->identity->retiredKanbanUserId);
         $this->assertSame('5', $cfg->subscriptions[0]->scopeId);
 
         File::deleteDirectory($dir);

@@ -71,6 +71,9 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         'kanban_move_card: revived a card from the abandon stage on PR reopen' => 'paired with notifyRevive — a distinct signal type, not a refusal',
         // A documented FAIL-OPEN diagnostic: the move still happens, so nothing was refused.
         'kanban_move_card: could not read board stage order for the no-regression guard — allowing the move' => 'fail-open diagnostic — the move proceeds, no refusal to signal',
+        // A TRANSIENT stamp failure (429/408/5xx) is not a refusal: the write stays owed and the retry
+        // re-stamps, and the owed-write queue's give-up alert is the live signal if it never lands.
+        'kanban_move_card: stamp failed transiently — the stamp stays owed and the retry re-stamps' => 'transient — stays owed and retried; the owed-write give-up alert is its live signal, not a refusal',
         // The SECOND fail-open route of the same guard (card#8761), and the one that had no
         // line at all: the preload read answered, with an empty order or without one of the
         // two stage ids. Same disposition as its twin above for the same reason — the move

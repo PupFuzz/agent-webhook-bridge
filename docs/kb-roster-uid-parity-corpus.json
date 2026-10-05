@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's roster reader — which kanban user a coord roster says ONE seat is on ONE board instance (card#10868 Q1: the roster is the single store; card#10869: the bridge holds each agent's identity.kanban_user_id against it in `bridge:check`). The toolkit OWNS the rule. tests/Unit/Support/RosterKanbanUserParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors through a toolkit checkout's own `kb_owner_resolve`.",
+  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's roster reader — which kanban user a coord roster says ONE seat is on ONE board instance (card#10868 Q1: the roster is the single store; card#11172 / DL-450: the bridge reads each agent's kanban user id from it at runtime). The toolkit OWNS the rule. tests/Unit/Support/RosterKanbanUserParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors through a toolkit checkout's own `kb_owner_resolve`.",
   "mirror": {
     "repo": "PupFuzz/agent-webhook-bridge",
     "class": "App\\Bridge\\Support\\RosterKanbanUser",
@@ -21,14 +21,16 @@
     "`found` (the value that made a verdict `nofield`/`bad`) is bridge-local message detail and is not compared."
   ],
   "last_measured": {
-    "date": "2026-09-29",
-    "authority_ref": "PupFuzz/agent-board-toolkit 11a6d150 (the dev merge of PR #425, card#10868), bin/_kb-board-lib.sh exported with `git archive`",
-    "authority_blob": "sha256:9aea087a25542fb9d69161a4c39ab34c8a595d35715f49502de88ec96a41c8db (bin/_kb-board-lib.sh) — copied from the runner's own `executed:` line, not typed",
-    "vectors_digest": "sha256:0c5844f59bae4ed336976bc0945ea0416d529f8a0e72c02e228dd07908ef0d99",
+    "date": "2026-10-03",
+    "authority_ref": "PupFuzz/agent-board-toolkit 4f7745b2 (origin/dev after PR #428, card#10868), bin/_kb-board-lib.sh from a detached worktree",
+    "authority_blob": "sha256:6171823f9c6be63e8aa19065b903dafce2c8a94b5de6d92adbf73da5192ef007 (bin/_kb-board-lib.sh) — copied from the runner's own `executed:` line, not typed",
+    "vectors_digest": "sha256:38a8fbc7cf18f8a840e935b3cd3cae1e187a4d81bce9a001f572effa846725af",
     "method": "`bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit <that export>` executed every vector, every known divergence and every pinned constant against the authority named above; `--control` over the same export reported every perturbed expectation (exit 0). As a discrimination check the runner was also run against a copy of the same lib with the trailing-dot strip removed and the id floor lowered to 0, and reported those vectors DISAGREE.",
-    "result": "exit 1 — agreed 29 · disagreed 3 · unmeasured 0, and the three disagreements are DELIBERATE: they are the integral-float vectors (`7.0`, `7.00`, `7e0`), published with the verdict `bad` that the toolkit's in-flight fix for card#10868 comment 7670 (a false self-takeover on a float id) is to return, and 11a6d150 still accepts them (`7e0` reaches it as `7`, since jq normalises the literal at parse). `--control` reported every perturbed row (exit 0). Re-take this measurement against the toolkit commit that lands that fix; exit 0 is then required, and the PHP_INT_MAX divergence is expected to converge with it and be deleted. Whoever adds, changes or deletes a vector re-takes this measurement over the whole corpus: the bridge-side test reds on the digest until they do."
+    "result": "exit 0 — agreed 32 · disagreed 0 · unmeasured 0 against toolkit origin/dev 4f7745b2. `--control` reported every perturbed row (exit 0). Since the 2026-09-29 measurement, toolkit PR #428 landed the integer-literal fix: `7.0` and `7.00` now agree on `bad`, and the 1e+300 known divergence converged (moved to vectors, expect `bad`). `7e0` did NOT converge, because jq normalises the literal to 7 at parse; it is now a declared known divergence (bridge stricter). Whoever adds, changes or deletes a vector re-takes this measurement over the whole corpus: the bridge-side test reds on the digest until they do."
   },
-  "mirror_local": {},
+  "mirror_local": {
+    "seatIds": "A bridge-local ENUMERATION with no far-end counterpart: the toolkit resolves one seat at a time (kb_owner_resolve) and never lists every seat's id. It adds no rule of its own — each entry is read through the same private verdict lookUp uses, first entry by name deciding — so the per-seat answer it relies on is the one the lookUp vectors hold; what it adds (which seats are enumerated) has nothing at the far end to compare against. Used by the bridge to refuse identity.peer_kanban_user_id that duplicates a seat's id (card#11172 / DL-450)."
+  },
   "mirrored_but_not_driven": {},
   "known_divergences": {
     "lookUp": [
@@ -60,32 +62,6 @@
         "args": [
           {
             "project": "p",
-            "roster": [
-              {
-                "name": "impl",
-                "kanban_user_id": {
-                  "kanban.example.com": 1e+300
-                }
-              }
-            ]
-          },
-          "impl",
-          "kanban.example.com"
-        ],
-        "authority": {
-          "uid": 1e+300,
-          "why": null
-        },
-        "mirror": {
-          "uid": null,
-          "why": "bad"
-        },
-        "why": "jq accepts any integral number at least 1; the port refuses a value that is not a JSON integer, and one larger than PHP_INT_MAX decodes to a float. The authority's answer is not a user id the board could hold either. The toolkit's integer-literal fix (card#10868 comment 7670) should converge this entry; the runner then reports it stale."
-      },
-      {
-        "args": [
-          {
-            "project": "p",
             "roster": {
               "0": {
                 "name": "impl",
@@ -107,6 +83,22 @@
           "why": null
         },
         "why": "PHP's json_decode turns an OBJECT whose keys are \"0\"..\"n\" into the same list an array decodes to, so the port reads such a roster as an array of seats; the toolkit's `roster | if type == \"array\"` reads it as no seats. The framework writes `roster` as an array; this shape is not one it produces."
+      },
+      {
+        "args": [
+          "{\"project\":\"p\",\"roster\":[{\"name\":\"impl\",\"kanban_user_id\":{\"kanban.example.com\":7e0}}]}",
+          "impl",
+          "kanban.example.com"
+        ],
+        "authority": {
+          "uid": 7,
+          "why": null
+        },
+        "mirror": {
+          "uid": null,
+          "why": "bad"
+        },
+        "why": "jq normalises the exponent literal `7e0` to `7` at parse, so the toolkit's integer-literal check (PR #428, card#10868 comment 7670) never sees the exponent and answers uid 7; the port reads the file's text and refuses a non-integer literal. The bridge is the stricter side. The authority's answer IS the board user 7, so the only consequence is that a roster spelling an id in exponent form is refused by the bridge's take while the toolkit's claim accepts it. Nobody writes ids that way; recorded rather than loosened."
       }
     ]
   },
@@ -629,7 +621,17 @@
       },
       {
         "args": [
-          "{\"project\":\"p\",\"roster\":[{\"name\":\"impl\",\"kanban_user_id\":{\"kanban.example.com\":7e0}}]}",
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 1e+300
+                }
+              }
+            ]
+          },
           "impl",
           "kanban.example.com"
         ],
@@ -637,7 +639,7 @@
           "uid": null,
           "why": "bad"
         },
-        "note": "the same integral float in exponent form — jq 1.7 normalises it to 7 at parse, so a far end that only inspects the decoded value cannot see it (args[0] is the config file's exact TEXT, so the literal survives to both ends)"
+        "note": "an integral number too large for a board user id; since toolkit PR #428 the authority refuses it too (this was a known divergence until 2026-10-03, now converged)"
       }
     ]
   }

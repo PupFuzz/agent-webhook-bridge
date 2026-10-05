@@ -3,12 +3,18 @@
 namespace App\Bridge\Writeback;
 
 /**
- * The outcome of resolving a GitHub read token for one repo (GitHubTokenResolver).
+ * The outcome of resolving a GitHub token for one repo (GitHubTokenResolver).
  * Exactly one of {token, problem} is set: a resolved token carries a human-readable
  * `source` label (for diagnostics), and a fail-loud outcome carries a `problem`
  * message. Deliberately non-throwing so bridge:reconcile can map a problem to its
- * loud non-zero exit while bridge:check maps the same problem to a warn — one
+ * loud non-zero exit while bridge:check maps the same problem to a finding — one
  * precedence, two error postures (DL-185).
+ *
+ * A problem also carries a {@see TokenFileFault}, so a caller that must tell an empty file from one
+ * it merely could not read does not parse the prose (card#11201). Both outcomes carry the
+ * {@see TokenSource} that answered and the FILE it named, where there is one, so `bridge:check` can
+ * say per repo which source resolved and judge the receiver's read of that file (DL-456). The path
+ * is never the token: printing it is safe.
  */
 final class TokenResolution
 {
@@ -16,16 +22,19 @@ final class TokenResolution
         public readonly ?string $token,
         public readonly ?string $source,
         public readonly ?string $problem,
+        public readonly ?TokenFileFault $fileFault,
+        public readonly ?TokenSource $sourceKind,
+        public readonly ?string $path,
     ) {}
 
-    public static function resolved(string $token, string $source): self
+    public static function resolved(string $token, string $source, TokenSource $kind, ?string $path = null): self
     {
-        return new self($token, $source, null);
+        return new self($token, $source, null, null, $kind, $path);
     }
 
-    public static function problem(string $problem): self
+    public static function problem(string $problem, ?TokenFileFault $fileFault = null, ?TokenSource $kind = null, ?string $path = null): self
     {
-        return new self(null, null, $problem);
+        return new self(null, null, $problem, $fileFault, $kind, $path);
     }
 
     public function ok(): bool

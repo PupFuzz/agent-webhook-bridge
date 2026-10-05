@@ -46,7 +46,7 @@ final class AgentToolsController
         // JSON Content-Type, `input()` reads form fields and the query string rather than the
         // body — so a body that parses would still reach the dispatcher with no `tool`.
         if (! $request->isJson()) {
-            return $this->refuse(422, 'request Content-Type must be application/json — the body is read as '.ToolCallBody::SHAPE);
+            return $this->refuse(422, 'request Content-Type must be application/json — the body is read as '.ToolCallBody::SHAPE, 'bad_request');
         }
         $parseResult = ToolCallBody::parse($request->getContent());
         if ($parseResult instanceof DispatchOutcome) {
@@ -95,7 +95,7 @@ final class AgentToolsController
             return $agent;
         }
         if (! $request->isJson()) {
-            return $this->refuse(422, 'request Content-Type must be application/json — the body is read as '.ToolCallBody::CLIENT_UPDATE_SHAPE);
+            return $this->refuse(422, 'request Content-Type must be application/json — the body is read as '.ToolCallBody::CLIENT_UPDATE_SHAPE, 'bad_request');
         }
         $decoded = ToolCallBody::parse($request->getContent(), ToolCallBody::CLIENT_UPDATE_SHAPE);
         if ($decoded instanceof DispatchOutcome) {
@@ -137,8 +137,12 @@ final class AgentToolsController
         return is_string($token) && $token !== '' ? $token : null;
     }
 
-    private function refuse(int $status, string $message): JsonResponse
+    /**
+     * @param  ?string  $reason  a machine-readable code for a caller-fixable refusal (card#11150 / DL-449); a
+     *                           401/503 whose STATUS is the answer carries none
+     */
+    private function refuse(int $status, string $message, ?string $reason = null): JsonResponse
     {
-        return response()->json(['ok' => false, 'error' => $message], $status);
+        return response()->json(['ok' => false, 'error' => $message] + ($reason === null ? [] : ['reason' => $reason]), $status);
     }
 }

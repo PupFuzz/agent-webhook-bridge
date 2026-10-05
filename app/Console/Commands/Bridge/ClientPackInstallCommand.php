@@ -78,7 +78,7 @@ class ClientPackInstallCommand extends BridgeCommand
             return 2;
         }
 
-        $token = (new GitHubTokenResolver)->resolveFor($repo);
+        $token = (new GitHubTokenResolver)->resolveForCli($repo);
         if ($token->token === null) {
             $this->error("bridge:client-pack:install: no GitHub read token for {$repo} (".UntrustedText::forOperator((string) $token->problem).'). Nothing was changed.');
 

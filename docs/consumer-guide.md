@@ -71,8 +71,38 @@ The three states of `actor_attribution`:
 ### Bridge-authored intents
 
 Some intents are composed by the bridge itself rather than by a classifier from a webhook. They
-reach the seat over `channel_push` **only** — there is no webhook event behind them, so they are
-never staged to the inbox — and carry `provider: "bridge"` and a null actor.
+carry `provider: "bridge"` and a null actor. `seat_idle_nudge` and `pm_standup` reach the seat over
+`channel_push` **only** and are never staged to the inbox; `ci_settled` and `ci_await_expired` are
+**staged to the inbox first and then pushed**, because the await they answer is deleted when they
+are sent and nothing else would carry them to a seat whose channel was down (their line `id` is
+defined in [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`*).
+
+**`ci_settled`** (card#11200 / DL-452) — every workflow run GitHub lists for a head this seat
+registered with `ci_await` is terminal. One terminal event per await, written to the inbox at least
+once — collapse duplicates on the line `id` — and pushed live once; the live push carries no line id, so a
+seat reading both its channel and `bridge:inbox` sees it on each. ⛔ **It is not a verdict:** run
+`ci-read` once on the head for green/red ([`board-tools.md`](board-tools.md) § *`ci_await` and
+`ci_await_cancel`* owns why and the limits). `subject_id` is `ci:<repo>@<head_sha>`. `payload`:
+
+| key | meaning |
+|---|---|
+| `repo`, `head_sha`, `pr` | the awaited head, as registered (`pr` null when none was given) |
+| `runs` | every run on the list, each `{workflow, conclusion, html_url}` — `workflow` is the run's workflow name, `conclusion` GitHub's string for it |
+| `all_terminal` | always `true` |
+| `measured_at` | when the bridge read the run list (UTC, milliseconds) |
+
+There is no `late_runs_possible` key; board-tools.md § *Limits* says why.
+
+**`ci_await_expired`** (card#11200 / DL-452) — the await reached its expiry before every run was seen
+terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` for the same await. `subject_id` as above.
+`payload`:
+
+| key | meaning |
+|---|---|
+| `repo`, `head_sha`, `pr` | the awaited head |
+| `registered_at`, `expires_at` | when the await was first stored, and when it expired (UTC, milliseconds) |
+| `last_read_at` | when the bridge last read the run list for it, or null if it never did |
+| `last_error` | why that last read failed, or null when it answered — a null here with a non-null `last_read_at` means CI was still running at that read |
 
 **`seat_idle_nudge`** (DL-380, DL-424) — this seat has sat idle past its horizon with work waiting.
 **Branch on `payload.source`**: the two sources send different evidence under the same kind.
@@ -269,24 +299,24 @@ If nothing surfaces to the model after wiring: verify the hook event type is in 
 
 ## Agent registry contract
 
-There is no `agents.json`. The registry is built per request by scanning the per-agent YAMLs in the config dir — the FILENAME (`prod-agent.yml` → `prod-agent`) is the agent's name, and its `identity:` block holds its immutable upstream ids:
+There is no `agents.json`. The registry is built per request by scanning the per-agent YAMLs in the config dir — the FILENAME (`prod-agent.yml` → `prod-agent`) is the agent's name, and its `identity:` block holds its immutable github ids — and from the coord roster at `BRIDGE_COORD_CONFIG_PATH`, which holds each agent's kanban user id for its seat (`identity.coord_seat`, else the agent name; DL-450):
 
 ```yaml
 # prod-agent.yml
 identity:
-  kanban_user_id: 3
   github_user_id: 12345678
   github_login: prod-agent-bot   # display-only label
 
 # dev-agent.yml
 identity:
-  kanban_user_id: 4
+  coord_seat: dev                # only when the roster seat is not the agent name
 ```
 
 | `identity` field | Required? | Notes |
 |---|---|---|
 | (filename) | yes | The `<agent>.yml` filename is the agent name — used for echo suppression by `actor.name` and as the addressing token for ReactionTarget routing |
-| `kanban_user_id` | optional | Immutable integer; absent = agent has no kanban identity |
+| `coord_seat` | optional | The coord roster seat whose `kanban_user_id` is this agent's kanban identity; absent = the agent name. A seat the roster gives no id = no kanban identity. (`kanban_user_id` itself is retired from this block — DL-450.) |
+| `peer_kanban_user_id` | optional | Only for an agent that is NO seat of this roster (a cross-install peer): its kanban user id, used for attribution and echo/signal matching only, never take/correct authority. `bridge:check` fails it, and the runtime ignores it, when it equals any roster seat's id, on a roster seat, or beside a `coord_seat` (DL-450) |
 | `github_user_id` | optional | Immutable numeric GitHub account id (`sender.id`); the GitHub **matching key**. absent = agent has no GitHub identity |
 | `github_login` | optional | Display-only label (GitHub usernames rename, so they are never a matching key — DL-002). A stale label fires a one-line drift warning |
 
@@ -322,7 +352,7 @@ Both filters happen **before** `inbox.jsonl` writes. Consumers do not need to re
 | `webhook_events` DB schema | `EXPECTED_SCHEMA_VERSION` in the migration set | Bumps on column add/remove/rename or constraint change. Internal; consumers tail JSONL, not the DB. |
 | Event-schema (Intent) | `v1` (per `$id` URI path) | Bumps on non-additive change. v2 would live at `docs/v2/event-schema.json`; v1 stays at current path. |
 | ReactionTarget schema | `v1` (per `$id` URI path) | Same policy. |
-| Agent registry | per-agent YAML `identity` blocks + optional `shared-identities.json` | Not a versioned wire surface — operator config. Recognition keys on immutable numeric ids (`kanban_user_id` / `github_user_id`); `github_login` is a display-only label (DL-002). Consumers tail `inbox.jsonl`, not the registry. |
+| Agent registry | per-agent YAML `identity` blocks + optional `shared-identities.json` | Not a versioned wire surface — operator config. Recognition keys on immutable numeric ids (the roster's kanban user id / `github_user_id`); `github_login` is a display-only label (DL-002). Consumers tail `inbox.jsonl`, not the registry. |
 
 Pin to the schema version you built against. Fail-soft (warn + skip) on intents whose `schema_version` doesn't match.
 

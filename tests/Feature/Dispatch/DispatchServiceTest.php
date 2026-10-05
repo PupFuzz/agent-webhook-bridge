@@ -30,6 +30,7 @@ use Tests\Fixtures\RecordingHandler;
 use Tests\Fixtures\SameKeyDistinctHandlersClassifier;
 use Tests\Fixtures\ThrowingClassifier;
 use Tests\Fixtures\UnknownHandlerClassifier;
+use Tests\Support\CoordRosterFixture;
 use Tests\TestCase;
 
 class DispatchServiceTest extends TestCase
@@ -37,6 +38,9 @@ class DispatchServiceTest extends TestCase
     use RefreshDatabase;
 
     private string $dir;
+
+    /** @var array<string, int> roster seat => kanban user id, for the agents given one */
+    private array $rosterSeats = [];
 
     protected function setUp(): void
     {
@@ -62,11 +66,12 @@ class DispatchServiceTest extends TestCase
      */
     private function writeAgent(string $name, string $classifierClass, array $treatAsEchoIds = [], array $treatAsSignal = [], ?int $kanbanUserId = null, array $scopes = [5]): void
     {
-        $yaml = '';
+        // The agent's kanban user id is its coord roster seat's (DL-450), never a YAML key.
         if ($kanbanUserId !== null) {
-            $yaml .= "identity:\n  kanban_user_id: {$kanbanUserId}\n";
+            $this->rosterSeats[$name] = $kanbanUserId;
+            CoordRosterFixture::configure($this->dir.'/coord', $this->rosterSeats);
         }
-        $yaml .= 'subscriptions:'."\n  - provider: kanban\n    scopes: [".implode(', ', $scopes)."]\n"
+        $yaml = 'subscriptions:'."\n  - provider: kanban\n    scopes: [".implode(', ', $scopes)."]\n"
             // Single-quoted YAML treats backslashes literally, so the FQCN's
             // single backslashes are written as-is (no escaping).
             ."classifier:\n  class: '".$classifierClass."'\n"
@@ -139,7 +144,7 @@ class DispatchServiceTest extends TestCase
     {
         // peer-agent exists so the allowlist name is valid (unknown names are
         // fail-closed) but subscribes to a different scope, so only prod-agent
-        // dispatches here. actor 137 → prod-agent (its kanban_user_id), not in
+        // dispatches here. actor 137 → prod-agent (its roster kanban user id), not in
         // the [peer-agent] allowlist → filtered, done, no classify.
         $this->writeAgent('peer-agent', LogIntentClassifier::class, scopes: [99]);
         $this->writeAgent('prod-agent', ThrowingClassifier::class, treatAsSignal: ['peer-agent'], kanbanUserId: 137);

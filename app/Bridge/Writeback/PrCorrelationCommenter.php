@@ -43,10 +43,11 @@ use Throwable;
  * `post_unconfirmed`: owed, never `posted`. A body the client cannot read reads as unconfirmed, and
  * costs the repair one dedupe read that then finds the comment.
  *
- * ⛔ ONE POSTING IDENTITY ON EVERY PATH. The token is the receiver's placed file and nothing else
- * ({@see GitHubTokenResolver::resolveFromFile()}). `bridge:replay` runs these handlers from a shell,
- * where the credential store and `GH_TOKEN` would otherwise resolve, and a comment posted from there
- * would carry an identity the receiver never uses. With no readable file, nothing posts.
+ * ⛔ ONE POSTING IDENTITY ON EVERY PATH. The token is the repo's, from the receiver's sources only
+ * ({@see GitHubTokenResolver::resolveFor()} without `GH_TOKEN`: the repo's `write_token_path`, the
+ * coord credential store read in-process, the single file — DL-456). `bridge:replay` runs these
+ * handlers from a shell, where `GH_TOKEN` would otherwise resolve, and a comment posted from there
+ * would carry an identity the receiver never uses. With no token for the repo, nothing posts.
  *
  * ⭐ THE DEDUPE IS A READ OF THE PULL REQUEST ITSELF, not a row of ours: a comment STARTING WITH the
  * marker is looked for before posting. That keeps the record where the harm is, needs no migration,
@@ -58,7 +59,7 @@ use Throwable;
  * cannot establish absence, NOTHING is posted — a missed comment is logged, a duplicate would repeat
  * on every delivery.
  */
-final class PrCorrelationCommenter
+final class PrCorrelationCommenter implements GitHubTokenFileConsumer
 {
     /**
      * Per request to GitHub. One attempt makes at most `GitHubReadClient::COMMENT_PAGE_LIMIT` GETs and
@@ -108,6 +109,22 @@ final class PrCorrelationCommenter
     public function __construct(private readonly GitHubTokenResolver $tokens = new GitHubTokenResolver)
     {
         $this->attempted = new OncePerKey;
+    }
+
+    public static function fileTokenLeg(): string
+    {
+        return 'PR correlation comments (DL-390)';
+    }
+
+    /** Every mapped repo: the comment has no switch of its own, it reports on the mapping's writeback. */
+    public static function fileTokenRepos(?WritebackConfig $writeback): array
+    {
+        return array_map(strval(...), array_keys($writeback === null ? [] : $writeback->mappings));
+    }
+
+    public static function fileTokenWrites(): bool
+    {
+        return true;
     }
 
     /**
@@ -213,6 +230,14 @@ final class PrCorrelationCommenter
 
     private function attempt(string $repo, int $number, string $outcome, string $body, ?string $cause): GitHubWriteAttempt
     {
+        // Narrowed here, not left to the caller: the comment is the write whoever asks for it
+        // (the move handler, the comment handler, `bridge:github-owed`), and the record and read
+        // rows written on its way are about it, not about the caller's move.
+        return BoardMoverScope::forOp(WriteOp::Comment, fn (): GitHubWriteAttempt => $this->attemptInScope($repo, $number, $outcome, $body, $cause));
+    }
+
+    private function attemptInScope(string $repo, int $number, string $outcome, string $body, ?string $cause): GitHubWriteAttempt
+    {
         $context = ['repo' => $repo, 'pr' => $number, 'outcome' => $outcome, 'cause' => $cause];
         try {
             return $this->post($repo, $number, $outcome, $body, $context);
@@ -231,6 +256,9 @@ final class PrCorrelationCommenter
     {
         Log::warning('pr_correlation_comment: NOT posted — an unexpected failure; the writeback outcome is unchanged', [
             'catalog_id' => 'pr_correlation_comment.unexpected_failure',
+            'handler' => BoardMoverScope::handler(),
+            'webhook_event_id' => BoardMoverScope::webhookEventId(),
+            'op' => 'comment',
         ] + $context + ['reason' => self::REASON_UNEXPECTED, 'error' => RedactedErrorText::of($e)]);
     }
 
@@ -256,9 +284,9 @@ final class PrCorrelationCommenter
             return new GitHubWriteAttempt(self::DEDUPED, landed: false, owed: self::retriable(self::DEDUPED, null));
         }
 
-        $resolution = $this->tokens->resolveFromFile();
+        $resolution = $this->tokens->resolveFor($repo);
         if (! $resolution->ok()) {
-            Log::warning('pr_correlation_comment: NOT posted — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — no GitHub token resolves for this repo (its write_token_path, the coord credential store, then the single token file — never GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_TOKEN_UNRESOLVED, 'problem' => $resolution->problem,
             ]);
 
@@ -269,27 +297,27 @@ final class PrCorrelationCommenter
         try {
             $present = (new GitHubReadClient($token, self::TIMEOUT_SECONDS))->hasIssueCommentStartingWith($repo, $number, $marker);
         } catch (RequestException $e) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the read of this pull request\'s comments with an HTTP error, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_http_error'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the read of this pull request\'s comments with an HTTP error, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_http_error', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_DEDUPE_READ_REFUSED, 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_DEDUPE_READ_REFUSED, $e->response->status());
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — the read of this pull request\'s comments failed, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_failed'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — the read of this pull request\'s comments failed, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_failed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_DEDUPE_READ_FAILED, 'error' => RedactedErrorText::of($e),
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_DEDUPE_READ_FAILED, null);
         }
         if ($present === null) {
-            Log::warning('pr_correlation_comment: NOT posted — this pull request\'s comments could not be read to the end, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_incomplete'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — this pull request\'s comments could not be read to the end, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_incomplete', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_DEDUPE_READ_INCOMPLETE,
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_DEDUPE_READ_INCOMPLETE, null);
         }
         if ($present) {
-            Log::info('pr_correlation_comment: already on the pull request for this outcome; not posted again', ['catalog_id' => 'pr_correlation_comment.already_posted'] + $context);
+            Log::info('pr_correlation_comment: already on the pull request for this outcome; not posted again', ['catalog_id' => 'pr_correlation_comment.already_posted', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context);
 
             return $this->settled($repo, $number, $outcome, $body, self::ALREADY_POSTED, null);
         }
@@ -297,26 +325,26 @@ final class PrCorrelationCommenter
         try {
             $answered = (new GitHubWriteClient($token, self::TIMEOUT_SECONDS))->createIssueComment($repo, $number, $body);
         } catch (RequestException $e) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the comment with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried in this run, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_http_error'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the comment with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried in this run, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_http_error', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_POST_REFUSED, 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_POST_REFUSED, $e->response->status());
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — the comment could not be sent to GitHub; not retried in this run, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_failed'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — the comment could not be sent to GitHub; not retried in this run, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_failed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_POST_FAILED, 'error' => RedactedErrorText::of($e),
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_POST_FAILED, null);
         }
         if ($answered === null || ! str_starts_with($answered, $marker)) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub ACCEPTED the comment and its answer does not carry it, so the post is not confirmed; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_unconfirmed'] + $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub ACCEPTED the comment and its answer does not carry it, so the post is not confirmed; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_unconfirmed', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_POST_UNCONFIRMED,
             ]);
 
             return $this->settled($repo, $number, $outcome, $body, self::REASON_POST_UNCONFIRMED, null);
         }
-        Log::info('pr_correlation_comment: posted', ['catalog_id' => 'pr_correlation_comment.posted'] + $context);
+        Log::info('pr_correlation_comment: posted', ['catalog_id' => 'pr_correlation_comment.posted', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context);
 
         return $this->settled($repo, $number, $outcome, $body, self::POSTED, null);
     }

@@ -62,19 +62,20 @@ return [
         'github' => [
             'api_base_url' => env('BRIDGE_GITHUB_API_BASE_URL', 'https://api.github.com'),
             // Optional explicit path to the GitHub read token (DL-184). Absent →
-            // the conventional <secret_dir>/github/token, with an ambient
-            // GH_TOKEN fallback. Set this to reuse a centralized credential
+            // the conventional <secret_dir>/github/token, with a GH_TOKEN fallback
+            // for the CLI's resolveForCli() alone. Set this to reuse a centralized credential
             // (e.g. ~/.config/coord/github-pat) without a per-install symlink;
             // when set it is AUTHORITATIVE (no GH_TOKEN fallback) so a wrong path
             // fails loud instead of silently resolving a different credential.
+            // Since DL-456 it is the LAST configured leg: a repo the coord credential
+            // store maps (coord_credentials_path below) or that declares a
+            // write_token_path in writeback.json never reads it.
             'token_path' => env('BRIDGE_GITHUB_TOKEN_PATH'),
-            // Store-native resolution (DL-185): when no explicit token file is
-            // placed, bridge:reconcile resolves a per-repo least-privilege PAT from
-            // the coordination store via this helper (git wire-format on
-            // stdin/stdout), keyed on the store's [git-credential-map]. Default is
-            // the framework helper name (PATH-resolved); an absolute path is used
-            // as-is; empty disables the store leg (falls back to GH_TOKEN).
-            'credential_helper' => env('BRIDGE_GITHUB_CREDENTIAL_HELPER', 'git-credential-coord'),
+            // ⛔ RETIRED (DL-456): `BRIDGE_GITHUB_CREDENTIAL_HELPER` ran the framework's helper for
+            // bridge:reconcile and nothing reads it now. Declared (null when unset, '' when set to
+            // empty — which used to keep the store out) only so bridge:check can say a set value
+            // has no effect and the store is read regardless.
+            'credential_helper' => env('BRIDGE_GITHUB_CREDENTIAL_HELPER'),
         ],
     ],
 
@@ -97,35 +98,59 @@ return [
     */
     'writeback' => [
         'correlation' => env('BRIDGE_WRITEBACK_CORRELATION', 'ref'),
-
-        /*
-        | The coordination project's coordination.config.json (DL-200). Read ONLY by
-        | `bridge:check`, to compare the OTHER mover's terminal_columns against this
-        | bridge's coord_card_terminal_stage_id — the cross-config compare that makes
-        | the move leg's config legitimate.
-        |
-        | CLI-ONLY, DELIBERATELY. Falls back to the ambient $COORD_CONFIG, which exists in
-        | an operator's shell but NOT in the PHP-FPM environment the receiver runs under.
-        | Nothing on the request path may read this: a synchronous webhook coupled to a
-        | file that isn't there at runtime fails silently in the one process nobody
-        | watches. Absent ⇒ the check reports CANNOT-VERIFY; it never fails the bridge.
-        |
-        | Two installs on one host (-prod / -dev) share ONE ambient $COORD_CONFIG, so
-        | this per-install override in that install's .env is what lets them point at
-        | different coordination projects.
-        |
-        | ⚠ The ambient $COORD_CONFIG is DELIBERATELY NOT read here. `php artisan
-        | optimize` (the documented deploy step, CLAUDE_DEPLOYMENT.md) caches this file,
-        | which FREEZES every env() at cache-build time — and the frozen value then wins
-        | over the live one. An ambient $COORD_CONFIG baked in here would resolve to
-        | whatever the DEPLOYING shell had (usually nothing), permanently, and the
-        | cross-config compare would report CANNOT-VERIFY forever: shipped, running, and
-        | inert — the exact failure this preflight exists to prevent. So the ambient
-        | fallback is read at the CLI read-site via getenv() (see CheckCommand), which is
-        | cache-immune and legitimate precisely because that read-site is CLI-only.
-        */
-        'coord_config_path' => env('BRIDGE_COORD_CONFIG_PATH'),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | The coordination project's coordination.config.json (DL-200, DL-450)
+    |--------------------------------------------------------------------------
+    |
+    | An ABSOLUTE path, set per install in .env. REQUIRED since card#11172 / DL-450:
+    | the coord roster in this file is the ONE store of each agent's kanban user id,
+    | and the bridge reads it AT RUNTIME — `board_take_card` (and its start form)
+    | writes the calling seat's id from it, `board_correct_card` compares against it,
+    | and every kanban event is attributed and echo-suppressed by it. Unset, or
+    | unreadable by the PHP-FPM user, the take refuses as a named install fault and a
+    | kanban delivery that needs attribution answers 5xx; `bridge:check` FAILs on an
+    | unset or relative value. App\Bridge\Support\CoordConfigFile is the one reader.
+    |
+    | ⚠ THE RUNTIME READS THIS SETTING ONLY. The ambient $COORD_CONFIG is not read
+    | here and never reaches the receiver: PHP-FPM does not inherit it, and
+    | `php artisan optimize` would freeze whatever the DEPLOYING shell had. The
+    | `bridge:check` cross-config compares of the writeback legs still fall back to
+    | the ambient variable at their CLI read-site (CoordConfigPath), which is
+    | cache-immune; the roster leg does not, because it measures what the runtime reads.
+    |
+    | Two installs on one host (-prod / -dev) set it separately, which is what lets
+    | them point at different coordination projects.
+    |
+    */
+
+    'coord_config_path' => env('BRIDGE_COORD_CONFIG_PATH'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | The coord credential store (DL-456, card#11208)
+    |--------------------------------------------------------------------------
+    | The coordination framework's `credentials.ini`. The bridge reads two of its
+    | sections IN-PROCESS — `[git-credential-map]` (repo -> key) and
+    | `[github] <key>_file` (key -> a token file) — to pick each repo's GitHub
+    | token, under PHP-FPM and the CLI alike. No helper subprocess is run and no
+    | token is copied: the bridge reads the file the store points at.
+    |
+    | Unset ⇒ `credentials.ini` beside BRIDGE_COORD_CONFIG_PATH, which is where
+    | the framework keeps both. Must be ABSOLUTE, for the reason the roster path
+    | must (DL-450 Decision 1). The ambient $COORD_CREDENTIALS is never read: FPM
+    | does not inherit it, and a CLI-only answer would let bridge:check vouch for a
+    | store the receiver does not read.
+    |
+    | A store that is absent is an EMPTY store (every repo unmapped). A store that
+    | is present and cannot be read or parsed resolves NO token for any repo — it
+    | may map the repo, and the single token file must never stand in for a
+    | mapped repo's own token.
+    */
+
+    'coord_credentials_path' => env('BRIDGE_COORD_CREDENTIALS_PATH'),
 
     /*
     |--------------------------------------------------------------------------
@@ -430,6 +455,41 @@ return [
 
     'board_tools' => [
         'client_half_ttl' => (int) env('BRIDGE_BOARD_TOOLS_CLIENT_HALF_TTL', 7 * 86400),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | CI awaits — the `ci_settled` wake (card#11200 / DL-452)
+    |--------------------------------------------------------------------------
+    |
+    | ttl — how long a seat's `ci_await` registration lives before the bridge
+    | gives up on it and emits `ci_await_expired`, in seconds (default 6 h,
+    | 60..604800). Re-registering the same head restarts it.
+    |
+    | max_per_seat — how many heads one seat may await at once (default 50,
+    | 1..10000); a NEW await past it is refused `too_many_awaits`.
+    |
+    | read_cooldown — a registration skips its own runs read when a read of the
+    | same head ANSWERED within this many seconds (default 60, 0..3600; 0
+    | always reads). A cost knob only: an await skipped by it is read by the
+    | sweep like any other.
+    |
+    | sweep_reads — how many heads one `ci-await-sweep` pass may read,
+    | install-wide (default 10, 1..100). The sweep reads a head whose oldest
+    | read is at least one sweep interval old, oldest first, so its GitHub cost
+    | is at most sweep_reads × 3600 / the sweep's interval head reads per hour.
+    |
+    | A value outside its range is REFUSED, not clamped: `ci_await` refuses as
+    | `install_fault.ci_await_config_invalid` and `bridge:check`
+    | (`ci_await.awaits`) fails, naming the key and the value.
+    |
+    */
+
+    'ci_await' => [
+        'ttl' => env('BRIDGE_CI_AWAIT_TTL', 21600),
+        'max_per_seat' => env('BRIDGE_CI_AWAIT_MAX_PER_SEAT', 50),
+        'read_cooldown' => env('BRIDGE_CI_AWAIT_READ_COOLDOWN', 60),
+        'sweep_reads' => env('BRIDGE_CI_AWAIT_SWEEP_READS', 10),
     ],
 
     /*

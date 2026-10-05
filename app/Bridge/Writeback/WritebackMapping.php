@@ -163,6 +163,12 @@ final class WritebackMapping
      *                                                                                                                                   relationship to board 13's stage 22 — which is
      *                                                                                                                                   why a per-board stage map is required rather
      *                                                                                                                                   than a bare list of board ids.
+     * @param  ?string  $writeTokenPath  optional (card#11208 / DL-456): the ABSOLUTE path of a token
+     *                                   FILE this repo's GitHub requests use ahead of the coord
+     *                                   credential store and the single token file — for a repo whose
+     *                                   store key is deliberately read-only. A path, never a token;
+     *                                   `GitHubTokenResolver` owns the precedence. null ⇒ the store,
+     *                                   then the single file.
      */
     public function __construct(
         public readonly int $boardId,
@@ -184,6 +190,7 @@ final class WritebackMapping
         public readonly string $issuePopulation = self::POPULATION_PREFIXED,
         public readonly ?array $coordCardLaneStageIds = null,
         public readonly ?array $boards = null,
+        public readonly ?string $writeTokenPath = null,
     ) {
         $this->mappedBoardId = $boardId;
     }

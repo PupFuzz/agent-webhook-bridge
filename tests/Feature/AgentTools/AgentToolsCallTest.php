@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
+use Tests\Support\CoordRosterFixture;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\Support\KanbanBoardStatus;
 use Tests\Support\KanbanSearchSim;
@@ -42,6 +43,16 @@ class AgentToolsCallTest extends TestCase
     use RefreshDatabase;
 
     private string $dir;
+
+    /** @var array<string, int|null> roster seat => kanban user id (null: a seat with no id) — DL-450 */
+    private array $rosterSeats = [];
+
+    /** Give $seat the kanban user $id (null: none) in the coord roster, the one place it is read from. */
+    private function seat(string $seat, ?int $id): void
+    {
+        $this->rosterSeats[$seat] = $id;
+        CoordRosterFixture::configure($this->dir.'/coord', $this->rosterSeats);
+    }
 
     private string $token = 'tools-bearer-abc123';   // gitleaks:allow — test fixture
 
@@ -81,7 +92,8 @@ class AgentToolsCallTest extends TestCase
         $tokenFile = $this->dir."/{$name}-tools-token";
         $this->writeSecret($tokenFile, $tokenValue);
 
-        $yaml = "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\nboard_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: {$scope['board_id']}\n  swimlane_id: {$scope['swimlane_id']}\n  create_stage_id: {$scope['create_stage_id']}\n".($extra ?? '');
+        $this->seat($name, crc32($name));
+        $yaml = "subscriptions: []\nboard_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: {$scope['board_id']}\n  swimlane_id: {$scope['swimlane_id']}\n  create_stage_id: {$scope['create_stage_id']}\n".($extra ?? '');
         File::put($this->dir."/{$name}.yml", $yaml);
     }
 
@@ -355,7 +367,8 @@ class AgentToolsCallTest extends TestCase
         $channelTokenFile = $this->dir.'/you-channel-token';
         $channelToken = 'you-channel-token-value';   // gitleaks:allow — test fixture
         $this->writeSecret($channelTokenFile, $channelToken);
-        File::put($this->dir.'/you.yml', "identity:\n  kanban_user_id: ".crc32('you')."\nsubscriptions: []\n"
+        $this->seat('you', crc32('you'));
+        File::put($this->dir.'/you.yml', "subscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
             ."board_tools:\n  transport: http\n  board_id: 20\n  swimlane_id: 7\n  create_stage_id: 99\n");
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => []]), '*/boards/*/preload.json' => Http::response(['data' => ['swimlanes' => [['id' => 7]], 'workflows' => [['stages' => [['id' => 99, 'name' => 'Backlog', 'position' => 1]]]]]])]);
@@ -370,7 +383,8 @@ class AgentToolsCallTest extends TestCase
         // are excluded from the index and the shared value authenticates as neither.
         $channelTokenFile = $this->dir.'/you-channel-token';
         $this->writeSecret($channelTokenFile, $this->token);   // same value as agent A's alias
-        File::put($this->dir.'/you.yml', "identity:\n  kanban_user_id: ".crc32('you')."\nsubscriptions: []\n"
+        $this->seat('you', crc32('you'));
+        File::put($this->dir.'/you.yml', "subscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
             ."board_tools:\n  transport: http\n  board_id: 20\n  swimlane_id: 7\n  create_stage_id: 99\n");
         Http::fake();
@@ -385,7 +399,7 @@ class AgentToolsCallTest extends TestCase
         // `board_tools` block on ANY agent, the roster indexes zero tokens, so any
         // bearer resolves to no agent → 401 (and nothing is created). This is the
         // end-to-end no-op assertion for the fail-closed opt-in.
-        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
+        File::put($this->dir.'/me.yml', "subscriptions: []\n");
         Http::fake();
 
         $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']], bearer: $this->token)
@@ -1543,6 +1557,41 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringContainsString('membership of that board', (string) $res->json('error'));
         $this->assertNull($res->json('result'));
         $this->assertSame([], self::searchQueries(), 'refused before any search — the structure read is what refuses it');
+    }
+
+    // ---- the id-free legs never read the roster (round-1 ruling 5) ----
+    //
+    // The base TestCase is a CONFIGURED install, so a tool that quietly started depending on the
+    // roster would pass every other test here. These run the tools that need no kanban user id
+    // with BRIDGE_COORD_CONFIG_PATH UNSET — the state in which the roster cannot be read at all.
+
+    public function test_my_cards_answers_with_the_roster_setting_unset(): void
+    {
+        config(['bridge.coord_config_path' => null]);
+        $this->fakeMembershipBoard([], [10 => true]);
+
+        $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200);
+    }
+
+    public function test_comment_posts_with_the_roster_setting_unset(): void
+    {
+        config(['bridge.coord_config_path' => null]);
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()]));
+
+        $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'a note']])
+            ->assertStatus(200)->assertJsonPath('result.commented', true);
+    }
+
+    /** The minted arm of a correction never consults the assignee, so it needs no roster either. */
+    public function test_a_minted_correction_lands_with_the_roster_setting_unset(): void
+    {
+        config(['bridge.coord_config_path' => null]);
+        $live = [$this->ownCardRow()];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)->assertJsonPath('result.authorized_by', 'minted');
     }
 
     public function test_my_cards_answers_an_empty_readable_board_with_empty_windows(): void
@@ -3683,14 +3732,14 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
-     * ⛔ AN UNDECLARED `identity.kanban_user_id` TURNS THE ASSIGNEE ARM OFF — it is not a fault.
-     * The key is optional, and no card can be assigned to an identity that does not exist, so
+     * ⛔ A SEAT THE COORD ROSTER GIVES NO KANBAN USER ID HAS ITS ASSIGNEE ARM OFF — it is not a
+     * fault. No card can be assigned to an identity that does not exist, so
      * every card this seat did not mint answers the ORDINARY not-yours refusal, byte for byte:
      * a live unminted card, an archived unminted card and a card that does not exist are one
      * response, and it is the same response a declared-id seat gets for somebody else's card.
      * The minted arm is untouched.
      */
-    public function test_an_undeclared_kanban_user_id_turns_the_assignee_arm_off_and_answers_the_ordinary_not_yours_bytes(): void
+    public function test_a_seat_with_no_roster_kanban_user_id_has_the_assignee_arm_off_and_answers_the_ordinary_not_yours_bytes(): void
     {
         $live = [$this->assignedCardRow($this->myKanbanUserId() + 1)];
         $archived = [];
@@ -3701,8 +3750,7 @@ class AgentToolsCallTest extends TestCase
         $ordinary->assertStatus(422);
         $this->assertStringContainsString('not one of yours', (string) $ordinary->json('error'));
 
-        $tokenFile = $this->dir.'/me-tools-token';
-        File::put($this->dir.'/me.yml', "identity: {}\nsubscriptions: []\nboard_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+        $this->seat('me', null);
 
         $live = [$this->ownCardRow()];
         $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
@@ -3734,16 +3782,17 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
-     * ⛔ A `kanban_user_id` two agents declare does not identify the caller, so it authorizes
+     * ⛔ A kanban user id the roster gives two seats does not identify the caller, so it authorizes
      * NOTHING by assignment — otherwise the twin seat could correct every card assigned to the
      * shared user. That IS an install fault and is named as one, but: (1) the minted arm never
      * reaches the resolver, so a minted card is still corrected; and (2) the fault is raised on
      * every not-yours path, so a live unminted card, an archived one and a missing one answer the
      * same bytes — the install fault is no existence oracle.
      */
-    public function test_a_shared_kanban_user_id_is_an_install_fault_that_neither_blocks_the_minted_arm_nor_discloses_a_card(): void
+    public function test_a_kanban_user_id_two_seats_share_is_an_install_fault_that_neither_blocks_the_minted_arm_nor_discloses_a_card(): void
     {
-        File::put($this->dir.'/twin.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
+        File::put($this->dir.'/twin.yml', "subscriptions: []\n");
+        $this->seat('twin', crc32('me'));
         $live = [$this->ownCardRow()];
         $archived = [];
         $this->switchableCorrectFake($live, $archived);
@@ -3755,7 +3804,7 @@ class AgentToolsCallTest extends TestCase
         $live = [$this->assignedCardRow($this->myKanbanUserId())];
         $liveAssigned = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
         $liveAssigned->assertStatus(422);
-        $this->assertStringContainsString('MORE THAN ONE agent', (string) $liveAssigned->json('error'));
+        $this->assertStringContainsString("AND to seat 'twin'", (string) $liveAssigned->json('error'));
 
         $live = [];
         $archived = [$this->assignedCardRow($this->myKanbanUserId() + 1)];
@@ -3774,6 +3823,27 @@ class AgentToolsCallTest extends TestCase
             return false;
         });
         $this->assertSame(1, $patches, 'only the minted correction wrote');
+    }
+
+    /**
+     * Round 2 M1: `identity.peer_kanban_user_id` is attribution only. A seat that is NO seat of
+     * this roster and declares a peer id equal to a card's assignee gets NO assignee authority —
+     * pinned at the door, so a later split of `SeatKanbanUser::lookup()` cannot start reading it.
+     */
+    public function test_a_peer_id_equal_to_the_assignee_grants_no_correction_authority(): void
+    {
+        $this->writeAgent('me', $this->token, ['board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55], "identity:\n  peer_kanban_user_id: 815\n");
+        unset($this->rosterSeats['me']);
+        $this->seat('somebody-else', 4);
+        $live = [$this->assignedCardRow(815)];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('not one of yours', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
     }
 
     /**
@@ -4768,43 +4838,42 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
-     * ⭐ THE IDENTITY IS RESOLVED FROM THE ROSTER, SO A ROSTER THAT DECLARES NO
-     * `identity.kanban_user_id` HAS NO ID FOR THIS SEAT — and that is an INSTALL fault named
-     * as one, reported BEFORE any board request, not a 500 and not a write of null.
+     * ⭐ THE IDENTITY IS RESOLVED FROM THE COORD ROSTER (DL-450), SO A SEAT THE ROSTER GIVES NO
+     * KANBAN USER ID HAS NO ID — and that is an INSTALL fault named as one, reported BEFORE any
+     * board request, not a 500 and not a write of null.
      */
-    public function test_take_refuses_when_this_agent_declares_no_kanban_user_id(): void
+    public function test_take_refuses_when_the_roster_gives_this_seat_no_kanban_user_id(): void
     {
-        $tokenFile = $this->dir.'/me-tools-token';
-        File::put($this->dir.'/me.yml', "identity: {}\nsubscriptions: []\nboard_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+        $this->seat('me', null);
         Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
 
         $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
 
-        $res->assertStatus(422);
+        $res->assertStatus(422)->assertJsonPath('reason', 'install_fault.no_kanban_user');
         $error = (string) $res->json('error');
-        $this->assertStringContainsString('identity.kanban_user_id', $error);
+        $this->assertStringContainsString("gives seat 'me' no kanban user id", $error);
         $this->assertStringContainsString('INSTALL fault', $error);
         Http::assertNothingSent();
     }
 
     /**
-     * ⛔ THE SAME FAULT FROM THE DOOR: a `kanban_user_id` two agents declare is refused BEFORE
+     * ⛔ THE SAME FAULT FROM THE DOOR: a kanban user id the roster gives two seats is refused BEFORE
      * any board request. `assigned_user_id` names a kanban USER, not a seat — so under a
      * shared id this seat would be told it holds a card the OTHER seat is working
      * (`already_held: true`, 200, nothing written), which is the collision the tool exists to
      * surface being reported as its own success.
      */
-    public function test_take_refuses_when_two_agents_declare_this_seat_s_kanban_user_id(): void
+    public function test_take_refuses_when_the_roster_gives_this_seat_s_kanban_user_id_to_another_seat(): void
     {
-        File::put($this->dir.'/twin.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
+        File::put($this->dir.'/twin.yml', "subscriptions: []\n");
+        $this->seat('twin', crc32('me'));
         Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
 
         $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
 
-        $res->assertStatus(422);
+        $res->assertStatus(422)->assertJsonPath('reason', 'install_fault.shared_kanban_user');
         $error = (string) $res->json('error');
-        $this->assertStringContainsString('MORE THAN ONE agent', $error);
-        $this->assertStringContainsString('me, twin', $error, 'the colliding agents are NAMED — an operator cannot fix a collision it has to go and find');
+        $this->assertStringContainsString("to seat 'me' (yours) AND to seat 'twin'", $error, 'the colliding seats are NAMED — an operator cannot fix a collision it has to go and find');
         $this->assertStringContainsString('INSTALL fault', $error);
         Http::assertNothingSent();
     }
@@ -4939,7 +5008,7 @@ class AgentToolsCallTest extends TestCase
         return [
             '404 — the card went between the check and the write' => [404, 'no longer exists'],
             '401 — the token is not accepted at all' => [401, 'did not accept the bridge\'s writeback token'],
-            '422 — the board refused a value in the write' => [422, 'identity.kanban_user_id'],
+            '422 — the board refused a value in the write' => [422, 'the id the roster gives your seat'],
         ];
     }
 
@@ -5462,7 +5531,7 @@ class AgentToolsCallTest extends TestCase
             'HTTP_AUTHORIZATION' => 'Bearer '.$this->token,
         ], $body)
             ->assertStatus(422)
-            ->assertExactJson(['ok' => false, 'error' => 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?, caller?, launch?}']);
+            ->assertExactJson(['ok' => false, 'error' => 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?, caller?, launch?}', 'reason' => 'bad_request']);
         Http::assertNothingSent();
     }
 
@@ -5518,7 +5587,7 @@ class AgentToolsCallTest extends TestCase
         ], $body)->assertStatus($status);
 
         if ($error !== null) {
-            $response->assertExactJson(['ok' => false, 'error' => $error]);
+            $response->assertExactJson(['ok' => false, 'error' => $error, 'reason' => 'bad_request']);
             Http::assertNothingSent();
 
             return;
@@ -5590,8 +5659,66 @@ class AgentToolsCallTest extends TestCase
                 'args' => ['tags_any' => ['a', 'b'], 'stage' => [50], 'include_archived' => true, 'lane' => 'mine', 'name_contains' => 'c', 'updated_since' => '2026-09-01', 'fields' => ['id', 'stage'], 'limit' => 5],
                 'fake' => $this->searchFake(),
             ],
+            'ci_await' => $this->ciAwaitFixture(['repo' => self::CI_REPO, 'head_sha' => str_repeat('a', 40), 'pr' => 3]),
+            'ci_await_cancel' => $this->ciAwaitFixture(['repo' => self::CI_REPO, 'head_sha' => str_repeat('a', 40)]),
             default => $this->fail("no undeclared-key fixture for the registered tool `{$tool}` — add one, so its refusal is covered"),
         };
+    }
+
+    /**
+     * The tools whose path reaches NO board (card#11200 / DL-452): `ci_await` reads GitHub's run
+     * list and `ci_await_cancel` reads nothing upstream. The door-wide arms that are about the
+     * BOARD's answers — {@see test_a_board_call_that_gets_no_answer_is_the_retryable_502_on_every_upstream_call}
+     * and the 422 relay — have nothing to walk on them, so their population leaves these out;
+     * {@see test_a_boardless_tool_sends_no_board_request} is what keeps a tool on this list from
+     * being one that does reach the board. A failed GitHub read is not a 502 here: it is
+     * `state: unmeasured` (docs/board-tools.md § `ci_await` and `ci_await_cancel`).
+     *
+     * @var list<string>
+     */
+    public const BOARDLESS_TOOLS = ['ci_await', 'ci_await_cancel'];
+
+    private const CI_REPO = 'octo/widgets';
+
+    /**
+     * A repo this install receives GitHub events for (another agent subscribes to it), a GitHub
+     * read token, and a run list with one run still going, so `ci_await` answers `waiting`.
+     *
+     * @param  array<string, mixed>  $args
+     * @return array{args: array<string, mixed>, fake: \Closure}
+     */
+    private function ciAwaitFixture(array $args): array
+    {
+        File::put($this->dir.'/gh-subscriber.yml', "subscriptions:\n  - provider: github\n    scopes: [".self::CI_REPO."]\n");
+        File::ensureDirectoryExists($this->dir.'/github');
+        $this->writeSecret($this->dir.'/github/token', 'gh-read-token');   // gitleaks:allow — test fixture
+
+        return [
+            'args' => $args,
+            'fake' => fn ($request) => str_contains($request->url(), 'api.github.com/repos/'.self::CI_REPO.'/actions/runs')
+                ? Http::response(['total_count' => 1, 'workflow_runs' => [['name' => 'CI', 'status' => 'in_progress', 'conclusion' => null, 'html_url' => 'https://github.com/x', 'event' => 'push']]])
+                : Http::response(['message' => 'a board-less tool reached '.$request->url()], 500),
+        ];
+    }
+
+    #[DataProvider('boardlessTools')]
+    public function test_a_boardless_tool_sends_no_board_request(string $tool): void
+    {
+        $fixture = $this->undeclaredKeyFixture($tool);
+        Http::fake($fixture['fake']);
+
+        $this->callTool(['tool' => $tool, 'args' => $fixture['args']])->assertStatus(200)->assertJsonPath('ok', true);
+
+        $this->assertSame([], array_values(array_filter(
+            array_map(fn (array $pair): string => $pair[0]->url(), Http::recorded()->all()),
+            fn (string $url): bool => str_contains($url, 'kanban.example.com'),
+        )), "{$tool} is listed as board-less and sent a board request");
+    }
+
+    /** @return array<string, array{string}> */
+    public static function boardlessTools(): array
+    {
+        return array_combine(self::BOARDLESS_TOOLS, array_map(fn (string $t): array => [$t], self::BOARDLESS_TOOLS));
     }
 
     /**
@@ -5648,7 +5775,10 @@ class AgentToolsCallTest extends TestCase
         Http::fake($fixture['fake']);
 
         $this->callTool(['tool' => $tool, 'args' => $fixture['args']])->assertStatus(200);
-        $this->assertNotEmpty(Http::recorded(), 'the call succeeded without reaching the board, so it witnessed nothing');
+        if ($tool !== 'ci_await_cancel') {
+            // ci_await_cancel sends no request at all: a 200 is its whole witness.
+            $this->assertNotEmpty(Http::recorded(), 'the call succeeded without reaching the board, so it witnessed nothing');
+        }
     }
 
     #[DataProvider('registeredTools')]
@@ -5715,7 +5845,7 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringContainsString('`assignee` is not an argument here, and it never will be', $error);
         $this->assertStringContainsString('from the bridge identity your call authenticated as', $error);
         $this->assertStringContainsString('Unknown argument `owner` — the assignee is resolved from your bridge identity, never from your arguments.', $error);
-        $this->assertStringContainsString('This tool accepts: `card_id`.', $error);
+        $this->assertStringContainsString('This tool accepts: `card_id`, `start`.', $error);
     }
 
     /**
@@ -5731,7 +5861,7 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
         $res->assertStatus(422);
         $this->assertSame(
-            'board_take_card: unknown argument `assigned_to` — the assignee is resolved from your bridge identity, never from your arguments. This tool accepts: `card_id`. Nothing was sent to the board — no card was read or written.',
+            'board_take_card: unknown argument `assigned_to` — the assignee is resolved from your bridge identity, never from your arguments. This tool accepts: `card_id`, `start`. Nothing was sent to the board — no card was read or written.',
             $res->json('error'),
         );
     }
@@ -5739,8 +5869,9 @@ class AgentToolsCallTest extends TestCase
     // ─── a board call that gets NO answer (DL-387) ────────────────────────────
 
     /**
-     * What the no-answer arm below walks: every registered tool's success path — the fixture
-     * {@see undeclaredKeyFixture} already owns, so a tool added later is in it — plus a named
+     * What the no-answer arm below walks: every registered tool's success path except the
+     * {@see BOARDLESS_TOOLS}, which reach no board — the fixture {@see undeclaredKeyFixture} already
+     * owns, so a tool added later is in it — plus a named
      * scenario for each branch that path never sends a request down.
      *
      * @return array<string, array{string}>
@@ -5762,7 +5893,7 @@ class AgentToolsCallTest extends TestCase
             $extra[$scenario] = [$scenario];
         }
 
-        return self::registeredTools() + $extra;
+        return array_diff_key(self::registeredTools(), array_flip(self::BOARDLESS_TOOLS)) + $extra;
     }
 
     /**

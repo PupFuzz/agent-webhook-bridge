@@ -177,10 +177,19 @@ final class KanbanClient
         $this->http()->patch("/tasks/{$cardId}.json", $fields)->throw();
     }
 
-    /** Move the card to a workflow stage (column-only; never touches payload/other fields). */
-    public function moveCard(int $cardId, int $stageId): void
+    /**
+     * Move the card to a workflow stage — column-only, never touching payload or any other field,
+     * unless $assignTo is given: then the SAME PATCH also sets `assigned_user_id` (card#11150 /
+     * DL-449), which kanban applies with the move in one transaction, so the card is never moved
+     * but unowned. ⚠ That mixed write is authorized as `task.update`, not `task.move` (kanban
+     * DL-204: anything beside `workflow_stage_id` is an update), so a role that may move cards
+     * but not edit them is refused it. Every column change of an existing card is a call to this
+     * method, which is what keeps the pin and `program`-parent censuses (keyed on `moveCard(`)
+     * complete.
+     */
+    public function moveCard(int $cardId, int $stageId, ?int $assignTo = null): void
     {
-        $this->patchCard($cardId, ['workflow_stage_id' => $stageId]);
+        $this->patchCard($cardId, ['workflow_stage_id' => $stageId] + ($assignTo === null ? [] : ['assigned_user_id' => $assignTo]));
     }
 
     /**
@@ -557,7 +566,7 @@ final class KanbanClient
         if ($shortfall === null) {
             return $walk;
         }
-        Log::info("writeback board read: the {$label} walk of board {$boardId} {$shortfall}; walking it once more, since a card leaving the part not yet read does this too", ['catalog_id' => 'kanban_client.board_read_rewalked', 'board_id' => $boardId, 'read' => $label]);
+        Log::info("writeback board read: the {$label} walk of board {$boardId} {$shortfall}; walking it once more, since a card leaving the part not yet read does this too", ['catalog_id' => 'kanban_client.board_read_rewalked', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'board_id' => $boardId, 'read' => $label]);
 
         [$walk, $shortfall] = $this->keyedWalk($boardId, $terms, $archivedOnly, $read);
         if ($shortfall === null) {
@@ -668,7 +677,7 @@ final class KanbanClient
     private static function refuseRead(int $boardId, string $read, string $why): never
     {
         $message = "writeback board read: the {$read} walk of board {$boardId} is refused — {$why}";
-        Log::warning($message, ['catalog_id' => 'kanban_client.board_read_refused', 'board_id' => $boardId, 'read' => $read]);
+        Log::warning($message, ['catalog_id' => 'kanban_client.board_read_refused', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'board_id' => $boardId, 'read' => $read]);
 
         throw new BoardReadRefused($message);
     }
@@ -956,6 +965,35 @@ final class KanbanClient
     }
 
     /**
+     * The writeback user's EFFECTIVE permissions on a board, as kanban reports them for the caller
+     * on the board resource (`data.permissions` of `GET /boards/{id}/preload.json` — kanban's
+     * `BoardResource`, resolved by `BoardPermissions::effectivePermissionsFor`, custom roles
+     * included), or null when the response carries no list of strings to read.
+     *
+     * ⚠ THE ROLE, AND ONLY THE ROLE. kanban answers a write 403 from three independent gates
+     * (the board-tools write refusal enumerates them); the token's own abilities (`read`/`write`)
+     * and the board's write gate (archived or trashed) are not in this list, so a caller reading
+     * it measures one gate of three and must say so.
+     *
+     * @return ?list<string>
+     */
+    public function boardPermissions(int $boardId): ?array
+    {
+        $permissions = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.permissions');
+        if (! is_array($permissions) || ! array_is_list($permissions)) {
+            return null;
+        }
+        foreach ($permissions as $permission) {
+            if (! is_string($permission)) {
+                return null;
+            }
+        }
+
+        /** @var list<string> $permissions */
+        return $permissions;
+    }
+
+    /**
      * Cheap board-visibility probe for `bridge:check` (DL-029): a single
      * `limit=1` search — answers "can this token see the board, and how big is
      * it?" without the full correlation read, independent of the correlation
@@ -1052,9 +1090,9 @@ final class KanbanClient
     {
         $read = $this->readBoard($boardId);
         if ($read->cards === []) {
-            Log::warning('writeback correlation: board read returned 0 cards — every card-move correlation will silently no-op until this is resolved; if the board is not genuinely empty, verify the writeback token user\'s board membership and that board_id/instance are correct', ['catalog_id' => 'kanban_client.correlation_board_empty', 'board_id' => $boardId]);
+            Log::warning('writeback correlation: board read returned 0 cards — every card-move correlation will silently no-op until this is resolved; if the board is not genuinely empty, verify the writeback token user\'s board membership and that board_id/instance are correct', ['catalog_id' => 'kanban_client.correlation_board_empty', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'board_id' => $boardId]);
         } elseif ($read->truncated) {
-            Log::warning('writeback correlation: board read hit the '.self::MAX_PAGES.'-page safety ceiling ('.(self::MAX_PAGES * self::SEARCH_LIMIT).' cards) — any cards beyond it are invisible to correlation', ['catalog_id' => 'kanban_client.correlation_page_ceiling', 'board_id' => $boardId, 'ceiling' => self::MAX_PAGES * self::SEARCH_LIMIT]);
+            Log::warning('writeback correlation: board read hit the '.self::MAX_PAGES.'-page safety ceiling ('.(self::MAX_PAGES * self::SEARCH_LIMIT).' cards) — any cards beyond it are invisible to correlation', ['catalog_id' => 'kanban_client.correlation_page_ceiling', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'board_id' => $boardId, 'ceiling' => self::MAX_PAGES * self::SEARCH_LIMIT]);
         }
 
         return $read->cards;
@@ -1393,7 +1431,7 @@ final class KanbanClient
     /** The DL-026 degraded-read line both correlation projections share — one message, one owner. */
     private static function warnUnreadableCollection(string $read, int $boardId): void
     {
-        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; ".self::UNREADABLE_BODY_CAUSE, ['catalog_id' => 'kanban_client.card_collection_unreadable', 'board_id' => $boardId, 'read' => $read]);
+        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; ".self::UNREADABLE_BODY_CAUSE, ['catalog_id' => 'kanban_client.card_collection_unreadable', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'board_id' => $boardId, 'read' => $read]);
     }
 
     /**
@@ -1412,7 +1450,7 @@ final class KanbanClient
      */
     private static function warnUnreadableStages(int $boardId): void
     {
-        Log::warning("writeback stage read: board {$boardId}'s preload read returned a 200 whose body carried no workflows collection — every stage answer this client gives for the board (order, name, id) is EMPTY, and empty is indistinguishable from a board with no stages, so each caller degrades as though it had one; ".self::UNREADABLE_BODY_CAUSE, ['catalog_id' => 'kanban_client.stage_collection_unreadable', 'board_id' => $boardId, 'read' => 'board-preload-stages']);
+        Log::warning("writeback stage read: board {$boardId}'s preload read returned a 200 whose body carried no workflows collection — every stage answer this client gives for the board (order, name, id) is EMPTY, and empty is indistinguishable from a board with no stages, so each caller degrades as though it had one; ".self::UNREADABLE_BODY_CAUSE, ['catalog_id' => 'kanban_client.stage_collection_unreadable', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'board_id' => $boardId, 'read' => 'board-preload-stages']);
     }
 
     /**

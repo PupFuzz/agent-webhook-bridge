@@ -167,6 +167,17 @@ enum CheckSlot: string
     case WritebackProbe = 'writeback-probe';
 
     /**
+     * The GitHub token-FILE plane (card#11201), right after the `writeback.json` envelope: can the
+     * runtime legs that reach GitHub with only the placed token file do so?
+     *
+     * ITS OWN SLOT, OUTSIDE THAT ENVELOPE, because one of its consumers — the `protocol:invalid`
+     * label — needs no `writeback.json` at all, and every slot inside the envelope is skipped on
+     * an install without one. It sits next to the envelope because two of its consumers read it,
+     * and the line that used to carry the promote leg's half of this printed there.
+     */
+    case GithubTokenFile = 'github-token-file';
+
+    /**
      * The event-follows-consumer plane, after the whole `writeback.json` envelope and
      * before the board-tools one: does an enabled classifier consume what has actually
      * ARRIVED for each subscribed github scope?

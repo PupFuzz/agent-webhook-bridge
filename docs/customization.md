@@ -354,7 +354,7 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 
 - **`classify()` runs once per serving agent** — returning an empty `ClassifyResult` for one agent doesn't affect the others; each agent's dispatch is independent.
 - **The instance is cached + shared across agents** (`ClassifierResolver` keys by class). Read `$ctx->agent` as a method-local; **never** stash it on an instance field — the next agent in the same dispatch loop would see stale state. (`$ctx` itself is a fresh per-event object, so reading from it is always safe.)
-- **`$ctx->agent` carries the agent's own config** — `agentName` (the YAML filename), `identity` (`kanban_user_id` / `github_user_id`), `subscriptions`, etc. — so recipient logic can key on whatever the addressing convention uses.
+- **`$ctx->agent` carries the agent's own config** — `agentName` (the YAML filename), `identity` (`github_user_id`, `coord_seat` — the agent's kanban user id is the coord roster's, not a config field; DL-450), `subscriptions`, etc. — so recipient logic can key on whatever the addressing convention uses.
 - **Addressing is operator policy, not bridge policy.** The bridge hands you the serving agent; what `to:`/`from:` labels mean is yours to define in the classifier. (This is why the seam is a classify param, not a built-in label filter.)
 
 #### Comment-level recipient filtering (the `TO:` line, DL-032)
@@ -491,7 +491,7 @@ it('emits new_card intent for task.created', function () {
         actor: $actor,
         provider: 'kanban',
         scopeId: '5',
-        agent: AgentConfig::fromArray('my-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        agent: AgentConfig::fromArray('my-agent', ['identity' => [], 'subscriptions' => []]),
     ));
 
     expect($result->intents)->toHaveCount(1);
@@ -514,7 +514,7 @@ public function handle(ReactionTarget $target, AgentConfig $agent): void;
 
 The classifier emits `ReactionTarget::make(handler: 'my_handler', ...)` and the dispatcher looks it up by name in `HandlerRegistry`. A handler throw is recorded as a best-effort note on that agent's dispatch row but does **not** fail the webhook or affect other agents (treatment C — the intent is already durable in the inbox).
 
-> **Durable handlers (DL-009).** If your handler performs a side effect that must **not** be silently dropped (a writeback, an external state change), also implement the marker interface `App\Bridge\Contracts\DurableReaction`. Such a handler runs **before** the best-effort handlers, and its throw **propagates** (→ 5xx → upstream redelivers) instead of becoming a note — so the side effect is retried, not lost. **Contract: a `DurableReaction` handler must be idempotent** (redelivery re-runs the whole dispatch). Durability is a property of the handler, never of the `ReactionTarget`, so the classify path can't spoof it. **Durable ≡ machine writeback ≡ survives echo (DL-203):** on a github writeback-emitting classifier, an echo/signal gate hit strips every intent and every non-`DurableReaction` target before dispatch — an unmarked custom handler is agent-facing and suppressed on the agent's own writes; implement the marker only for a machine writeback.
+> **Durable handlers (DL-009).** If your handler performs a side effect that must **not** be silently dropped (a writeback, an external state change), also implement the marker interface `App\Bridge\Contracts\DurableReaction`. Such a handler runs **before** the best-effort handlers, and its throw **propagates** (→ 5xx → upstream redelivers) instead of becoming a note — so the side effect is retried, not lost. **Contract: a `DurableReaction` handler must be idempotent** (redelivery re-runs the whole dispatch). Durability is a property of the handler, never of the `ReactionTarget`, so the classify path can't spoof it. **Durable ≡ machine writeback ≡ survives echo (DL-203):** on a github writeback-emitting classifier, an echo/signal gate hit strips every intent and every non-`DurableReaction` target before dispatch — an unmarked custom handler is agent-facing and suppressed on the agent's own writes; implement the marker only for a machine writeback. **Optionally also implement `App\Bridge\Contracts\DeclaresWriteOp`** (card#11223), which returns the kind of write a target asks for (a case of `App\Bridge\Writeback\WriteOp`; the catalog's `ops` block lists the values and what each means). The board-mover log rows written while your target is applied or owed carry it as `op`, and a reader such as the coordination framework selects failed moves by `op: move`. Without it those rows say `op: undeclared`. `docs/writeback.md` § *The board-mover catalog* owns the keys.
 
 ### Default shipped handlers
 
@@ -717,9 +717,9 @@ class SyncBoardHandlerTest extends TestCase
 
         // AgentConfig::fromArray needs the minimum required sections; build it
         // inline (there is no global config-fixture helper). The agent name is
-        // the first arg — there is no identity.self; ids live in identity.
+        // the first arg — there is no identity.self; github ids live in identity.
         $agent = AgentConfig::fromArray('test-agent', [
-            'identity' => ['kanban_user_id' => 137],
+            'identity' => ['github_user_id' => 137],
             'subscriptions' => [['provider' => 'kanban', 'scopes' => [5]]],
         ]);
 

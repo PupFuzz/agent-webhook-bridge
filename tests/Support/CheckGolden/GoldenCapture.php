@@ -52,8 +52,8 @@ final class GoldenCapture
         $uid = function_exists('posix_getuid') ? (string) posix_getuid() : '?';
 
         return str_replace(
-            [rtrim($installRoot, '/'), rtrim(base_path(), '/'), "(uid {$uid})"],
-            ['<INSTALL>', '<APP>', '(uid <UID>)'],
+            [rtrim($installRoot, '/'), rtrim(base_path(), '/'), "(uid {$uid})", '(uid '.GoldenProcessIdentity::UID.')'],
+            ['<INSTALL>', '<APP>', '(uid <UID>)', '(uid <UID>)'],
             $output,
         );
     }

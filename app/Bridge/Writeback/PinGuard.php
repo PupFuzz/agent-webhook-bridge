@@ -197,7 +197,7 @@ final class PinGuard
         $alerts->warnAndNotify(
             'pin_guard.pinned',
             "{$arm}: {$write} refused — card is pinned (block_reason/no-automove)",
-            ['card_id' => $cardId, 'repo' => $repo] + $logContext,
+            ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => BoardMoverScope::op(), 'card_id' => $cardId, 'repo' => $repo] + $logContext,
             $repo, $outcome, $cardId, self::REASON, $issueNumber,
         );
 
@@ -346,6 +346,9 @@ final class PinGuard
             .'write reached through this row is unguarded until it is fixed',
             [
                 'catalog_id' => 'pin_guard.row_unreadable',
+                'handler' => BoardMoverScope::handler(),
+                'webhook_event_id' => BoardMoverScope::webhookEventId(),
+                'op' => BoardMoverScope::op(),
                 'card_id' => is_numeric($card['id'] ?? null) ? (int) $card['id'] : null,
                 'reason' => self::UNREADABLE_ROW_REASON,
             ],

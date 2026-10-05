@@ -8,7 +8,6 @@ use App\Bridge\Check\Silence;
 use App\Bridge\Support\CoordConfigPath;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\CoordConfigTerminals;
-use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackMapping;
 
@@ -40,9 +39,8 @@ use App\Bridge\Writeback\WritebackMapping;
  * Stage 8's inventory keys on the check id, so the grouping costs granularity there —
  * accepted deliberately over reordering operator-visible output.
  *
- * NO LEG HERE CAN THROW: `stageFor()` is a pure array read,
- * {@see GitHubTokenResolver::resolveFor} is documented total ("bridge:check depends on it
- * never throwing"), and {@see CoordConfigTerminals::load} returns null for every
+ * NO LEG HERE CAN THROW: `stageFor()` is a pure array read, and
+ * {@see CoordConfigTerminals::load} returns null for every
  * absent/unreadable/malformed input rather than raising. That is what lets this check
  * yield incrementally across many mappings without the caller's fail-soft envelope being
  * able to swallow findings it had already produced.
@@ -350,20 +348,13 @@ final class WritebackMappingConfigCheck implements Check
                 }
             }
             // DL-207: promote-on-release health. WritebackConfig::load already fails
-            // closed on a missing shipped/released stage, so this catches the two
-            // silent-inert shapes load cannot: both stages mapped to ONE column (the
-            // promote is a no-op), and no FPM-viable GitHub token. The promote leg runs in
-            // the webhook RUNTIME — unlike bridge:reconcile (CLI), under FPM GH_TOKEN is
-            // absent and the git-credential-coord store helper is CLI-only (DL-184), so
-            // ONLY a placed token FILE resolves there. There is no reconcile backstop for
-            // Shipped→Released, so an inert leg strands cards.
-            if ($mapping->promoteOnRelease) {
-                if ($mapping->stageFor('merged') !== null && $mapping->stageFor('merged') === $mapping->stageFor('merged_to_main')) {
-                    yield Finding::warn("writeback: mapping for {$repo} sets promote_on_release but stages.merged and stages.merged_to_main are the same stage — the Shipped→Released promote is a no-op (nothing to move); map them to distinct columns or remove promote_on_release.");
-                }
-                if (! (new GitHubTokenResolver)->resolveFromFile()->ok()) {
-                    yield Finding::warn("writeback: mapping for {$repo} sets promote_on_release but no GitHub read token resolves from a FILE (<secret_dir>/github/token, or providers.github.token_path) — the promote leg runs in the FPM webhook runtime where GH_TOKEN is absent and the credential-store helper is CLI-only, so a store/GH_TOKEN-only token (usable by bridge:reconcile) leaves the promote leg INERT at runtime with no reconcile backstop. Place a read-only token file (chmod 600).");
-                }
+            // closed on a missing shipped/released stage, so this catches the silent-inert
+            // shape load cannot: both stages mapped to ONE column (the promote is a no-op).
+            // The leg's other inert shape — no token FILE, the only token the FPM runtime
+            // resolves — is `GitHubTokenFileCheck`'s, with the other legs that need that file
+            // (card#11201): one probe, not one per consumer.
+            if ($mapping->promoteOnRelease && $mapping->stageFor('merged') !== null && $mapping->stageFor('merged') === $mapping->stageFor('merged_to_main')) {
+                yield Finding::warn("writeback: mapping for {$repo} sets promote_on_release but stages.merged and stages.merged_to_main are the same stage — the Shipped→Released promote is a no-op (nothing to move); map them to distinct columns or remove promote_on_release.");
             }
             // card#7348 / DL-305: the MENTION-vs-CLOSURE semantics, said at setup time.
             // The only leg here that speaks about a mapping which is entirely CORRECT —
@@ -446,7 +437,7 @@ final class WritebackMappingConfigCheck implements Check
         if ($config === null) {
             $where = CoordConfigPath::unreadableClause($path);
 
-            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
 
             return;
         }

@@ -286,13 +286,12 @@ class CheckGoldenTest extends TestCase
 
                 // ---- per-agent legs (the interleaved output constraint (b) protects) ----
             case 'agent-yaml-malformed':
-                $i->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\nsubscriptions: [\n");
+                $i->boot()->agent('prod-agent', "subscriptions: [\n");
 
                 return $default;
 
             case 'agent-classifier-missing':
-                $i->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
-                    ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                $i->boot()->agent('prod-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                     ."classifier:\n  class: App\\Bridge\\Classifiers\\NoSuchClassifier\n");
 
                 return $default;
@@ -307,15 +306,13 @@ class CheckGoldenTest extends TestCase
                 return $default;
 
             case 'agent-channel-socket-parent-missing':
-                $i->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
-                    ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                $i->boot()->agent('prod-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                     ."channel:\n  socket: ".$i->path('no-such-dir/agent.sock')."\n");
 
                 return $default;
 
             case 'agent-channel-http-no-port':
-                $i->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
-                    ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                $i->boot()->agent('prod-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                     ."channel:\n  url: http://127.0.0.1/push\n");
 
                 return $default;
@@ -327,8 +324,7 @@ class CheckGoldenTest extends TestCase
                 // later reader could not tell "the measurement improved" from "the
                 // measured region moved" (DL-242 stage 5b). It exists solely so the probe
                 // pin has a way to fail.
-                $i->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
-                    ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                $i->boot()->agent('prod-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                     ."channel:\n  url: http://127.0.0.1:9/push\n");
 
                 return $default;
@@ -398,7 +394,7 @@ class CheckGoldenTest extends TestCase
                 // Overwrite the healthy agent in place: the mapping, token and board stubs
                 // must survive, because the point is a well-formed writeback plane read by
                 // a run that could not finish reading its agents.
-                $i->agent('prod-agent', "identity:\n  kanban_user_id: 137\nsubscriptions: [\n");
+                $i->agent('prod-agent', "subscriptions: [\n");
 
                 return $default;
 
@@ -429,7 +425,11 @@ class CheckGoldenTest extends TestCase
 
                 // ---- writeback: the deep leg that reaches the board client ----
             case 'writeback-move-leg-coord-config-unset':
+                // The setting itself unset, so the compare falls back to the (pinned)
+                // ambient $COORD_CONFIG — and, since DL-450, the roster leg FAILS on the unset
+                // setting in the same capture.
                 $this->moveLegInstall($i);
+                config(['bridge.coord_config_path' => null]);
 
                 return $default;
 
@@ -438,6 +438,7 @@ class CheckGoldenTest extends TestCase
                 // as the unset case, DIFFERENT diagnosis and DIFFERENT operator
                 // instruction — which is why it must not be normalized away.
                 $this->moveLegInstall($i);
+                config(['bridge.coord_config_path' => null]);
 
                 return ['args' => [], 'fpm' => false, 'coordConfig' => $i->path('absent-coord.json')];
 
@@ -489,8 +490,7 @@ class CheckGoldenTest extends TestCase
                 // ---- board_tools + the opt-in probes ----
             case 'board-tools-http-enabled':
                 $i->boot()
-                    ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
-                        ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                    ->agent('prod-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                         // The bearer sits on `board_tools.auth`, NOT on `channel.auth`:
                         // a channel bearer is legal only alongside `channel.url`, so the
                         // first cut of this fixture threw at AgentConfig::load and the
@@ -507,7 +507,7 @@ class CheckGoldenTest extends TestCase
                     '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0]]),
                     '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
                         ['id' => 55, 'name' => 'Backlog', 'position' => 1024.0],
-                    ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']]]]),
+                    ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']], 'permissions' => ['board.view', 'task.move', 'task.update']]]),
                 ]);
 
                 return $default;
@@ -525,8 +525,7 @@ class CheckGoldenTest extends TestCase
                 // half-hour of slack is what keeps `3h` floored at 3 for any run of this
                 // suite that finishes inside 30 minutes.
                 $i->boot()
-                    ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
-                        ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                    ->agent('prod-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                         ."board_tools:\n  transport: http\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n"
                         ."  auth:\n    token_path: ".$i->path('tools-bearer')."\n")
                     ->secret('tools-bearer', 'bearer-value')
@@ -540,7 +539,7 @@ class CheckGoldenTest extends TestCase
                     '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0]]),
                     '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
                         ['id' => 55, 'name' => 'Backlog', 'position' => 1024.0],
-                    ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']]]]),
+                    ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']], 'permissions' => ['board.view', 'task.move', 'task.update']]]),
                 ]);
 
                 return $default;
@@ -1438,7 +1437,7 @@ class CheckGoldenTest extends TestCase
 
     private function kanbanAgentYaml(): string
     {
-        return "identity:\n  kanban_user_id: 137\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n";
+        return "subscriptions:\n  - provider: kanban\n    scopes: [5]\n";
     }
 
     /** A forced-command line that denies pty+forwarding — the shape the probe certifies. */
@@ -1453,8 +1452,7 @@ class CheckGoldenTest extends TestCase
     private function sshInstall(GoldenInstall $i, string $transport): void
     {
         $i->boot()
-            ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
-                ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ->agent('prod-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                 // No `channel:` block: `channel.auth.token_path` is only valid with an
                 // HTTP channel, and an ssh agent has none — copying the http fixture's
                 // bearer line here aborts the agent's config leg before board_tools is
@@ -1465,7 +1463,7 @@ class CheckGoldenTest extends TestCase
             '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0]]),
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
                 ['id' => 55, 'name' => 'Backlog', 'position' => 1024.0],
-            ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']]]]),
+            ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']], 'permissions' => ['board.view', 'task.move', 'task.update']]]),
         ]);
     }
 
@@ -1481,7 +1479,7 @@ class CheckGoldenTest extends TestCase
     private function moveLegInstall(GoldenInstall $i, array $stubs = []): void
     {
         $i->boot()
-            ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n  github_user_id: 555\n"
+            ->agent('prod-agent', "identity:\n  github_user_id: 555\n"
                 ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                 ."  - provider: github\n    scopes: [\"owner/repo\"]\n"
                 ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
