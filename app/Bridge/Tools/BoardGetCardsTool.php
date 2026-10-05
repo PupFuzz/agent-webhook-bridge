@@ -16,8 +16,9 @@ use Illuminate\Support\Facades\Log;
  * ⛔ THE CONTRACT IS N IN, N OUT. Every requested id comes back as exactly one entry, in request
  * order, with one of {@see STATUSES}. An id is never omitted: a seat asking after ten cards and
  * getting nine back cannot tell a missing card from a dropped one, and that silent omission —
- * `board_my_cards` leaving out every card outside the seat's lane, column window or archive side —
- * is what this tool exists to end (rt#572). Where the bridge cannot establish a status for an id,
+ * `board_my_cards` leaving out every card outside the seat's lane, column window or archive side, as
+ * it did when rt#572 asked (since card#11267 it lists the seat's assigned cards in any lane; the rest
+ * of that is unchanged) — is what this tool exists to end. Where the bridge cannot establish a status for an id,
  * the WHOLE call is refused; a partial answer with an unstated hole is the defect, not a fallback.
  *
  * ⭐ HOW EACH STATUS IS ESTABLISHED, in the order it is asked:

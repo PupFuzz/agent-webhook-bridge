@@ -114,7 +114,8 @@ final class BoardCardRank
     /**
      * The rows in (stage rank, position, id) order. A row on a stage the board read did not carry
      * sorts after every stage, a row with no numeric `position` after every positioned row of its
-     * stage, and a row with no numeric id last of all — none is dropped.
+     * stage, and a row with no numeric id after the rows that share its stage and position — none
+     * is dropped.
      *
      * @param  list<array<string, mixed>>  $rows
      * @return list<array<string, mixed>>

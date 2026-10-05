@@ -60,7 +60,7 @@ use Illuminate\Support\Facades\Log;
  * cards, and the TITLES-ONLY response — the cheapest call this tool offers —
  * was measured at 121,032 chars / 390 cards on one seat and 81,067 / 292 on
  * another (2026-09-07), which overflows the context window of the very seats it
- * exists for. Each of the three card populations (own lane, shared lane, coord)
+ * exists for. Each of the three card populations (your cards, shared lane, coord)
  * is now cut to `BoardMyCardsTool::DEFAULT_MAX_CARDS` cards unless the caller
  * raises `limit`, and each carries its own window block — `total` / `returned` / `limit` /
  * `truncated` — so a capped read is legible AS capped and can never be mistaken
