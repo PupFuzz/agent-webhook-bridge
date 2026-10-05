@@ -180,6 +180,25 @@ final class SeatKanbanUser
     }
 
     /**
+     * {@see declaredForCallingSeat}'s answer WITH the roster's reason when it is null — the seat is
+     * absent from the roster ({@see RosterKanbanUser::ABSENT}), or present with no usable id for this
+     * kanban host (every other verdict) — for a reader that reports which of the two it was
+     * (`board_my_cards`' `selection`, card#11267). The same one lookup, so the id and the reason
+     * cannot answer about different configs; every state that is a refusal there is one here.
+     *
+     * @param  string  $tool  the tool name every refusal is prefixed with
+     *
+     * @throws ToolRefusalException
+     * @throws \LogicException if no front door established a seat for this process
+     */
+    public static function declaredVerdictForCallingSeat(string $tool): RosterKanbanUser
+    {
+        [$callingAgentName, , , $roster] = self::lookup($tool);
+
+        return $roster->verdictFor($callingAgentName);
+    }
+
+    /**
      * The coord roster SEAT name the calling seat's own YAML says it is — `identity.coord_seat`,
      * else its agent name (card#10869). Read from the same lookup as the id, so the two cannot
      * answer about different configs. `board_take_card` uses it to tell a legacy

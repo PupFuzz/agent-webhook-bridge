@@ -5976,7 +5976,7 @@ class AgentToolsCallTest extends TestCase
      * Two calls keep their own answer and are asserted as that, not skipped, both because they run
      * after the card exists, so a 502 there would tell the seat to retry a create that landed:
      * `board_create_card`'s placement read-back reports no placement when it cannot read one
-     * (DL-299), and its assign-at-birth reports `assignee_unset_reason: assign_failed` (DL-459).
+     * (DL-299), and its assign-at-birth reports `assignee_unset_reason: assign_unconfirmed` — the PATCH may have landed (DL-459).
      */
     #[DataProvider('unansweredCallScenarios')]
     public function test_a_board_call_that_gets_no_answer_is_the_retryable_502_on_every_upstream_call(string $scenario): void
@@ -6020,7 +6020,7 @@ class AgentToolsCallTest extends TestCase
             $this->assertNotNull($failed, "{$scenario}: run {$at} sent fewer requests than the clean run");
 
             if ($tool === 'board_create_card' && str_starts_with((string) $failed, 'PATCH ') && array_key_exists('assigned_user_id', $failedData)) {
-                $res->assertStatus($answered->status())->assertJsonPath('result.assignee_unset_reason', 'assign_failed');
+                $res->assertStatus($answered->status())->assertJsonPath('result.assignee_unset_reason', 'assign_unconfirmed');
 
                 continue;
             }

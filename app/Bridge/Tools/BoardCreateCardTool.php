@@ -87,6 +87,15 @@ use Illuminate\Support\Facades\Log;
  */
 final class BoardCreateCardTool implements Tool
 {
+    /** `assignee_unset_reason`: the board REFUSED the assignee PATCH, so the card is unassigned. */
+    private const ASSIGN_FAILED = 'assign_failed';
+
+    /** `assignee_unset_reason`: the assignee PATCH got NO answer, so it may have landed or not. */
+    private const ASSIGN_UNCONFIRMED = 'assign_unconfirmed';
+
+    /** `assignee_unset_reason`, idempotent hit only: the hit's holder could not be read, so it was not written. */
+    private const ASSIGNEE_UNREADABLE = 'assignee_unreadable';
+
     /**
      * ⚠ ONE CONSTANT BECAUSE THE TWO THROW SITES MUST STAY BYTE-IDENTICAL, and nothing
      * about two adjacent string literals says so. `title` is refused both for not being a
@@ -126,8 +135,11 @@ final class BoardCreateCardTool implements Tool
                 $hitId = $existing[0];
                 Log::info('board_create_card: idempotency hit — returning the existing card, no create', ['agent' => $agentName, 'idem_tag' => $idemTag, 'card_id' => $hitId]);
 
+                $hit = $this->readBack($client, $hitId, $agentName, 'idempotency hit');
+
                 return ['created' => false, 'idempotent_hit' => true, 'card_id' => $hitId]
-                    + $this->placement($client, $cfg, $hitId, $agentName, 'idempotency hit');
+                    + $this->placement($hit, $cfg, $hitId, $agentName, 'idempotency hit')
+                    + $this->assignOnHit($client, $scope, $hitId, $hit, $agentName);
             }
 
             // The ARCHIVE side of the same key (DL-297): the read above is
@@ -199,8 +211,42 @@ final class BoardCreateCardTool implements Tool
         }
 
         return ['created' => true, 'idempotent_hit' => false, 'card_id' => $newId]
-            + $this->placement($client, $cfg, $newId, $agentName, 'created')
+            + $this->placement($this->readBack($client, $newId, $agentName, 'created'), $cfg, $newId, $agentName, 'created')
             + $this->assignAtBirth($client, $scope, $newId, $agentName);
+    }
+
+    /**
+     * The assignee half of an IDEMPOTENT HIT (card#11267): a retried create whose first attempt
+     * landed but never got its assignee PATCH (it timed out, or the call died between the two
+     * writes) returns a card nobody holds. So a hit reports `assigned_user_id` and
+     * `assignee_unset_reason` exactly as a create does, and an UNASSIGNED hit is sent the same
+     * assignee PATCH a create sends ({@see assignAtBirth}).
+     *
+     * ⛔ ONLY A HIT READ AS UNASSIGNED IS WRITTEN. A hit somebody holds is reported as held — by
+     * this seat or by whoever took it over since — and never re-assigned: replacing a holder is
+     * `board_take_card`'s, with its warning and its comment. A hit whose holder this call could
+     * not read (the read-back failed, or carried no integer-or-null `assigned_user_id`) is not
+     * written either, because it may be held; it reports `assignee_unreadable`.
+     *
+     * @param  array<string, mixed>|null  $card  the hit's read-back ({@see readBack}), null when it failed
+     * @return array{assigned_user_id: ?int, assignee_unset_reason: ?string}
+     */
+    private function assignOnHit(KanbanClient $client, SeatCardScope $scope, int $cardId, ?array $card, string $agentName): array
+    {
+        $readable = $card !== null && array_key_exists('assigned_user_id', $card)
+            && ($card['assigned_user_id'] === null || is_int($card['assigned_user_id']));
+        if ($readable && $card['assigned_user_id'] !== null) {
+            return ['assigned_user_id' => $card['assigned_user_id'], 'assignee_unset_reason' => null];
+        }
+        if (! $readable) {
+            Log::warning('board_create_card: the idempotency hit\'s holder could not be read, so it is not assigned — it may already be held', [
+                'agent' => $agentName, 'card_id' => $cardId, 'read_back' => $card !== null,
+            ]);
+
+            return ['assigned_user_id' => null, 'assignee_unset_reason' => self::ASSIGNEE_UNREADABLE];
+        }
+
+        return $this->assignAtBirth($client, $scope, $cardId, $agentName);
     }
 
     /**
@@ -211,9 +257,11 @@ final class BoardCreateCardTool implements Tool
      * ⚠ A SEPARATE WRITE AFTER THE CREATE, AND IT NEVER UNDOES IT. Sent inside the create, a seat whose
      * kanban user is not a board member would have the whole create refused (kanban refuses an
      * assignee who is not a member) — a card this tool used to create, no longer created. So the
-     * card is created exactly as before and the assignee is written after it; a refused or failed
-     * write leaves the card unassigned, as every card was before this, and the response says why.
-     * After the idempotency collapse, so it is the SURVIVING card that is assigned.
+     * card is created exactly as before and the assignee is written after it; a refused write
+     * leaves the card unassigned, as every card was before this ({@see ASSIGN_FAILED}), an
+     * unanswered one leaves it UNKNOWN ({@see ASSIGN_UNCONFIRMED} — it may have landed), and the
+     * response says which. After the idempotency collapse, so it is the SURVIVING card that is
+     * assigned. An idempotent hit reaches this too, when the hit is unassigned ({@see assignOnHit}).
      *
      * @return array{assigned_user_id: ?int, assignee_unset_reason: ?string}
      */
@@ -225,12 +273,21 @@ final class BoardCreateCardTool implements Tool
 
         try {
             $client->patchCard($cardId, ['assigned_user_id' => $scope->kanbanUserId]);
-        } catch (RequestException|ConnectionException $e) {
-            Log::warning('board_create_card: the card was created, but assigning it to the creating seat failed — it is left unassigned', [
+        } catch (RequestException $e) {
+            Log::warning('board_create_card: the card exists, but the board refused assigning it to the creating seat — it is left unassigned', [
                 'agent' => $agentName, 'card_id' => $cardId, 'assigned_user_id' => $scope->kanbanUserId, 'error' => RedactedErrorText::of($e),
             ]);
 
-            return ['assigned_user_id' => null, 'assignee_unset_reason' => 'assign_failed'];
+            return ['assigned_user_id' => null, 'assignee_unset_reason' => self::ASSIGN_FAILED];
+        } catch (ConnectionException $e) {
+            // No answer: the PATCH may have landed before the connection was lost, so "left
+            // unassigned" would be a claim this call cannot make. A retry with the same
+            // idempotency_key re-reads the card and reports (or completes) the assignment.
+            Log::warning('board_create_card: the card exists, but assigning it to the creating seat got no answer — the assignment may have landed or not', [
+                'agent' => $agentName, 'card_id' => $cardId, 'assigned_user_id' => $scope->kanbanUserId, 'error' => RedactedErrorText::of($e),
+            ]);
+
+            return ['assigned_user_id' => null, 'assignee_unset_reason' => self::ASSIGN_UNCONFIRMED];
         }
 
         return ['assigned_user_id' => $scope->kanbanUserId, 'assignee_unset_reason' => null];
@@ -249,6 +306,26 @@ final class BoardCreateCardTool implements Tool
     public function refusedArgumentReason(string $key): ?string
     {
         return null;
+    }
+
+    /**
+     * The ONE read-back of the card this call answers with — its placement and, on an idempotent
+     * hit, its holder are both read off it, so the two cannot describe different reads. FAIL-SOFT
+     * for the reasons {@see placement} gives: null when the read failed, logged here.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function readBack(KanbanClient $client, int $cardId, string $agentName, string $arm): ?array
+    {
+        try {
+            return $client->getCard($cardId);
+        } catch (\Throwable $e) {
+            Log::warning('board_create_card: the card could not be read back, so the response reports NO placement rather than the configured board/lane', [
+                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId, 'error' => RedactedErrorText::of($e),
+            ]);
+
+            return null;
+        }
     }
 
     /**
@@ -315,20 +392,15 @@ final class BoardCreateCardTool implements Tool
      * makes the tool do is a separate question from what it reports, and this
      * change is scoped to the report.
      *
+     * @param  array<string, mixed>|null  $card  the read-back ({@see readBack}), null when it failed
      * @return array{board_id: ?int, swimlane_id: ?int, placement_observed: bool, configured_board_id: int, configured_swimlane_id: int}
      */
-    private function placement(KanbanClient $client, BoardToolsConfig $cfg, int $cardId, string $agentName, string $arm): array
+    private function placement(?array $card, BoardToolsConfig $cfg, int $cardId, string $agentName, string $arm): array
     {
         $configured = ['configured_board_id' => (int) $cfg->boardId, 'configured_swimlane_id' => (int) $cfg->swimlaneId];
         $unobserved = ['board_id' => null, 'swimlane_id' => null, 'placement_observed' => false] + $configured;
 
-        try {
-            $card = $client->getCard($cardId);
-        } catch (\Throwable $e) {
-            Log::warning('board_create_card: the card could not be read back, so the response reports NO placement rather than the configured board/lane', [
-                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId, 'error' => RedactedErrorText::of($e),
-            ]);
-
+        if ($card === null) {
             return $unobserved;
         }
 

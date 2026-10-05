@@ -8,6 +8,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\CoordRosterFixture;
 use Tests\TestCase;
@@ -194,7 +195,7 @@ class BoardSeatCardsTest extends TestCase
         $this->assertSame([101, 102, 104, 106], $ids);
         $this->assertSame(4, $res['body']['result']['cards_window']['total']);
         $this->assertSame(
-            ['kanban_user_id' => self::ME, 'assignee_arm' => 'applied', 'unavailable_reason' => null, 'assigned_read_truncated' => false],
+            ['kanban_user_id' => self::ME, 'assignee_arm' => 'applied', 'unavailable_reason' => null, 'no_kanban_user_reason' => null, 'assigned_read_truncated' => false],
             $res['body']['result']['selection'],
         );
     }
@@ -239,22 +240,43 @@ class BoardSeatCardsTest extends TestCase
         $this->assertSame(['in_progress_stage_id' => null, 'pull_stage_ids' => [], 'unmapped_reason' => 'no_mapping_on_board'], $res['body']['result']['stage_rank']);
     }
 
-    public function test_a_seat_the_roster_gives_no_kanban_user_reads_only_the_unassigned_cards_in_its_lane(): void
+    /**
+     * A seat the roster gives no kanban user ON THIS HOST may still hold cards under an id the roster
+     * has not recorded here, so a held card in its lane cannot be shown not to be its own: the lane
+     * is kept WHOLE, as under `unavailable` — never narrowed to the unassigned cards (card#11267 r1).
+     *
+     * @return array<string, array{array<string, mixed>, string}>
+     */
+    public static function noKanbanUserRosters(): array
     {
-        CoordRosterFixture::configure($this->dir.'/coord', ['me' => null, 'other' => self::OTHER]);
+        return [
+            'seat absent from the roster' => [['other' => self::OTHER], SeatCardScope::ROSTER_SEAT_ABSENT],
+            'seat with no kanban_user_id at all' => [['me' => null, 'other' => self::OTHER], SeatCardScope::NO_KANBAN_ID_FOR_HOST],
+            'seat with an id for another host only' => [['me' => ['other-kanban.example.com' => self::ME], 'other' => self::OTHER], SeatCardScope::NO_KANBAN_ID_FOR_HOST],
+        ];
+    }
+
+    /** @param  array<string, int|array<string, mixed>|null>  $roster */
+    #[DataProvider('noKanbanUserRosters')]
+    public function test_a_seat_the_roster_gives_no_kanban_user_keeps_its_whole_lane_and_says_which_roster_case(array $roster, string $reason): void
+    {
+        CoordRosterFixture::configure($this->dir.'/coord', $roster);
         $this->board([
             self::row(301, 48, self::HOME, null, 1),
-            self::row(302, 48, self::HOME, self::OTHER, 2),
+            self::row(302, 48, self::HOME, self::OTHER, 2),   // held, in the seat's own lane: kept
             self::row(303, 48, self::TOPIC, null, 3),
         ]);
 
         $res = $this->tool('board_my_cards');
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
-        $this->assertSame([301], self::listed($res['body']));
+        $ids = self::listed($res['body']);
+        sort($ids);
+        $this->assertSame([301, 302], $ids);
         $this->assertSame('no_kanban_user', $res['body']['result']['selection']['assignee_arm']);
+        $this->assertSame($reason, $res['body']['result']['selection']['no_kanban_user_reason']);
         $this->assertNull($res['body']['result']['selection']['assigned_read_truncated']);
-        $this->assertFalse(self::boardWalkSent(), 'a seat with no kanban user has no assigned cards to walk the board for');
+        $this->assertFalse(self::boardWalkSent(), 'a seat with no kanban user has no id to walk the board for');
     }
 
     public function test_a_roster_that_cannot_identify_the_seat_keeps_the_whole_lane_and_says_why(): void
@@ -274,6 +296,7 @@ class BoardSeatCardsTest extends TestCase
         $this->assertSame([401, 402], $ids);
         $this->assertSame('unavailable', $res['body']['result']['selection']['assignee_arm']);
         $this->assertSame('install_fault.coord_config_unset', $res['body']['result']['selection']['unavailable_reason']);
+        $this->assertNull($res['body']['result']['selection']['no_kanban_user_reason']);
         $this->assertFalse(self::boardWalkSent());
     }
 
@@ -287,6 +310,31 @@ class BoardSeatCardsTest extends TestCase
         $this->assertTrue($res['body']['result']['already_held']);
         $this->assertSame(self::TOPIC, $res['body']['result']['swimlane_id']);
         $this->assertSame('assigned', $res['body']['result']['in_scope_by']);
+    }
+
+    /**
+     * "Assigned to" is a PERMISSION test on the take's assigned arm, so it is strict: a numeric
+     * STRING names nobody (card#11267 r1 — the primitive used to cast it).
+     */
+    public function test_a_numeric_string_assignee_is_not_assigned_to_that_user(): void
+    {
+        $this->assertFalse(SeatCardScope::isAssignedTo(['assigned_user_id' => '42'], 42));
+        $this->assertFalse(SeatCardScope::isAssignedTo(['assigned_user_id' => 42.0], 42));
+        $this->assertFalse(SeatCardScope::isAssignedTo([], 42));
+        $this->assertTrue(SeatCardScope::isAssignedTo(['assigned_user_id' => 42], 42), 'the control: an integer id does match');
+    }
+
+    public function test_take_refuses_a_card_in_another_lane_whose_assignee_is_my_id_as_a_string(): void
+    {
+        $row = self::row(503, 54, self::TOPIC, null, 1);
+        $row['assigned_user_id'] = (string) self::ME;
+        $this->board([$row]);
+
+        $res = $this->tool('board_take_card', ['card_id' => 503]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']));
+        $this->assertSame('out_of_scope', $res['body']['reason']);
+        Http::assertNotSent(fn (Request $r): bool => $r->method() === 'PATCH');
     }
 
     public function test_take_still_refuses_a_card_in_another_lane_that_is_not_assigned_to_me(): void
@@ -364,5 +412,112 @@ class BoardSeatCardsTest extends TestCase
         $this->assertSame(1, $res['body']['result']['card_id']);
         $this->assertNull($res['body']['result']['assigned_user_id']);
         $this->assertSame('assign_failed', $res['body']['result']['assignee_unset_reason']);
+    }
+
+    public function test_create_reports_an_unanswered_assignee_write_as_unconfirmed_not_unassigned(): void
+    {
+        Http::fake(function (Request $request) {
+            if ($request->method() === 'PATCH') {
+                return Http::failedConnection('cURL error 28: Operation timed out')($request);
+            }
+            if (str_contains($request->url(), '/tasks.json')) {
+                return Http::response(['data' => ['id' => 1]], 201);
+            }
+
+            return Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => self::HOME]]);
+        });
+
+        $res = $this->tool('board_create_card', ['title' => 'born, owner unknown']);
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertTrue($res['body']['result']['created']);
+        $this->assertNull($res['body']['result']['assigned_user_id']);
+        $this->assertSame('assign_unconfirmed', $res['body']['result']['assignee_unset_reason']);
+    }
+
+    /**
+     * A board whose tag search answers `$hit` for the idempotency key, and whose read-back of that
+     * card answers `$readBack` (null: the read-back fails).
+     *
+     * @param  array<string, mixed>|null  $readBack
+     */
+    private function idempotentHit(int $hit, ?array $readBack): void
+    {
+        Http::fake(function (Request $request) use ($hit, $readBack) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                return Http::response(['data' => [['id' => $hit, 'board_id' => 10]], 'meta' => ['total' => 1]]);
+            }
+            if ($request->method() === 'GET' && str_contains($url, "/tasks/{$hit}.json")) {
+                return $readBack === null ? Http::response(['message' => 'boom'], 500) : Http::response(['data' => $readBack]);
+            }
+
+            return Http::response(['data' => ['id' => $hit]], 200);
+        });
+    }
+
+    public function test_a_retried_create_assigns_the_hit_card_when_nobody_holds_it(): void
+    {
+        $this->idempotentHit(88, ['id' => 88, 'board_id' => 10, 'swimlane_id' => self::HOME, 'assigned_user_id' => null]);
+
+        $res = $this->tool('board_create_card', ['title' => 'retried', 'idempotency_key' => 'k-1']);
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertTrue($res['body']['result']['idempotent_hit']);
+        $this->assertSame(self::ME, $res['body']['result']['assigned_user_id']);
+        $this->assertNull($res['body']['result']['assignee_unset_reason']);
+        Http::assertSent(fn (Request $r): bool => $r->method() === 'PATCH'
+            && str_ends_with($r->url(), '/tasks/88.json')
+            && $r->data() === ['assigned_user_id' => self::ME]);
+        Http::assertNotSent(fn (Request $r): bool => $r->method() === 'POST');
+    }
+
+    public function test_a_retried_create_reports_the_holder_of_a_hit_card_and_writes_nothing(): void
+    {
+        $this->idempotentHit(89, ['id' => 89, 'board_id' => 10, 'swimlane_id' => self::HOME, 'assigned_user_id' => self::OTHER]);
+
+        $res = $this->tool('board_create_card', ['title' => 'retried', 'idempotency_key' => 'k-2']);
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertSame(self::OTHER, $res['body']['result']['assigned_user_id']);
+        $this->assertNull($res['body']['result']['assignee_unset_reason']);
+        Http::assertNotSent(fn (Request $r): bool => $r->method() === 'PATCH');
+    }
+
+    /** @return array<string, array{array<string, mixed>|null}> */
+    public static function unreadableHitHolders(): array
+    {
+        return [
+            'the read-back failed' => [null],
+            'the read-back carries no assigned_user_id' => [['id' => 90, 'board_id' => 10, 'swimlane_id' => self::HOME]],
+            'the read-back carries a non-integer assigned_user_id' => [['id' => 90, 'board_id' => 10, 'swimlane_id' => self::HOME, 'assigned_user_id' => '7002']],
+        ];
+    }
+
+    /** @param  array<string, mixed>|null  $readBack */
+    #[DataProvider('unreadableHitHolders')]
+    public function test_a_retried_create_whose_hit_holder_cannot_be_read_writes_nothing_and_says_so(?array $readBack): void
+    {
+        $this->idempotentHit(90, $readBack);
+
+        $res = $this->tool('board_create_card', ['title' => 'retried', 'idempotency_key' => 'k-3']);
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertNull($res['body']['result']['assigned_user_id']);
+        $this->assertSame('assignee_unreadable', $res['body']['result']['assignee_unset_reason']);
+        Http::assertNotSent(fn (Request $r): bool => $r->method() === 'PATCH');
+    }
+
+    public function test_a_retried_create_by_a_seat_with_no_kanban_user_says_why_the_hit_is_unassigned(): void
+    {
+        CoordRosterFixture::configure($this->dir.'/coord', ['me' => null]);
+        $this->idempotentHit(91, ['id' => 91, 'board_id' => 10, 'swimlane_id' => self::HOME, 'assigned_user_id' => null]);
+
+        $res = $this->tool('board_create_card', ['title' => 'retried', 'idempotency_key' => 'k-4']);
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertNull($res['body']['result']['assigned_user_id']);
+        $this->assertSame('no_kanban_user', $res['body']['result']['assignee_unset_reason']);
+        Http::assertNotSent(fn (Request $r): bool => $r->method() === 'PATCH');
     }
 }
