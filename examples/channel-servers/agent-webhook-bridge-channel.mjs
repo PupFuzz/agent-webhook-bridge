@@ -56,6 +56,9 @@ import {
   clientUpdateInstruction,
   errorDetail,
   readClientVersion,
+  askServedTools,
+  readServedToolsCache,
+  resolveServedTools,
 } from './channel-lib.mjs';
 import { channelSocketPath, failureMarkerPath } from './entry.mjs';
 
@@ -142,7 +145,9 @@ function shouldAdvertiseTools() {
   return kind === 'ssh' || kind === 'http' || kind === 'invalid';
 }
 
-const TOOLS_ENABLED = shouldAdvertiseTools();
+// What the environment says. Which of the bridge tools are then advertised is the bridge's own
+// answer for this agent (card#11283), resolved below once TOOL_DEFINITIONS exists.
+const ENV_TOOLS_ON = shouldAdvertiseTools();
 
 // clear_context is a LOCAL-EXEC self-management tool (card 5089), advertised on a gate
 // that is ORTHOGONAL to the board tools above: it NEVER proxies to the bridge, so it has
@@ -183,10 +188,6 @@ function shouldAdvertiseClearContext() {
 }
 
 const CLEAR_CONTEXT_ENABLED = shouldAdvertiseClearContext();
-
-// The tools MCP capability + the tools/list and tools/call handlers come on when EITHER
-// tool family is advertised — the two gates are independent.
-const ADVERTISE_ANY_TOOL = TOOLS_ENABLED || CLEAR_CONTEXT_ENABLED;
 
 // The tool surface, hard-coded to mirror the bridge contract (DL-217; the
 // correction tool is DL-326). Kept
@@ -745,6 +746,42 @@ const TOOL_DEFINITIONS = [
   },
 ];
 
+// The bridge tools this launch advertises: the served set ∩ TOOL_DEFINITIONS (card#11283 /
+// DL-462). Resolved ONCE, before INSTRUCTIONS and the Server, down channel-lib's
+// `resolveServedTools` ladder: this launch's cache, one served_tools call, the last good cache,
+// the env rule. Only on a seat whose environment turns the tools on and names a transport: an
+// explicit BRIDGE_CHANNEL_TOOLS=0 still asks nothing. The bridge enforces the same set
+// (`not_served`), so a fallback can only ever advertise a tool that refuses — never grant one.
+const SERVED_TOOLS_DEADLINE_MS = 5000;
+
+async function resolveAdvertisedTools() {
+  if (!ENV_TOOLS_ON) {
+    return { tools: [], source: 'board tools are off in this environment' };
+  }
+  const transport = boardToolsTransport(process.env);
+  if (transport.kind !== 'ssh' && transport.kind !== 'http') {
+    return { tools: TOOL_DEFINITIONS, source: 'the env rule: no usable board-tools transport to ask' };
+  }
+  const root = process.env.AWB_CLIENT_ROOT;
+  const { served, source } = await resolveServedTools({
+    launchId: process.env.AWB_LAUNCH_ID,
+    cache: root ? readServedToolsCache(root) : null,
+    ask: () => askServedTools(transport, { deadlineMs: SERVED_TOOLS_DEADLINE_MS }),
+  });
+  return { tools: served === null ? TOOL_DEFINITIONS : TOOL_DEFINITIONS.filter((tool) => served.includes(tool.name)), source };
+}
+
+const ADVERTISED = await resolveAdvertisedTools();
+const BRIDGE_TOOLS = ADVERTISED.tools;
+const TOOLS_ENABLED = BRIDGE_TOOLS.length > 0;
+// Only CI tools, no board tool: an implementation seat (a scope-less block, DL-461). Its
+// instructions must not tell it it has board tools — it has none.
+const CI_TOOLS_ONLY = TOOLS_ENABLED && BRIDGE_TOOLS.every((tool) => tool.name.startsWith('ci_'));
+
+// The tools MCP capability + the tools/list and tools/call handlers come on when EITHER
+// tool family is advertised — the two gates are independent.
+const ADVERTISE_ANY_TOOL = TOOLS_ENABLED || CLEAR_CONTEXT_ENABLED;
+
 // LOCAL-EXEC self-management tool (card 5089). NOT part of TOOL_DEFINITIONS — those are
 // proxied to the bridge; this one is spawned locally and never leaves the host. The
 // description carries the operational guardrails as usage guidance for the model.
@@ -921,9 +958,16 @@ const INSTRUCTIONS = [
   'The body is JSON: {"intent": {kind, subject_id, summary, payload, ...}}; the kind and target_id attributes are copied from it (target_id is intent.subject_id) and are absent when a body carries no intent.',
   'These channel EVENTS are one-way notifications: read them and act — no reply is sent back through the event.',
   'kind identifies what happened upstream (e.g. new_card, column_move, content_edit); target_id names the resource the event is about; summary describes the event in prose; payload carries kind-specific data.',
-  ...(TOOLS_ENABLED
+  ...(CI_TOOLS_ONLY
     ? [
-        `This server ALSO exposes request/response board tools scoped to YOUR channel identity: ${TOOL_DEFINITIONS.map((tool) => tool.name).join(', ')} —`,
+        `This server ALSO exposes request/response CI tools for YOUR channel identity: ${BRIDGE_TOOLS.map((tool) => tool.name).join(', ')} —`,
+        'call ci_await to be told when CI on a commit finishes instead of polling GitHub, and ci_await_cancel to stop waiting (each tool\'s own description says what it does).',
+        'No board tool is served to this agent.',
+      ]
+    : []),
+  ...(TOOLS_ENABLED && !CI_TOOLS_ONLY
+    ? [
+        `This server ALSO exposes request/response board tools scoped to YOUR channel identity: ${BRIDGE_TOOLS.map((tool) => tool.name).join(', ')} —`,
         'call them to see, capture, fix or annotate board work without a kanban token (each tool\'s own description says what it does);',
         'never mint a second card to say the first is wrong — correct it, or comment on it;',
         'every write is confined by the bridge to your own board, and each tool\'s description states its scope.',
@@ -1059,7 +1103,7 @@ function handleClearContext() {
 if (ADVERTISE_ANY_TOOL) {
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      ...(TOOLS_ENABLED ? TOOL_DEFINITIONS : []),
+      ...BRIDGE_TOOLS,
       ...(CLEAR_CONTEXT_ENABLED ? [CLEAR_CONTEXT_TOOL] : []),
     ],
   }));
@@ -1146,8 +1190,10 @@ if (TOOLS_ENABLED) {
         ? 'ssh target present (default-on)'
         : 'endpoint+bearer present (default-on)';
   console.error(
-    `[${SERVER_NAME}] board tools ENABLED (${why}) — proxying tools/call to ${target}`,
+    `[${SERVER_NAME}] board tools ENABLED (${why}) — advertising ${BRIDGE_TOOLS.map((tool) => tool.name).join(', ')} from ${ADVERTISED.source}; proxying tools/call to ${target}`,
   );
+} else if (ENV_TOOLS_ON) {
+  console.error(`[${SERVER_NAME}] no bridge tool advertised: ${ADVERTISED.source}`);
 }
 
 if (CLEAR_CONTEXT_ENABLED) {

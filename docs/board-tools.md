@@ -1768,9 +1768,12 @@ of polling GitHub. The coordination framework's onboarding writes it.
   pinned by `provision-board-tools.py --role a` (add `--from 127.0.0.1,::1` on a same-box seat;
   re-runs must pass the same `--from`). The pin is an operator step. An existing impl seat needs
   that pin once, then `--role b --bootstrap-client` once, to get onto the self-updating client.
-- **Advertisement:** until the channel server reads `served_tools` (a later slice), a scope-less
-  seat's server advertises every board tool, and each refuses `not_served` with nothing read or
-  written. Listing only `ci_*` depends on that slice.
+- **Advertisement:** from channel-server client 0.9.45 (DL-462) the server lists what the bridge
+  serves the agent — `ci_await` and `ci_await_cancel` for a scope-less agent — and its
+  instructions describe no board tool. The resolution ladder (launch cache, one `served_tools`
+  call, last good cache, the env rule) is owned by `examples/channel-servers/README.md`
+  § *Which tools are listed*. A seat on an older client lists every board tool, and each refuses
+  `not_served` with nothing read or written.
 
 ## `ci_await` and `ci_await_cancel`
 
