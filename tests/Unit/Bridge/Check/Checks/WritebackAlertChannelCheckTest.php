@@ -5,6 +5,8 @@ namespace Tests\Unit\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\WritebackAlertChannelCheck;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PastedSecretShape;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\Severity;
 use App\Bridge\Writeback\AlertChannel;
 use App\Bridge\Writeback\WritebackConfig;
@@ -103,6 +105,24 @@ class WritebackAlertChannelCheckTest extends TestCase
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Ok, $findings[0]['severity']);
         $this->assertStringContainsString("socket {$socket} (parent dir present)", $findings[0]['message']);
+    }
+
+    /**
+     * card#11261 — a bare value has dirname `.`, which exists, so the check reports OK and names the
+     * socket. A token pasted there must be named as a fingerprint.
+     */
+    public function test_a_token_pasted_as_the_socket_is_named_as_a_fingerprint(): void
+    {
+        $pasted = str_repeat('ab12', 16);
+
+        $findings = $this->findings(new AlertChannel(socket: $pasted));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertSame('writeback.json alert_channel: socket '.PastedSecretShape::displayPathSetting($pasted).' (parent dir present)', $findings[0]['message']);
+        $this->assertStringContainsString(PastedSecretShape::fingerprint($pasted), $findings[0]['message']);
+        $this->assertStringNotContainsString($pasted, $findings[0]['message']);
+        $this->assertStringNotContainsString($pasted, RedactedErrorText::of(new \RuntimeException($findings[0]['message'])));
     }
 
     public function test_a_loopback_url_is_ok(): void

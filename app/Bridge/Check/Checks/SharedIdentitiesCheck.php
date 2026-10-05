@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\SharedIdentitiesFileState;
 
 /**
@@ -55,7 +56,7 @@ final class SharedIdentitiesCheck implements Check
         }
 
         if ($file->state === SharedIdentitiesFileState::Unreadable) {
-            yield Finding::unvalidated("shared-identities.json at {$file->path} could NOT be read by this process (it is present — a perms or I/O fault, not an absent file), so how many shared accounts it declares is unknown and this run is not evidence that attribution is wired; re-run as the owning user, or fix its perms.");
+            yield Finding::unvalidated('shared-identities.json at '.PastedSecretShape::displayPathSetting($file->path).' could NOT be read by this process (it is present — a perms or I/O fault, not an absent file), so how many shared accounts it declares is unknown and this run is not evidence that attribution is wired; re-run as the owning user, or fix its perms.');
 
             return;
         }
@@ -64,7 +65,7 @@ final class SharedIdentitiesCheck implements Check
         // not a JSON object. Warn rather than fail because the runtime degrades rather than
         // breaks — attribution silently goes missing, which is precisely what must be loud.
         if ($file->state === SharedIdentitiesFileState::Malformed) {
-            yield Finding::warn("shared-identities.json at {$file->path} is not a valid JSON object — it is IGNORED at runtime (the loader is fail-soft), so every agent sharing an account loses its attribution silently. Fix the JSON, or remove the file if it is not needed.");
+            yield Finding::warn('shared-identities.json at '.PastedSecretShape::displayPathSetting($file->path).' is not a valid JSON object — it is IGNORED at runtime (the loader is fail-soft), so every agent sharing an account loses its attribution silently. Fix the JSON, or remove the file if it is not needed.');
 
             return;
         }

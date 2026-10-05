@@ -6,6 +6,8 @@ use App\Bridge\Classifiers\EventDrivenClassifier;
 use App\Bridge\Classifiers\InboxOnlyClassifier;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\PastedSecretShape;
+use App\Bridge\Support\RedactedErrorText;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -27,6 +29,47 @@ class AgentConfigTest extends TestCase
             'identity' => ['github_user_id' => 137],
             'subscriptions' => [['provider' => 'kanban', 'scopes' => [5], 'event_filter' => ['task.*']]],
         ], $overrides);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function pastedPathSettings(): array
+    {
+        return [
+            'channel.socket' => ['socket'],
+            'channel.server_path' => ['server_path'],
+        ];
+    }
+
+    /**
+     * card#11261 — a bearer-shaped value pasted where a path belongs is refused (it is not an
+     * absolute path) and the refusal prints a fingerprint of it, not the value. The positive
+     * assertion is the fingerprint: an absence check alone would also pass a message that dropped
+     * the value entirely.
+     */
+    #[DataProvider('pastedPathSettings')]
+    public function test_a_token_pasted_as_a_channel_path_is_refused_as_a_fingerprint(string $key): void
+    {
+        $pasted = str_repeat('ab12', 16);
+
+        try {
+            AgentConfig::fromArray('prod-agent', $this->raw(['channel' => [$key => $pasted]]));
+            $this->fail("channel.{$key} accepted a value that is not an absolute path");
+        } catch (ConfigException $e) {
+            $this->assertStringNotContainsString($pasted, $e->getMessage());
+            $this->assertStringContainsString("channel.{$key} '".PastedSecretShape::displayPathSetting($pasted)."' must be an absolute path", $e->getMessage());
+            $this->assertStringContainsString(PastedSecretShape::fingerprint($pasted), $e->getMessage());
+            $this->assertStringNotContainsString($pasted, RedactedErrorText::of($e));
+        }
+    }
+
+    public function test_a_real_channel_path_is_still_printed_as_written(): void
+    {
+        try {
+            AgentConfig::fromArray('prod-agent', $this->raw(['channel' => ['socket' => 'rel/chan.sock']]));
+            $this->fail('a relative socket was accepted');
+        } catch (ConfigException $e) {
+            $this->assertStringContainsString("channel.socket 'rel/chan.sock' must be an absolute path", $e->getMessage());
+        }
     }
 
     public function test_parses_a_valid_config(): void

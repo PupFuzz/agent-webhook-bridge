@@ -269,7 +269,7 @@ final class AgentConfig
             // host/uid restore. Throws on an unresolvable token (fail-closed).
             $socketStr = PathHelper::expandRuntimeTokens($socketStr);
             if (! SocketPath::isValid($socketStr)) {
-                throw new ConfigException("channel.socket '{$socketStr}' must be an absolute path with no '..' segment or null byte");
+                throw new ConfigException("channel.socket '".PastedSecretShape::displayPathSetting($socketStr)."' must be an absolute path with no '..' segment or null byte");
             }
         }
 
@@ -344,7 +344,7 @@ final class AgentConfig
         if ($rawServerPath !== null) {
             $serverPath = is_scalar($rawServerPath) ? (string) $rawServerPath : '';
             if (! SocketPath::isValid($serverPath)) {
-                throw new ConfigException("channel.server_path '{$serverPath}' must be an absolute path with no '..' segment or null byte");
+                throw new ConfigException("channel.server_path '".PastedSecretShape::displayPathSetting($serverPath)."' must be an absolute path with no '..' segment or null byte");
             }
             if (str_ends_with($serverPath, '.mjs')) {
                 $serverPath = dirname($serverPath);

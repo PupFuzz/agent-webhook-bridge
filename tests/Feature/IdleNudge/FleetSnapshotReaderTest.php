@@ -10,6 +10,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 /**
@@ -165,6 +166,23 @@ class FleetSnapshotReaderTest extends TestCase
 
         File::delete($this->dir.'/fleet-token');
         $this->assertUnmeasured("the fleet token file is absent, unreachable, or not a regular file at {$this->dir}/fleet-token (BRIDGE_IDLE_NUDGE_TOKEN_PATH)");
+        Http::assertNothingSent();
+    }
+
+    /** card#11261 — a token pasted as BRIDGE_IDLE_NUDGE_TOKEN_PATH is not in the unmeasured reason. */
+    public function test_a_token_pasted_as_the_token_path_is_not_in_the_refusal(): void
+    {
+        $pasted = PastedTokenFixture::value();
+        config(['bridge.idle_nudge.token_path' => $pasted]);
+        Http::fake();
+
+        try {
+            $this->read();
+            $this->fail('expected an unmeasured pass');
+        } catch (IdleNudgeUnmeasured $e) {
+            $this->assertStringNotContainsString($pasted, $e->getMessage());
+            $this->assertMatchesRegularExpression('/not a regular file at <a credential-shaped value, sha256:[0-9a-f]{8}> \(BRIDGE_IDLE_NUDGE_TOKEN_PATH\)/', $e->getMessage());
+        }
         Http::assertNothingSent();
     }
 }

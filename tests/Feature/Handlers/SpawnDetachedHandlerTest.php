@@ -7,6 +7,7 @@ use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Handlers\SpawnDetachedHandler;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Support\Facades\File;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 class SpawnDetachedHandlerTest extends TestCase
@@ -98,6 +99,21 @@ class SpawnDetachedHandlerTest extends TestCase
         $this->expectException(HandlerException::class);
         $this->expectExceptionMessage('setsid not found');
         $this->spawn(['cmd' => [$this->touch, $this->dir.'/x']]);
+    }
+
+    /** card#11261 — a token pasted as BRIDGE_SPAWN_SETSID_PATH is not in the handler's refusal. */
+    public function test_a_token_pasted_as_the_setsid_path_is_not_in_the_refusal(): void
+    {
+        $pasted = PastedTokenFixture::value();
+        config(['bridge.spawn.setsid_path' => $pasted]);
+
+        try {
+            $this->spawn(['cmd' => [$this->touch, $this->dir.'/x']]);
+            $this->fail('expected the handler to refuse');
+        } catch (HandlerException $e) {
+            $this->assertStringNotContainsString($pasted, $e->getMessage());
+            $this->assertMatchesRegularExpression('/setsid not found \(<a credential-shaped value, sha256:[0-9a-f]{8}>\)/', $e->getMessage());
+        }
     }
 
     public function test_valid_cmd_executes_detached(): void

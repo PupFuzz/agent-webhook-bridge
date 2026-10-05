@@ -100,6 +100,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#11147** — **Docs: the `agent.kanban_user_roster` check's docblock and `docs/config-schema.md` § identity no longer claim that no roster carries `kanban_user_id` yet.** That was a census, and it stopped being true when a roster did. Both now state the condition: a roster seat with no id for this host warns, and DL-439 (operator ruling C) makes that a fail once the roster carries the ids, a flip that is not built. Two test comments that repeated the census are corrected the same way. No behaviour change: the check's severity is still WARN.
 
+### Security
+
+- **card#11261 / DL-458** — 🔒 **A token pasted into a path setting is no longer printed by the messages that name the setting**, beyond the two settings card#11208 already covered. Two kinds of setting are not covered: the directory settings below, and `BRIDGE_TOOLS_SSH_KEY`, which `ssh` prints in its own stderr (`docs/config-schema.md` § *A token pasted where a path belongs*). `BRIDGE_COORD_CONFIG_PATH` (and the ambient `$COORD_CONFIG`), `BRIDGE_IDLE_NUDGE_TOKEN_PATH`, `BRIDGE_SPAWN_SETSID_PATH`, `BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR`, every agent-YAML `token_path`, `channel.socket` and `channel.server_path`, and the `writeback.json` `alert_channel.auth.token_path` and `alert_channel.socket` are now printed as `<a credential-shaped value, sha256:…>` when the value has a credential's shape. That applies in `laravel.log`, `bridge:check` text and JSON, board-tools refusals, handler exceptions, and `bridge:provision` / `bridge:provision-tools` output. A real path, which always holds a `/` or starts with `~`, is printed exactly as before.
+  - ⛔ **Not covered: `BRIDGE_DIR`, `BRIDGE_CONFIG_DIR`, `BRIDGE_SECRET_DIR` and `BRIDGE_STATE_DIR`.** A token pasted into one of these becomes the first part of every path built under it, which a display rule cannot shorten. Set them only to absolute paths. `docs/config-schema.md` § *A token pasted where a path belongs* owns the rule and this bound.
+  - **For custom code only:** `CoordCredentialStore::displayName()`, `::displayPathSetting()`, `::looksLikePastedSecret()` and `::fingerprint()` moved to `App\Bridge\Support\PastedSecretShape`; the old names are removed. `UnreadableFileException::permissionsFault()`'s second argument is now the path as a message may print it.
+  - Message text changes only for a value with a credential's shape. No migration, no config key, no route change; `--format=json` `schema` stays **1**.
+
 ## [0.95.0] - 2026-10-01
 
 ### Changed

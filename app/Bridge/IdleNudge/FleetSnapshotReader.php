@@ -3,6 +3,7 @@
 namespace App\Bridge\IdleNudge;
 
 use App\Bridge\Exceptions\UnreadableSecretException;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\TokenFile;
 use Illuminate\Http\Client\ConnectionException;
@@ -63,19 +64,20 @@ final class FleetSnapshotReader
 
     private function token(string $path): string
     {
+        $shown = PastedSecretShape::displayPathSetting($path);
         if (! is_file($path)) {
-            throw new IdleNudgeUnmeasured("the fleet token file is absent, unreachable, or not a regular file at {$path} (BRIDGE_IDLE_NUDGE_TOKEN_PATH)");
+            throw new IdleNudgeUnmeasured("the fleet token file is absent, unreachable, or not a regular file at {$shown} (BRIDGE_IDLE_NUDGE_TOKEN_PATH)");
         }
         if (SecretFile::isInsecure($path)) {
-            throw new IdleNudgeUnmeasured("the fleet token file at {$path} is group/world-readable — chmod 600");
+            throw new IdleNudgeUnmeasured("the fleet token file at {$shown} is group/world-readable — chmod 600");
         }
         try {
             $token = TokenFile::readTrimmed($path);
         } catch (UnreadableSecretException) {
-            throw new IdleNudgeUnmeasured("the fleet token file at {$path} could not be read by this process");
+            throw new IdleNudgeUnmeasured("the fleet token file at {$shown} could not be read by this process");
         }
         if ($token === null) {
-            throw new IdleNudgeUnmeasured("the fleet token file at {$path} is empty");
+            throw new IdleNudgeUnmeasured("the fleet token file at {$shown} is empty");
         }
 
         return $token;

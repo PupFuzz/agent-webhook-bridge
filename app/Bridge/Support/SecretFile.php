@@ -74,7 +74,7 @@ final class SecretFile
 
         return sprintf(
             'secret file at %s is group/world-readable (mode %04o) — chmod 600',
-            $path,
+            PastedSecretShape::displayPathSetting($path),
             $perms === false ? 0 : ($perms & 0o777),
         );
     }

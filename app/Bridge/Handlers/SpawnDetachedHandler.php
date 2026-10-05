@@ -7,6 +7,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\PathHelper;
 
 /**
@@ -126,7 +127,7 @@ final class SpawnDetachedHandler implements Handler
             }
         }
         throw new HandlerException(
-            'spawn_detached: setsid not found ('.implode(' / ', $candidates).
+            'spawn_detached: setsid not found ('.implode(' / ', array_map(PastedSecretShape::displayPathSetting(...), $candidates)).
             '); set BRIDGE_SPAWN_SETSID_PATH to its absolute path'
         );
     }

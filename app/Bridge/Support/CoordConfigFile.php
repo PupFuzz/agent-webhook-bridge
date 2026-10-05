@@ -114,12 +114,13 @@ final class CoordConfigFile
      */
     private static function read(string $path, array|false $stat): self
     {
+        $shown = PastedSecretShape::displayPathSetting($path);
         if ($stat === false) {
             // `lstat` answers false for a removed file AND for one under a directory this
             // process may not traverse; only the first is the same for every reader.
             return PathVisibility::ancestorIsTraversable($path)
-                ? new self($path, self::ABSENT, "there is no file at {$path}")
-                : new self($path, self::UNREADABLE, "a directory above {$path} is not traversable by this OS user, so whether the file exists was not measured");
+                ? new self($path, self::ABSENT, "there is no file at {$shown}")
+                : new self($path, self::UNREADABLE, "a directory above {$shown} is not traversable by this OS user, so whether the file exists was not measured");
         }
         $refusal = UntrustedPathContents::lstatRefusal($stat);
         if ($refusal !== null) {
@@ -134,7 +135,7 @@ final class CoordConfigFile
             return new self($path, self::UNREADABLE, $e->getMessage());
         }
         if ($raw === null) {
-            return new self($path, self::ABSENT, "there is no file at {$path} (it was removed while being read)");
+            return new self($path, self::ABSENT, "there is no file at {$shown} (it was removed while being read)");
         }
         $decoded = json_decode($raw, true);
         if (! is_array($decoded)) {
@@ -169,14 +170,25 @@ final class CoordConfigFile
      */
     public function faultClause(): string
     {
+        $shown = $this->shownPath();
+
         return match ($this->fault) {
             self::UNSET => self::SETTING.' is not set in this install\'s .env',
-            self::NOT_ABSOLUTE => self::SETTING." is '{$this->path}', which is not an absolute path",
-            self::ABSENT => "there is no coord roster at {$this->path}",
-            self::NOT_A_FILE => "the coord roster at {$this->path} is not a file the bridge will read: {$this->detail}",
-            self::UNREADABLE => "the coord roster at {$this->path} could not be read by this OS user: {$this->detail}",
-            self::MALFORMED => "the coord roster at {$this->path} is not a JSON object ({$this->detail})",
-            default => "the coord roster at {$this->path} was read",
+            self::NOT_ABSOLUTE => self::SETTING." is '{$shown}', which is not an absolute path",
+            self::ABSENT => "there is no coord roster at {$shown}",
+            self::NOT_A_FILE => "the coord roster at {$shown} is not a file the bridge will read: {$this->detail}",
+            self::UNREADABLE => "the coord roster at {$shown} could not be read by this OS user: {$this->detail}",
+            self::MALFORMED => "the coord roster at {$shown} is not a JSON object ({$this->detail})",
+            default => "the coord roster at {$shown} was read",
         };
+    }
+
+    /**
+     * The setting's value as a message may print it — {@see PastedSecretShape::displayPathSetting()}.
+     * `path` stays the value as read, for the read; every message naming the file uses this.
+     */
+    public function shownPath(): string
+    {
+        return PastedSecretShape::displayPathSetting((string) $this->path);
     }
 }
