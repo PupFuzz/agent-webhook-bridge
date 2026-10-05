@@ -10,7 +10,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
-- **Dependabot PR #869** — **npm/@modelcontextprotocol/sdk 1.30.1 → 1.31.0 in examples/channel-servers** (GHSA-6qxp-vccf-f47h, OAuth client credentials not bound to the authorization server that issued them). The channel server uses only the SDK's stdio `Server`/`Client` and their transports, never its OAuth client, so the advisory does not reach it; bumped because it is in-range and freely available. Reference channel-server snapshot 0.9.45 → 0.9.46.
+- **Dependabot PR #869** — **npm/@modelcontextprotocol/sdk 1.30.1 → 1.32.1 in examples/channel-servers**, past three SDK advisories, none of which reaches the channel server: GHSA-22jm-h49p-29qw (high; experimental tasks not tied to the session that created them — only a server given a `taskStore`, and the channel server passes none), GHSA-6prh-2h8m-c8cw (medium; HTTP client transports and OAuth requests followed cross-origin redirects — only `StreamableHTTPClientTransport`, `SSEClientTransport` or the OAuth `auth()` functions, and the channel server's SDK `Client` is stdio-only) and GHSA-6qxp-vccf-f47h (high; OAuth client credentials not bound to their issuer — the OAuth client again). Bumped because the fixes are in-range and freely available. 1.32.0 also makes the server accept a `tools/call` with no `arguments`; the channel server already reads a missing one as `{}`. Reference channel-server snapshot 0.9.45 → 0.9.46.
 
 ### Changed
 
