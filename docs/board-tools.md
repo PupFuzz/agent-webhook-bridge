@@ -1711,27 +1711,35 @@ of polling GitHub. The coordination framework's onboarding writes it.
 **⛔ THE CROSS-REPO CONTRACT — DECLARED HERE, for the framework that writes these blocks:**
 
 - **Minimum bridge.** A scope-less block **throws at load on a bridge that predates DL-461**,
-  and a config that throws takes the whole install's receiver down. Write one only after
-  asking the bridge `{"op": "served_tools"}` on the client-update door (ssh: the forced command's
-  stdin; http: `POST /agent-tools/client`). The question is about the BRIDGE, so whose credential
-  asks matters only for whether the door answers at all:
-  - **An already-enabled agent's credential** (e.g. the PM's pinned key or bearer). `ok: true` ⇒
-    this bridge supports scope-less blocks; the answer is `{ok, op, agent, served: [...]}`, `agent`
-    being the identity the door resolved.
-  - **The would-be seat's own pinned key, before its block exists** (ssh only — over http a seat
-    with no enabled block has no bearer the door accepts, so it gets a 401 and learns nothing).
-    The door refuses it at exit 2 because the agent has no enabled block. `reason: "door_closed"` on
-    that refusal ⇒ this bridge supports scope-less blocks (the reason was added with DL-461). Exit 2
-    with **no** `reason` ⇒ an older bridge, OR an agent name the bridge has no YAML for
-    (`unknown agent`); either way, do not write the block yet.
-  - **Too old**, exit 1 (HTTP 422), either of:
-    - no `reason`, and the error starts `unknown client-update` — a bridge with the update door
-      but without this op;
-    - `reason: "bad_request"`, and the error is ``request must carry a non-empty `tool` `` — a
-      bridge older than the door, which reads the body as a board-tools call.
-    Do not write the block. This is the same pair `provision-board-tools.py`'s
-    `predates_served_tools()` matches; any other answer is about the asking agent, not the
-    bridge's age.
+  and a config that throws takes the whole install's receiver down. Before writing one, send
+  `{"op": "served_tools"}` to the client-update door (ssh: the forced command's stdin; http:
+  `POST /agent-tools/client`). **The test is POSITIVE-ONLY — write the block on exactly these two
+  answers, and on NO other:**
+  - **`ok: true`**, asked with an already-enabled agent's credential (e.g. the PM's pinned key or
+    bearer). The answer is `{ok, op, agent, served: [...]}`, `agent` being the identity the door
+    resolved.
+  - **exit 2 with `reason: "door_closed"`**, asked with the would-be seat's own pinned key before its
+    block exists (ssh only). The door refuses that agent because it has no enabled block, and the
+    `door_closed` reason was added with DL-461, so its presence proves the bridge is new enough.
+
+  **Every other answer means do not write the block** — it is not a negative verdict to be
+  matched, it is the absence of a positive one. Known shapes, as examples and not as the
+  definition:
+  - exit 1 / HTTP 422, no `reason`, error ``request must carry a non-empty `tool` `` — a bridge
+    older than the update door, which reads the body as a board-tools call (later bridges add
+    `reason: "bad_request"` to the same refusal);
+  - exit 1 / HTTP 422, no `reason`, error starting `unknown client-update` — a bridge with the
+    door but without this op;
+  - HTTP **404** with no envelope — a bridge with no `/agent-tools/client` route;
+  - HTTP **401** — a bearer the door does not accept, which is what a seat with no enabled block
+    has over http, so it learns nothing;
+  - exit 2 with **no** `reason` — not a positive answer. Causes include an older bridge, an agent
+    name the bridge has no YAML for (`unknown agent`), a malformed agent YAML
+    (`agent config error`), or any 5xx.
+
+  `provision-board-tools.py`'s `predates_served_tools()` recognises a superset of the two
+  exit-1 refusal shapes above, for a different decision: whether `--self-cert` may fall back to
+  `board_my_cards`. It is not this test, and it is never a licence to write a block.
 - **Rollback.** Remove every scope-less block BEFORE rolling a bridge back below DL-461.
 - **What it serves:** `ci_await` and `ci_await_cancel` only, checked bridge-side by the dispatcher
   gate (`BoardToolDispatcher`) and pinned by `ServedToolsTest` / `ScopelessDispatchTest`.

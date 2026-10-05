@@ -866,6 +866,24 @@ class SshTransportProbeTest extends TestCase
         $this->assertSame(['board_my_cards', 'ci_await_cancel'], array_map(static fn (string $in): string => json_decode($in, true)['tool'], $env->sentStdins));
     }
 
+    /** An agent served nothing answers the CI follow-up `not_served` too: the FAIL says so, not "unreachable". */
+    public function test_a_follow_up_refused_not_served_names_an_agent_served_nothing(): void
+    {
+        $env = new FakeSshProbeEnvironment;
+        $refusal = (string) json_encode(['ok' => false, 'error' => 'not served', 'reason' => 'not_served']);
+        $env->stdoutQueue = [$refusal, $refusal];
+        $env->exitQueue = [1, 1];
+
+        $findings = (new SshTransportProbe($env))->probeLive('me@host', [
+            ['agent' => 'pm', 'board_id' => 10, 'swimlane_id' => 4],
+            ['agent' => 'impl', 'board_id' => null, 'swimlane_id' => null],
+        ]);
+
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('served NO tool', $findings[0]->message);
+        $this->assertStringNotContainsString('unreachable', $findings[0]->message);
+    }
+
     /** Control: a board_my_cards refusal that is NOT `not_served` stays a failure and is not followed up. */
     public function test_live_probe_does_not_follow_up_any_other_refusal(): void
     {

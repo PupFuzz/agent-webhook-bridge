@@ -2270,10 +2270,14 @@ def _ssh_round_trip(cmd, payload: str, target: str):
 def predates_served_tools(returncode: int, envelope) -> bool:
     """Did a bridge answer `{op: served_tools}` as one that does not know the op (card#11283)?
 
-    Exactly two shapes, both exit 1: a bridge with the client-update door (DL-430) but no
-    `served_tools` names it `unknown client-update op` (no `reason`), and a bridge older than the
-    door reads the body as a board-tools call with no `tool` (`reason: bad_request`). Anything else — `door_closed`,
-    an exit 2, a success — is an answer about THIS seat and is never retried as an old bridge.
+    Both shapes exit 1. A bridge with the client-update door (DL-430) but no `served_tools`
+    names it `unknown client-update op`, with no `reason`. A bridge older than the door reads the
+    body as a board-tools call with no `tool`. That refusal carries no `reason` on every real
+    pre-door bridge; `reason: bad_request` was added later (DL-449) and is accepted too. Anything
+    else — `door_closed`, an exit 2, a success — is never retried as an old bridge. This is a
+    superset of the refusal shapes `docs/board-tools.md` § Scope-less agents lists, and it decides
+    only the self-cert fallback — never whether a scope-less block may be written, which is
+    positive-only.
     """
     if returncode != 1 or not isinstance(envelope, dict) or envelope.get("ok") is not False:
         return False

@@ -613,6 +613,14 @@ final class SshTransportProbe
     private function probeLiveScopeless(string $target, array $scopeless): array
     {
         $r = $this->env->sshRoundTrip($target, (string) json_encode(ExemptCaller::scopelessProbeBody()));
+        if ($r['exit'] === 1) {
+            $refusal = json_decode($r['stdout'], true);
+            if (is_array($refusal) && ($refusal['reason'] ?? null) === 'not_served') {
+                // The door is live and the key resolved; the agent behind it is served nothing
+                // (a scope-less block with `ci_tools: false`).
+                return [Finding::fail("ssh {$target}: the door answered, but ci_await_cancel was refused not_served — the pinned key resolved to an agent that is served NO tool (a scope-less block with ci_tools: false). Its ci_tools.agent line says which; give it a board scope or drop the opt-out.")];
+            }
+        }
         if ($r['exit'] !== 0) {
             return [Finding::fail("ssh {$target} exited {$r['exit']} on the scope-less (ci_await_cancel) probe — unreachable or the forced command failed (stderr: ".UntrustedText::forOperator(trim($r['stderr'])).')')];
         }

@@ -719,6 +719,9 @@ class SelfCert(unittest.TestCase):
     def test_a_bridge_that_predates_served_tools_falls_back_to_board_my_cards(self):
         for old in (
             {"ok": False, "error": "unknown client-update `op` \"served_tools\" — this bridge serves client_manifest"},
+            # Every real pre-door bridge: no `reason` (it was added later, by DL-449).
+            {"ok": False, "error": "request must carry a non-empty `tool`"},
+            # The same refusal on a bridge that carries DL-449's reason.
             {"ok": False, "error": "request must carry a non-empty `tool`", "reason": "bad_request"},
         ):
             sent = self._run_seq([(json.dumps(old), 1), (json.dumps({"ok": True, "result": {}}), 0)])
