@@ -48,7 +48,12 @@ function installFakeHelper(binDir) {
 function recordingBridge(t) {
   let hits = 0;
   const server = http.createServer((req, res) => {
-    hits += 1;
+    // Only the board-tools CALL endpoint is the proxy these cases watch. The server's own
+    // startup `served_tools` ask (card#11283) goes to the update door beside it, and its
+    // `{"ok":true}` answer is not that op's answer, so the env rule keeps the tools on.
+    if (req.url === '/agent-tools/call') {
+      hits += 1;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('{"ok":true}');
   });

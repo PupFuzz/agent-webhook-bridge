@@ -325,6 +325,33 @@ wiring advertises no `tools` capability (nothing dead).
 If the tools are advertised but the endpoint or bearer is unset, a `tools/call`
 returns a **structured refusal naming the missing config** (no call is made).
 
+### Which tools are listed: what the bridge serves this agent (client 0.9.45 and later)
+
+The env rule above decides whether the bridge tools are ON. WHICH of them are listed is the
+bridge's own answer for this agent (card#11283 / DL-462): the bridge's `served_tools` set ∩
+the tools this server defines. An implementation seat with a scope-less `board_tools` block is
+served `ci_await` and `ci_await_cancel` only, so that is all it lists, and its instructions
+describe CI tools and no board tool. The set is resolved ONCE, at start-up, before the MCP
+handshake, from the first of:
+
+1. **This launch's cache**, `<client root>/served-tools.json`, written by the launch-time
+   updater from this launch's `client_manifest` answer (only when that answer carries
+   `served_tools`). No call is made.
+2. **One `{"op": "served_tools"}` call** to the update door over this seat's transport (5 s):
+   - the bridge's list ⇒ that list;
+   - `door_closed` (the ssh door will not serve this agent) ⇒ **no bridge tool**;
+   - a bridge that does not know the op (ssh exit 1 or HTTP 422 with no `reason` and an
+     `unknown client-update` error; the pre-door empty-`tool` refusal; HTTP 404) ⇒ the env
+     rule, every tool, and any cache is ignored.
+3. **The last good cache**, from any earlier launch, when the call says nothing (no answer, a
+   reason-less exit 2, a 5xx, a 401, a body that is not the op's answer).
+4. **The env rule**: every tool, as before 0.9.45.
+
+The bridge refuses an unserved tool (`not_served`) whatever this server lists, so a fallback can
+only ever list a tool that refuses — it never grants one. `served-tools.json` is an add-only
+cross-release contract: `{launch_id, agent, served: [...], written_at}`; readers use
+`launch_id` and `served`.
+
 The bridge side is loopback-gated: same-box installs point `BRIDGE_TOOLS_ENDPOINT`
 at a loopback peer (`https://<public-host>/...` FAILS the gate: the kernel
 source-selects the box's public IP). An Apache/TLS-fronted bridge has two

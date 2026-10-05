@@ -138,6 +138,7 @@ export function goodPack(release, opts = {}) {
  *   fail        {op: {status, error}}  answer that op with a failure ({op: {status, raw}}: that body, verbatim)
  *   delayMs     {op: ms}  hold that op's answer
  *   packBytes   override of the bytes served by client_pack
+ *   servedTools a list: answers `served_tools` and rides on client_manifest (card#11283); unset = a bridge without either
  * `requests` records every door request body; `reports` every client_report.
  */
 export async function fixtureBridge(t, initial = {}) {
@@ -188,6 +189,11 @@ export async function fixtureBridge(t, initial = {}) {
         }
         return send(state.fail[op].status, { ok: false, error: state.fail[op].error });
       }
+      // card#11283: `servedTools` (a list) answers the `served_tools` op and rides on every
+      // client_manifest answer; left unset, the fixture is a bridge that predates both.
+      if (op === 'served_tools' && Array.isArray(state.servedTools)) {
+        return send(200, { ok: true, op, agent: 'fixture-agent', served: state.servedTools });
+      }
       if (op === 'client_report') {
         reports.push(body);
         for (const line of body.entries) {
@@ -215,6 +221,7 @@ export async function fixtureBridge(t, initial = {}) {
           offer,
           approval: { required: offer === null, owed: offer === null ? state.owed ?? p.manifest.bridge_release : null },
           log_head: state.installId ? logHead(state.installId) : null,
+          ...(Array.isArray(state.servedTools) ? { served_tools: state.servedTools } : {}),
         });
       }
       if (op === 'client_pack') {
