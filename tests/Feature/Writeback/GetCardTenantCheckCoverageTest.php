@@ -137,7 +137,7 @@ class GetCardTenantCheckCoverageTest extends TestCase
         // reassigns that to `min()` of the same board-scoped read. None of the three can
         // carry an id out of author-controlled text (DL-330 corrected an earlier claim that
         // named only the create).
-        'Bridge/Tools/BoardCreateCardTool.php::placement#1' => 'cardsByTag($cfg->boardId, …) on the idempotency-hit arm; createCard($cfg->boardId, …) or min(cardsByTag(…)) on the create arm',
+        'Bridge/Tools/BoardCreateCardTool.php::readBack#1' => 'cardsByTag($cfg->boardId, …) on the idempotency-hit arm; createCard($cfg->boardId, …) or min(cardsByTag(…)) on the create arm (the one read-back placement and, on a hit, the holder are read off — card#11267)',
         // The per-card disposition of a coord card move. `$id` comes from the union of
         // `cardsByTag($mapping->boardId, "id:{$sid}")` and
         // `correlateIssue($mapping->boardId, …)`, and the row is re-checked through

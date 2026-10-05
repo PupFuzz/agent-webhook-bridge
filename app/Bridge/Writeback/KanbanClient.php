@@ -499,6 +499,19 @@ final class KanbanClient
     }
 
     /**
+     * Every live card on a board, and whether the walk stopped at the page ceiling — the read
+     * `board_my_cards` takes a seat's ASSIGNED cards from (card#11267). kanban's search has no term
+     * that selects by assignee id (`@<initials>` matches a user's initials, which do not identify
+     * one), so the board is walked whole and the assignee is matched bridge-side, by the board
+     * tools' `SeatCardScope`. The read is named, so a page answered 200 with no card
+     * collection is logged per page, as the lane read's is ({@see pagedSearch}).
+     */
+    public function boardRowsRead(int $boardId): BoardRead
+    {
+        return $this->pagedSearch($boardId, '', false, 'assignee-search');
+    }
+
+    /**
      * Every row a board-scoped search answers, and whether the walk stopped at the MAX_PAGES ceiling
      * instead — the ONE page walk behind {@see readBoard}, {@see swimlaneCards} and {@see tagRowsRead}
      * (DL-028). `$terms` are the `q` terms after the board scope, which this method writes itself, each
@@ -881,7 +894,9 @@ final class KanbanClient
     /**
      * {@see boardStageNames}' map plus the rest of what the same `preload.json` read carries about
      * a board's columns and lanes, from ONE request: every stage id, the stages the board declares
-     * terminal, and the swimlane ids with {@see boardSwimlaneIds}' null-versus-empty split.
+     * terminal, the swimlane ids with {@see boardSwimlaneIds}' null-versus-empty split, and each
+     * stage's `position` — {@see boardStageOrder}'s map off the same read (card#11267: what a
+     * finished-column test needs, without a second request).
      * `board_my_cards` reads this once per call.
      *
      * ⭐ TERMINALITY IS READ FROM THE BOARD'S OWN FLAG WHERE THE BOARD SETS ONE, AND FROM
@@ -905,11 +920,15 @@ final class KanbanClient
         $stageIds = [];
         $declared = [];
         $laneTyped = [];
+        $positions = [];
         foreach ($stages as $s) {
             if (! isset($s['id']) || ! is_numeric($s['id'])) {
                 continue;
             }
             $stageIds[] = (int) $s['id'];
+            if (is_numeric($s['position'] ?? null)) {
+                $positions[(int) $s['id']] = (float) $s['position'];
+            }
             // Strict `true`: kanban sends a real boolean, and a stage whose key is ABSENT (any
             // kanban before v0.47.0) must land here as "not flagged" rather than as a read this
             // method cannot interpret — see TerminalBasis on why absent needs no separate state.
@@ -961,6 +980,7 @@ final class KanbanClient
             array_values(array_unique($basis === TerminalBasis::Declared ? $declared : $laneTyped)),
             self::idList(is_array($data) ? ($data['swimlanes'] ?? null) : null),
             $basis,
+            $positions,
         );
     }
 

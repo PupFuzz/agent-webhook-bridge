@@ -1604,7 +1604,9 @@ class AgentToolsCallTest extends TestCase
 
         $this->assertSame([], $result['cards_by_stage']);
         $this->assertSame(0, $result['cards_window']['total']);
-        $this->assertSame(['board_id=10 swimlane_id=4'], self::searchQueries());
+        // The lane read, then the board walk the assigned arm reads (card#11267): this seat's roster
+        // gives it a kanban user, so its assigned cards are looked for in every lane.
+        $this->assertSame(['board_id=10 swimlane_id=4', 'board_id=10'], self::searchQueries());
     }
 
     public function test_my_cards_refuses_a_coord_board_the_token_cannot_read(): void
@@ -1619,7 +1621,7 @@ class AgentToolsCallTest extends TestCase
 
         $res->assertStatus(422);
         $this->assertStringContainsString('the structure of the coordination board 12', (string) $res->json('error'));
-        $this->assertSame(['board_id=10 swimlane_id=4', 'board_id=12 tags:"repo:me"'], self::searchQueries());
+        $this->assertSame(['board_id=10 swimlane_id=4', 'board_id=10', 'board_id=12 tags:"repo:me"'], self::searchQueries());
     }
 
     public function test_an_empty_coord_leg_on_a_readable_coord_board_is_answered(): void
@@ -1752,7 +1754,9 @@ class AgentToolsCallTest extends TestCase
         // this pin asserts now is the true, weaker statement — every key the tool has ever
         // emitted is still emitted, in order, and the description pair is still the only
         // conditional part of the shape. The full ordered list stays because that is what
-        // makes an accidental addition red rather than pass.
+        // makes an accidental addition red rather than pass. card#11267 appends `swimlane_id`
+        // (a seat's cards now span lanes) and `position` — the latter only when the row carries
+        // one, and this fixture's row carries none.
         $this->fakeOneCardWithDescription('the scope nobody asked for');
 
         $card = $this->callTool(['tool' => 'board_my_cards'])
@@ -1761,7 +1765,7 @@ class AgentToolsCallTest extends TestCase
 
         $this->assertArrayNotHasKey('description', $card);
         $this->assertArrayNotHasKey('description_truncated', $card);
-        $this->assertSame(['id', 'name', 'stage', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'pr_url', 'source', 'updated_at'], array_keys($card));
+        $this->assertSame(['id', 'name', 'stage', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'pr_url', 'source', 'updated_at', 'swimlane_id'], array_keys($card));
     }
 
     public function test_my_cards_include_description_false_is_the_default_shape(): void
@@ -1972,11 +1976,12 @@ class AgentToolsCallTest extends TestCase
         $this->assertCount(BoardMyCardsTool::DEFAULT_MAX_CARDS, $ids);
         $this->assertSame(500, max($ids), 'the newest card in the lane must survive the cut');
         $this->assertSame(500 - BoardMyCardsTool::DEFAULT_MAX_CARDS + 1, min($ids), 'the cut must take the newest N, contiguously');
-        // Emission still follows the board's own answer order (id-descending, as kanban
-        // answers), so an uncut list is byte-identical to what this tool has always returned.
-        $answered = $ids;
-        rsort($answered);
-        $this->assertSame($answered, $ids, 'the kept rows keep their original positions');
+        // WHICH cards survive is decided by id; the ORDER they are emitted in is the seat's rank
+        // order (card#11267): stage rank, then `position`, then id. These rows carry no position,
+        // so within the one column the id decides, ascending.
+        $ranked = $ids;
+        sort($ranked);
+        $this->assertSame($ranked, $ids, 'the kept rows are emitted in rank order');
     }
 
     public function test_my_cards_default_read_shows_the_live_column_not_a_wall_of_done(): void
@@ -1996,7 +2001,7 @@ class AgentToolsCallTest extends TestCase
         $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
 
         $this->assertArrayHasKey('In Review', $result['cards_by_stage'], 'the live column must be reachable from the DEFAULT call');
-        $this->assertSame([60, 59, 58, 57, 56], array_column($result['cards_by_stage']['In Review'], 'id'));
+        $this->assertSame([56, 57, 58, 59, 60], array_column($result['cards_by_stage']['In Review'], 'id'));
         $this->assertTrue($result['cards_window']['truncated']);
     }
 
@@ -2058,14 +2063,15 @@ class AgentToolsCallTest extends TestCase
         // from "FIRST 52 as answered" — which is how this control quietly stopped
         // controlling when the selection direction flipped (card#8985 r2: with the whole
         // comparator replaced by take-first-N it still passed). This lane answers all the
-        // ODD ids and then all the EVEN ones, which separates three hypotheses at once:
+        // ODD ids and then all the EVEN ones, which separates the hypotheses:
         //
         //   selection by id (correct) => the ten highest are 51..60
         //   take-first-N              => 1,3,5,…,19       — a different SET
-        //   emission re-sorted        => 51,52,…,60       — a different ORDER
+        //   emission in answer order  => 51,53,…,59,52,…,60 — a different ORDER
         //
-        // and pins that the kept rows keep the board's own positions, so an uncut list is
-        // byte-identical to what this tool has always returned.
+        // Since card#11267 the kept rows are emitted in the seat's rank order — stage rank, then
+        // `position`, then id — not in the board's answer order; these rows carry no position, so
+        // the id decides, ascending.
         $ids = array_merge(range(1, 59, 2), range(2, 60, 2));
         $rows = [];
         foreach ($ids as $id) {
@@ -2083,7 +2089,7 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200)
             ->json('result.cards_by_stage.Backlog');
 
-        $this->assertSame([51, 53, 55, 57, 59, 52, 54, 56, 58, 60], array_column($cards, 'id'));
+        $this->assertSame(range(51, 60), array_column($cards, 'id'));
     }
 
     public function test_my_cards_never_lets_an_unidentifiable_row_displace_a_card_that_has_an_id(): void
@@ -2098,7 +2104,7 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200)->json('result');
 
         $this->assertSame(
-            [6, 4, 2],
+            [2, 4, 6],
             array_map(static fn (array $card): mixed => $card['id'], $result['cards_by_stage']['Backlog'])
         );
         $this->assertSame(6, $result['cards_window']['total']);
@@ -2256,7 +2262,7 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200)->json('result');
 
         $this->assertSame(['In Review'], array_keys($result['cards_by_stage']));
-        $this->assertSame([5, 3], array_column($result['cards_by_stage']['In Review'], 'id'));
+        $this->assertSame([3, 5], array_column($result['cards_by_stage']['In Review'], 'id'));
         $this->assertSame(2, $result['cards_window']['total']);
         $this->assertSame(51, $result['cards_window']['stage_filter']);
     }
@@ -2287,7 +2293,7 @@ class AgentToolsCallTest extends TestCase
             'total' => 500, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'stage_filter' => 50,
             'remedy' => $result['cards_window']['remedy'] ?? null,
         ], $result['cards_window']);
-        $this->assertSame([500, 499, 498, 497], array_column($result['cards_by_stage']['Backlog'], 'id'));
+        $this->assertSame([497, 498, 499, 500], array_column($result['cards_by_stage']['Backlog'], 'id'));
     }
 
     public function test_my_cards_refuses_an_ambiguous_stage_name_rather_than_guessing(): void
@@ -5067,9 +5073,11 @@ class AgentToolsCallTest extends TestCase
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
             '*/tasks/search.json*' => Http::response(['data' => [
+                // Held by THIS seat: since card#11267 a lane card another user holds is theirs and
+                // is not in this list, so the held card the id is rendered on is the seat's own.
                 ['id' => 1, 'name' => 'taken', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
                     'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10,
-                    'assigned_user_id' => 4242],
+                    'assigned_user_id' => $this->myKanbanUserId()],
                 ['id' => 2, 'name' => 'free', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
                     'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10,
                     'assigned_user_id' => null],
@@ -5079,7 +5087,7 @@ class AgentToolsCallTest extends TestCase
         $res = $this->callTool(['tool' => 'board_my_cards']);
 
         $res->assertStatus(200)
-            ->assertJsonPath('result.cards_by_stage.Backlog.0.assigned_user_id', 4242)
+            ->assertJsonPath('result.cards_by_stage.Backlog.0.assigned_user_id', $this->myKanbanUserId())
             // The unassigned card is the control: without it a projection that emitted the
             // key only when set would pass, and "no assignee" would be indistinguishable
             // from "this bridge does not report assignees".
@@ -5965,9 +5973,10 @@ class AgentToolsCallTest extends TestCase
      * rest from the scenario's fixture. A request added to a tool's path later joins the population
      * without anybody editing this test.
      *
-     * One call keeps its own answer and is asserted as that, not skipped: `board_create_card`'s
-     * placement read-back runs after the card exists and reports no placement when it cannot read
-     * one (DL-299), so a 502 there would tell the seat to retry a create that landed.
+     * Two calls keep their own answer and are asserted as that, not skipped, both because they run
+     * after the card exists, so a 502 there would tell the seat to retry a create that landed:
+     * `board_create_card`'s placement read-back reports no placement when it cannot read one
+     * (DL-299), and its assign-at-birth reports `assignee_unset_reason: assign_unconfirmed` — the PATCH may have landed (DL-459).
      */
     #[DataProvider('unansweredCallScenarios')]
     public function test_a_board_call_that_gets_no_answer_is_the_retryable_502_on_every_upstream_call(string $scenario): void
@@ -5976,11 +5985,13 @@ class AgentToolsCallTest extends TestCase
         $failAt = 0;
         $sent = 0;
         $failed = null;
+        $failedData = [];
         $log = [];
-        Http::fake(function ($request) use (&$fake, &$failAt, &$sent, &$failed, &$log) {
+        Http::fake(function ($request) use (&$fake, &$failAt, &$sent, &$failed, &$failedData, &$log) {
             $log[] = $request->method().' '.urldecode($request->url());
             if (++$sent === $failAt) {
                 $failed = $request->method().' '.urldecode($request->url());
+                $failedData = $request->data();
 
                 return Http::failedConnection('cURL error 28: Operation timed out after 15000 milliseconds with 0 bytes received')($request);
             }
@@ -6007,6 +6018,12 @@ class AgentToolsCallTest extends TestCase
         for ($at = 1; $at <= $requests; $at++) {
             $res = $run($at);
             $this->assertNotNull($failed, "{$scenario}: run {$at} sent fewer requests than the clean run");
+
+            if ($tool === 'board_create_card' && str_starts_with((string) $failed, 'PATCH ') && array_key_exists('assigned_user_id', $failedData)) {
+                $res->assertStatus($answered->status())->assertJsonPath('result.assignee_unset_reason', 'assign_unconfirmed');
+
+                continue;
+            }
 
             if (preg_match('#^GET .*/tasks/\d+\.json$#', (string) $failed) === 1) {
                 $this->assertSame('board_create_card', $tool, "only the create's placement read-back keeps its own answer, and {$failed} is not it");
@@ -6050,7 +6067,10 @@ class AgentToolsCallTest extends TestCase
      *    validator to reject (DL-339), so the board's text there names nothing the seat can change;
      *  - the duplicate collapse's archive PATCH → the retryable 502: it runs after the card was
      *    created and only when a retry is idempotent (DL-339's one exception);
-     *  - the create's placement read-back → its own answer, `placement_observed: false` (DL-299).
+     *  - the create's placement read-back → its own answer, `placement_observed: false` (DL-299);
+     *  - the create's assign-at-birth PATCH → its own answer, `assignee_unset_reason: assign_failed`
+     *    (DL-459): it runs after the card exists, so relaying a refusal would send the seat to retry
+     *    a create that landed.
      */
     #[DataProvider('unansweredCallScenarios')]
     public function test_a_board_422_is_relayed_on_every_write_and_stays_the_retryable_502_on_every_read(string $scenario): void
@@ -6092,6 +6112,12 @@ class AgentToolsCallTest extends TestCase
             $res = $run($at);
             $this->assertNotNull($refused, "{$scenario}: run {$at} sent fewer requests than the clean run");
             $which = $refused->method().' '.urldecode($refused->url());
+
+            if ($tool === 'board_create_card' && $refused->method() === 'PATCH' && array_key_exists('assigned_user_id', $refused->data())) {
+                $res->assertStatus($answered->status())->assertJsonPath('result.assignee_unset_reason', 'assign_failed');
+
+                continue;
+            }
 
             if (preg_match('#^GET .*/tasks/\d+\.json$#', $which) === 1) {
                 $this->assertSame('board_create_card', $tool, "only the create's placement read-back keeps its own answer, and {$which} is not it");

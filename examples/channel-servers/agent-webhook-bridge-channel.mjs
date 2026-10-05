@@ -197,23 +197,33 @@ const TOOL_DEFINITIONS = [
   {
     name: 'board_my_cards',
     description:
-      'Return YOUR OWN cards on the board (your product swimlane grouped by stage, ' +
-      'plus any shared/coordination cards your bridge identity is scoped to). Read-only; ' +
+      'Return YOUR OWN cards on the board: every card ASSIGNED to you, in any lane or in ' +
+      'none, plus the UNASSIGNED cards in your own swimlane (a card in your lane that ' +
+      'another user holds is theirs, not yours). They are grouped by stage and ordered ' +
+      'ACROSS lanes the way you should work them: the In Progress column, then the columns ' +
+      'work is pulled from, then the rest, then finished ones (stage_rank names them); within ' +
+      'a column by the board\'s own position (the PM\'s ranking), then card id. Each card carries swimlane_id and ' +
+      'position. The selection block says whether your assigned cards could be read ' +
+      '(assignee_arm). Also returns any shared/coordination cards your bridge identity is ' +
+      'scoped to. Read-only; ' +
       'the kanban token never leaves the bridge. Titles only by default — pass ' +
       'include_description when you need the SCOPE written on a card. EACH card list is ' +
       'CAPPED by default; every list carries a window block (total / returned / limit / ' +
-      'truncated) and truncated: true means there is more behind it — narrow with stage, ' +
-      'or raise limit deliberately. NEVER read a truncated list as the whole board. ' +
+      'truncated) and truncated: true means there is more behind it. The cap keeps the ' +
+      'NEWEST cards (highest ids) before ordering, so on a truncated list your top-ranked ' +
+      'card can be behind the cut — narrow with stage (e.g. the In Progress column), or ' +
+      'raise limit deliberately. NEVER read a truncated list as the whole board. ' +
       'Each card carries assigned_user_id: the raw kanban user id holding it, or null ' +
       'when nobody does. That is how you tell a card another seat is already working ' +
       'from a free one WHEN THE COLUMN NEVER MOVED — the bridge resolves no name for ' +
       'it, so an id you do not recognise is somebody else. board_take_card is how you ' +
-      'claim a free one — but ONLY in your own lanes: coordination cards appear in the ' +
+      'claim a free one — but ONLY in your own lanes or one already assigned to you: coordination cards appear in the ' +
       'coord_cards block of this same response, they are on a different board, and they ' +
       'are NOT takeable (the attempt is refused write-free and says so). ' +
-      'Your lane read NEVER shows a card that is in another lane or in NO lane, so ' +
-      '"none of my cards carry tag X" is not something the lane read can tell you: pass ' +
-      'tag to read every card on your board carrying that tag, whatever lane it is in. ' +
+      'A card outside your lane (another lane, or no lane) is listed only when it is ' +
+      'ASSIGNED to you, so "none of my cards carry tag X" is not something this read can ' +
+      'tell you about unassigned cards: pass tag to read every card on your board carrying ' +
+      'that tag, whatever lane it is in and whoever holds it. ' +
       'A board fault ' +
       'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
       'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
@@ -291,7 +301,12 @@ const TOOL_DEFINITIONS = [
     description:
       'Create a card in YOUR OWN swimlane (the swimlane is forced from your bridge ' +
       'identity — you cannot target another lane). The card is born untriaged and ' +
-      'surfaces to the triage pass. Pass an idempotency_key to make retries safe. ' +
+      'surfaces to the triage pass, and it is ASSIGNED TO YOU (your own kanban user, ' +
+      'resolved from your bridge identity): the result\'s assigned_user_id says so, or is ' +
+      'null with assignee_unset_reason naming why it is not known to be yours ' +
+      '(assign_unconfirmed means the assignment got no answer and may have landed) — the ' +
+      'card is created either way. Pass an idempotency_key to make retries safe: a retry ' +
+      'that finds the card already created returns it, and assigns it to you if nobody holds it. ' +
       'The returned board_id/swimlane_id are READ BACK from the card and can differ ' +
       'from the scope you are configured for, which is returned beside them as ' +
       'configured_board_id/configured_swimlane_id. placement_observed: false means ' +
@@ -420,8 +435,9 @@ const TOOL_DEFINITIONS = [
       'nobody else. Sending assigned_user_id, assignee, user_id or any other ' +
       'user-naming argument is REFUSED and nothing is written. ' +
       'Scoped to cards on YOUR board in a lane you work (your own swimlane, or the ' +
-      'shared one if your bridge is configured for it). You do NOT have to have filed ' +
-      'the card: taking work somebody else queued for you is the point. ' +
+      'shared one if your bridge is configured for it), or already ASSIGNED to you in any ' +
+      'lane or in none (the result\'s in_scope_by says which: lane or assigned). You do NOT ' +
+      'have to have filed the card: taking work somebody else queued for you is the point. ' +
       '⚠ NOT every card board_my_cards shows you — the coord_cards block of that ' +
       'response is a DIFFERENT board, addressed to you by tag rather than held in a ' +
       'lane, and those cards are not takeable here. The refusal names that as the likely ' +
@@ -557,12 +573,18 @@ const TOOL_DEFINITIONS = [
     name: 'board_search',
     description:
       'Search the cards on YOUR board by filter and get the MATCHES ONLY — no lane list, no column ' +
-      'list, no grouping. Every filter is applied by the board itself, and the filters combine ' +
+      'list, no grouping. Every filter is applied by the board itself (except lane: unrouted\'s ' +
+      'unassigned test, which the board has no term for: the bridge applies it to the rows the ' +
+      'board returns), and the filters combine ' +
       '(AND). lane defaults to any: cards in every lane of your board, each with its swimlane_id ' +
-      '(null means no lane). Results are the NEWEST matches first, cut to limit; window says ' +
+      '(null means no lane). lane: unrouted is the routing queue — the UNASSIGNED cards in no ' +
+      'lane, or in a lane that is no agent\'s home lane on this bridge; home_lanes names the lanes ' +
+      'it left out, and a lane that is home to an agent on ANOTHER bridge shows up as unrouted. ' +
+      'Results are the NEWEST matches first, cut to limit; window says ' +
       'total (how many matched), returned, truncated (true when more matched than were returned) ' +
-      'and total_is_lower_bound (true only when a tags_any union could not be sized exactly — ' +
-      'truncated is then true too). summary: true returns counts instead of cards: total and ' +
+      'and total_is_lower_bound (true when the total could not be sized exactly — a tags_any ' +
+      'union, or an unrouted search that matched more than one page — and truncated is then ' +
+      'true too). summary: true returns counts instead of cards (not with lane: unrouted): total and ' +
       'by_stage, plus by_tag for the tags you name in summary_tags. Read-only. Where the board ' +
       'cannot show it applied a filter, the call is REFUSED (422) rather than answered with a ' +
       'count of something else. A board fault that cannot clear (the bridge token revoked/rotated, ' +
@@ -614,8 +636,10 @@ const TOOL_DEFINITIONS = [
         },
         lane: {
           type: 'string',
-          enum: ['mine', 'any', 'none'],
-          description: 'mine = your own swimlane, none = cards in no lane, any = every lane (default).',
+          enum: ['mine', 'any', 'none', 'unrouted'],
+          description:
+            'mine = your own swimlane, none = cards in no lane, any = every lane (default), ' +
+            'unrouted = unassigned cards in no lane or in no home lane of an agent on this bridge.',
         },
         summary: {
           type: 'boolean',

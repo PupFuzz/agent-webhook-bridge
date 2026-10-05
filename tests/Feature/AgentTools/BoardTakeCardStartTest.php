@@ -215,6 +215,22 @@ class BoardTakeCardStartTest extends TestCase
         $this->assertSame([['workflow_stage_id' => 49]], $this->patches);
     }
 
+    /**
+     * card#11267: a card routed to this seat by its assignee, in a lane the seat does not work, starts
+     * like any card in its own lane — the case a topic lane put out of reach.
+     */
+    public function test_start_moves_a_card_assigned_to_this_seat_in_a_lane_it_does_not_work(): void
+    {
+        $this->board(['swimlane_id' => 9, 'assigned_user_id' => $this->me()]);
+
+        $this->start()->assertStatus(200)
+            ->assertJsonPath('result.in_scope_by', 'assigned')
+            ->assertJsonPath('result.swimlane_id', 9)
+            ->assertJsonPath('result.moved', true)
+            ->assertJsonPath('result.already_held', true);
+        $this->assertSame([['workflow_stage_id' => 49]], $this->patches);
+    }
+
     /** @return array<string, array{int, string}> */
     public static function finishedColumns(): array
     {

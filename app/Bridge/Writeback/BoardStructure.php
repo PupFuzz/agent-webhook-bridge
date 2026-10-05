@@ -24,6 +24,7 @@ final class BoardStructure
      * @param  list<int>  $terminalStageIds  the stages this board's `$terminalBasis` declares terminal
      * @param  list<int>|null  $swimlaneIds  null ⇒ the read carried no swimlane collection
      * @param  TerminalBasis  $terminalBasis  which declaration `$terminalStageIds` was read from
+     * @param  array<int, float>  $stagePositions  id => the stage's board `position`, for each stage that carried one
      */
     public function __construct(
         public readonly array $stageNames,
@@ -31,5 +32,6 @@ final class BoardStructure
         public readonly array $terminalStageIds,
         public readonly ?array $swimlaneIds,
         public readonly TerminalBasis $terminalBasis,
+        public readonly array $stagePositions = [],
     ) {}
 }

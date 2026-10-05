@@ -33,8 +33,10 @@ use Throwable;
  *    identity ECHO of the resolved agent's own config, so a mismatch is a real finding — the
  *    bearer reached a DIFFERENT agent's window — while a match certifies resolution and NOT
  *    that the fail-closed row filter ran, which config compared against config cannot show.
- *    `board_my_cards` exposes no per-row swimlane_id on its lane lists (`BoardCardProjection::project` does not emit it), so the lane
- *    filter has no observable in this response at all; since DL-302 the BOARD axis does have
+ *    Since card#11267 `board_my_cards`' cards carry their own `swimlane_id`, but that list holds
+ *    the seat's ASSIGNED cards from any lane beside its lane's unassigned ones, so a card outside
+ *    the configured lane is not evidence the lane filter failed — the filter still has no
+ *    observable here; since DL-302 the BOARD axis does have
  *    one (`result.board_id` / `result.board_observed`, read off the rows), and this probe
  *    does not yet assert on it — adding a fail arm there changes what bridge:check rejects.
  *
