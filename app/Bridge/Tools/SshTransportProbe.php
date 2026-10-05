@@ -616,9 +616,9 @@ final class SshTransportProbe
         if ($r['exit'] === 1) {
             $refusal = json_decode($r['stdout'], true);
             if (is_array($refusal) && ($refusal['reason'] ?? null) === 'not_served') {
-                // The door is live and the key resolved; the agent behind it is served nothing
-                // (a scope-less block with `ci_tools: false`).
-                return [Finding::fail("ssh {$target}: the door answered, but ci_await_cancel was refused not_served — the pinned key resolved to an agent that is served NO tool (a scope-less block with ci_tools: false). Its ci_tools.agent line says which; give it a board scope or drop the opt-out.")];
+                // The door is live and the key resolved, to an agent not served the CI tools
+                // (`ci_tools: false`, on a scope-less block or on a mis-pinned scoped one).
+                return [Finding::fail("ssh {$target}: the door answered, but ci_await_cancel was refused not_served — the agent behind the pinned key is not served the CI tools (its block sets ci_tools: false). bridge:check's ci_tools.agent lines show each agent's served set; check which agent this key is pinned to.")];
             }
         }
         if ($r['exit'] !== 0) {

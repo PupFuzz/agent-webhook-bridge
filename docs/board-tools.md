@@ -1722,12 +1722,29 @@ of polling GitHub. The coordination framework's onboarding writes it.
     block exists (ssh only). The door refuses that agent because it has no enabled block, and the
     `door_closed` reason was added with DL-461, so its presence proves the bridge is new enough.
 
+  ⛔ **Each positive counts only for the install it came FROM.** One host can run several
+  installs (`CLAUDE_DEPLOYMENT.md` runs a prod and a dev side by side), each with its own
+  agent-config directory. A positive certifies the install the credential reached, and that
+  install is identified by the **`artisan` path in the pinned key's forced command** (ssh) or
+  the **vhost of the endpoint** (http). It licenses a block only in THAT install's agent-config
+  directory. A PM key pinned to an upgraded dev install answers `ok: true` whatever prod runs;
+  writing prod's block on it takes prod's receiver down. The same binding holds for
+  `door_closed`: the seat's key must be pinned to the forced command of the install that will
+  hold the block.
+
+  ⛔ **Ask only after the bridge update has COMPLETED, including its PHP-FPM reload.** The ssh
+  door runs the CLI from the checkout, so it serves new code as soon as the code is pulled; the
+  http door is served by FPM, which can keep serving the old code until it reloads. An answer
+  taken mid-update can be positive on one door while the other still runs the old release.
+
   **Every other answer means do not write the block** — it is not a negative verdict to be
   matched, it is the absence of a positive one. Known shapes, as examples and not as the
   definition:
-  - exit 1 / HTTP 422, no `reason`, error ``request must carry a non-empty `tool` `` — a bridge
-    older than the update door, which reads the body as a board-tools call (later bridges add
-    `reason: "bad_request"` to the same refusal);
+  - ssh exit 1, no `reason`, error ``request must carry a non-empty `tool` `` — a bridge older
+    than the update door, which reads the body as a board-tools call. (Over http the same bridge
+    has no door route and answers 404, below. Later bridges add `reason: "bad_request"` to this
+    refusal, but every one of them already routes an `op` body to the door, so that variant
+    cannot come back from this ask.)
   - exit 1 / HTTP 422, no `reason`, error starting `unknown client-update` — a bridge with the
     door but without this op;
   - HTTP **404** with no envelope — a bridge with no `/agent-tools/client` route;

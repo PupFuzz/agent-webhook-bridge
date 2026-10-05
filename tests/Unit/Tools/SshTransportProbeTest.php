@@ -866,7 +866,7 @@ class SshTransportProbeTest extends TestCase
         $this->assertSame(['board_my_cards', 'ci_await_cancel'], array_map(static fn (string $in): string => json_decode($in, true)['tool'], $env->sentStdins));
     }
 
-    /** An agent served nothing answers the CI follow-up `not_served` too: the FAIL says so, not "unreachable". */
+    /** An agent not served the CI tools answers the follow-up `not_served` too: the FAIL says so, not "unreachable". */
     public function test_a_follow_up_refused_not_served_names_an_agent_served_nothing(): void
     {
         $env = new FakeSshProbeEnvironment;
@@ -880,7 +880,8 @@ class SshTransportProbeTest extends TestCase
         ]);
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertStringContainsString('served NO tool', $findings[0]->message);
+        $this->assertStringContainsString('not served the CI tools', $findings[0]->message);
+        $this->assertStringContainsString('ci_tools.agent', $findings[0]->message);
         $this->assertStringNotContainsString('unreachable', $findings[0]->message);
     }
 
