@@ -401,7 +401,7 @@ class GitHubTokenResolverTest extends TestCase
     /**
      * ⛔ A TOKEN PASTED WHERE A PATH SETTING BELONGS IS NEVER RENDERED (round-2 review, MINOR 1):
      * `BRIDGE_COORD_CREDENTIALS_PATH` and `BRIDGE_GITHUB_TOKEN_PATH` are printed by the same
-     * problems, through `CoordCredentialStore::displayPathSetting()`.
+     * problems, through `PastedSecretShape::displayPathSetting()`.
      *
      * @return array<string, array{0: callable(CoordCredentialStoreFixture, string): void, 1: string}>
      */

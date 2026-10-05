@@ -42,6 +42,6 @@ final class CoordConfigPath
     {
         return $path === null
             ? '$COORD_CONFIG is not set'
-            : "the coordination config at {$path} is absent, unreadable, or malformed";
+            : 'the coordination config at '.PastedSecretShape::displayPathSetting($path).' is absent, unreadable, or malformed';
     }
 }

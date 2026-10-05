@@ -44,7 +44,7 @@ use App\Bridge\Exceptions\UnreadableFileException;
  *
  * ⛔ NO STORE TEXT THAT COULD BE A TOKEN REACHES A MESSAGE: a malformed store is named by line
  * number, and a name with a credential's shape (a token pasted as a map value, which then stands as
- * the `[github]` key) is printed through {@see self::displayName()} — the framework's
+ * the `[github]` key) is printed through {@see PastedSecretShape::displayName()} — the framework's
  * `_safe_coordinate`. These messages are logged on every delivery and printed by `bridge:check`.
  *
  * ⚑ A MISSING STORE IS AN EMPTY STORE (every repo unmapped), as for the framework's reader — but
@@ -87,12 +87,6 @@ final class CoordCredentialStore
 
     /** A name (and a map value) the subset reads: printable ASCII, no whitespace. */
     private const NAME = '/\A[\x21-\x7e]+\z/';
-
-    /**
-     * The framework's `TOKEN_PREFIXES` (`coord_credentials.py`): the credential formats its store
-     * holds. Mirrored, not imported — the bridge cannot import the framework's Python.
-     */
-    private const TOKEN_PREFIXES = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'glpat-', 'xoxb-', 'xoxp-'];
 
     /** Python's `str.isspace()` set, near enough: ASCII whitespace, the C0 separators, NEL and Unicode space separators. */
     private const SPACE = '[\s\x{1c}-\x{1f}\x{85}\p{Zs}\x{2028}\x{2029}]';
@@ -169,7 +163,7 @@ final class CoordCredentialStore
      */
     public function faultClause(): string
     {
-        $path = self::displayPathSetting((string) $this->path);
+        $path = $this->shownPath();
 
         return match ($this->fault) {
             self::UNSET => 'where the coord credential store is was not determined: neither '.self::SETTING.' nor BRIDGE_COORD_CONFIG_PATH (an absolute path, which the store sits beside) is set in this install\'s .env',
@@ -182,57 +176,12 @@ final class CoordCredentialStore
     }
 
     /**
-     * A store name (a map value, a `[github]` key) as a message may print it: as written, or — when
-     * it has the shape of a credential — a non-reversible fingerprint. The framework's
-     * `_safe_coordinate`: a token pasted where a name belongs must not be printed by every message
-     * that names it. Elided, never refused, as the framework does: a long key name has the shape too.
+     * The store's path as a message may print it — {@see PastedSecretShape::displayPathSetting()}.
+     * `path` stays the value as read, for the read; every message naming the store uses this.
      */
-    public static function displayName(string $name): string
+    public function shownPath(): string
     {
-        return self::elide($name, 'name');
-    }
-
-    /**
-     * A path-valued SETTING (an env var, a config key) as a message may print it — the one display
-     * rule for every such value, so a token pasted where a path belongs is printed by none of the
-     * messages that name the setting. An absolute or `~/` path never has the shape (it holds a
-     * separator), so a real path is printed as written; only a bare value can be elided.
-     */
-    public static function displayPathSetting(string $value): string
-    {
-        return self::elide($value, 'value');
-    }
-
-    private static function elide(string $value, string $noun): string
-    {
-        return self::looksLikePastedSecret($value)
-            ? "<a credential-shaped {$noun}, ".self::fingerprint($value).'>'
-            : $value;
-    }
-
-    /**
-     * The framework's `looks_like_pasted_secret`, line for line: no separator, no leading `~`, and
-     * either a known token prefix or 24+ characters with no dot.
-     */
-    public static function looksLikePastedSecret(string $value): bool
-    {
-        $v = trim($value);
-        if ($v === '' || str_starts_with($v, '~') || str_contains($v, '/') || str_contains($v, '\\')) {
-            return false;
-        }
-        foreach (self::TOKEN_PREFIXES as $prefix) {
-            if (str_starts_with(strtolower($v), $prefix)) {
-                return true;
-            }
-        }
-
-        return strlen($v) >= 24 && ! str_contains($v, '.');
-    }
-
-    /** The framework's `pointer_fingerprint`: `sha256:` and 8 hex characters. */
-    public static function fingerprint(string $value): string
-    {
-        return 'sha256:'.substr(hash('sha256', $value), 0, 8);
+        return PastedSecretShape::displayPathSetting((string) $this->path);
     }
 
     /**
@@ -285,14 +234,14 @@ final class CoordCredentialStore
     {
         $this->assertReadable();
         $github = $this->sections[self::GITHUB_SECTION] ?? [];
-        $name = self::displayName($key);
-        $file = self::displayName($key.'_file');
+        $name = PastedSecretShape::displayName($key);
+        $file = PastedSecretShape::displayName($key.'_file');
         $inline = self::lookup($github, $key);
         if ($inline !== null && $inline !== '') {
             return [null, "[github] {$name} holds an INLINE value, and the bridge reads only a `{$file}` pointer — move the token into a file (chmod 600) and point `{$file}` at it (the framework's `/coord:update --area credential-indirection` does this); the value is not shown"];
         }
         $pointer = self::lookup($github, $key.'_file');
-        if (($pointer === null || $pointer === '') && self::looksLikePastedSecret($key)) {
+        if (($pointer === null || $pointer === '') && PastedSecretShape::looksLikePastedSecret($key)) {
             return [null, "[git-credential-map] maps this repo to {$name}, which has the shape of a CREDENTIAL rather than a key name, and [github] has no pointer for it — a map value names a [github] key whose `<key>_file` holds the token's path, never the token; its text is not shown"];
         }
         if ($pointer === null || $pointer === '') {

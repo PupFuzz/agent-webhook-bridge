@@ -6,6 +6,7 @@ use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelPushTransport;
 use App\Bridge\Support\ChannelToken;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Validation\SocketEndpoint;
@@ -402,7 +403,7 @@ final class WritebackAlertNotifier
     private function validateSocketPath(string $path): void
     {
         if (! SocketPath::isValid($path)) {
-            throw new \RuntimeException("writeback alert socket is not a valid absolute path (no '..'): {$path}");
+            throw new \RuntimeException("writeback alert socket is not a valid absolute path (no '..'): ".PastedSecretShape::displayPathSetting($path));
         }
         SocketEndpoint::assertValid(
             $path,

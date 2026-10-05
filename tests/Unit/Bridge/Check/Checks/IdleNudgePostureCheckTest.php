@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 /**
@@ -233,6 +234,18 @@ class IdleNudgePostureCheckTest extends TestCase
 
         $this->assertOne(Severity::Fail, 'MISCONFIGURED');
         $this->assertOne(Severity::Fail, 'is group/world-readable');
+    }
+
+    /** card#11261 — a token pasted as BRIDGE_IDLE_NUDGE_TOKEN_PATH is printed as a fingerprint. */
+    public function test_a_token_pasted_as_the_token_path_is_not_in_any_finding(): void
+    {
+        $pasted = PastedTokenFixture::value();
+        config(['bridge.idle_nudge.token_path' => $pasted]);
+
+        foreach ($this->findings() as $f) {
+            $this->assertStringNotContainsString($pasted, $f->message);
+        }
+        $this->assertOne(Severity::Fail, 'the fleet token file <a credential-shaped value, sha256:');
     }
 
     public function test_every_unset_mezzanine_key_is_named_in_one_line(): void

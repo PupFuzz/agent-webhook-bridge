@@ -9,6 +9,7 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use Illuminate\Support\Facades\File;
 use Tests\Support\MaterializesChecks;
+use Tests\Support\PastedTokenFixture;
 use Tests\TestCase;
 
 /**
@@ -62,6 +63,18 @@ class ChannelTokenPathCheckTest extends TestCase
             "agent prod-agent: channel auth token not readable at {$path} — channel_push will FAIL until fixed",
             $findings[0]->message,
         );
+    }
+
+    /** card#11261 — a token pasted as `channel.auth.token_path` is printed as a fingerprint. */
+    public function test_a_token_pasted_as_the_token_path_is_not_in_the_finding(): void
+    {
+        $pasted = PastedTokenFixture::value();
+
+        $findings = $this->findingsFor($pasted);
+
+        $this->assertCount(1, $findings);
+        $this->assertStringNotContainsString($pasted, $findings[0]->message);
+        $this->assertMatchesRegularExpression('/^agent prod-agent: channel auth token not readable at <a credential-shaped value, sha256:[0-9a-f]{8}> — /', $findings[0]->message);
     }
 
     public function test_a_group_readable_token_surfaces_the_perms_message_with_its_mode(): void

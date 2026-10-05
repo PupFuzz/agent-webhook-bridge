@@ -7,6 +7,7 @@ use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\Severity;
@@ -239,8 +240,9 @@ final class BoardToolAgentResolver
         if ($token === null || $token === '') {
             // A blank-but-readable file is MEASURED and keeps the definite claim; only an
             // unseeable one is unvalidated (card#5698).
-            $this->problems[] = $this->recordProblem($agentName, PathVisibility::unverifiedUnlessVisible($path, "board_tools: agent {$agentName}: bearer token at {$path}")
-                ?? Finding::fail("board_tools: agent {$agentName}: no token at {$path} — board tools disabled for this agent until a token (chmod 600) is placed"));
+            $shown = PastedSecretShape::displayPathSetting($path);
+            $this->problems[] = $this->recordProblem($agentName, PathVisibility::unverifiedUnlessVisible($path, "board_tools: agent {$agentName}: bearer token at {$shown}")
+                ?? Finding::fail("board_tools: agent {$agentName}: no token at {$shown} — board tools disabled for this agent until a token (chmod 600) is placed"));
 
             return null;
         }

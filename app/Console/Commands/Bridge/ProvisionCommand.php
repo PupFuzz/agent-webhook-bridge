@@ -10,6 +10,7 @@ use App\Bridge\Provision\ProvisionResult;
 use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Provision\WritebackIdentityOffer;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
@@ -116,7 +117,7 @@ class ProvisionCommand extends BridgeCommand
                     // "unreadable" until card#5778, which was the wrong half of the split
                     // even then and is now provably so: an unreadable token throws above,
                     // so null is absent-or-blank and nothing else.
-                    $this->warn("{$label} SKIP — no token at {$agent->tokenPath($secretDir, $sub->provider)} (place one, chmod 600)");
+                    $this->warn("{$label} SKIP — no token at ".PastedSecretShape::displayPathSetting($agent->tokenPath($secretDir, $sub->provider)).' (place one, chmod 600)');
                     $rc = self::FAILURE;
 
                     continue;

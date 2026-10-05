@@ -145,6 +145,11 @@ _PROBE_COLLABORATORS = (
     # reaches this text primitive directly. Listed because a hop the scan does not follow is a
     # hop nothing guards, not because it is suspected.
     "app/Bridge/Support/UntrustedText.php",
+    # card#11261: `UntrustedPathContents` prints the path it refuses through the one display
+    # rule for a path setting, so a token pasted where a path belongs is not echoed. A LEAF:
+    # trim/str_*/strtolower/strlen/hash/substr over the string it is handed — it names no
+    # other class and reads, opens and executes nothing.
+    "app/Bridge/Support/PastedSecretShape.php",
 )
 
 # Classes the closure reaches that this repo does NOT declare, so no `app/` file can be
