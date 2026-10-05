@@ -560,7 +560,19 @@ class CheckCommand extends BridgeCommand
         // The check turns it into prose; the JSON document emits it as data. A check
         // deriving its own would re-run the per-scope query behind the other renderer's
         // back and could disagree with it (card#5229).
-        $eventConsumers = (new EventConsumerReconciler)->reconcile($ctx->githubScopeConsumers);
+        //
+        // DL-460: `CiAwaitGate` is an install-wide consumer of `workflow_run.completed` once any
+        // agent can call `ci_await` — an ENABLED board_tools block — so that set is derived
+        // here, before the reconciliation that reads it, rather than in the board-tools plane
+        // below that also reads it.
+        $ctx->boardToolsEnabled = array_values(array_filter(
+            $configs,
+            fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
+        ));
+        $eventConsumers = (new EventConsumerReconciler)->reconcile(
+            $ctx->githubScopeConsumers,
+            EventConsumerReconciler::installWideConsumed($ctx->boardToolsEnabled),
+        );
         $ctx->eventConsumers = $eventConsumers;
         if (! $this->emitReport($runner->run(CheckSlot::EventConsumer, $ctx))) {
             $ok = false;
@@ -597,12 +609,9 @@ class CheckCommand extends BridgeCommand
         // membership) NEVER FAIL (DL-220 split — a transient/empty kanban read must not
         // FAIL the install check). They said "stay WARN" until DL-251 split them: `warn`
         // where the leg answered badly, `unvalidated` where the read never resolved.
-        // What stays here is derivation: which agents have the block enabled, the bearer
-        // index, the SECOND kanban client, and the ssh subset.
-        $ctx->boardToolsEnabled = array_values(array_filter(
-            $configs,
-            fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
-        ));
+        // What stays here is derivation: the bearer index, the SECOND kanban client, and the
+        // ssh subset. Which agents have the block enabled is derived above the event-consumer
+        // reconciliation, which reads it (DL-460).
 
         // ⚑ A WRITE, INSIDE A CHECK COMMAND, ON PURPOSE (card#8973 / DL-360). `bridge:check`
         // is the one path that already parses every agent's block AND touches this bridge's
@@ -625,7 +634,7 @@ class CheckCommand extends BridgeCommand
         // subject is an agent that is NOT in the enabled subset at all, and the install it
         // was written for had lost EVERY block — so an empty subset is precisely the state
         // it must speak in. It also populates `$ctx->boardToolsLost`, which the NEXT STEPS
-        // derivation below reads to withhold the `no_block` question for a seat just
+        // derivation below reads to withhold the `no_block` line for a seat just
         // reported LOST.
         if (! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))) {
             $ok = false;
@@ -1227,12 +1236,15 @@ class CheckCommand extends BridgeCommand
         $escapedScope = UntrustedText::forOperator((string) $step->scope);
 
         return match ($step->state) {
-            // ⛔ THE OPT-OUT IS NAMED, and it is what keeps this from being a nag. This is
-            // the only state a correctly-configured install can sit in forever — an agent
-            // that is deliberately notification-only owes nothing and would otherwise be
-            // told to provision on every run, with no action available to silence it. That
-            // is the shape `emitFinding()` refuses `warn` for, one level down.
-            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — and that is a QUESTION FOR YOU, not a defect this run found: should {$step->agent} be able to read, file and correct its own cards from inside its session? YES ⇒ run `{$step->command}` — it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. NO ⇒ put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — a declined capability is a decision, and this line goes away. Either answer finishes it; leaving it unanswered is the only outcome that does not. {$doc}",
+            // ⛔ THE DEFAULT IS STATED BY ROLE, NOT ASKED (DL-460). A pm or solo seat
+            // always gets board tools — it is where `ci_await` comes from — and an impl seat
+            // uses kbcard for its board work. The bridge cannot read a seat's role from its
+            // YAML, so the line names both roles and lets the operator apply the one that fits.
+            // ⛔ THE OPT-OUT IS STILL NAMED, and it is what keeps this from being a nag: an
+            // agent that needs no block at all owes nothing and would otherwise be told to
+            // provision on every run, with no action available to silence it. That is the
+            // shape `emitFinding()` refuses `warn` for, one level down.
+            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — no reading, filing or correcting its own cards from inside its session, and no `ci_await`. Whether it needs one is decided by the seat's ROLE, which this run cannot read from the YAML: A PM OR SOLO SEAT ALWAYS GETS BOARD TOOLS — run `{$step->command}`; it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. An IMPL seat uses kbcard for its board work, and gets `ci_await` from a scope-less block — `board_tools:` with `enabled: true` and no board scope, which serves no board tool. For an agent that needs no `board_tools:` block at all, put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — that records the decision, and this line goes away. {$doc}",
 
             // ⛔ THE UNMEASURED ARM SAYS SO, AND SENDS THE READER TO `sudo`, NOT TO
             // PROVISION. This is the line that, before the split, told an install whose only

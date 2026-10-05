@@ -241,7 +241,7 @@ enum CheckSlot: string
      *
      * ⚑ IT MUST RUN AFTER THE SIGHTING WRITE AND BEFORE `NextSteps::derive()`, and both
      * halves matter: the run has to see its own sightings, and the `next_steps` block reads
-     * {@see CheckContext::$boardToolsLost} to withhold the `no_block` question for a seat it
+     * {@see CheckContext::$boardToolsLost} to withhold the `no_block` line for a seat it
      * has just reported as LOST.
      */
     case BoardToolsLost = 'board-tools-lost';

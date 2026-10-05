@@ -8,7 +8,7 @@ use App\Bridge\Tools\ServedTools;
 
 /**
  * The resolved `board_tools` section of a per-agent config (DL-217) — the
- * channel-identity-scoped board window an impl agent gets over the two-way
+ * channel-identity-scoped board window a seat's agent gets over the two-way
  * agent channel. WHICH tools that window contains is
  * {@see BoardToolsRegistry}'s to say and is deliberately not
  * enumerated here: this docblock named two, a third arrived with DL-326, and a list

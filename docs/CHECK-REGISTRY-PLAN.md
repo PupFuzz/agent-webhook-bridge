@@ -3003,7 +3003,7 @@ the work distinguishes those.
   EMPTY and every slot inside the guard was skipped in silence. A leg that can only speak while
   the thing it looks for is present is a decoration. It also runs BEFORE `NextSteps::derive()`,
   because it populates `CheckContext::$boardToolsLost`, which that derivation reads to withhold
-  the `no_block` question for a seat just reported LOST. Cost, against the prices quoted above:
+  the `no_block` line for a seat just reported LOST. Cost, against the prices quoted above:
   one class, one slot, ONE `emitReport` arm in `handle()` (the global shape) plus one
   non-predicate statement (the sighting write, whose LOOP deliberately lives in the ledger so
   `handle()` gains no `foreach`), the pinned id list, both registered-total literals, and the

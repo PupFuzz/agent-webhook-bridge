@@ -58,7 +58,7 @@ use Throwable;
  * the question as a LOST FAIL whose remedy is the retirement. Deleting a seat is a
  * decommission, and the product asks for the decommission to be STATED. Recording `enabled:
  * false` as a durable tombstone was the alternative and was withdrawn: it would have made
- * `bridge:check`'s own `no_block` advice — *"NO ⇒ put board_tools: with enabled: false"* — a
+ * `bridge:check`'s own `no_block` advice — *"put `board_tools:` with `enabled: false`"* — a
  * permanent silent mute for that seat.
  *
  * ⚑ EVERY FINDING HERE CARRIES `agent: null` IN `--format=json`. This is a run-once

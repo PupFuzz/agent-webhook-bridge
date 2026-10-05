@@ -229,7 +229,8 @@ class ConfigSeenLedgerTest extends TestCase
      * positive cases, one recording nothing would satisfy the two negative ones — and only the
      * comparison shows it DISCRIMINATES. The two it must NOT record are the point: a present
      * block in any form is not lost, so it needs no witness, and recording `enabled: false`
-     * would turn `bridge:check`'s own "NO ⇒ set enabled: false" advice into a permanent mute.
+     * would turn `bridge:check`'s own "put `board_tools:` with `enabled: false`" advice into a
+     * permanent mute.
      */
     public function test_the_sighting_loop_records_enabled_and_retired_blocks_and_nothing_else(): void
     {
