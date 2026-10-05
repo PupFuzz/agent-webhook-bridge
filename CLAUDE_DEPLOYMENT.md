@@ -115,11 +115,14 @@ php artisan bridge:provision-tools --agent=<name>  # BOARD TOOLS ARE THE DEFAULT
                                                   # `board_tools:` with `enabled: false` in its YAML; that records the
                                                   # decision WHILE THE BLOCK IS PRESENT. Deleting that YAML later is a
                                                   # decommission, not a decline: docs/board-tools.md § Retiring a seat.
-                                                  # `bridge:check` above prints a NEXT STEPS line for every agent that
-                                                  # has neither, and that block is the entry point.
-                                                  # ⚠ ci_await settles when a `workflow_run` delivery arrives; with
-                                                  # none, only its sweep's own GitHub reads settle it. So the repo
-                                                  # webhook for a pm or solo seat sends *Workflow runs* beside *Pushes*
+                                                  # `bridge:check` above prints a NEXT STEPS line for every agent with
+                                                  # no `board_tools:` block at all, and that block is the entry point.
+                                                  # ⚠ ci_await's registration read settles CI that has already
+                                                  # finished; after that it settles when a `workflow_run` delivery
+                                                  # arrives, and with none only its sweep's own GitHub reads settle
+                                                  # it, and only while the sweep runs. A pm or solo seat can await
+                                                  # ANY github repo this install receives, so EVERY repo webhook on
+                                                  # this install sends *Workflow runs* beside *Pushes*
                                                   # (docs/writeback.md § 4. The repo webhook).
                                                   # Roles/handoff (ssh door): docs/board-tools-enablement.md
                                                   # HTTP-door runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).

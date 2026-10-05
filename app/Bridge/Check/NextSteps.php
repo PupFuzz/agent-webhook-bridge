@@ -13,7 +13,7 @@ use App\Bridge\Support\Severity;
  * past board tools by card#9150).
  *
  * WHAT IT CLOSES. A fresh install ends with a check inventory and a tally, and nothing in
- * it says the two-way board window EXISTS — so an impl agent that could read, file and
+ * it says the two-way board window EXISTS — so an agent that could read, file and
  * correct its own cards through the bridge is never told the capability is there or how to
  * turn it on. The runbook has existed since DL-217; nothing pointed at it from the one
  * command a fresh install is told to run.

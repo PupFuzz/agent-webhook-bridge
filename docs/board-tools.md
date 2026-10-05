@@ -2,8 +2,10 @@
 
 The bridge is push-only no longer. When an install enables **board tools**, an
 agent gets a small, channel-identity-scoped **request/response** surface over the
-same channel that already delivers wake events — so an impl seat with **no kanban
-token and no toolkit** can see and capture its own board work directly.
+same channel that already delivers wake events — so a seat with **no kanban token and
+no toolkit** can see and capture its own board work directly. Which seats get it is a
+deployment default: every pm and solo seat, while an impl seat uses kbcard
+(`CLAUDE_DEPLOYMENT.md` § Fresh install, DL-460).
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it

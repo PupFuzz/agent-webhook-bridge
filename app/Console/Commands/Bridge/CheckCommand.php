@@ -624,7 +624,7 @@ class CheckCommand extends BridgeCommand
         // subject is an agent that is NOT in the enabled subset at all, and the install it
         // was written for had lost EVERY block — so an empty subset is precisely the state
         // it must speak in. It also populates `$ctx->boardToolsLost`, which the NEXT STEPS
-        // derivation below reads to withhold the `no_block` question for a seat just
+        // derivation below reads to withhold the `no_block` line for a seat just
         // reported LOST.
         if (! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))) {
             $ok = false;

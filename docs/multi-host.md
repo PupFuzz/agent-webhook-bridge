@@ -358,10 +358,10 @@ path, script path, storage path and git ref already filled in:
 
 | step | actor | what it does |
 | --- | --- | --- |
-| 1 | impl agent, on its seat | `provision-board-tools.py --role b` — generates the FIPS ECDSA P-256 key, deploys the channel snapshot, merges `.mcp.json`; posts its PUBLIC key line and keeps the printed `Fingerprint:` line visible |
+| 1 | seat agent, on its seat | `provision-board-tools.py --role b` — generates the FIPS ECDSA P-256 key, deploys the channel snapshot, merges `.mcp.json`; posts its PUBLIC key line and keeps the printed `Fingerprint:` line visible |
 | 2 | PM agent, on host A | saves that key line to a file (quoted heredoc or a file-write tool — never a shell one-liner), re-runs the command with `--host-a` + `--pubkey-from`, then **STOPS** |
 | 3 | **operator (a human)** | pins the forced-command line with `--role a` (§ 3 below is what that line IS and why it is the only boundary) |
-| 4 | impl agent, on its seat | `--role b --certify-only` — one real ssh round-trip using the target and key its own `.mcp.json` recorded, then the self-updating client's bootstrap (DL-445; a bridge offering none keeps the copied snapshot); then starts its session |
+| 4 | seat agent, on its seat | `--role b --certify-only` — one real ssh round-trip using the target and key its own `.mcp.json` recorded, then the self-updating client's bootstrap (DL-445; a bridge offering none keeps the copied snapshot); then starts its session |
 | 5 | PM agent, on host A | `bridge:check` — the agent's NEXT STEPS line clears once step 4's call is on the ledger |
 
 Who each actor is, why step 3 is a **process** control rather than a mechanism, and how

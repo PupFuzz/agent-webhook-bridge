@@ -377,7 +377,7 @@ class ProvisionToolsCommand extends BridgeCommand
      * Reports the cause and returns false at the first bad value.
      *
      * ⛔ THE PACKET IS PASTE-READY TEXT, AND THAT IS EXACTLY WHY THE VALUES ARE CHECKED
-     * HERE. Its steps are commands an impl agent and an operator paste into their own
+     * HERE. Its steps are commands the seat's agent and an operator paste into their own
      * shells, so an unvalidated `--host-a`, `--ssh-port` or path does not stay a bad
      * option — it becomes a shell fragment on somebody else's box, one of them at a `sudo`
      * prompt. Refusing is not a courtesy to the parser; it is the only point at which this

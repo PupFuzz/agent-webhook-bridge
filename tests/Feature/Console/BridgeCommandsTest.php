@@ -4262,7 +4262,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('--role b --agent impl --ssh-target bridge-user@<host-A>', $out);
         $this->assertStringContainsString("python3 {$script} --role a --agent impl", $out);
         // The five actors-and-steps spine.
-        foreach (['STEP 1 — IMPL AGENT impl', 'STEP 2 — PM', 'STEP 4 — IMPL AGENT impl', 'STEP 5 — PM'] as $step) {
+        foreach (['STEP 1 — SEAT AGENT impl', 'STEP 2 — PM', 'STEP 4 — SEAT AGENT impl', 'STEP 5 — PM'] as $step) {
             $this->assertStringContainsString($step, $out);
         }
         // The old generated-bash scaffold (+ its prefix-only pubkey guard, #5033) is gone.
