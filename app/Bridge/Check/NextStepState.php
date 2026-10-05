@@ -54,7 +54,7 @@ enum NextStepState: string
      * here. The two would otherwise contradict each other on one screen: this state's whole
      * premise (DL-357 Decision 8, reworded by DL-460) is that it is the one state a
      * correctly-configured install can sit in forever, and its own remedy for an agent that
-     * is not a pm or solo seat — set `enabled: false` — would MUTE a FAIL printed two lines
+     * needs no block at all — set `enabled: false` — would MUTE a FAIL printed two lines
      * above. What the line tells the operator (the default by seat role) is the renderer's
      * to say, in `CheckCommand::nextStepSentence()`, not this state's. So the population is now
      * *no block AND no record of one* — `next_steps` being empty still means nothing is

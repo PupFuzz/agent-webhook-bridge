@@ -160,7 +160,7 @@ final class NextSteps
             // `no_block` wording on the premise that it is "the one state a
             // correctly-configured install can sit in forever" — never a defect this run
             // found. A LOST FAIL two lines above breaks that premise outright, and the advice
-            // underneath it (an agent that is not a pm or solo seat puts `board_tools:` with
+            // underneath it (an agent that needs no block at all puts `board_tools:` with
             // `enabled: false`) would MUTE the failure rather than answer it. The
             // remedy for a lost block is in the FAIL line; this block stays quiet about it.
             if ($state === NextStepState::NoBlock && in_array($name, $ctx->boardToolsLost, true)) {

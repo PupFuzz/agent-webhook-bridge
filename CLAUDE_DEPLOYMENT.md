@@ -110,11 +110,12 @@ php artisan bridge:provision-tools --agent=<name>  # BOARD TOOLS ARE THE DEFAULT
                                                   # without polling GitHub; docs/board-tools.md § ci_await). It prints
                                                   # a paste-ready board_tools: block, and for an ssh-transport agent
                                                   # the whole SETUP PACKET (five steps, three actors — one a human).
-                                                  # impl seats: no — they use kbcard. For an impl seat, or
-                                                  # any other agent that is not a pm or solo seat, declare
-                                                  # `board_tools:` with `enabled: false` in its YAML; that records the
-                                                  # decision WHILE THE BLOCK IS PRESENT. Deleting that YAML later is a
-                                                  # decommission, not a decline: docs/board-tools.md § Retiring a seat.
+                                                  # impl seats use kbcard for their board work. For an agent that
+                                                  # needs no board_tools: block at all, declare `board_tools:` with
+                                                  # `enabled: false` in its YAML to silence the NEXT STEPS line; that
+                                                  # records the decision WHILE THE BLOCK IS PRESENT. Deleting that
+                                                  # YAML later is a decommission, not a decline: docs/board-tools.md
+                                                  # § Retiring a seat.
                                                   # `bridge:check` above prints a NEXT STEPS line for every agent with
                                                   # no `board_tools:` block at all, and that block is the entry point.
                                                   # ⚠ ci_await's registration read settles CI that has already

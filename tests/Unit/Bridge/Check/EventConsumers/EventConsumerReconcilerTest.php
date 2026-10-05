@@ -4,6 +4,8 @@ namespace Tests\Unit\Bridge\Check\EventConsumers;
 
 use App\Bridge\Check\EventConsumers\EventConsumerReconciler;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciliation;
+use App\Bridge\CiAwait\CiAwaitGate;
+use App\Bridge\Support\AgentConfig;
 use App\Models\WebhookEvent;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -198,6 +200,36 @@ class EventConsumerReconcilerTest extends TestCase
     /**
      * @param  list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>  $consumers
      */
+    public function test_an_install_wide_consumer_joins_every_scopes_declarations_but_not_its_agents(): void
+    {
+        // DL-460: `CiAwaitGate` consumes `workflow_run.completed` on every scope the install
+        // receives once an agent can call `ci_await`. It is a consumer, not a subscriber, so
+        // it covers the arrival without being named among the scope's agents.
+        $this->arrived('workflow_run.completed');
+        $this->arrived('workflow_run.requested');
+
+        $scope = (new EventConsumerReconciler)->reconcile(
+            [self::SCOPE => [$this->consumer('wb', consumed: ['pull_request'])]],
+            [CiAwaitGate::CONSUMED_EVENT_TYPE],
+        )->scopes[0];
+
+        $this->assertSame([], $scope->unconsumed());
+        $this->assertSame(['pull_request', 'workflow_run'], $scope->consumed);
+        $this->assertSame(['workflow_run' => ['completed']], $scope->qualified);
+        $this->assertSame(['wb'], $scope->agents);
+        // Qualified, so the action the gate ignores stays in the INFO inventory.
+        $this->assertSame(['requested'], array_keys($scope->unlistedActions()['workflow_run']));
+    }
+
+    public function test_ci_await_counts_as_a_consumer_only_where_an_agent_has_board_tools_enabled(): void
+    {
+        $this->assertSame([], EventConsumerReconciler::installWideConsumed([]));
+        $this->assertSame(
+            [CiAwaitGate::CONSUMED_EVENT_TYPE],
+            EventConsumerReconciler::installWideConsumed([AgentConfig::fromArray('pm', [])]),
+        );
+    }
+
     private function reconcile(array $consumers): EventConsumerReconciliation
     {
         return (new EventConsumerReconciler)->reconcile([self::SCOPE => $consumers]);

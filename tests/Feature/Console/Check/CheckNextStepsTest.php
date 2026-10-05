@@ -127,7 +127,7 @@ class CheckNextStepsTest extends TestCase
     public function test_the_no_block_entry_states_the_role_default_instead_of_asking(): void
     {
         // DL-460: board tools are the DEFAULT for a pm or solo seat (it is where
-        // `ci_await` comes from), and an impl seat uses kbcard. The line used to put that
+        // `ci_await` comes from), and an impl seat uses kbcard for its board work. The line used to put that
         // to the operator as an open yes/no question, which is how a pm or solo seat came
         // out of an install with board tools declined and kept polling CI.
         $lines = $this->nextStepLines($this->runCheck());
@@ -135,7 +135,7 @@ class CheckNextStepsTest extends TestCase
         $this->assertStringContainsString('agent-a:', $lines[1]);
         $this->assertStringContainsString('A PM OR SOLO SEAT ALWAYS GETS BOARD TOOLS', $lines[1]);
         $this->assertStringContainsString('ci_await', $lines[1]);
-        $this->assertStringContainsString('An IMPL seat uses kbcard instead', $lines[1]);
+        $this->assertStringContainsString('An IMPL seat uses kbcard for its board work', $lines[1]);
         $this->assertStringContainsString('`enabled: false`', $lines[1]);
         $this->assertStringNotContainsString('QUESTION FOR YOU', $lines[1]);
     }

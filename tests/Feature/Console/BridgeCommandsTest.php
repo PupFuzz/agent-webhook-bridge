@@ -1256,6 +1256,28 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_event_consumer_counts_ci_await_as_a_workflow_run_consumer_when_board_tools_are_enabled(): void
+    {
+        // DL-460 (gap since DL-452): `CiAwaitGate` consumes `workflow_run.completed` for
+        // EVERY github scope the install receives, whichever agent subscribes it, once any
+        // agent has board tools enabled and so can call `ci_await`. Without it in the
+        // consumer list this leg told the operator to drop `workflow_run` from the
+        // subscription — which would break `ci_await` on that repo. The same install shape
+        // with no board-tools block is the warn case above.
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        File::append($this->dir.'/wb.yml', "board_tools:\n  transport: ssh\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('workflow_run.completed', 'e2');
+
+        // Read the WHOLE output: PendingCommand's line matcher lets an
+        // expectsOutputToContain claim the very line a doesntExpect… would have caught.
+        Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString('board_tools ssh:', $out, 'the fixture must reach an enabled board-tools block');
+        $this->assertStringNotContainsString("has received 'workflow_run'", $out);
+    }
+
     public function test_check_event_consumer_warn_carries_occurrences_and_last_seen(): void
     {
         // #4321: the observed set is unbounded (retention is event-gated or manual),
