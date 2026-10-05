@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
 import { scratch, connectServer } from './mcp-harness.mjs';
 import { fixtureBridge } from './client-update-fixture.mjs';
 import { classifyServedToolsAnswer, readServedToolsCache, SERVED_TOOLS_FILE } from '../channel-lib.mjs';
@@ -175,6 +176,28 @@ test('over http, a current bridge\'s answer is used', async (t) => {
 
   assert.deepEqual(await advertised(client), CI);
   assert.deepEqual(bridge.requests.map((r) => r.body), [{ op: 'served_tools' }]);
+});
+
+test('an http door that accepts the connection and never answers: the call is cut at its 5 s cap and the env rule lists every tool', { timeout: 30000 }, async (t) => {
+  const held = [];
+  const server = http.createServer((req) => {
+    held.push(req);   // read nothing back: the request is never answered
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const endpoint = `http://127.0.0.1:${server.address().port}/agent-tools/call`;
+
+  const started = Date.now();
+  const client = await connectServer(t, { BRIDGE_TOOLS_ENDPOINT: endpoint, BRIDGE_TOOLS_TOKEN: 'hang-token' }, opts);
+  const elapsed = Date.now() - started;
+
+  assert.deepEqual(await advertised(client), ALL);
+  assert.equal(held.length, 1, 'the door was reached, and held');
+  assert.ok(elapsed >= 4500, `the server waited for the door before listing (${elapsed} ms)`);
+  assert.ok(elapsed < 15000, `the start-up is bounded by the 5 s cap, not by the door (${elapsed} ms)`);
 });
 
 test('BRIDGE_CHANNEL_TOOLS=0 still turns the bridge tools off, and the door is not asked', async (t) => {
