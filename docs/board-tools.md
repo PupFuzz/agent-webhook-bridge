@@ -1712,11 +1712,26 @@ of polling GitHub. The coordination framework's onboarding writes it.
 
 - **Minimum bridge.** A scope-less block **throws at load on a bridge that predates DL-461**,
   and a config that throws takes the whole install's receiver down. Write one only after
-  asking the bridge: `{"op": "served_tools"}` on the client-update door (ssh: the forced command's
-  stdin; http: `POST /agent-tools/client`). `ok: true` ⇒ this bridge supports scope-less blocks. A
-  refusal with no `reason`, exit 1 (HTTP 422), whose error starts `unknown client-update` — or, on a
-  bridge older than the door, names a missing `tool` — ⇒ it does not; do not write the block. The
-  answer is `{ok, op, agent, served: [...]}`; `agent` is the identity the door resolved.
+  asking the bridge `{"op": "served_tools"}` on the client-update door (ssh: the forced command's
+  stdin; http: `POST /agent-tools/client`). The question is about the BRIDGE, so whose credential
+  asks matters only for whether the door answers at all:
+  - **An already-enabled agent's credential** (e.g. the PM's pinned key or bearer). `ok: true` ⇒
+    this bridge supports scope-less blocks; the answer is `{ok, op, agent, served: [...]}`, `agent`
+    being the identity the door resolved.
+  - **The would-be seat's own pinned key, before its block exists** (ssh only — over http a seat
+    with no enabled block has no bearer the door accepts, so it gets a 401 and learns nothing).
+    The door refuses it at exit 2 because the agent has no enabled block. `reason: "door_closed"` on
+    that refusal ⇒ this bridge supports scope-less blocks (the reason was added with DL-461). Exit 2
+    with **no** `reason` ⇒ an older bridge, OR an agent name the bridge has no YAML for
+    (`unknown agent`); either way, do not write the block yet.
+  - **Too old**, exit 1 (HTTP 422), either of:
+    - no `reason`, and the error starts `unknown client-update` — a bridge with the update door
+      but without this op;
+    - `reason: "bad_request"`, and the error is ``request must carry a non-empty `tool` `` — a
+      bridge older than the door, which reads the body as a board-tools call.
+    Do not write the block. This is the same pair `provision-board-tools.py`'s
+    `predates_served_tools()` matches; any other answer is about the asking agent, not the
+    bridge's age.
 - **Rollback.** Remove every scope-less block BEFORE rolling a bridge back below DL-461.
 - **What it serves:** `ci_await` and `ci_await_cancel` only, checked bridge-side by the dispatcher
   gate (`BoardToolDispatcher`) and pinned by `ServedToolsTest` / `ScopelessDispatchTest`.
@@ -1781,11 +1796,12 @@ register nor cancel another's.
      with `read_skipped: "rate_limited"` and `retry_not_before`, sends no request, and never answers
      `settled`. Your await carries the limit's error and reset like the rest of the head's, so the
      sweep reads it after the reset;
-   - **your seat's registrations have already caused `BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR` reads in
-     the last hour** (default 60; card#11283 / DL-461): it answers `waiting` with
-     `read_skipped: "seat_read_limited"` and `retry_not_before` (when your budget frees; `null` when
-     the limiter itself could not be read, which also skips the read and is logged), and sends no
-     request. ⛔ The await **is stored** — it is never refused for this — and the instant is in the
+   - **your agent's registrations have already caused `BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR` reads in
+     the current window** (default 60; card#11283 / DL-461) — a FIXED one-hour window opened by the
+     agent's first counted read, not a rolling hour, so up to twice the value can land around a
+     window boundary: it answers `waiting` with `read_skipped: "seat_read_limited"` and
+     `retry_not_before` (when the window closes; the key is **omitted** when the limiter itself
+     could not be read, which also skips the read and is logged), and sends no request. ⛔ The await **is stored** — it is never refused for this — and the instant is in the
      ANSWER only: it is not written to the head, so deliveries and the sweep read and settle it as
      usual. The bound exists so a seat looping register/cancel, or registering fresh SHAs, cannot
      spend the install's GitHub quota; a refusal would have sent that seat back to polling.
@@ -2766,7 +2782,7 @@ spelling the responder answered the header under, which is how a version skew st
 an identity fault — see **Which spelling the probe read** above.
 
 ⚠ **This step STAMPS the client-half ledger (DL-313), and step 7 has not run yet.**
-`--probe-tools` POSTs a real `board_my_cards` with that agent's own bearer, so it reaches
+`--probe-tools` POSTs a real `board_my_cards` (`ci_await_cancel` for a scope-less agent) with that agent's own bearer, so it reaches
 `BoardToolDispatcher`'s success point exactly as the seat would and writes the same row.
 `bridge:check` will therefore print `client half REPORTED` for the agent from here on —
 **including for a seat whose channel server is not running and whose `.mcp.json` has no

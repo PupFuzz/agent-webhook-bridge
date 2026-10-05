@@ -2270,9 +2270,9 @@ def _ssh_round_trip(cmd, payload: str, target: str):
 def predates_served_tools(returncode: int, envelope) -> bool:
     """Did a bridge answer `{op: served_tools}` as one that does not know the op (card#11283)?
 
-    Exactly two shapes, both exit 1 with no `reason`: a bridge with the client-update door
-    (DL-430) but no `served_tools` names it `unknown client-update op`, and a bridge older than
-    the door reads the body as a board-tools call with no `tool`. Anything else — `door_closed`,
+    Exactly two shapes, both exit 1: a bridge with the client-update door (DL-430) but no
+    `served_tools` names it `unknown client-update op` (no `reason`), and a bridge older than the
+    door reads the body as a board-tools call with no `tool` (`reason: bad_request`). Anything else — `door_closed`,
     an exit 2, a success — is an answer about THIS seat and is never retried as an old bridge.
     """
     if returncode != 1 or not isinstance(envelope, dict) or envelope.get("ok") is not False:

@@ -252,7 +252,7 @@ final class CiAwaitService
     }
 
     /**
-     * Whether `$agent`'s registration may read GitHub now, under its per-seat budget of
+     * Whether `$agent`'s registration may read GitHub now, under its per-agent budget of
      * `$perHour` reads (card#11283), counting this read when it may. When it may not,
      * `$retryAt` is when the budget frees — or stays null when the limiter itself failed, which
      * is logged and also skips the read: an unmeasured budget is not read as an unbounded one.
@@ -270,7 +270,7 @@ final class CiAwaitService
 
             return true;
         } catch (Throwable $e) {
-            Log::warning('bridge ci_await: the per-seat read limiter could not be read, so this registration skips its own runs read — the sweep and a workflow_run delivery still settle the await', [
+            Log::warning('bridge ci_await: the per-agent read limiter could not be read, so this registration skips its own runs read — the sweep and a workflow_run delivery still settle the await', [
                 'agent' => $agent,
             ] + RedactedErrorText::logContext($e));
 

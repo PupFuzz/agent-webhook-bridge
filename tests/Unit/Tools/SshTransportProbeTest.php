@@ -854,6 +854,8 @@ class SshTransportProbeTest extends TestCase
             (string) json_encode(['ok' => false, 'error' => 'board_my_cards: not served', 'reason' => 'not_served']),
             (string) json_encode(['ok' => true, 'tool' => 'ci_await_cancel', 'result' => ['cancelled' => false]]),
         ];
+        // The real door answers `not_served` as a 422, which the forced command exits 1 with.
+        $env->exitQueue = [1, 0];
 
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [
             ['agent' => 'pm', 'board_id' => 10, 'swimlane_id' => 4],
@@ -867,7 +869,7 @@ class SshTransportProbeTest extends TestCase
     /** Control: a board_my_cards refusal that is NOT `not_served` stays a failure and is not followed up. */
     public function test_live_probe_does_not_follow_up_any_other_refusal(): void
     {
-        $env = new FakeSshProbeEnvironment(sshStdout: (string) json_encode(['ok' => false, 'error' => 'upstream board error']));
+        $env = new FakeSshProbeEnvironment(sshExit: 1, sshStdout: (string) json_encode(['ok' => false, 'error' => 'upstream board error', 'reason' => 'bad_request']));
 
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [
             ['agent' => 'pm', 'board_id' => 10, 'swimlane_id' => 4],
@@ -1138,10 +1140,13 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
     /** @var list<string> stdouts consumed one per round-trip before falling back to `$sshStdout` (card#11283) */
     public array $stdoutQueue = [];
 
+    /** @var list<int> per-call exit codes, consumed in step with {@see self::$stdoutQueue}; empty ⇒ `sshExit` */
+    public array $exitQueue = [];
+
     public function sshRoundTrip(string $target, string $stdin): array
     {
         $this->sentStdins[] = $stdin;
 
-        return ['exit' => $this->sshExit, 'stdout' => array_shift($this->stdoutQueue) ?? $this->sshStdout, 'stderr' => $this->sshStderr];
+        return ['exit' => array_shift($this->exitQueue) ?? $this->sshExit, 'stdout' => array_shift($this->stdoutQueue) ?? $this->sshStdout, 'stderr' => $this->sshStderr];
     }
 }

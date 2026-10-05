@@ -132,6 +132,7 @@ class CiAwaitTest extends TestCase
         config(['bridge.ci_await.seat_reads_per_hour' => 1]);
         $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null]])]]);
 
+        $openedAt = Carbon::now()->getTimestamp();
         $first = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
         $this->assertTrue($first->ok);
         $this->assertArrayNotHasKey('read_skipped', $first->body()['result']);
@@ -143,7 +144,11 @@ class CiAwaitTest extends TestCase
         $result = $again->body()['result'];
         $this->assertSame('waiting', $result['state']);
         $this->assertSame('seat_read_limited', $result['read_skipped']);
-        $this->assertNotNull($result['retry_not_before']);
+        // The window is an hour, opened by the first counted read: the budget frees about an hour
+        // after it, not seconds later.
+        $freesIn = Carbon::parse($result['retry_not_before'])->getTimestamp() - $openedAt;
+        $this->assertGreaterThanOrEqual(3590, $freesIn, (string) $result['retry_not_before']);
+        $this->assertLessThanOrEqual(3600, $freesIn, (string) $result['retry_not_before']);
         $this->assertSame(1, CiAwait::query()->count(), 'the await is stored, never refused');
         $this->assertNull(CiAwait::query()->firstOrFail()->retry_not_before, 'the seat budget is never written to the head');
         $this->assertSentRunsReads(1);
@@ -159,7 +164,7 @@ class CiAwaitTest extends TestCase
         $other = $this->callTool('seat-b', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::OTHER_SHA]);
 
         $this->assertSame('seat_read_limited', $second->body()['result']['read_skipped']);
-        $this->assertArrayNotHasKey('read_skipped', $other->body()['result'], 'the budget is per seat');
+        $this->assertArrayNotHasKey('read_skipped', $other->body()['result'], 'the budget is per agent');
         $this->assertSame(3, CiAwait::query()->count());
         $this->assertSentRunsReads(2);
     }
@@ -177,7 +182,7 @@ class CiAwaitTest extends TestCase
         $this->assertArrayNotHasKey('retry_not_before', $out->body()['result'], 'no instant is known when the limiter did not answer');
         $this->assertSame(1, CiAwait::query()->count());
         $this->assertSentRunsReads(0);
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $m): bool => str_contains($m, 'per-seat read limiter could not be read'))->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m): bool => str_contains($m, 'per-agent read limiter could not be read'))->once();
     }
 
     public function test_an_out_of_range_seat_budget_is_an_install_fault(): void

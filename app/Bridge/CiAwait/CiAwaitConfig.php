@@ -54,7 +54,9 @@ final class CiAwaitConfig
     }
 
     /**
-     * How many GitHub runs reads ONE seat's registrations may cause per rolling hour (card#11283).
+     * How many GitHub runs reads ONE agent's registrations may cause per FIXED one-hour window,
+     * opened by that agent's first counted read (card#11283) — not a rolling hour: up to twice this
+     * can land around a window boundary.
      * Past it a registration is still stored — only its own read is skipped, the sweep and a
      * `workflow_run` delivery settle it — so a seat looping register/cancel, or registering fresh
      * SHAs, cannot spend the install's GitHub quota. @throws ConfigException naming the value read

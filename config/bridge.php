@@ -479,8 +479,11 @@ return [
     | read is at least one sweep interval old, oldest first, so its GitHub cost
     | is at most sweep_reads × 3600 / the sweep's interval head reads per hour.
     |
-    | seat_reads_per_hour — how many GitHub runs reads ONE seat's registrations
-    | may cause per rolling hour (default 60, 1..10000; card#11283). Past it the
+    | seat_reads_per_hour — how many GitHub runs reads ONE agent's registrations
+    | may cause per FIXED one-hour window, which opens at that agent's first
+    | counted read (RateLimiter::hit, 3600s decay) — not a rolling hour, so up to
+    | twice this can land around a window boundary (default 60, 1..10000;
+    | card#11283). Past it the
     | await is still STORED and its own read is skipped (`read_skipped:
     | seat_read_limited`, with the instant the budget frees) — the sweep and a
     | workflow_run delivery settle it. A register/cancel loop, or a stream of

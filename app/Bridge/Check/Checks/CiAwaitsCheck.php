@@ -20,7 +20,7 @@ use Throwable;
  * Can a seat's `ci_await` be settled or expired on this install (card#11200 / DL-452)?
  *
  * FAILs on a `BRIDGE_CI_AWAIT_*` value the bridge refuses — every `ci_await` call refuses with it.
- * WARNs when the per-seat read limiter's cache store does not answer (card#11283).
+ * WARNs when the per-agent read limiter's cache store does not answer (card#11283).
  * WARNs when the `ci_awaits` table is missing (every `ci_await` refuses until `php artisan
  * migrate`). With awaits stored, WARNs for each thing that would leave one waiting until it
  * expires or forever: no clock to read or expire them ({@see CiAwaitSweepJob::clockGap()}); a runs
@@ -57,7 +57,7 @@ final class CiAwaitsCheck implements Check
         try {
             RateLimiter::attempts(CiAwaitService::SEAT_READ_LIMITER_PREFIX.'bridge-check-probe');
         } catch (Throwable $e) {
-            yield Finding::warn('ci_await: the per-seat read limiter\'s cache store did not answer ('.RedactedErrorText::of($e).') — every ci_await registration skips its own runs read until it does (awaits are still stored, and the sweep and workflow_run deliveries settle them). Check CACHE_STORE.');
+            yield Finding::warn('ci_await: the per-agent read limiter\'s cache store did not answer ('.RedactedErrorText::of($e).') — every ci_await registration skips its own runs read until it does (awaits are still stored, and the sweep and workflow_run deliveries settle them). Check CACHE_STORE.');
         }
 
         try {

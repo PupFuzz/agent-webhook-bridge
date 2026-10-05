@@ -92,8 +92,8 @@ use Throwable;
  */
 class CheckCommand extends BridgeCommand
 {
-    protected $signature = 'bridge:check {--probe-tools= : POST a live board_my_cards to this /agent-tools/call endpoint per enabled agent (opt-in — verifies the same-box loopback recipe end to end; the endpoint is the value the channel server uses, e.g. https://<bridge-hostname>/agent-tools/call)}
-                            {--probe-tools-ssh= : round-trip a live board_my_cards over ssh to this <user@host> (opt-in — certifies the SSH-forced-command board-tools transport end to end; card 4952)}
+    protected $signature = 'bridge:check {--probe-tools= : POST a live board_my_cards (ci_await_cancel to a scope-less, CI-only agent) to this /agent-tools/call endpoint per enabled agent (opt-in — verifies the same-box loopback recipe end to end; the endpoint is the value the channel server uses, e.g. https://<bridge-hostname>/agent-tools/call)}
+                            {--probe-tools-ssh= : round-trip a live board_my_cards over ssh to this <user@host> — ci_await_cancel when every ssh agent is scope-less, and as the follow-up when the door answers not_served (opt-in — certifies the SSH-forced-command board-tools transport end to end; card 4952)}
                             {--format=text : output format — `text` (the operator report) or `json` (a versioned machine-readable document; see docs/check-json-contract.md). The checks that run, and the exit code, are identical either way.}';
 
     protected $description = 'Validate the bridge install config (dirs, DB connectivity, agent YAMLs)';

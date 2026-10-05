@@ -279,14 +279,22 @@ final class SshTransportProbe
         // card#11283: a target whose configured ssh agents are ALL scope-less cannot be sent
         // board_my_cards — it would be refused `not_served` — so it gets the write-nothing CI
         // probe instead. A mixed set keeps board_my_cards: its scope header is the only identity
-        // echo there is, and a `not_served` answer to it is itself the news that the pinned key
-        // resolved to a scope-less agent, which is followed up below.
+        // echo there is, and a `not_served` answer to it (exit 1) is itself the news that the
+        // pinned key resolved to a scope-less agent, which is followed up below.
         $scopeless = array_values(array_filter($expectedScopes, static fn (array $s): bool => $s['board_id'] === null));
         if ($scopeless !== [] && count($scopeless) === count($expectedScopes)) {
             return $this->probeLiveScopeless($target, $scopeless);
         }
         // Declared a probe (card#10567 B4), so the fleet ledger keeps the seat's own report of its client.
         $r = $this->env->sshRoundTrip($target, (string) json_encode(ExemptCaller::probeBody()));
+        // A `not_served` refusal is a 422, which the forced command exits 1 with — so it is read
+        // BEFORE the exit gate, or a scope-less pin on a mixed bridge would read as unreachable.
+        if ($r['exit'] === 1 && $scopeless !== []) {
+            $refusal = json_decode($r['stdout'], true);
+            if (is_array($refusal) && ($refusal['reason'] ?? null) === 'not_served') {
+                return $this->probeLiveScopeless($target, $scopeless);
+            }
+        }
         if ($r['exit'] !== 0) {
             // ⛔ ESCAPED AT THE INTERPOLATION (card#9200, DL-366). Everything this leg
             // echoes below crossed the wire from a REMOTE host: its stderr, its stdout, and
@@ -300,9 +308,6 @@ final class SshTransportProbe
             return [Finding::fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".UntrustedText::forOperator(substr(trim($r['stdout']), 0, 200)))];
         }
         if ($decoded['ok'] !== true) {
-            if (($decoded['reason'] ?? null) === 'not_served' && $scopeless !== []) {
-                return $this->probeLiveScopeless($target, $scopeless);
-            }
             $error = is_string($decoded['error'] ?? null) ? $decoded['error'] : 'unknown';
 
             return [Finding::fail("ssh {$target}: board_my_cards did not succeed (error: ".UntrustedText::forOperator($error).')')];
