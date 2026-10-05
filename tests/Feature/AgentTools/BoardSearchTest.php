@@ -1256,6 +1256,7 @@ class BoardSearchTest extends TestCase
             $this->fail('a home-lane set that cannot be read must refuse the call');
         } catch (ToolRefusalException $e) {
             $this->assertTrue($e->installFault);
+            $this->assertSame('install_fault.agent_config_unreadable', $e->reason);
             $this->assertStringContainsString('could not read its own agent configuration', $e->getMessage());
         }
         Http::assertNothingSent();

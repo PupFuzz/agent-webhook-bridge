@@ -477,8 +477,8 @@ three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could 
   count and the rows both come from its own `tags:"…"` match and differ only on the lane, so
   the check stands behind the lane count, never behind the tag match. A board with no lane but
   yours answers `other_swimlanes: 0` without a count search, still checked against the rows.
-- ⚠ **This read crosses the lane boundary on purpose.** The bridge-enforced read isolation
-  described below holds for your lane lists; `tag_cards` lists cards in other agents' lanes
+- ⚠ **This read crosses the lane boundary on purpose** (§ Reads that cross lanes). The
+  bridge-enforced read isolation described below holds for your lane lists; `tag_cards` lists cards in other agents' lanes
   that carry the tag you name, on your own board. It is one exact tag: `*` (a wildcard to kanban),
   `"`, and `%` (a wildcard to a kanban older than v0.36.0) are refused. `_` is accepted — agent
   names carry it — and kanban v0.36.0 and later match it literally; an older kanban reads it as
@@ -575,18 +575,29 @@ membership, never by swimlane — so the boundary keeping you out of another
 agent's lane is your `board_tools.swimlane_id` config plus a fail-closed row
 filter: every returned row is re-checked against your configured swimlane and any
 non-matching row is **dropped and logged**. The upstream `swimlane_id=` search
-term is efficiency + defense-in-depth, not the boundary. ⚠ **Three reads cross it
-deliberately.** The `tag` read (DL-383) lists the cards on your board carrying the
-one tag you name, in any lane — see § Cards carrying a tag, in any lane. The
-**assigned arm** (card#11267) walks your whole board and keeps **only the rows
-assigned to your own kanban user** — a card in another lane reaches you only when
-it is yours by assignment; see § Which cards are yours. And `board_search`'s
-**`lane: "unrouted"`** (card#11267, rt#595 ask 4) lists the UNASSIGNED cards in no lane
-or in a lane that is no agent's home lane on this install — so it reaches other lanes,
-never a configured home lane (yours included) and never an assigned card. Both
-exclusions are a fail-closed row filter of their own, not kanban's lane term: a row
-whose assignee or lane cannot be read is dropped, and a home-lane row is dropped and
-logged; see § `board_search`.
+term is efficiency + defense-in-depth, not the boundary. The reads that cross it on purpose are
+listed in § Reads that cross lanes, below.
+
+### Reads that cross lanes
+
+This is the one list of reads on this door that reach past your own lane. Each stays on your own
+configured board. Elsewhere this doc and the code point here rather than repeating it.
+
+- **`board_search` with `lane: "any"`, the default**: the widest. It searches every lane on your
+  board, filtered by what you pass. See § `board_search`.
+- **`board_search` with `lane: "none"`**: the cards in no lane.
+- **`board_search` with `lane: "unrouted"`** (card#11267, rt#595 ask 4): the UNASSIGNED cards in
+  no lane or in a lane that is no agent's home lane on this install. It never returns a configured
+  home lane (yours included) or an assigned card. Both exclusions are a fail-closed row filter of
+  their own, not kanban's lane term: a row whose assignee or lane cannot be read is dropped, and a
+  home-lane row is dropped and logged. See § *`lane: "unrouted"`*.
+- **`board_get_cards`** (DL-435): the cards whose ids you name, in any lane. A card on another
+  board is a status with no content. See § `board_get_cards`.
+- **`board_my_cards`' `tag` read** (DL-383): the cards carrying the one exact tag you name, in any
+  lane. See § Cards carrying a tag, in any lane.
+- **`board_my_cards`' assigned arm** (card#11267): walks your whole board and keeps **only the rows
+  assigned to your own kanban user**, so a card in another lane reaches you only when it is yours by
+  assignment. See § Which cards are yours.
 
 ### An empty window is not always an empty lane
 
@@ -1243,7 +1254,7 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `too_many_awaits` | `ci_await` | a NEW await would take you past `BRIDGE_CI_AWAIT_MAX_PER_SEAT`; nothing was stored (a refresh is never refused for it) |
 | `install_fault.ci_await_config_invalid` | `ci_await` | a `BRIDGE_CI_AWAIT_*` setting (`TTL`, `MAX_PER_SEAT`, `READ_COOLDOWN`) is outside its range |
 | `install_fault.ci_await_store_unavailable` | `ci_await`, `ci_await_cancel` | the `ci_awaits` table is missing (`php artisan migrate`) or the database did not answer |
-| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` (and `ci_await`, `install_fault.agent_config_unreadable` only: an agent config that will not load, so whether the repo is received cannot be told) | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
+| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` (and `install_fault.agent_config_unreadable` only: `ci_await`, an agent config that will not load, so whether the repo is received cannot be told; `board_search` with `lane: "unrouted"`, so the home lanes it leaves out cannot be told) | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
 
 A failure whose STATUS is the answer carries no code: the 502 `upstream board error` stays one
 body byte for byte for every cause (DL-387); the HTTP door's 401 (bearer) and 503 (install) answers
@@ -1451,8 +1462,7 @@ A key you did not select is absent.
 **⚠ No window.** Nothing is cut — the request is bounded instead — so there is no `cards_window`,
 `truncated` or `total_is_lower_bound` here. N in, N out is this tool's whole honesty contract.
 
-**⚠ It crosses lanes, deliberately** — the second read on this door that does, after `board_my_cards`'
-`tag` read (DL-383). You name each id, on your own board; a card anywhere else is a status with no
+**⚠ It crosses lanes, deliberately** (§ Reads that cross lanes). You name each id, on your own board; a card anywhere else is a status with no
 content.
 
 **Errors.** A permanent 4xx on the board-scoped search, the membership control (other than a not-readable answer — a 403, or a 200 it reads as unreadable — the membership refusal above) or the stage read is a
@@ -1592,9 +1602,8 @@ collection is the retryable `502`.
   give: its counts would include the assigned cards the bridge drops from rows. Search without
   `summary`; the window says whether its `total` is exact.
 
-**⚠ It crosses lanes by default** (`lane: any`) — the third read on this door that does, after
-`board_my_cards`' `tag` read (DL-383) and `board_get_cards` (DL-435), and the first whose population
-you **filter** rather than name. It stays on your own configured board: every search carries
+**⚠ It crosses lanes by default** (`lane: any`; § Reads that cross lanes), and its population is
+one you **filter** rather than name. It stays on your own configured board: every search carries
 `board_id=<yours>`, and kanban's disclosure confirms it applied.
 
 ### `lane: "unrouted"` (card#11267, rt#595 ask 4)

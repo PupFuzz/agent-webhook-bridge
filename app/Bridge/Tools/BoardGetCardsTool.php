@@ -32,8 +32,8 @@ use Illuminate\Support\Facades\Log;
  *      403 ⇒ `other_board`, but only once {@see ownBoardReadable} has shown the same token may read
  *      this board — see there for why that control is not optional.
  *
- * ⚠ IT CROSSES LANES, deliberately — the second read on this door that does (after DL-383's `tag`
- * read). A card id is caller-named on the caller's own board, so there is no wider population to
+ * ⚠ IT CROSSES LANES, deliberately (docs/board-tools.md § Reads that cross lanes owns the list of
+ * reads that do). A card id is caller-named on the caller's own board, so there is no wider population to
  * leak; a card on ANOTHER board is reported as `other_board` with no content and no board id.
  *
  * ⚠ NO WINDOW, and therefore no `truncated` / `total_is_lower_bound`: nothing is cut, because the

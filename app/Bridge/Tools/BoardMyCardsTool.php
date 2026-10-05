@@ -28,7 +28,8 @@ use Illuminate\Support\Facades\Log;
  * kanban, NOT the boundary. Every returned row is re-checked against the
  * configured swimlane and a non-matching one is DROPPED + logged (a misbehaving
  * upstream must never leak a foreign lane's card into a caller's window). ⚠ The ASSIGNED
- * arm (card#11267) is the second deliberate crossing beside `tag` below: it walks the whole
+ * arm (card#11267) crosses it deliberately, as `tag` below does (docs/board-tools.md § Reads that
+ * cross lanes owns the list): it walks the whole
  * board and keeps only the rows assigned to the calling seat's own kanban user — a card in
  * another lane reaches a caller only when it is the caller's by assignment.
  *
@@ -105,7 +106,8 @@ use Illuminate\Support\Facades\Log;
  * between a board-scoped read and a card search, and a refusal naming the wrong one denies the
  * true cause to the operator by name.
  *
- * ⭐ `tag` IS THE ONE READ HERE THAT CROSSES SWIMLANES ON PURPOSE (card#9260, DL-383). A seat
+ * ⭐ `tag` IS ONE OF THE READS HERE THAT CROSS SWIMLANES ON PURPOSE (card#9260, DL-383); the
+ * other is the assigned arm, which lists the cards assigned to the seat in any lane (DL-459). A seat
  * whose sprint cards sat at `swimlane_id: null` read its own lane, found none, and wrote that its
  * sprint was empty: the lane read never contained them, and nothing in the response varied
  * between "no such cards" and "not in your lane". `tag_cards` reads the board by tag, so every
@@ -113,8 +115,7 @@ use Illuminate\Support\Facades\Log;
  * the ones in other lanes and in none, each count reported only when it can be stood behind (see
  * {@see swimlaneCount}). ⚠ This is a deliberate widening of the read-isolation boundary above,
  * for the one exact tag the caller names on its own board: a glob is refused, so it cannot be
- * turned into a whole-board read. Without `tag` the call makes the same requests and returns the
- * same keys it did before.
+ * turned into a whole-board read.
  */
 final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
 {

@@ -209,8 +209,10 @@ const TOOL_DEFINITIONS = [
       'the kanban token never leaves the bridge. Titles only by default — pass ' +
       'include_description when you need the SCOPE written on a card. EACH card list is ' +
       'CAPPED by default; every list carries a window block (total / returned / limit / ' +
-      'truncated) and truncated: true means there is more behind it — narrow with stage, ' +
-      'or raise limit deliberately. NEVER read a truncated list as the whole board. ' +
+      'truncated) and truncated: true means there is more behind it. The cap keeps the ' +
+      'NEWEST cards (highest ids) before ordering, so on a truncated list your top-ranked ' +
+      'card can be behind the cut — narrow with stage (e.g. the In Progress column), or ' +
+      'raise limit deliberately. NEVER read a truncated list as the whole board. ' +
       'Each card carries assigned_user_id: the raw kanban user id holding it, or null ' +
       'when nobody does. That is how you tell a card another seat is already working ' +
       'from a free one WHEN THE COLUMN NEVER MOVED — the bridge resolves no name for ' +

@@ -60,9 +60,9 @@ use Illuminate\Support\Facades\Log;
  * zero rows at 200, so a call whose every search answered nothing is held to the membership control
  * `board_get_cards` asks ({@see BoardMembershipControl}, via {@see member}).
  *
- * ⚠ IT CROSSES LANES by default (`lane: any`) — the third read on this door that does, after
- * DL-383's `tag` read and DL-435's `board_get_cards`, and the first whose population is
- * caller-FILTERED rather than caller-NAMED. It is bounded to the seat's own configured board: every
+ * ⚠ IT CROSSES LANES by default (`lane: any`), and its population is caller-FILTERED rather than
+ * caller-NAMED. docs/board-tools.md § Reads that cross lanes owns the list of reads that cross
+ * lanes. It is bounded to the seat's own configured board: every
  * search carries `board_id=<board>`, kanban's disclosure confirms it applied, and a row naming
  * another board refuses the call without its content.
  *
@@ -296,7 +296,7 @@ final class BoardSearchTool implements Tool
                 'agent' => $agentName, 'board_id' => $boardId, 'error' => $e->getMessage(),
             ]);
 
-            throw new ToolRefusalException('board_search: `lane: "unrouted"` leaves out every lane an agent on this bridge calls home, and the bridge could not read its own agent configuration to learn which lanes those are — so it cannot show any card is unrouted. NO cards were returned. This is an INSTALL fault; report it to your operator.', installFault: true);
+            throw new ToolRefusalException('board_search: `lane: "unrouted"` leaves out every lane an agent on this bridge calls home, and the bridge could not read its own agent configuration to learn which lanes those are — so it cannot show any card is unrouted. NO cards were returned. This is an INSTALL fault; report it to your operator.', installFault: true, reason: 'install_fault.agent_config_unreadable');
         }
 
         $lanes = [(int) $cfg->swimlaneId];
