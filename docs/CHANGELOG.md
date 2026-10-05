@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.96.0] - 2026-10-04
+
 ### Changed
 
 - **card#11172 / DL-450** — ⚠ **The coord roster is now the ONE source of each agent's kanban user id, read at runtime; `identity.kanban_user_id` is retired, and nothing reads it.** The roster (`roster[].kanban_user_id[<kanban host>]` for the agent's seat — `identity.coord_seat`, else the agent name) used to be held against a YAML copy only when `bridge:check` ran, so between runs the bridge could act on a stale id — and the id decides who `board_take_card` (and its start form) assigns, which carries `board_correct_card` rights. The take, the start form, `board_correct_card`'s assignee arm, kanban event attribution and self echo-suppression now all read the roster, in the file **`BRIDGE_COORD_CONFIG_PATH`** names.
