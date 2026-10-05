@@ -218,9 +218,10 @@ const TOOL_DEFINITIONS = [
       'claim a free one — but ONLY in your own lanes or one already assigned to you: coordination cards appear in the ' +
       'coord_cards block of this same response, they are on a different board, and they ' +
       'are NOT takeable (the attempt is refused write-free and says so). ' +
-      'Your lane read NEVER shows a card that is in another lane or in NO lane, so ' +
-      '"none of my cards carry tag X" is not something the lane read can tell you: pass ' +
-      'tag to read every card on your board carrying that tag, whatever lane it is in. ' +
+      'A card outside your lane (another lane, or no lane) is listed only when it is ' +
+      'ASSIGNED to you, so "none of my cards carry tag X" is not something this read can ' +
+      'tell you about unassigned cards: pass tag to read every card on your board carrying ' +
+      'that tag, whatever lane it is in and whoever holds it. ' +
       'A board fault ' +
       'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
       'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
@@ -300,8 +301,10 @@ const TOOL_DEFINITIONS = [
       'identity — you cannot target another lane). The card is born untriaged and ' +
       'surfaces to the triage pass, and it is ASSIGNED TO YOU (your own kanban user, ' +
       'resolved from your bridge identity): the result\'s assigned_user_id says so, or is ' +
-      'null with assignee_unset_reason naming why the card was left unassigned — the card ' +
-      'is created either way. Pass an idempotency_key to make retries safe. ' +
+      'null with assignee_unset_reason naming why it is not known to be yours ' +
+      '(assign_unconfirmed means the assignment got no answer and may have landed) — the ' +
+      'card is created either way. Pass an idempotency_key to make retries safe: a retry ' +
+      'that finds the card already created returns it, and assigns it to you if nobody holds it. ' +
       'The returned board_id/swimlane_id are READ BACK from the card and can differ ' +
       'from the scope you are configured for, which is returned beside them as ' +
       'configured_board_id/configured_swimlane_id. placement_observed: false means ' +
@@ -568,12 +571,18 @@ const TOOL_DEFINITIONS = [
     name: 'board_search',
     description:
       'Search the cards on YOUR board by filter and get the MATCHES ONLY — no lane list, no column ' +
-      'list, no grouping. Every filter is applied by the board itself, and the filters combine ' +
+      'list, no grouping. Every filter is applied by the board itself (except lane: unrouted\'s ' +
+      'unassigned test, which the board has no term for: the bridge applies it to the rows the ' +
+      'board returns), and the filters combine ' +
       '(AND). lane defaults to any: cards in every lane of your board, each with its swimlane_id ' +
-      '(null means no lane). Results are the NEWEST matches first, cut to limit; window says ' +
+      '(null means no lane). lane: unrouted is the routing queue — the UNASSIGNED cards in no ' +
+      'lane, or in a lane that is no agent\'s home lane on this bridge; home_lanes names the lanes ' +
+      'it left out, and a lane that is home to an agent on ANOTHER bridge shows up as unrouted. ' +
+      'Results are the NEWEST matches first, cut to limit; window says ' +
       'total (how many matched), returned, truncated (true when more matched than were returned) ' +
-      'and total_is_lower_bound (true only when a tags_any union could not be sized exactly — ' +
-      'truncated is then true too). summary: true returns counts instead of cards: total and ' +
+      'and total_is_lower_bound (true when the total could not be sized exactly — a tags_any ' +
+      'union, or an unrouted search that matched more than one page — and truncated is then ' +
+      'true too). summary: true returns counts instead of cards (not with lane: unrouted): total and ' +
       'by_stage, plus by_tag for the tags you name in summary_tags. Read-only. Where the board ' +
       'cannot show it applied a filter, the call is REFUSED (422) rather than answered with a ' +
       'count of something else. A board fault that cannot clear (the bridge token revoked/rotated, ' +
@@ -625,8 +634,10 @@ const TOOL_DEFINITIONS = [
         },
         lane: {
           type: 'string',
-          enum: ['mine', 'any', 'none'],
-          description: 'mine = your own swimlane, none = cards in no lane, any = every lane (default).',
+          enum: ['mine', 'any', 'none', 'unrouted'],
+          description:
+            'mine = your own swimlane, none = cards in no lane, any = every lane (default), ' +
+            'unrouted = unassigned cards in no lane or in no home lane of an agent on this bridge.',
         },
         summary: {
           type: 'boolean',

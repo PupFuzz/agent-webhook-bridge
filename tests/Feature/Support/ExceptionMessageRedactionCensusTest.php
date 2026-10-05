@@ -137,6 +137,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Support/TokenFile.php::readTrimmed#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardCardRank.php::forBoard#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardCorrectCardTool.php::installHoldTags#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Tools/BoardSearchTool.php::homeLanes#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardTakeCardTool.php::inProgressColumn#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardTakeCardTool.php::refuseIfFinished#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardToolAgentResolver.php::readToken#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,

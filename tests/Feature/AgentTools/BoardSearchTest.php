@@ -2,8 +2,11 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Exceptions\ToolRefusalException;
+use App\Bridge\Support\AgentConfig;
 use App\Bridge\Tools\BoardSearchTool;
 use App\Bridge\Tools\ToolsCallStdio;
+use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
@@ -52,6 +55,12 @@ class BoardSearchTest extends TestCase
 
     /** The writeback user is not a member of the board: kanban's search floors it to zero rows, at 200. */
     private bool $nonMember = false;
+
+    /** @var list<int>|null the board's lanes, carried by the preload when set (`lane: unrouted` narrows by them) */
+    private ?array $swimlanes = null;
+
+    /** A misbehaving kanban: it says it applied a `swimlane_id=` term and returns every lane anyway. */
+    private bool $ignoresLaneTerm = false;
 
     protected function setUp(): void
     {
@@ -184,7 +193,8 @@ class BoardSearchTest extends TestCase
             preg_match('/^name:"(.+)"$/', $token, $m) === 1 => str_contains(mb_strtolower((string) $row['name']), mb_strtolower($m[1])),
             preg_match('/^updated_at>=:(\d{4}-\d{2}-\d{2})$/', $token, $m) === 1 => substr((string) $row['updated_at'], 0, 10) >= $m[1],
             $token === 'swimlane_id=none' => $row['swimlane_id'] === null,
-            preg_match('/^swimlane_id=(\d+)$/', $token, $m) === 1 => $row['swimlane_id'] === (int) $m[1],
+            preg_match('/^swimlane_id=((?:\d+|none)(?:,(?:\d+|none))*)$/', $token, $m) === 1 => $this->ignoresLaneTerm
+                || in_array($row['swimlane_id'] ?? 'none', array_map(fn (string $l): int|string => $l === 'none' ? 'none' : (int) $l, explode(',', $m[1])), true),
             default => null,
         };
     }
@@ -196,7 +206,7 @@ class BoardSearchTest extends TestCase
                 ['id' => 50, 'name' => 'Backlog', 'position' => 1],
                 ['id' => 51, 'name' => 'In Review', 'position' => 2],
                 ['id' => 52, 'name' => 'Done', 'position' => 3],
-            ]]]]]),
+            ]]]] + ($this->swimlanes === null ? [] : ['swimlanes' => array_map(fn (int $id): array => ['id' => $id], $this->swimlanes)])]),
             '*/boards/'.self::BOARD.'/status.json' => $this->nonMember ? KanbanBoardStatus::forbidden() : KanbanBoardStatus::readable(self::BOARD),
             '*/boards/'.self::BOARD.'/tasks/by-ref.json*' => function (Request $request) use ($byRefStatus) {
                 if ($this->nonMember) {
@@ -1034,5 +1044,220 @@ class BoardSearchTest extends TestCase
         $this->assertSame(422, $res['status']);
         $this->assertStringContainsString('does not name any stage', (string) $res['body']['error']);
         $this->assertSame([], self::searches());
+    }
+
+    // ─── lane: unrouted (card#11267, rt#595 ask 4) ───────────────────────────
+
+    /** Another agent on THIS install, on the same board, whose home lane is OTHER_LANE. */
+    private const OTHER_LANE = 7;
+
+    /** A lane no agent on this install calls home. */
+    private const TOPIC_LANE = 9;
+
+    /** A second board-tools agent on this install, home lane {@see OTHER_LANE} on the same board. */
+    private function otherAgentHere(): void
+    {
+        File::put($this->dir.'/other-tools-token', 'tools-bearer-other');   // gitleaks:allow — test fixture
+        chmod($this->dir.'/other-tools-token', 0o600);
+        File::put($this->dir.'/other.yml', "subscriptions: []\nboard_tools:\n  enabled: true\n  transport: http\n"
+            ."  auth:\n    token_path: {$this->dir}/other-tools-token\n"
+            .'  board_id: '.self::BOARD."\n  swimlane_id: ".self::OTHER_LANE."\n  create_stage_id: 50\n");
+    }
+
+    private function unroutedBoard(): void
+    {
+        $this->swimlanes = [self::MY_LANE, self::OTHER_LANE, self::TOPIC_LANE];
+        $this->otherAgentHere();
+    }
+
+    public function test_unrouted_lists_an_unassigned_card_in_a_lane_no_agent_here_calls_home(): void
+    {
+        $this->unroutedBoard();
+        $this->card(101, ['swimlane_id' => self::TOPIC_LANE]);
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted', 'fields' => ['id', 'swimlane_id', 'assigned_user_id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([101], self::ids($res['body']));
+        $this->assertSame(['board_id=10 swimlane_id='.self::TOPIC_LANE.',none'], self::searches(), 'kanban narrows the lanes: every lane but the home ones, and none');
+        $this->assertSame(['total' => 1, 'returned' => 1, 'limit' => BoardSearchTool::DEFAULT_LIMIT, 'truncated' => false, 'total_is_lower_bound' => false], $res['body']['result']['window']);
+        $this->assertSame('unrouted', $res['body']['result']['filters']['lane']);
+    }
+
+    public function test_unrouted_lists_an_unassigned_card_in_no_lane(): void
+    {
+        $this->unroutedBoard();
+        $this->card(102, ['swimlane_id' => null]);
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted', 'fields' => ['id', 'swimlane_id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([102], self::ids($res['body']));
+        $this->assertNull($res['body']['result']['cards'][0]['swimlane_id']);
+    }
+
+    /** kanban has no unassigned term, so this exclusion is the bridge's row filter and nothing else. */
+    public function test_unrouted_never_returns_an_assigned_card(): void
+    {
+        $this->unroutedBoard();
+        $this->card(103, ['swimlane_id' => self::TOPIC_LANE, 'assigned_user_id' => 815]);
+        $this->card(104, ['swimlane_id' => null, 'assigned_user_id' => 815]);
+        $this->card(105, ['swimlane_id' => self::TOPIC_LANE]);
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted', 'fields' => ['id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([105], self::ids($res['body']));
+        $this->assertSame(1, $res['body']['result']['window']['total'], 'the total counts what the filter kept, not kanban\'s count of the lanes');
+    }
+
+    /**
+     * ⛔ THE ROW FILTER IS THE BOUNDARY, NOT KANBAN'S LANE TERM: this kanban says it applied the
+     * term and returns every lane anyway, and a card in another configured agent's home lane is
+     * still never returned.
+     */
+    public function test_unrouted_never_returns_a_card_in_another_configured_agents_home_lane(): void
+    {
+        $this->unroutedBoard();
+        $this->ignoresLaneTerm = true;
+        $this->card(106, ['swimlane_id' => self::OTHER_LANE]);
+        $this->card(107, ['swimlane_id' => self::TOPIC_LANE]);
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted', 'fields' => ['id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([107], self::ids($res['body']));
+    }
+
+    public function test_unrouted_never_returns_a_card_in_the_callers_own_home_lane(): void
+    {
+        $this->unroutedBoard();
+        $this->ignoresLaneTerm = true;
+        $this->card(108, ['swimlane_id' => self::MY_LANE]);
+        $this->card(109, ['swimlane_id' => self::TOPIC_LANE]);
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted', 'fields' => ['id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([109], self::ids($res['body']));
+    }
+
+    public function test_unrouted_names_the_lanes_it_treated_as_home_and_the_bound_it_cannot_close(): void
+    {
+        $this->unroutedBoard();
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted']);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([self::MY_LANE, self::OTHER_LANE], $res['body']['result']['home_lanes']);
+        $this->assertSame(BoardSearchTool::HOME_LANES_NOTE, $res['body']['result']['home_lanes_note']);
+        $this->assertStringContainsString('another bridge install', BoardSearchTool::HOME_LANES_NOTE);
+    }
+
+    public function test_a_lane_other_than_unrouted_carries_no_home_lanes(): void
+    {
+        $this->unroutedBoard();
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'any']);
+
+        $this->assertArrayNotHasKey('home_lanes', $res['body']['result']);
+        $this->assertArrayNotHasKey('home_lanes_note', $res['body']['result']);
+    }
+
+    /** A row whose assignee or lane cannot be read cannot be shown unrouted, so it is dropped. */
+    public function test_unrouted_drops_a_row_whose_assignee_or_lane_cannot_be_read(): void
+    {
+        $this->unroutedBoard();
+        $this->card(110, ['swimlane_id' => self::TOPIC_LANE]);
+        unset($this->live[110]['assigned_user_id']);
+        $this->card(111, ['swimlane_id' => self::TOPIC_LANE, 'assigned_user_id' => '815']);
+        $this->card(112, ['swimlane_id' => self::TOPIC_LANE]);
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted', 'fields' => ['id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([112], self::ids($res['body']));
+    }
+
+    /**
+     * The bridge filters what kanban returns, so kanban's count is not the population: a search that
+     * matched more than one page could read makes the total a lower bound, said on the window.
+     */
+    public function test_unrouted_reports_a_lower_bound_when_the_lanes_matched_more_than_one_page(): void
+    {
+        $this->unroutedBoard();
+        foreach (range(1001, 1000 + BoardSearchTool::MAX_LIMIT + 3) as $id) {
+            $this->card($id, ['swimlane_id' => self::TOPIC_LANE, 'assigned_user_id' => $id % 2 === 0 ? 815 : null]);
+        }
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted', 'fields' => ['id']]);
+
+        $window = $res['body']['result']['window'];
+        $this->assertTrue($window['total_is_lower_bound']);
+        $this->assertTrue($window['truncated']);
+        $this->assertSame(BoardSearchTool::MAX_LIMIT / 2, $window['total'], 'the unassigned half of the one page read');
+        $this->assertSame(BoardSearchTool::DEFAULT_LIMIT, $window['returned']);
+        $this->assertSame(1000 + BoardSearchTool::MAX_LIMIT + 3, self::ids($res['body'])[0], 'newest first, as every board_search window');
+    }
+
+    public function test_unrouted_with_pr_number_drops_the_assigned_and_home_lane_candidates(): void
+    {
+        $this->unroutedBoard();
+        $this->card(120, ['swimlane_id' => self::TOPIC_LANE, 'payload' => ['pr_number' => 42]]);
+        $this->card(121, ['swimlane_id' => self::TOPIC_LANE, 'payload' => ['pr_number' => 42], 'assigned_user_id' => 815]);
+        $this->card(122, ['swimlane_id' => self::OTHER_LANE, 'payload' => ['pr_number' => 42]]);
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted', 'pr_number' => 42, 'fields' => ['id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([120], self::ids($res['body']));
+        $this->assertSame([self::MY_LANE, self::OTHER_LANE], $res['body']['result']['home_lanes']);
+    }
+
+    public function test_a_summary_of_unrouted_is_refused_before_any_read(): void
+    {
+        $this->unroutedBoard();
+        $this->fakeKanban();
+
+        $res = $this->http(['lane' => 'unrouted', 'summary' => true]);
+
+        $this->assertSame(422, $res['status']);
+        $this->assertStringContainsString('no term for an unassigned card', (string) $res['body']['error']);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * Both doors load the agent configuration before they dispatch, so a config that will not load
+     * is refused there; what reaches this arm is a config that broke between the door's read and
+     * the tool's (a YAML edited under the running bridge). The tool is called directly to put it
+     * in that state.
+     */
+    public function test_unrouted_refuses_when_the_agent_configuration_cannot_be_read(): void
+    {
+        $this->unroutedBoard();
+        $this->writeAgent('http');
+        $cfg = AgentConfig::load('me', $this->dir)->boardTools;
+        $this->assertNotNull($cfg);
+        File::put($this->dir.'/broken.yml', "board_tools: [unclosed\n");
+        $this->fakeKanban();
+
+        try {
+            (new BoardSearchTool)->call(['lane' => 'unrouted'], $cfg, new KanbanClient('https://kanban.example.com/api/v3', 'wb-token'), 'me');
+            $this->fail('a home-lane set that cannot be read must refuse the call');
+        } catch (ToolRefusalException $e) {
+            $this->assertTrue($e->installFault);
+            $this->assertStringContainsString('could not read its own agent configuration', $e->getMessage());
+        }
+        Http::assertNothingSent();
     }
 }
