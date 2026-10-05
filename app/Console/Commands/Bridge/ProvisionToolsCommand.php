@@ -377,7 +377,7 @@ class ProvisionToolsCommand extends BridgeCommand
      * Reports the cause and returns false at the first bad value.
      *
      * ⛔ THE PACKET IS PASTE-READY TEXT, AND THAT IS EXACTLY WHY THE VALUES ARE CHECKED
-     * HERE. Its steps are commands an impl agent and an operator paste into their own
+     * HERE. Its steps are commands the seat's agent and an operator paste into their own
      * shells, so an unvalidated `--host-a`, `--ssh-port` or path does not stay a bad
      * option — it becomes a shell fragment on somebody else's box, one of them at a `sudo`
      * prompt. Refusing is not a courtesy to the parser; it is the only point at which this
@@ -529,6 +529,16 @@ class ProvisionToolsCommand extends BridgeCommand
             '  #   enabled: true',
             '  #   auth:',
             "  #     token_path: /abs/path/to/{$agentName}-board-tools-token",
+        ] as $line) {
+            $this->line($line);
+        }
+        // card#11283: the implementation-seat variant. Scope-less means CI tools only — no board
+        // read or write — and only an EXPLICIT `enabled: true` block may omit the scope.
+        $this->line('# For an IMPLEMENTATION seat (CI tools only, no board access), use instead:');
+        foreach ([
+            'board_tools:',
+            '  enabled: true',
+            '  # no board_id / swimlane_id / create_stage_id: served ci_await + ci_await_cancel only',
         ] as $line) {
             $this->line($line);
         }

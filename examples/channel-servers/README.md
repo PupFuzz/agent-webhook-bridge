@@ -274,7 +274,7 @@ See [`docs/multi-host.md`](../../docs/multi-host.md) for the full SSH-tunneled m
 
 From client 0.9.29 a seat need not copy this directory at all: its bridge publishes a **client pack** per bridge release (DL-428/DL-430) and the seat runs it from a **seat root** it updates at every new launch (card#10568, DL-434). Getting a seat onto that path — fetching the first pack and pointing `.mcp.json` at the root — is the bootstrap. Every onboarding entry point runs it once the seat's ssh round-trip succeeds (`--certify-only`, `--self-cert`, the same-box wrapper; DL-445), and `provision-board-tools.py --role b --bootstrap-client` runs it on its own (DL-444). `docs/board-tools.md` owns their flags and refusals. A seat whose bridge offers nothing to install keeps its copied directory as described above. This section describes what a bootstrapped seat runs.
 
-- **The root** holds `entry.mjs` (what `.mcp.json` points at), `current.json` (the installed release), `versions/<release>/` (each verified release, immutable once installed), `bin/<tool>` (shims that run the current release's copy of each seat tool and of each client program under `client/bin/` — `bridge-board-call`, below), `state.json` (what THIS launch's update did), `install-log.jsonl` (append-only, hash-chained) and `launch.json` (the session guard's record).
+- **The root** holds `entry.mjs` (what `.mcp.json` points at), `current.json` (the installed release), `versions/<release>/` (each verified release, immutable once installed), `bin/<tool>` (shims that run the current release's copy of each seat tool and of each client program under `client/bin/` — `bridge-board-call`, below), `state.json` (what THIS launch's update did), `install-log.jsonl` (append-only, hash-chained), `launch.json` (the session guard's record) and, from client 0.9.45, `served-tools.json` (the bridge's served-tools answer for this launch, written by the updater; see [§ *Which tools are listed*](#which-tools-are-listed-what-the-bridge-serves-this-agent-client-0945-and-later)).
 - **At a new launch, and only then**, `entry.mjs` asks its own bridge's client-update door what it publishes, over the board-tools transport this server already uses (`BRIDGE_TOOLS_SSH_TARGET`, or `BRIDGE_TOOLS_ENDPOINT` + bearer — the door is `…/agent-tools/client` beside `…/agent-tools/call`). A newer release is fetched, checked against the sha256 values its manifest names, extracted, and switched in before the server starts, so the session runs it from its first message. A reconnect inside a running session (`/mcp reconnect`) changes nothing and asks nothing: **a running session's tools never change under it**.
 - **A release that is not intact is passed over — one primitive, `classifyRelease`, judges it.** (A test pins a direct fs read under `versions/` from a function not on its allowlist, on a path the test exercises in-process; reads via `fs.open`/`readSync`, inside an allowlisted function, or in the child process (`importFailure`, `main`) are not pinned.) At a launch it checks the files the client cannot run without (cheap, `REQUIRED_CLIENT_FILES`); not-started or a bootstrap pays the full tree once. It returns `ok`, or `bad` for EVERY OTHER outcome alike — missing, a hash mismatch, or a plain read fault (a permission or I/O error) — there is no third state: a read fault has the same status as a confirmed mismatch, and only the not-started messages word it apart (design review, card#10568 non-convergence re-derivation — an earlier split that spared a read fault from deletion protected nothing reachable and blocked the one repair that mattered). The newest OTHER release that classifies `ok` starts instead, loudly, and `current.json` is repointed to it once the update reaches that step — **repointing deletes nothing**; an install (below) and the retention prune are what remove a release, each on its own terms. When no release classifies `ok`, the seat is not started and the message says to bootstrap — or, for a release passed over for a read fault, to fix the file it names. A file outside the cheap scope that the server imports can still fail only when the release is imported (a `seat-tools/bin/` file is not checked at launch at all: it fails when that tool runs, and the seat still starts), and then the seat is **not started** (no other release is tried): `entry.mjs` classifies that release's whole tree once to word the message — not intact on this seat (re-bootstrap: a bootstrap re-verifies the whole tree and replaces what is not intact), intact and failing anyway (a defect in the published release, or this seat's own Node runtime no longer matching its `node_engines`), or a read fault (named, with the file to fix; a bootstrap replaces a release with a file-level read fault too).
 - **Any failure keeps the installed release running**, bounded by `AWB_CLIENT_UPDATE_BUDGET_MS`: the bridge unreachable, a pack that does not check out, a downgrade offered, the same release offered with other bytes, a Node this seat does not run. It is loud: `state.json`, one line at the top of this server's INSTRUCTIONS (below), the install log, and the report to the bridge, where `php artisan bridge:client-fleet` shows the seat's state to the PM.
@@ -324,6 +324,33 @@ wiring advertises no `tools` capability (nothing dead).
 
 If the tools are advertised but the endpoint or bearer is unset, a `tools/call`
 returns a **structured refusal naming the missing config** (no call is made).
+
+### Which tools are listed: what the bridge serves this agent (client 0.9.45 and later)
+
+The env rule above decides whether the bridge tools are ON. WHICH of them are listed is the
+bridge's own answer for this agent (card#11283 / DL-462): the bridge's `served_tools` set ∩
+the tools this server defines. An implementation seat with a scope-less `board_tools` block is
+served `ci_await` and `ci_await_cancel` only, so that is all it lists, and its instructions
+describe CI tools and no board tool. The set is resolved ONCE, at start-up, before the MCP
+handshake, from the first of:
+
+1. **This launch's cache**, `<client root>/served-tools.json`, written by the launch-time
+   updater from this launch's `client_manifest` answer (only when that answer carries
+   `served_tools`). No call is made.
+2. **One `{"op": "served_tools"}` call** to the update door over this seat's transport (5 s):
+   - the bridge's list ⇒ that list;
+   - `door_closed` (the ssh door will not serve this agent) ⇒ **no bridge tool**;
+   - a bridge that does not know the op (ssh exit 1 or HTTP 422 with no `reason` and an
+     `unknown client-update` error; the pre-door empty-`tool` refusal; HTTP 404) ⇒ the env
+     rule, every tool, and any cache is ignored.
+3. **The last good cache**, from any earlier launch, when the call says nothing (no answer, a
+   reason-less exit 2, a 5xx, a 401, a body that is not the op's answer).
+4. **The env rule**: every tool, as before 0.9.45.
+
+The bridge refuses an unserved tool (`not_served`) whatever this server lists, so a fallback can
+only ever list a tool that refuses — it never grants one. `served-tools.json` is an add-only
+cross-release contract: `{launch_id, agent, served: [...], written_at}`; readers use
+`launch_id` and `served`.
 
 The bridge side is loopback-gated: same-box installs point `BRIDGE_TOOLS_ENDPOINT`
 at a loopback peer (`https://<public-host>/...` FAILS the gate: the kernel

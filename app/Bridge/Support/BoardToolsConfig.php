@@ -4,10 +4,11 @@ namespace App\Bridge\Support;
 
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Tools\BoardToolsRegistry;
+use App\Bridge\Tools\ServedTools;
 
 /**
  * The resolved `board_tools` section of a per-agent config (DL-217) — the
- * channel-identity-scoped board window an impl agent gets over the two-way
+ * channel-identity-scoped board window a seat's agent gets over the two-way
  * agent channel. WHICH tools that window contains is
  * {@see BoardToolsRegistry}'s to say and is deliberately not
  * enumerated here: this docblock named two, a third arrived with DL-326, and a list
@@ -148,7 +149,39 @@ final class BoardToolsConfig
         // card#10567 B4: `client_update.approval_required: true` — the client-update door offers this
         // agent a published client pack only once `bridge:client-approve` has approved its content.
         public readonly bool $clientUpdateApprovalRequired = false,
+        // card#11283: whether this agent is served the self-scoped CI tools (`ci_await`,
+        // `ci_await_cancel`). `board_tools.ci_tools: false` opts out; a value that is not a strict
+        // bool opts out too and names itself in `ciToolsProblem`, which bridge:check FAILs on. It
+        // never throws: an opt-out that cannot be read must not take the agent's door down with it.
+        public readonly bool $ciTools = true,
+        public readonly ?string $ciToolsProblem = null,
     ) {}
+
+    /**
+     * The keys whose presence makes a block SCOPED (card#11283). An explicit block carrying NONE
+     * of them — by `array_key_exists`, so a key written as bare `board_id:` counts as present and
+     * takes the scoped path, where it fails as it does today — is a scope-less block: an enabled
+     * agent that is served the CI tools and no board tool.
+     */
+    public const SCOPE_KEYS = ['board_id', 'swimlane_id', 'create_stage_id', 'shared_swimlane_id', 'coord_board_id', 'address_tags'];
+
+    /**
+     * Keys that only mean something to a scoped agent, refused on a scope-less block rather than
+     * silently ignored: `description_max_bytes` caps a board read the agent is never served, and
+     * `fleet_view` opens the whole fleet's client states to the PM's seat, which a CI-only seat is
+     * not (card#11283 ruling). `client_update` stays: the update door serves a scope-less agent.
+     */
+    private const SCOPED_ONLY_KEYS = ['description_max_bytes', 'fleet_view'];
+
+    /**
+     * An ENABLED block with no board scope (card#11283): served the CI tools and nothing that
+     * reads or writes a board. {@see ServedTools} is what turns this into a
+     * served set; nothing else should branch on it to decide what an agent may call.
+     */
+    public function isScopeless(): bool
+    {
+        return $this->enabled && $this->boardId === null;
+    }
 
     /**
      * Parse the top-level `board_tools` block from a per-agent config. Absent ⇒
@@ -212,7 +245,10 @@ final class BoardToolsConfig
         // malformation (require*/parse* throw; an unsatisfiable explicit assertion
         // is malformed config).
         if ($enabledKeyPresent && $block['enabled'] === true) {
-            return self::build($block, $channel);
+            // card#11283: only an EXPLICIT block can be scope-less. A default-class block with no
+            // scope keeps failing `requireInt` below and suppressing, as it always has, so no
+            // YAML that loads today changes meaning — every block that is newly valid here threw.
+            return self::carriesScopeKey($block) ? self::build($block, $channel) : self::buildScopeless($block, $channel);
         }
 
         // (3) DISABLED: is_array AND enabled === false (strict) — well-formed no-op.
@@ -317,6 +353,7 @@ final class BoardToolsConfig
         $descriptionMaxBytes = self::optionalPositiveInt($block, 'description_max_bytes') ?? self::DEFAULT_DESCRIPTION_MAX_BYTES;
         $fleetView = self::optionalBool($block, 'fleet_view', 'board_tools.fleet_view');
         $approvalRequired = self::parseApprovalRequired($block);
+        [$ciTools, $ciToolsProblem] = self::parseCiTools($block);
 
         return new self(
             enabled: true,
@@ -334,7 +371,83 @@ final class BoardToolsConfig
             descriptionMaxBytes: $descriptionMaxBytes,
             fleetView: $fleetView,
             clientUpdateApprovalRequired: $approvalRequired,
+            ciTools: $ciTools,
+            ciToolsProblem: $ciToolsProblem,
         );
+    }
+
+    /**
+     * @param  array<mixed>  $block
+     */
+    private static function carriesScopeKey(array $block): bool
+    {
+        foreach (self::SCOPE_KEYS as $key) {
+            if (array_key_exists($key, $block)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * An explicit block with no scope key (card#11283). The door half — transport, bearer,
+     * ssh account, client-update approval — parses exactly as {@see build} parses it, so a
+     * scope-less agent authenticates through the same doors as any other; the scope stays null,
+     * which is what {@see isScopeless} reads.
+     *
+     * @param  array<mixed>  $block
+     */
+    private static function buildScopeless(array $block, ?ChannelConfig $channel): self
+    {
+        foreach (self::SCOPED_ONLY_KEYS as $key) {
+            if (array_key_exists($key, $block)) {
+                throw new ConfigException("board_tools.{$key} needs a board scope (board_id, swimlane_id, create_stage_id) — a block with none is CI-tools-only; remove {$key}, or add the scope");
+            }
+        }
+        $transportExplicit = array_key_exists('transport', $block);
+        $transport = self::parseTransport($block);
+        [$tokenPath, $bearerFromChannel] = self::requireBearer($block, $channel, $transport);
+        [$ciTools, $ciToolsProblem] = self::parseCiTools($block);
+
+        return new self(
+            enabled: true,
+            tokenPath: $tokenPath,
+            boardId: null,
+            swimlaneId: null,
+            createStageId: null,
+            sharedSwimlaneId: null,
+            coordBoardId: null,
+            addressTags: [],
+            bearerFromChannel: $bearerFromChannel,
+            transport: $transport,
+            sshAccount: self::optionalString($block, 'ssh_account'),
+            transportExplicit: $transportExplicit,
+            clientUpdateApprovalRequired: self::parseApprovalRequired($block),
+            ciTools: $ciTools,
+            ciToolsProblem: $ciToolsProblem,
+        );
+    }
+
+    /**
+     * `board_tools.ci_tools` (card#11283): absent ⇒ on. A strict bool is honoured. ANY other
+     * value — bare `ci_tools:` (null) and `no`/`off` strings included, which symfony/yaml does not
+     * booleanize — is read as OFF and named, never as on and never as a throw: it is an opt-out,
+     * so the safe reading of an unreadable one is "the operator wanted it off".
+     *
+     * @param  array<mixed>  $block
+     * @return array{0: bool, 1: ?string}
+     */
+    private static function parseCiTools(array $block): array
+    {
+        if (! array_key_exists('ci_tools', $block)) {
+            return [true, null];
+        }
+        if (is_bool($block['ci_tools'])) {
+            return [$block['ci_tools'], null];
+        }
+
+        return [false, 'board_tools.ci_tools must be true or false (symfony/yaml does not booleanize yes/no/on/off) — the CI tools are OFF for this agent until it is'];
     }
 
     /**

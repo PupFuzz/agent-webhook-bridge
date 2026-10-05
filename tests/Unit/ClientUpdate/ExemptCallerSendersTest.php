@@ -22,7 +22,7 @@ use PHPUnit\Framework\TestCase;
  */
 class ExemptCallerSendersTest extends TestCase
 {
-    private const BODY = '/[\'"]tool[\'"]\s*(=>|:)\s*[\'"]board_/';
+    private const BODY = '/[\'"]tool[\'"]\s*(=>|:)\s*[\'"](board_|ci_)/';
 
     /**
      * @return list<string> "path:line: text" for each line in the population that declares no caller
@@ -33,7 +33,7 @@ class ExemptCallerSendersTest extends TestCase
         foreach (explode("\n", $source) as $i => $line) {
             $isBody = preg_match(self::BODY, $line) === 1;
             $isProbeTransport = str_contains($line, '->sshRoundTrip(');
-            if (($isBody && ! str_contains($line, 'caller')) || ($isProbeTransport && ! str_contains($line, 'ExemptCaller::probeBody()'))) {
+            if (($isBody && ! str_contains($line, 'caller')) || ($isProbeTransport && preg_match('/ExemptCaller::(probeBody|scopelessProbeBody)\(\)/', $line) !== 1)) {
                 $out[] = $path.':'.($i + 1).': '.trim($line);
             }
         }

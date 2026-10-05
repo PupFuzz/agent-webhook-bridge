@@ -2,9 +2,11 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Writeback\BoardReadRefused;
 use App\Bridge\Writeback\BoardStructure;
 use App\Bridge\Writeback\KanbanClient;
@@ -20,7 +22,8 @@ use Illuminate\Support\Facades\Log;
  * `summary: true` returns counts and no rows. A read tool on the board-tools door;
  * {@see BoardToolsRegistry} is the set that door offers.
  *
- * ⭐ EVERY FILTER IS KANBAN'S, NEVER A BRIDGE-SIDE SCAN. Each one rides kanban's own search DSL
+ * ⭐ EVERY FILTER IS KANBAN'S, NEVER A BRIDGE-SIDE SCAN — with ONE exception, `lane: unrouted`'s
+ * unassigned test, which kanban has no term for (below). Each one rides kanban's own search DSL
  * (`QueryParser`, source-read at kanban `origin/dev` 54a63399): `tags:"t"` per tag (ANDed),
  * `workflow_stage_id=a,b`, `name:"needle"` (a LIKE `%needle%`), `updated_at>=:YYYY-MM-DD` (a DATE
  * compare), `swimlane_id=<lane>|none`, and the `archived` switch. The two kanban has no term for are
@@ -47,7 +50,9 @@ use Illuminate\Support\Facades\Log;
  * search by id descending and ids are allocated monotonically), in that order. `total` is kanban's
  * own `meta.total` for the population, so `truncated` is true exactly when more matched than were
  * returned, and `total_is_lower_bound` is true only on a `tags_any` union the bridge could not size
- * exactly — where `truncated` is then true too, because the window cannot be shown complete.
+ * exactly, or a `lane: unrouted` search that was not read whole — where `truncated` is then true
+ * too, because the window cannot be shown complete. (Under `lane: unrouted` `total` is the count of
+ * rows the bridge kept, not kanban's — see below.)
  * `limit` is capped at {@see KanbanClient::SEARCH_LIMIT}, kanban's own page cap, so ONE request per
  * search is the whole window: nothing is walked.
  *
@@ -55,11 +60,27 @@ use Illuminate\Support\Facades\Log;
  * zero rows at 200, so a call whose every search answered nothing is held to the membership control
  * `board_get_cards` asks ({@see BoardMembershipControl}, via {@see member}).
  *
- * ⚠ IT CROSSES LANES by default (`lane: any`) — the third read on this door that does, after
- * DL-383's `tag` read and DL-435's `board_get_cards`, and the first whose population is
- * caller-FILTERED rather than caller-NAMED. It is bounded to the seat's own configured board: every
+ * ⚠ IT CROSSES LANES by default (`lane: any`), and its population is caller-FILTERED rather than
+ * caller-NAMED. docs/board-tools.md § Reads that cross lanes owns the list of reads that cross
+ * lanes. It is bounded to the seat's own configured board: every
  * search carries `board_id=<board>`, kanban's disclosure confirms it applied, and a row naming
  * another board refuses the call without its content.
+ *
+ * ⭐ `lane: unrouted` (card#11267, rt#595 ask 4) — the PM's routing queue: the UNASSIGNED cards in
+ * no configured home lane, or in no lane at all. "Home lane" is the `board_tools.swimlane_id` of
+ * every agent THIS install configures on the same board, read through the agent-config loader
+ * ({@see homeLanes}) — no second list. ⛔ IT IS THE ONE FILTER HERE KANBAN CANNOT APPLY WHOLE:
+ * kanban's search has no unassigned term (its only assignee term is `@<initials>`), so kanban
+ * narrows the lanes (`swimlane_id=<every other lane>,none`) and the bridge drops the rest in a
+ * FAIL-CLOSED row filter ({@see unroutedOnly}) — a row is kept only when it READS as unassigned and
+ * outside every home lane, so a row this call cannot read is never answered as unrouted. Because
+ * the bridge filters, kanban's `meta.total` is not the population: each search reads a whole page
+ * ({@see MAX_LIMIT}), `total` counts the rows the filter kept, and a search that was not complete
+ * makes it a lower bound (`total_is_lower_bound` and `truncated`), as a `tags_any` union is.
+ * `summary` is refused with it: a count of unassigned cards is not a count kanban can give.
+ * ⚠ A lane that is home to an agent on ANOTHER install is listed here as unrouted — this install
+ * cannot see that config. Over-listing is the accepted direction (rt#595); the response names the
+ * lanes it treated as home (`home_lanes`) and says so.
  */
 final class BoardSearchTool implements Tool
 {
@@ -89,8 +110,13 @@ final class BoardSearchTool implements Tool
 
     public const LANE_NONE = 'none';
 
+    public const LANE_UNROUTED = 'unrouted';
+
     /** @var list<string> */
-    public const LANES = [self::LANE_MINE, self::LANE_ANY, self::LANE_NONE];
+    public const LANES = [self::LANE_MINE, self::LANE_ANY, self::LANE_NONE, self::LANE_UNROUTED];
+
+    /** What `home_lanes_note` says on every `lane: unrouted` answer: the one bound the read cannot close. */
+    public const HOME_LANES_NOTE = 'home_lanes are the swimlane_id of every agent this bridge install configures on this board. A lane that is home to an agent on another bridge install is not among them, so its unassigned cards are listed here as unrouted.';
 
     public function name(): string
     {
@@ -123,6 +149,7 @@ final class BoardSearchTool implements Tool
         $fields = $this->fields($args, $summary);
         $limit = $this->limit($args, $summary);
         $stageArg = $this->stageArgument($args);
+        $unrouted = $lane === self::LANE_UNROUTED;
 
         if ($prNumber !== null && $archived) {
             throw new ToolRefusalException('board_search: `pr_number` cannot be combined with `include_archived: true`. kanban finds a card by its PR number only through its by-ref index, which answers LIVE cards and has no switch for archived ones, and its search has no PR-number term — so the archived side of that match cannot be read, and an answer leaving it out would look complete. Drop one of the two; `board_get_cards` reads known ids on either side.');
@@ -130,10 +157,14 @@ final class BoardSearchTool implements Tool
         if ($summary && count($tagsAny) > 1) {
             throw new ToolRefusalException('board_search: `summary` cannot count a `tags_any` of more than one tag. kanban\'s search has no OR, so each tag is its own count, and a card carrying two of them would be counted twice in any sum — the bridge does not report a count it cannot stand behind. Count one tag at a time, or use `summary_tags` to count each tag on its own.');
         }
+        if ($summary && $unrouted) {
+            throw new ToolRefusalException('board_search: `summary` cannot count `lane: "unrouted"`. kanban\'s search has no term for an unassigned card, so the bridge drops the assigned ones from the cards it reads — and a kanban count would include them. Search without `summary` to list the unrouted cards; the window says whether its total is exact.');
+        }
+        $homeLanes = $unrouted ? $this->homeLanes($cfg, $boardId, $agentName) : [];
 
         $sides = $archived ? [false, true] : [false];
         $variants = $tagsAny === [] ? [null] : $tagsAny;
-        $readsStructure = $stageArg !== null || $summary || in_array('stage', $fields, true);
+        $readsStructure = $stageArg !== null || $summary || $unrouted || in_array('stage', $fields, true);
         // What only a read can size (the columns a summary counts, the cards carrying the PR) is
         // counted at its floor here; the total is checked again once that read has sized it. A
         // `stage` list's distinct integer ids are that floor for the columns: each resolves to
@@ -152,13 +183,18 @@ final class BoardSearchTool implements Tool
         }
         // A summary with no `stage` answers per column of the whole board, so it needs the column
         // list; the degraded read (no stage collection) would otherwise pass for a board of none.
-        if ($summary && $stageArg === null && $structure?->terminalBasis === TerminalBasis::Unreadable) {
+        if ($summary && $stageArg === null && $structure->terminalBasis === TerminalBasis::Unreadable) {
             throw new ToolRefusalException("board_search: `summary` counts per column of your board {$boardId}, and kanban's read of that board answered without its column (stage) list — a 200 whose body carried no stage collection — so there are no columns to count. NO counts were returned. Name the columns in `stage` to count those, or retry; if it persists this is an INSTALL fault, report it to your operator.", installFault: true);
         }
         $stageNames = $structure->stageNames ?? [];
         $stages = $stageArg === null ? null : $this->resolveStages($stageArg, $stageNames, $boardId);
 
-        $filter = new BoardSearchFilter($tagsAll, $stages, $name, $since, $lane === self::LANE_ANY ? null : ($lane === self::LANE_MINE ? (string) (int) $cfg->swimlaneId : 'none'));
+        $filter = new BoardSearchFilter($tagsAll, $stages, $name, $since, match ($lane) {
+            self::LANE_ANY => null,
+            self::LANE_MINE => (string) (int) $cfg->swimlaneId,
+            self::LANE_NONE => 'none',
+            default => $this->unroutedLaneTerm($structure, $homeLanes),
+        });
         $echo = array_filter([
             'tags_all' => $tagsAll ?: null,
             'tags_any' => $tagsAny ?: null,
@@ -167,13 +203,18 @@ final class BoardSearchTool implements Tool
             'name_contains' => $name,
             'updated_since' => $since,
         ], fn ($v): bool => $v !== null) + ['include_archived' => $archived, 'lane' => $lane];
+        $laneScope = $unrouted ? ['home_lanes' => $homeLanes, 'home_lanes_note' => self::HOME_LANES_NOTE] : [];
 
         if ($prNumber !== null) {
             $candidates = $this->prCandidates($client, $boardId, $prNumber, $agentName);
-            $reasks = $filter->narrows() || $variants !== [null];
+            // `unrouted` always re-asks, so its row filter reads search rows — the shape it is held to.
+            $reasks = $filter->narrows() || $variants !== [null] || $unrouted;
             $sized = $plan(0, count($candidates), $reasks);
             $this->withinCeiling($sized);
             $matches = $reasks ? $this->reasked($client, $boardId, $candidates, $filter, $variants, $membership, $agentName) : $candidates;
+            if ($unrouted) {
+                $matches = $this->unroutedOnly($matches, $homeLanes, $boardId, $agentName);
+            }
             $byTag = $summary ? $this->tallyByTag($client, $boardId, $matches, $filter, $summaryTags, $membership, $agentName) : [];
             if (isset($sized[self::PLAN_CONTROL])) {
                 $this->member($membership, $boardId, $agentName);
@@ -181,7 +222,7 @@ final class BoardSearchTool implements Tool
 
             return $summary
                 ? $this->summaryResult($boardId, $echo, $this->tallyByStage($matches, $stages, $structure), $byTag, count($matches))
-                : $this->rowsResult($boardId, $echo, $fields, $limit, $cfg, $stageNames, array_map(fn (array $r): array => ['row' => $r, 'archived' => false], $matches), count($matches), false, $archived);
+                : $this->rowsResult($boardId, $echo, $fields, $limit, $cfg, $stageNames, array_map(fn (array $r): array => ['row' => $r, 'archived' => false], $matches), count($matches), false, $archived, $laneScope);
         }
 
         if ($summary) {
@@ -201,14 +242,24 @@ final class BoardSearchTool implements Tool
             $sideTotals = [];
             $complete = true;
             foreach ($variants as $variant) {
-                $page = $this->search($client, $boardId, $filter->terms($variant), $limit, $side, $membership, $agentName);
+                // `unrouted` reads a whole page: the bridge filters what kanban returns, so the
+                // more of the lane-narrowed population one request covers, the more of the window
+                // and the total it can stand behind.
+                $page = $this->search($client, $boardId, $filter->terms($variant), $unrouted ? self::MAX_LIMIT : $limit, $side, $membership, $agentName);
                 $sideTotals[] = (int) $page->total;
                 $complete = $complete && count((array) $page->rows) >= (int) $page->total;
-                foreach ((array) $page->rows as $row) {
+                $rows = (array) $page->rows;
+                foreach ($unrouted ? $this->unroutedOnly($rows, $homeLanes, $boardId, $agentName) : $rows as $row) {
                     $byId[(int) $row['id']] ??= $row;
                 }
             }
-            if (count($variants) === 1) {
+            if ($unrouted) {
+                // kanban's totals count the assigned cards the filter dropped, so they size
+                // nothing here: the kept rows are the population only when every search was read
+                // whole, and a lower bound otherwise.
+                $total += count($byId);
+                $lowerBound = $lowerBound || ! $complete;
+            } elseif (count($variants) === 1) {
                 $total += $sideTotals[0];
             } elseif ($complete) {
                 $total += count($byId);
@@ -222,7 +273,96 @@ final class BoardSearchTool implements Tool
         }
         $this->member($membership, $boardId, $agentName);
 
-        return $this->rowsResult($boardId, $echo, $fields, $limit, $cfg, $stageNames, $all, $total, $lowerBound, $archived);
+        return $this->rowsResult($boardId, $echo, $fields, $limit, $cfg, $stageNames, $all, $total, $lowerBound, $archived, $laneScope);
+    }
+
+    /**
+     * The home lanes of `lane: unrouted`: the `board_tools.swimlane_id` of every agent this install
+     * configures on `$boardId`, read through the one agent-config loader ({@see SubscriptionRegistry})
+     * — plus the calling agent's own, from the config this call resolved, so a config changed
+     * under the running bridge cannot drop the caller's lane from the set. Sorted, distinct.
+     *
+     * ⛔ A config that will not load REFUSES the call: without it no lane can be shown not to be
+     * somebody's home, and answering would list routed cards as unrouted with nothing saying so.
+     *
+     * @return list<int>
+     */
+    private function homeLanes(BoardToolsConfig $cfg, int $boardId, string $agentName): array
+    {
+        try {
+            $configs = (new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs();
+        } catch (ConfigException $e) {
+            Log::warning('board_search: the agent configuration could not be read, so the home lanes `lane: unrouted` excludes are unknown — refusing', [
+                'agent' => $agentName, 'board_id' => $boardId, 'error' => $e->getMessage(),
+            ]);
+
+            throw new ToolRefusalException('board_search: `lane: "unrouted"` leaves out every lane an agent on this bridge calls home, and the bridge could not read its own agent configuration to learn which lanes those are — so it cannot show any card is unrouted. NO cards were returned. This is an INSTALL fault; report it to your operator.', installFault: true, reason: 'install_fault.agent_config_unreadable');
+        }
+
+        $lanes = [(int) $cfg->swimlaneId];
+        foreach ($configs as $config) {
+            $tools = $config->boardTools;
+            if ($tools !== null && $tools->boardId === $boardId && $tools->swimlaneId !== null) {
+                $lanes[] = $tools->swimlaneId;
+            }
+        }
+        $lanes = array_values(array_unique($lanes));
+        sort($lanes);
+
+        return $lanes;
+    }
+
+    /**
+     * The `swimlane_id=` term `lane: unrouted` sends kanban: every lane of the board that is not a
+     * home lane, and `none`. EFFICIENCY, never the boundary — {@see unroutedOnly} is — so a board
+     * whose lane list the structure read did not carry sends no lane term at all and leaves the
+     * whole exclusion to the row filter.
+     *
+     * @param  list<int>  $homeLanes
+     */
+    private function unroutedLaneTerm(?BoardStructure $structure, array $homeLanes): ?string
+    {
+        if ($structure?->swimlaneIds === null) {
+            return null;
+        }
+
+        return implode(',', [...array_values(array_diff($structure->swimlaneIds, $homeLanes)), 'none']);
+    }
+
+    /**
+     * ⛔ THE BOUNDARY OF `lane: unrouted`, FAIL-CLOSED: a row is kept only when it carries an
+     * `assigned_user_id` that is present and null (nobody holds it) AND a `swimlane_id` that is
+     * present and either null (no lane) or an integer outside `$homeLanes`. Everything else is
+     * dropped — an assigned row because it is routed, and a row whose assignee or lane cannot be
+     * read because it cannot be shown unrouted. A home-lane row is one kanban's lane term should
+     * already have excluded, so it is dropped AND logged, as the lane read's isolation filter does
+     * with a foreign-lane row; so is an unreadable one.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @param  list<int>  $homeLanes
+     * @return list<array<string, mixed>>
+     */
+    private function unroutedOnly(array $rows, array $homeLanes, int $boardId, string $agentName): array
+    {
+        $kept = [];
+        foreach ($rows as $row) {
+            $readable = array_key_exists('assigned_user_id', $row) && ($row['assigned_user_id'] === null || is_int($row['assigned_user_id']))
+                && array_key_exists('swimlane_id', $row) && ($row['swimlane_id'] === null || is_int($row['swimlane_id']));
+            $home = $readable && $row['swimlane_id'] !== null && in_array($row['swimlane_id'], $homeLanes, true);
+            if (! $readable || $home) {
+                Log::warning('board_search: `lane: unrouted` dropped a row that is in a home lane or whose assignee or lane could not be read', [
+                    'agent' => $agentName, 'board_id' => $boardId, 'card_id' => $row['id'] ?? null,
+                    'reason' => $readable ? 'home_lane' : 'unreadable',
+                ]);
+
+                continue;
+            }
+            if ($row['assigned_user_id'] === null) {
+                $kept[] = $row;
+            }
+        }
+
+        return $kept;
     }
 
     /**
@@ -232,9 +372,10 @@ final class BoardSearchTool implements Tool
      * @param  list<string>  $fields
      * @param  array<int, string>  $stageNames
      * @param  list<array{row: array<string, mixed>, archived: bool}>  $matches
+     * @param  array<string, mixed>  $laneScope  `home_lanes` / `home_lanes_note` under `lane: unrouted`, else empty
      * @return array<string, mixed>
      */
-    private function rowsResult(int $boardId, array $echo, array $fields, int $limit, BoardToolsConfig $cfg, array $stageNames, array $matches, int $total, bool $lowerBound, bool $flagArchived): array
+    private function rowsResult(int $boardId, array $echo, array $fields, int $limit, BoardToolsConfig $cfg, array $stageNames, array $matches, int $total, bool $lowerBound, bool $flagArchived, array $laneScope = []): array
     {
         usort($matches, fn (array $a, array $b): int => (int) $b['row']['id'] <=> (int) $a['row']['id']);
         $kept = array_slice($matches, 0, $limit);
@@ -256,6 +397,7 @@ final class BoardSearchTool implements Tool
         return [
             'configured_board_id' => $boardId,
             'filters' => $echo,
+            ...$laneScope,
             'fields' => $fields,
             'cards' => $cards,
             'window' => [
@@ -749,7 +891,7 @@ final class BoardSearchTool implements Tool
         }
         $lane = is_string($args['lane']) ? BoardToolArgs::trimmed($args['lane']) : null;
         if (! in_array($lane, self::LANES, true)) {
-            throw new ToolRefusalException('board_search: `lane` must be one of '.implode(', ', array_map(fn (string $l): string => "`{$l}`", self::LANES)).' — `mine` is your own swimlane, `none` the cards in no lane, `any` every lane (the default).');
+            throw new ToolRefusalException('board_search: `lane` must be one of '.implode(', ', array_map(fn (string $l): string => "`{$l}`", self::LANES)).' — `mine` is your own swimlane, `none` the cards in no lane, `unrouted` the unassigned cards in no home lane of an agent on this bridge (or in no lane), `any` every lane (the default).');
         }
 
         return $lane;

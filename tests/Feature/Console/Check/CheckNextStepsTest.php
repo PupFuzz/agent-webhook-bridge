@@ -124,6 +124,22 @@ class CheckNextStepsTest extends TestCase
         $this->assertStringNotContainsString('not usable yet', $lines[4]);
     }
 
+    public function test_the_no_block_entry_states_the_role_default_instead_of_asking(): void
+    {
+        // DL-460: board tools are the DEFAULT for a pm or solo seat (it is where
+        // `ci_await` comes from), and an impl seat uses kbcard for its board work. The line used to put that
+        // to the operator as an open yes/no question, which is how a pm or solo seat came
+        // out of an install with board tools declined and kept polling CI.
+        $lines = $this->nextStepLines($this->runCheck());
+
+        $this->assertStringContainsString('agent-a:', $lines[1]);
+        $this->assertStringContainsString('A PM OR SOLO SEAT ALWAYS GETS BOARD TOOLS', $lines[1]);
+        $this->assertStringContainsString('ci_await', $lines[1]);
+        $this->assertStringContainsString('An IMPL seat uses kbcard for its board work', $lines[1]);
+        $this->assertStringContainsString('`enabled: false`', $lines[1]);
+        $this->assertStringNotContainsString('QUESTION FOR YOU', $lines[1]);
+    }
+
     public function test_the_seat_side_entry_states_the_bridge_cannot_verify_it_and_refuses_the_probe_shortcut(): void
     {
         // DL-229 IS THE WHOLE POINT OF THIS ENTRY. The bridge may not read the seat's own
@@ -141,6 +157,28 @@ class CheckNextStepsTest extends TestCase
         // would clear the line without the seat ever calling — the block would then certify
         // its own advice.
         $this->assertStringContainsString('Do NOT clear this line with --probe-tools', $lines[2]);
+    }
+
+    /**
+     * card#11283: a SCOPE-LESS seat (CI tools only) is told to make a call it is SERVED — a
+     * `board_my_cards` would be refused `not_served` and report nothing.
+     */
+    public function test_the_seat_side_entry_names_a_served_call_for_a_scope_less_seat(): void
+    {
+        $this->bootGoldenInstall('next-steps-scopeless', function (GoldenInstall $i) {
+            $i->boot()
+                ->roster(self::SEATS)
+                ->agent('agent-b', $this->kanbanOnlyAgentYaml()
+                    ."board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$i->path('bearer-b')}\n")
+                ->secret('bearer-b', self::BEARER_B);
+        });
+        Artisan::call('bridge:check');
+        $lines = $this->nextStepLines(Artisan::output());
+
+        $this->assertCount(2, $lines, implode("\n", $lines));
+        $this->assertStringContainsString("the CALLING SEAT's half is NOT VERIFIABLE FROM HERE", $lines[1]);
+        $this->assertStringContainsString('make ONE ci_await_cancel call', $lines[1]);
+        $this->assertStringNotContainsString('board_my_cards', $lines[1]);
     }
 
     public function test_the_json_document_carries_the_same_four_entries_with_their_states(): void

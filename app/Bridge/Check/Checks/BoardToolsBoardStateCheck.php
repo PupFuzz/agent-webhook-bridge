@@ -52,11 +52,10 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
         $client = $ctx->boardToolsClient;
         $bt = $config->boardTools;
         // The client is the slot's own guard, so `CheckCommand` never runs this without
-        // one; the `boardId` arm is the inline code's defensive `continue` (an enabled
-        // block ⇒ boardId non-null by construction), preserved rather than dropped so the
-        // migration changes nothing in either direction.
+        // one; the `boardId` arm was the inline code's defensive `continue`, and since card#11283 it is
+        // LIVE: an enabled scope-less block (CI tools only) carries a null boardId.
         if ($client === null || $bt === null || $bt->boardId === null) {
-            yield Silence::because('this agent has no board-tools board to read — the slot guard means no client was constructed, or the block is disabled/suppressed (both of which null boardId), and a suppressed block is reported by its own check');
+            yield Silence::because('this agent has no board-tools board to read — the slot guard means no client was constructed, the block is scope-less (CI tools only, card#11283), or it is disabled/suppressed (each of which nulls boardId), and a suppressed block is reported by its own check');
 
             return;
         }

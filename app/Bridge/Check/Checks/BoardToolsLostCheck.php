@@ -58,7 +58,7 @@ use Throwable;
  * the question as a LOST FAIL whose remedy is the retirement. Deleting a seat is a
  * decommission, and the product asks for the decommission to be STATED. Recording `enabled:
  * false` as a durable tombstone was the alternative and was withdrawn: it would have made
- * `bridge:check`'s own `no_block` advice — *"NO ⇒ put board_tools: with enabled: false"* — a
+ * `bridge:check`'s own `no_block` advice — *"put `board_tools:` with `enabled: false`"* — a
  * permanent silent mute for that seat.
  *
  * ⚑ EVERY FINDING HERE CARRIES `agent: null` IN `--format=json`. This is a run-once
@@ -288,7 +288,12 @@ final class BoardToolsLostCheck implements Check
             ? "was seen at {$row['last']}"
             : "was seen from {$row['first']} to {$row['last']}";
 
-        $message = "board_tools: agent {$name}: block LOST — an enabled board_tools block {$window} (transport {$row['transport']}, board {$row['board']}, swimlane {$row['swimlane']})";
+        // card#11283: a scope-less block (CI tools only) is recorded with no board and no lane;
+        // printing "board , swimlane " would read as a corrupt row rather than as what it was.
+        $scope = $row['board'] === null && $row['swimlane'] === null
+            ? 'scope-less — CI tools only'
+            : "board {$row['board']}, swimlane {$row['swimlane']}";
+        $message = "board_tools: agent {$name}: block LOST — an enabled board_tools block {$window} (transport {$row['transport']}, {$scope})";
 
         if ($call !== null) {
             $message .= '; last successful tools call '.$call->lastSuccessAt->toIso8601String().' over '.$call->transport;

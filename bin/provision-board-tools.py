@@ -114,6 +114,9 @@ _AGENT_RE = re.compile(r"^[a-z0-9_-]+$")
 _CHANNEL_RE = re.compile(r"^[a-z0-9_-]+$")
 _ARTISAN_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
 _SSH_ACCOUNT_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
+# sshd's `from=` pattern-list: comma-separated hosts/addresses/CIDRs, `*`/`?` wildcards and a
+# leading `!` negation. No quote, space or anything else, so it cannot close the option early.
+_FROM_RE = re.compile(r"^[A-Za-z0-9.:*?!/_-]+(?:,[A-Za-z0-9.:*?!/_-]+)*$")
 
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +142,7 @@ def is_authorized_key_shape(s: object) -> bool:
 DEFAULT_FORCED_COMMAND_TIMEOUT = 300
 
 
-def build_forced_command(agent: str, artisan: str, timeout_secs: int) -> str:
+def build_forced_command(agent: str, artisan: str, timeout_secs: int, from_hosts: str | None = None) -> str:
     """The `authorized_keys` forced-command line (options included) for one agent.
 
     The forced command is the SOLE board-tools security boundary (card 5091). Card 5092
@@ -150,12 +153,18 @@ def build_forced_command(agent: str, artisan: str, timeout_secs: int) -> str:
     it was retired — see multi-host.md § 3). `-k 10` escalates to SIGKILL 10s after SIGTERM
     so a holder that traps SIGTERM is still reaped. `timeout_secs <= 0` disables the wrapper
     (operator opt-out). Pure — the single source of the pinned command string.
+
+    `from_hosts` (card#11283, `--from`) prefixes sshd's `from="<pattern-list>"`, so the key
+    authenticates only from those addresses — `127.0.0.1,::1` for a same-box seat. It is part
+    of the line this run writes, so a later run must pass the SAME `--from` or be refused as
+    "different options", exactly as for `--artisan` or the timeout.
     """
     inner = f"php {artisan} bridge:tools-call --agent={agent}"
     if timeout_secs > 0:
         inner = f"timeout -k 10 {timeout_secs} {inner}"
+    restrict = f'from="{from_hosts}",' if from_hosts else ""
     return (
-        f'command="{inner}"'
+        f'{restrict}command="{inner}"'
         ",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding"
     )
 
@@ -694,6 +703,9 @@ def run_role_a(args) -> int:
     timeout_secs = args.forced_command_timeout
     if timeout_secs < 0:
         _fail(f"--forced-command-timeout {timeout_secs} must be >= 0 (0 disables the bound)")
+    from_hosts = args.from_hosts
+    if from_hosts is not None and not _FROM_RE.fullmatch(from_hosts):
+        _fail(f"--from {from_hosts!r} must be an sshd pattern-list, e.g. 127.0.0.1,::1 (no quotes or spaces)")
 
     pubkey, pubkey_path, pubkey_tmp = _read_pubkey_and_path(args)
     try:
@@ -723,7 +735,7 @@ def run_role_a(args) -> int:
             f"root with `sudo python3 …`."
         )
 
-    forced = build_forced_command(agent, artisan, timeout_secs)
+    forced = build_forced_command(agent, artisan, timeout_secs, from_hosts)
     guard = f'bridge:tools-call --agent={agent}"'
     supplied_core = " ".join(pubkey.split()[:2])
 
@@ -2239,16 +2251,8 @@ def _npm_ci(deploy_dir: str) -> None:
         )
 
 
-def _self_cert(target: str, ssh_key, ssh_port) -> int:
-    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
-    if ssh_key:
-        cmd += ["-i", ssh_key]
-    if ssh_port:
-        cmd += ["-p", str(ssh_port)]
-    cmd.append(target)
-    # `caller` declares this a self-certification, so the bridge's fleet ledger does not record it as
-    # the seat's channel server reporting (card#10567 B4); an older bridge ignores the key.
-    payload = json.dumps({"tool": "board_my_cards", "args": {}, "caller": "self-cert"})
+def _ssh_round_trip(cmd, payload: str, target: str):
+    """One ssh round-trip to the forced command: (exit code, parsed envelope). Fails on no JSON."""
     try:
         proc = subprocess.run(cmd, input=payload, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -2260,15 +2264,87 @@ def _self_cert(target: str, ssh_key, ssh_port) -> int:
             f"--self-cert: ssh {target} returned no parseable JSON envelope "
             f"(exit {proc.returncode}; stderr: {proc.stderr.strip()})"
         )
+    return proc.returncode, envelope
+
+
+def predates_served_tools(returncode: int, envelope) -> bool:
+    """Did a bridge answer `{op: served_tools}` as one that does not know the op (card#11283)?
+
+    Both shapes exit 1. A bridge with the client-update door (DL-430) but no `served_tools`
+    names it `unknown client-update op`, with no `reason`. A bridge older than the door reads the
+    body as a board-tools call with no `tool`. That refusal carries no `reason` on every real
+    pre-door bridge; `reason: bad_request` was added later (DL-449) and is accepted too, though it
+    cannot actually arrive here: every bridge that sends it already routes an `op` body to the door. Anything
+    else — `door_closed`, an exit 2, a success — is never retried as an old bridge. This is a
+    superset of the refusal shapes `docs/board-tools.md` § Scope-less agents lists, and it decides
+    only the self-cert fallback — never whether a scope-less block may be written, which is
+    positive-only.
+    """
+    if returncode != 1 or not isinstance(envelope, dict) or envelope.get("ok") is not False:
+        return False
+    if "reason" in envelope and envelope.get("reason") not in (None, "bad_request"):
+        return False
+    error = envelope.get("error")
+    return isinstance(error, str) and (
+        error.startswith("unknown client-update") or "non-empty `tool`" in error
+    )
+
+
+def self_cert_tool_body(served):
+    """The one tool call `--self-cert` certifies with, chosen from what the bridge SERVES (card#11283).
+
+    `board_my_cards` when served (a scoped agent, or a bridge that predates `served_tools`); else
+    the write-nothing `ci_await_cancel` on a head nobody awaits (a scope-less, CI-only agent — the
+    bridge's own `ExemptCaller::scopelessProbeBody()` shape); else None (served nothing).
+    """
+    if "board_my_cards" in served:
+        return {"tool": "board_my_cards", "args": {}, "caller": "self-cert"}
+    if "ci_await_cancel" in served:
+        args = {"repo": "bridge-probe/no-such-repo", "head_sha": "0" * 40}
+        return {"tool": "ci_await_cancel", "args": args, "caller": "self-cert"}
+    return None
+
+
+def _self_cert(target: str, ssh_key, ssh_port) -> int:
+    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+    if ssh_key:
+        cmd += ["-i", ssh_key]
+    if ssh_port:
+        cmd += ["-p", str(ssh_port)]
+    cmd.append(target)
+    # card#11283: ask the door what it serves THIS seat — it answers a scope-less (CI-only) seat,
+    # which board_my_cards would refuse, and its `agent` echo names the identity the key resolved
+    # to. It goes through the client-update door, never the dispatcher, so it writes nothing.
+    returncode, envelope = _ssh_round_trip(cmd, json.dumps({"op": "served_tools"}), target)
+    identity = ""
+    if isinstance(envelope, dict) and envelope.get("ok") is True and envelope.get("op") == "served_tools" and returncode == 0:
+        served = envelope.get("served") if isinstance(envelope.get("served"), list) else []
+        identity = f" as agent {envelope.get('agent')!r} (served: {', '.join(served) or 'nothing'})"
+        payload = self_cert_tool_body(served)
+        if payload is None:
+            _fail(f"--self-cert: {target} answered{identity} — this agent is served NO tool, so there is no call to certify. Fix its board_tools block on the bridge.")
+    elif predates_served_tools(returncode, envelope):
+        # A bridge that predates `served_tools` serves no scope-less seat: board_my_cards is the
+        # round-trip it can answer.
+        payload = self_cert_tool_body(["board_my_cards"])
+    else:
+        _fail(
+            f"--self-cert: ssh {target} returned an error envelope "
+            f"(exit {returncode}; envelope: {json.dumps(envelope)[:200]})"
+        )
+    # ONE real tool round-trip through the dispatcher, as before: it is what certifies the call
+    # path, not just the door. `caller` declares it a self-certification, so the bridge's fleet
+    # ledger does not record it as the seat's channel server reporting (card#10567 B4).
+    returncode, envelope = _ssh_round_trip(cmd, json.dumps(payload), target)
     is_bad_envelope = not isinstance(envelope, dict) or (
         ("ok" in envelope and not envelope["ok"]) or bool(envelope.get("error"))
     )
-    if proc.returncode != 0 or is_bad_envelope:
+    if returncode != 0 or is_bad_envelope:
         _fail(
             f"--self-cert: ssh {target} returned an error envelope "
-            f"(exit {proc.returncode}; envelope: {json.dumps(envelope)[:200]})"
+            f"(exit {returncode}; envelope: {json.dumps(envelope)[:200]})"
         )
-    print(f"--self-cert: OK — {target} certified a healthy board_my_cards round-trip.")
+    print(f"--self-cert: OK — {target} certified a healthy {payload['tool']} round-trip{identity}.")
     return 0
 
 
@@ -2308,6 +2384,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="[role a] hard wall-clock cap (seconds) on each forced-command invocation, "
         "key-scoped; 0 disables (card 5092)",
     )
+    p.add_argument(
+        "--from",
+        dest="from_hosts",
+        help="[role a] restrict the pinned key to these source addresses (sshd from=), e.g. "
+        "127.0.0.1,::1 for a same-box seat. Part of the pinned line: re-runs must pass the same value",
+    )
 
     # host B
     p.add_argument("--ssh-target", help="[role b] user@host of the bridge box")
@@ -2323,7 +2405,7 @@ def build_parser() -> argparse.ArgumentParser:
     # MUTUALLY EXCLUSIVE AT THE PARSER, so the conflict is rc 2 and one message rather
     # than a hand-rolled check that has to be kept in step with the flags.
     cert = p.add_mutually_exclusive_group()
-    cert.add_argument("--self-cert", action="store_true", help="[role b] fire one real ssh board_my_cards round-trip, "
+    cert.add_argument("--self-cert", action="store_true", help="[role b] fire one real ssh round-trip (served_tools; board_my_cards on a bridge that predates it), "
                       "and on success bootstrap the client as --certify-only does")
     cert.add_argument(
         "--certify-only",

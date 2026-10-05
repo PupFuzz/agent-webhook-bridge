@@ -805,6 +805,133 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertTrue($doc['ok']);
     }
 
+    // ---- card#11283 / DL-461: what the hooks delivering here carry (warn-only) ----
+
+    /**
+     * Boot the github install with ONE agent that is served `ci_await` (a scope-less
+     * board_tools block) when `$ciServed`, else the plain github agent.
+     *
+     * @param  list<array<string, mixed>>  $hooks
+     */
+    private function bootWithHooks(array $hooks, bool $ciServed = true): void
+    {
+        $this->bootGoldenInstall('github-webhook-subscription', function (GoldenInstall $i) use ($hooks, $ciServed) {
+            $i->boot()->agent('gh-agent', "identity:\n  github_user_id: 555\n"
+                ."subscriptions:\n  - provider: github\n    scopes: [\"".self::SCOPE."\"]\n"
+                .($ciServed ? "board_tools:\n  enabled: true\n  transport: ssh\n" : ''));
+            $i->secret('github/token', 'gh-token');
+            Http::fake(['*/repos/owner/repo/hooks*' => Http::response($hooks, 200)]);
+        });
+    }
+
+    /**
+     * @param  array<string, mixed>  $doc
+     * @return list<array<string, mixed>>
+     */
+    private function legFindings(array $doc): array
+    {
+        foreach ($doc['checks'] as $check) {
+            if ($check['id'] === GitHubWebhookSubscriptionCheck::ID) {
+                return $check['findings'];
+            }
+        }
+        $this->fail('the github webhook leg is not in the check inventory at all');
+    }
+
+    /** @return array<string, mixed> */
+    private static function hook(bool $active, array $events, string $url = self::RECEIVER): array
+    {
+        return ['id' => 1, 'active' => $active, 'events' => $events, 'config' => ['url' => $url]];
+    }
+
+    public function test_an_inactive_matching_hook_warns_and_moves_no_exit_code(): void
+    {
+        $this->bootWithHooks([self::hook(false, ['workflow_run'])]);
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('INACTIVE', $findings[1]['message']);
+    }
+
+    public function test_a_hook_without_workflow_run_warns_when_an_agent_is_served_ci_await(): void
+    {
+        $this->bootWithHooks([self::hook(true, ['push', 'pull_request'])]);
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('does not send "Workflow runs"', $findings[1]['message']);
+        $this->assertStringContainsString('agent gh-agent is served ci_await', $findings[1]['message']);
+    }
+
+    /** Control for the warn above: the same hook says nothing when no agent here is served ci_await. */
+    public function test_a_hook_without_workflow_run_is_silent_when_no_agent_is_served_ci_await(): void
+    {
+        $this->bootWithHooks([self::hook(true, ['push'])], ciServed: false);
+
+        [, $doc] = $this->runJson();
+
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
+    public function test_the_wildcard_event_satisfies_workflow_run(): void
+    {
+        $this->bootWithHooks([self::hook(true, ['*'])]);
+
+        [, $doc] = $this->runJson();
+
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
+    /** EVERY matching hook is read, not the first: the active one carrying workflow_run satisfies it. */
+    public function test_a_second_matching_hook_is_read(): void
+    {
+        $this->bootWithHooks([self::hook(true, ['push']), self::hook(true, ['workflow_run'])]);
+        [, $doc] = $this->runJson();
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
+    public function test_an_inactive_hook_carrying_workflow_run_does_not_count(): void
+    {
+        $this->bootWithHooks([self::hook(false, ['workflow_run']), self::hook(true, ['push'])]);
+        [, $doc] = $this->runJson();
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'), 'an inactive hook sends nothing, whatever its events');
+        $this->assertStringContainsString('does not send "Workflow runs"', $findings[1]['message']);
+    }
+
+    /** A hook that carries neither field is UNKNOWN, never a wrong setting: no line. */
+    public function test_a_matching_hook_without_the_fields_adds_no_line(): void
+    {
+        $this->bootWithHooks([['id' => 1, 'config' => ['url' => self::RECEIVER]]]);
+
+        [, $doc] = $this->runJson();
+
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
+    /**
+     * `found` keeps exactly its old meaning: a match on a FULL page followed by a page that
+     * fails is still a live hook (the walk used to stop at the match), and the unread settings
+     * add no line.
+     */
+    public function test_a_match_stays_found_when_the_walk_past_it_fails(): void
+    {
+        $page1 = array_fill(0, 99, ['config' => ['url' => self::FOREIGN_RECEIVER]]);
+        $page1[] = self::hook(true, ['push']);
+        $this->bootGithubInstall(Http::sequence()->push($page1, 200)->push(['message' => 'boom'], 500));
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('ok', $this->onlyFinding($doc)['severity']);
+    }
+
     /**
      * One agent, one github subscription, and the hook-list stub this fixture answers with.
      *

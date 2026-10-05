@@ -71,7 +71,7 @@ jobs:
       # Pin maintained by dependabot's github-actions ecosystem (see .github/dependabot.yml)
       # — it has opened a bump PR for this action on the weekly cadence since adoption, so a
       # pin behind the toolkit's newest tag is a between-runs lag, not an unmaintained pin.
-      - uses: PupFuzz/agent-board-toolkit/release-artifacts@9768e6a413b83d9fb74740869cbc0fa8e74db752  # v0.36.0
+      - uses: PupFuzz/agent-board-toolkit/release-artifacts@2bc5c2cb3a4ec08001474461f7968809623a1a86  # v0.44.0
         with:
           base-sha: ${{ steps.pr-base.outputs.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}

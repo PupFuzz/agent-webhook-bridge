@@ -14,7 +14,7 @@ namespace App\Bridge\Tools;
  * operator, refused for one reason.
  *
  * ⛔ THE REASON IT IS REFUSED RATHER THAN ESCAPED. `--host-a` is interpolated into the ssh
- * target of a STEP 1 command an impl agent pastes into its own shell, and `--ssh-port`
+ * target of a STEP 1 command the seat's agent pastes into its own shell, and `--ssh-port`
  * into `--ssh-port <n>` beside it. A renderer that escaped instead would be inventing a
  * quoting contract for a string the reader retypes by hand anyway; a host name that is not
  * a host name is a typo or an injection attempt, and neither should render.

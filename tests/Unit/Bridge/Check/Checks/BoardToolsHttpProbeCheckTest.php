@@ -454,6 +454,30 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertStringNotContainsString("\x1b", $findings[0]->message);
     }
 
+    /**
+     * card#11283 / DL-461 SF-1: a scope-less agent is probed with the write-nothing
+     * `ci_await_cancel`, never `board_my_cards` (which it would be refused), and the ok line says
+     * there is no board window to match.
+     */
+    public function test_a_scope_less_agent_is_probed_with_a_write_nothing_ci_call(): void
+    {
+        $this->fakeResult(['repo' => 'bridge-probe/no-such-repo', 'head_sha' => str_repeat('0', 40), 'cancelled' => false]);
+        $agent = AgentConfig::fromArray('impl', [
+            'subscriptions' => [],
+            'board_tools' => ['enabled' => true, 'transport' => 'http', 'auth' => ['token_path' => $this->token('impl')]],
+        ]);
+
+        $findings = $this->findingsFor([$agent]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('scope-less (CI tools only)', $findings[0]->message);
+        Http::assertSent(fn ($r): bool => $r['tool'] === 'ci_await_cancel'
+            && $r['args'] === ['repo' => 'bridge-probe/no-such-repo', 'head_sha' => str_repeat('0', 40)]
+            && $r['caller'] === 'probe');
+        Http::assertNotSent(fn ($r): bool => $r['tool'] === 'board_my_cards');
+    }
+
     private function httpAgent(string $name, ?string $tokenPath = null): AgentConfig
     {
         return AgentConfig::fromArray($name, [

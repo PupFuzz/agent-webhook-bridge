@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Check;
 
+use App\Bridge\Tools\ServedTools;
+
 /**
  * ONE agent's next board-tools enablement step (card#8959, DL-352).
  *
@@ -35,5 +37,13 @@ final class NextStep
          * "a scope spelled as nothing" one value on the machine surface.
          */
         public readonly ?string $scope = null,
+        /**
+         * The one tool the seat should call to report its client half — set on
+         * {@see NextStepState::SeatSideUnreported} only, from
+         * {@see ServedTools::reportingCall()} (card#11283), so a CI-only seat
+         * is never told to call a board tool it is refused. Null elsewhere, and where the agent
+         * is served nothing. Not emitted on the JSON surface.
+         */
+        public readonly ?string $seatCall = null,
     ) {}
 }

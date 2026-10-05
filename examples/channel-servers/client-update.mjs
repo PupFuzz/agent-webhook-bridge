@@ -70,7 +70,7 @@ import {
   resolveInstalled,
   REQUIRED_CLIENT_FILES,
 } from './entry.mjs';
-import { sshRoundTrip, httpRoundTrip, boardToolsTransport, redactUrl, scrubSnippet, errorDetail } from './channel-lib.mjs';
+import { sshRoundTrip, httpRoundTrip, boardToolsTransport, redactUrl, scrubSnippet, errorDetail, deriveClientDoorUrl, SERVED_TOOLS_FILE } from './channel-lib.mjs';
 
 // ⚑ PINNED PROTOCOL CONSTANTS, checked against the bridge by
 // tests/Unit/ClientUpdate/ClientReportLimitsLockstepTest.php: `client_report` refuses a report
@@ -446,19 +446,11 @@ export function releaseLock(handle) {
 
 /** The client-update door beside a BRIDGE_TOOLS_ENDPOINT that ends in `/agent-tools/call`. */
 export function clientDoorUrl(endpoint) {
-  let url;
-  try {
-    url = new URL(endpoint);
-  } catch {
-    throw new Failure('BRIDGE_TOOLS_ENDPOINT is not a URL (its value is not shown: it may carry a credential)');
+  const door = deriveClientDoorUrl(endpoint);
+  if (door.why) {
+    throw new Failure(door.why);
   }
-  if (!url.pathname.endsWith('/agent-tools/call')) {
-    throw new Failure(`BRIDGE_TOOLS_ENDPOINT ${redactUrl(endpoint)} does not end in /agent-tools/call, so the update door's address (…/agent-tools/client beside it) cannot be derived from it`);
-  }
-  url.pathname = `${url.pathname.slice(0, -'call'.length)}client`;
-  url.search = '';
-  url.hash = '';
-  return url.toString();
+  return door.url;
 }
 
 function interpret(op, text, legOk, legWhy, serverSide) {
@@ -1389,6 +1381,7 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
       const answer = await ask(ctx, { op: 'client_manifest' }, MANIFEST_LEG_MS);
       reachable = true;
       head = answer.log_head ?? null;
+      writeServedTools(ctx, answer);
       const { manifest, manifestSha256 } = manifestFromAnswer(answer);
       known.manifest = manifest;
       known.manifestSha256 = manifestSha256;
@@ -1443,6 +1436,30 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
     return result;
   } finally {
     releaseLock(lock);
+  }
+}
+
+/**
+ * `<root>/served-tools.json` from a client_manifest answer that carries `served_tools` (card#11283):
+ * the cache the channel server this launch starts reads instead of asking the bridge again. An
+ * answer without the key (a bridge that predates it) writes nothing and leaves an earlier cache
+ * where it is. Fail-soft: a cache that cannot be written costs one served_tools call, never the
+ * update.
+ */
+function writeServedTools(ctx, answer) {
+  const served = answer.served_tools;
+  if (!Array.isArray(served) || !served.every((name) => typeof name === 'string')) {
+    return;
+  }
+  try {
+    writeJsonAtomic(path.join(ctx.root, SERVED_TOOLS_FILE), {
+      launch_id: ctx.launchId,
+      agent: typeof answer.agent === 'string' ? answer.agent : null,
+      served,
+      written_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    ctx.say(`could not write ${SERVED_TOOLS_FILE} (${err && err.code ? err.code : err && err.message ? err.message : err}); the channel server asks the bridge instead`);
   }
 }
 

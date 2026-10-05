@@ -8,9 +8,11 @@ use App\Bridge\Check\NextStepState;
 use App\Bridge\Check\Silence;
 use App\Bridge\Provision\GitHubWebhookProbe;
 use App\Bridge\Provision\GitHubWebhookProbeKind;
+use App\Bridge\Provision\GitHubWebhookProbeResult;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretPath;
+use App\Bridge\Tools\ServedTools;
 use Illuminate\Routing\Router;
 
 /**
@@ -218,6 +220,9 @@ final class GitHubWebhookSubscriptionCheck implements Check
                     "github webhook: {$scope} — COULD NOT LOOK: {$result->reason}, using the token from {$result->source}. This run did NOT check whether the repo's webhook is live, and that is NOT evidence it is gone. Re-run bridge:check once api.github.com answers normally."
                 ),
             };
+            if ($result->kind === GitHubWebhookProbeKind::Present) {
+                yield from $this->deliverySettings($ctx, $scope, $result);
+            }
         }
 
         // NO TRAILING `Silence` DECLARATION, deliberately: the `match` above is exhaustive
@@ -229,6 +234,40 @@ final class GitHubWebhookSubscriptionCheck implements Check
         // having said nothing only when it said nothing about nothing. If a future edit adds a
         // `continue` that lands in neither list, the run reports an UNDECLARED silence rather
         // than passing — which is the mechanism working, not a gap.
+    }
+
+    /**
+     * card#11283: what the hooks that DO deliver here say about two delivery settings, read off
+     * the same walk (no further GitHub call). Both arms are `warn` and neither moves the exit
+     * code: the `ok` line above stays true — a hook delivers here — and these say what it
+     * carries. An unknown (null) prints nothing; the walk could not read it, and a missing
+     * field on GitHub's side is not evidence of a wrong setting.
+     *
+     *  - every matching hook INACTIVE ⇒ GitHub delivers nothing on it, for any event;
+     *  - no ACTIVE matching hook sends `workflow_run` while some agent here is served the CI
+     *    tools ⇒ a seat's `ci_await` settles only through the ci-await-sweep's own reads, at
+     *    least one sweep interval late — the polling the tool exists to remove.
+     *
+     * @return iterable<Finding>
+     */
+    private function deliverySettings(CheckContext $ctx, string $scope, GitHubWebhookProbeResult $result): iterable
+    {
+        if ($result->active === false) {
+            yield Finding::warn("github webhook: {$scope} — every repo webhook delivering to this install is INACTIVE, so GitHub sends nothing on it. Re-activate it in the repo's webhook settings (someone with admin:repo_hook on {$scope}).");
+
+            return;
+        }
+        if ($result->workflowRun !== false) {
+            return;
+        }
+        $served = ServedTools::make();
+        foreach ($ctx->configs as $config) {
+            if (in_array('ci_await', $served->namesFor($config->boardTools), true)) {
+                yield Finding::warn("github webhook: {$scope} — the repo webhook delivering here does not send \"Workflow runs\" (workflow_run), and agent {$config->agentName} is served ci_await: an await on {$scope} settles only through the ci-await-sweep's own reads, at least one sweep interval after CI finishes. Add the event on the repo webhook (someone with admin:repo_hook on {$scope}).");
+
+                return;
+            }
+        }
     }
 
     /**

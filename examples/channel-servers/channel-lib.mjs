@@ -431,3 +431,153 @@ function updateStateLine(state, { launchId, root }) {
       );
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// What the bridge serves this agent (card#11283 / DL-462)
+
+// The cache of the bridge's `served_tools` answer, in the client root (beside state.json).
+// ⛔ AN ADD-ONLY CROSS-RELEASE CONTRACT: the updater of one release writes it and the server of
+// another reads it, so a field is never renamed, retyped or removed — only added. Shape:
+//   { launch_id: <the launch that wrote it>, agent: <the bridge's identity echo, or null when the
+//     answer carried none — client_manifest does not>, served: [<tool name>, …], written_at }
+// Readers rely on `launch_id` and `served` only.
+export const SERVED_TOOLS_FILE = 'served-tools.json';
+
+// The client-update door beside a board-tools endpoint that ends in `/agent-tools/call`:
+// `{url}`, or `{why}` naming what is wrong without quoting the value (it may carry a credential).
+export function deriveClientDoorUrl(endpoint) {
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return { why: 'BRIDGE_TOOLS_ENDPOINT is not a URL (its value is not shown: it may carry a credential)' };
+  }
+  if (!url.pathname.endsWith('/agent-tools/call')) {
+    return { why: `BRIDGE_TOOLS_ENDPOINT ${redactUrl(endpoint)} does not end in /agent-tools/call, so the update door's address (…/agent-tools/client beside it) cannot be derived from it` };
+  }
+  url.pathname = `${url.pathname.slice(0, -'call'.length)}client`;
+  url.search = '';
+  url.hash = '';
+  return { url: url.toString() };
+}
+
+function isToolList(value) {
+  return Array.isArray(value) && value.every((name) => typeof name === 'string');
+}
+
+const PRE_DOOR_REFUSAL = 'request must carry a non-empty `tool`';
+
+// What one `{"op":"served_tools"}` answer says. Input: `{via: 'ssh', code, stdout}`,
+// `{via: 'http', status, text}`, or `{failure: <why>}` when no answer arrived. Output:
+//   { kind: 'served', served }   the bridge's list for this agent
+//   { kind: 'door_closed' }      the ssh door will not serve this agent at all (DL-461)
+//   { kind: 'old_bridge' }       a bridge that does not know the op: one with the update door but
+//                                not this op (`unknown client-update …`, no reason), one older than
+//                                the door (ssh: the empty-`tool` refusal; http: 404, no route)
+//   { kind: 'unknown', why }     anything else — no answer, a reason-less exit 2, a 5xx, a 401, a
+//                                body that is not the op's answer. It says nothing about what is
+//                                served, so the caller falls back (last cache, then the env rule).
+export function classifyServedToolsAnswer(answer) {
+  if (answer.failure) {
+    return { kind: 'unknown', why: answer.failure };
+  }
+  const status = answer.via === 'ssh' ? `ssh exit ${answer.code}` : `HTTP ${answer.status}`;
+  if (answer.via === 'http' && answer.status === 404) {
+    return { kind: 'old_bridge' };
+  }
+  let body = null;
+  try {
+    body = JSON.parse(answer.via === 'ssh' ? answer.stdout : answer.text);
+  } catch {
+    body = null;
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { kind: 'unknown', why: `${status}, no JSON envelope` };
+  }
+  const clean = answer.via === 'ssh' ? answer.code === 0 : answer.status === 200;
+  if (clean && body.ok === true && body.op === 'served_tools' && isToolList(body.served)) {
+    return { kind: 'served', served: body.served };
+  }
+  if (answer.via === 'ssh' && answer.code === 2 && body.ok === false && body.reason === 'door_closed') {
+    return { kind: 'door_closed' };
+  }
+  const refused = answer.via === 'ssh' ? answer.code === 1 : answer.status === 422;
+  if (refused && body.ok === false && typeof body.error === 'string') {
+    if (body.reason === undefined && body.error.startsWith('unknown client-update')) {
+      return { kind: 'old_bridge' };
+    }
+    // The pre-door refusal carries no reason on every real bridge; a later bridge added
+    // `bad_request` to it, though such a bridge routes an `op` body to the door instead.
+    if ((body.reason === undefined || body.reason === 'bad_request') && body.error === PRE_DOOR_REFUSAL) {
+      return { kind: 'old_bridge' };
+    }
+  }
+  return { kind: 'unknown', why: `${status}${typeof body.error === 'string' ? `: ${scrubSnippet(body.error).slice(0, 200)}` : ''}` };
+}
+
+// `<root>/served-tools.json` as `{launchId, served}`, or null for an absent or malformed file.
+export function readServedToolsCache(root) {
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(`${root}/${SERVED_TOOLS_FILE}`, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== 'object' || typeof raw.launch_id !== 'string' || !isToolList(raw.served)) {
+    return null;
+  }
+  return { launchId: raw.launch_id, served: raw.served };
+}
+
+// The ONE `served_tools` call, over the seat's board-tools transport (`boardToolsTransport`'s
+// ssh or http result). Resolves with the classified answer; never rejects.
+export async function askServedTools(transport, { deadlineMs }) {
+  const input = JSON.stringify({ op: 'served_tools' });
+  if (transport.kind === 'ssh') {
+    const r = await sshRoundTrip({ target: transport.target, key: transport.key, port: transport.port, input, deadlineMs });
+    return classifyServedToolsAnswer(r.failure ? { failure: r.failure.message } : { via: 'ssh', code: r.code, stdout: r.stdout });
+  }
+  const door = deriveClientDoorUrl(transport.url);
+  if (door.why) {
+    return { kind: 'unknown', why: door.why };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
+  try {
+    const r = await httpRoundTrip({ url: door.url, token: transport.token, body: input, signal: controller.signal });
+    return classifyServedToolsAnswer({ via: 'http', status: r.status, text: r.text });
+  } catch (err) {
+    return classifyServedToolsAnswer({ failure: `${redactUrl(door.url)}: ${errorDetail(err)}` });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The served set this launch advertises, down the ladder (design §5, DL-462):
+//   1. this launch's cache (the updater wrote it from this launch's client_manifest answer);
+//   2. one served_tools call — `served` is used; `door_closed` advertises no bridge tool;
+//      `old_bridge` takes the env rule (a bridge that does not know the op predates scope-less
+//      agents, so any cache is from a newer bridge and is not believed);
+//   3. on `unknown`, the last good cache, from any launch;
+//   4. else the env rule.
+// Resolves `{served, source}`; `served` null means the env rule. `cache` is readServedToolsCache's
+// result; `ask` makes the call.
+export async function resolveServedTools({ launchId, cache, ask }) {
+  if (cache && launchId && cache.launchId === launchId) {
+    return { served: cache.served, source: 'this launch\'s served-tools cache' };
+  }
+  const answer = await ask();
+  if (answer.kind === 'served') {
+    return { served: answer.served, source: 'the bridge\'s served_tools answer' };
+  }
+  if (answer.kind === 'door_closed') {
+    return { served: [], source: 'the bridge\'s door is closed to this agent (door_closed)' };
+  }
+  if (answer.kind === 'old_bridge') {
+    return { served: null, source: 'a bridge that predates served_tools; the env rule' };
+  }
+  if (cache) {
+    return { served: cache.served, source: `the last good served-tools cache (launch ${cache.launchId}), since served_tools did not answer (${answer.why})` };
+  }
+  return { served: null, source: `the env rule, since served_tools did not answer (${answer.why}) and no cache exists` };
+}

@@ -11,7 +11,7 @@ generated, per agent, by `php artisan bridge:provision-tools --agent=<name>` —
 | actor | runs |
 | --- | --- |
 | **PM agent** (host A, the bridge's own OS user) | `bridge:provision-tools --agent=X …`; edits `X.yml`; saves the key line the seat posts; runs `bridge:check`. **Does NOT run STEP 3.** |
-| **impl agent** (host B — its own seat, its own OS user) | `provision-board-tools.py --role b` from its own clone; posts its PUBLIC key line; runs `--role b --certify-only` (which also bootstraps its self-updating client); starts its session |
+| **seat agent** (host B — the agent being enabled, on its own seat, its own OS user) | `provision-board-tools.py --role b` from its own clone; posts its PUBLIC key line; runs `--role b --certify-only` (which also bootstraps its self-updating client); starts its session |
 | **operator** (a human) | runs STEP 3 — the pin — after deciding the posted key is that seat's. `sudo` only when the forced-command account is not the one `bridge:provision-tools` ran as |
 
 **The security statement, stated plainly.** The pin's only boundary is **a person choosing
@@ -177,6 +177,7 @@ The packet prints a pointer to it too.
 
 ## For the coord plugin
 
-An agent-fleet coordination layer wiring a new impl seat should point at **this page** and
-then run the packet, rather than restating the steps: a second copy of a five-step exchange
-is a second thing to keep in sync with the command that generates it.
+An agent-fleet coordination layer wiring a new seat for board tools — a pm or solo seat by
+default (DL-460) — should point at **this page** and then run the packet, rather than
+restating the steps: a second copy of a five-step exchange is a second thing to keep in sync
+with the command that generates it.

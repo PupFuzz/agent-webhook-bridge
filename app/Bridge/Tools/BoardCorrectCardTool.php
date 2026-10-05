@@ -507,8 +507,9 @@ final class BoardCorrectCardTool implements Tool
     /**
      * Whether the row's own `assigned_user_id` is the calling seat's kanban user.
      *
-     * ⛔ STRICT, AND FAIL-CLOSED ON A DEGRADED READ. Only an `int` on the row can match, and it
-     * must be IDENTICAL to the resolved id — no `==`, no numeric-string coercion — so `null`,
+     * ⛔ STRICT, AND FAIL-CLOSED ON A DEGRADED READ. The match is {@see SeatCardScope::isAssignedTo},
+     * the one strict test every assignee arm on this door uses: only an `int` on the row can match,
+     * and it must be IDENTICAL to the resolved id — no `==`, no numeric-string coercion — so `null`,
      * `""`, `"0"` or a decorated string never equal anybody. Present-null is the ordinary
      * UNASSIGNED answer and is quiet; an ABSENT key or any other non-integer is a read that
      * cannot say whose card this is, so it is logged and does not authorize.
@@ -526,12 +527,12 @@ final class BoardCorrectCardTool implements Tool
             return false;
         }
 
-        $holder = $row['assigned_user_id'] ?? null;
-        if (is_int($holder)) {
-            return $holder === $callerUserId;
+        if (SeatCardScope::isAssignedTo($row, $callerUserId)) {
+            return true;
         }
 
-        if (! array_key_exists('assigned_user_id', $row) || $holder !== null) {
+        $holder = $row['assigned_user_id'] ?? null;
+        if (! is_int($holder) && (! array_key_exists('assigned_user_id', $row) || $holder !== null)) {
             Log::warning('board_correct_card: the row carries no readable assigned_user_id, so the assignee arm cannot authorize this correction', [
                 'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'reason' => 'assigned_user_id_unreadable',
             ]);

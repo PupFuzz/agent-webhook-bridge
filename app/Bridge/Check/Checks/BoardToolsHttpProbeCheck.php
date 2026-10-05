@@ -33,8 +33,10 @@ use Throwable;
  *    identity ECHO of the resolved agent's own config, so a mismatch is a real finding — the
  *    bearer reached a DIFFERENT agent's window — while a match certifies resolution and NOT
  *    that the fail-closed row filter ran, which config compared against config cannot show.
- *    `board_my_cards` exposes no per-row swimlane_id on its lane lists (`BoardCardProjection::project` does not emit it), so the lane
- *    filter has no observable in this response at all; since DL-302 the BOARD axis does have
+ *    Since card#11267 `board_my_cards`' cards carry their own `swimlane_id`, but that list holds
+ *    the seat's ASSIGNED cards from any lane beside its lane's unassigned ones, so a card outside
+ *    the configured lane is not evidence the lane filter failed — the filter still has no
+ *    observable here; since DL-302 the BOARD axis does have
  *    one (`result.board_id` / `result.board_observed`, read off the rows), and this probe
  *    does not yet assert on it — adding a fail arm there changes what bridge:check rejects.
  *
@@ -144,7 +146,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
             try {
                 $resp = Http::withToken($token)->acceptJson()->timeout(10)
-                    ->post($endpoint, ExemptCaller::probeBody());
+                    ->post($endpoint, $bt->isScopeless() ? ExemptCaller::scopelessProbeBody() : ExemptCaller::probeBody());
             } catch (ConnectionException $e) {
                 // ESCAPED PRECAUTIONARILY (card#9200, DL-366), and the reason is stated
                 // rather than claimed: this message is composed by the HTTP client, but
@@ -175,8 +177,16 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
             }
 
             $result = $resp->json('result');
+            $probed = $bt->isScopeless() ? 'ci_await_cancel' : 'board_my_cards';
             if (! is_array($result)) {
-                yield Finding::fail("board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm board_my_cards ran ({$this->probeErrorDetail($resp)}).");
+                yield Finding::fail("board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm {$probed} ran ({$this->probeErrorDetail($resp)}).");
+
+                continue;
+            }
+            if ($bt->isScopeless()) {
+                // card#11283: a scope-less agent has no board window to echo; the bearer is
+                // per-agent, so a 200 from the dispatcher's CI-tool path IS this agent's door.
+                yield Finding::ok("board_tools probe: agent {$name}: {$endpoint} → 200; scope-less (CI tools only) — ci_await_cancel answered through this agent's bearer and wrote nothing (no await existed on the probe head). There is no board window to match.");
 
                 continue;
             }

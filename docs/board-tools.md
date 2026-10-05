@@ -2,8 +2,11 @@
 
 The bridge is push-only no longer. When an install enables **board tools**, an
 agent gets a small, channel-identity-scoped **request/response** surface over the
-same channel that already delivers wake events — so an impl seat with **no kanban
-token and no toolkit** can see and capture its own board work directly.
+same channel that already delivers wake events — so a seat with **no kanban token and
+no toolkit** can see and capture its own board work directly. Which seats get it is a
+deployment default: every pm and solo seat, while an impl seat uses kbcard for its board
+work (`CLAUDE_DEPLOYMENT.md` § Fresh install, DL-460) and gets `ci_await` from a **scope-less**
+block — no board tool at all ([§ Scope-less agents](#scope-less-agents-the-ci-tools-without-a-board-card11283--dl-461), DL-461).
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
@@ -11,13 +14,13 @@ The tools that ship today — the table is held against the bridge's own registr
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
-| `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
-| `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
+| `board_my_cards` | read | Return YOUR own cards — every card ASSIGNED to you in any lane or in none, plus the UNASSIGNED cards in your product swimlane (card#11267 / DL-459), grouped by stage and ordered across lanes by stage rank (In Progress, pull columns, the rest, finished), then board position, then id — and the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured. Read-proxied — the kanban token never leaves the bridge. |
+| `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass, and it is **assigned to you** (card#11267 / DL-459) — or left unassigned, with the response naming why. |
 | `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
-| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
+| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. Scoped to a lane you work, or a card already assigned to you in any lane (card#11267). ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
-| `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none`) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused; the window says `total`, `truncated` and `total_is_lower_bound`. |
+| `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none` / `unrouted` — the unassigned cards in no home lane, the PM's routing queue, card#11267) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused — except `unrouted`'s unassigned test, which the board has no term for and the bridge applies to the rows it returns; the window says `total`, `truncated` and `total_is_lower_bound`. |
 | `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA is terminal, you get ONE `ci_settled` event on your channel; if that does not happen before the wait expires, ONE `ci_await_expired`. **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
 | `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it. Never touches another seat's. |
 
@@ -133,7 +136,7 @@ bridge answered: [§ Did the call reach the bridge?](#did-the-call-reach-the-bri
 
 | Arg | Required | Notes |
 | --- | --- | --- |
-| `include_description` | no | Boolean (default `false`). Adds `description` + `description_truncated` to **every** projected card — your own lane, the shared lane, and the coord cards alike. A non-boolean is **refused** (422) rather than coerced. See § Reading a card's scope below. |
+| `include_description` | no | Boolean (default `false`). Adds `description` + `description_truncated` to **every** projected card — your own cards, the shared lane, and the coord cards alike. A non-boolean is **refused** (422) rather than coerced. See § Reading a card's scope below. |
 | `stage` | no | Return only the cards in **one column of your product board**. The **numeric stage id** is the primary form. A **string** is a stage **NAME**, matched case-insensitively and whitespace-trimmed — `"50"` is looked up as a stage *called* `50`, never as id 50. A name that resolves to **no** stage, or to **more than one**, is **refused** (422): the bridge does not guess which column you meant. A numeric id that is not a stage on your board is refused too. ⛔ **An EMPTY value is refused, not ignored** — `""`, whitespace, an invisible character, or an explicit `null`. Omit the argument entirely to read every column; a silently-dropped filter would hand you *more* cards than you asked for, and the two doors disagreed about it. ⛔ **It does not reach the coord cards** — they are on a different board, whose stage ids are unrelated to yours. See § The default is capped below. |
 | `limit` | no | How many cards **each list** is cut to (default **52 cards per list** — see § The default is capped). A positive integer; anything else (a float, a numeric string such as `"20"`, a boolean, `0`, a negative) is **refused** (422) before any board read, never coerced. |
 | `tag` | no | **ONE tag, matched exactly** (for example `lane:A`). Adds a `tag_cards` block: every live card on **your board** carrying it, in **any lane or in none**, each with its own `swimlane_id`. See § [Cards carrying a tag, in any lane](#cards-carrying-a-tag-in-any-lane-tag-include_terminal). Trimmed as the HTTP door trims. **Refused** (422, before any board read): a non-string, an EMPTY value (`""`, whitespace, an invisible character, an explicit `null`), a value containing `"`, `*` or `%`, a value containing a character kanban stores escaped (a control character, `/`, `\` or any non-ASCII character — no exact tag match can find it), and one longer than kanban's tag cap. ⛔ Omit it and the response is exactly the default. |
@@ -149,20 +152,34 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
   "board_observed": true,
   "configured_board_id": 10, // the board this agent is configured to read
   "swimlane_id": 4,
+  "selection": {             // which of your cards could be read — see § Which cards are yours
+    "kanban_user_id": 42,            // your seat's kanban user (the roster's), or null
+    "assignee_arm": "applied",       // "applied" | "no_kanban_user" | "unavailable"
+    "unavailable_reason": null,      // when "unavailable": the roster's install_fault.* code
+    "no_kanban_user_reason": null,   // when "no_kanban_user": "roster_seat_absent" | "no_kanban_id_for_host"
+    "assigned_read_truncated": false // the board walk stopped at its page ceiling; null when not walked
+  },
+  "stage_rank": {            // the columns ranked first — see § Which cards are yours
+    "in_progress_stage_id": 49,      // the mapping's `stages.started`, or null
+    "pull_stage_ids": [54],          // its `started_from_stages`
+    "unmapped_reason": null          // why nothing is ranked first, when it is not
+  },
   "board_stages": [          // EVERY column of your board, in the board's own order —
     { "id": 50, "name": "Backlog" },      // present whether or not a card in it survived
     { "id": 51, "name": "In Review" }     // the cut, so `stage` is always reachable
   ],                       // ordered by kanban's own `position`, not the payload's order
-  "cards_by_stage": {
+  "cards_by_stage": {        // keys and cards in RANK order — see § Which cards are yours
+    "In Review": [ /* ... */ ],
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
                     "assigned_user_id": 42,   // who holds it, or null — see below
                     "dl_number": "DL-1", "pr_number": null,
                     "pr_url": null,           // the card's PR url, or null — see below
                     "source": "owner/repo",   // the card's by-ref repo, or null — see below
                     "updated_at": "...",
+                    "swimlane_id": 9,         // the lane it is in (null: none) — card#11267
+                    "position": 2048.0,       // the board's in-column order — card#11267
                     // the next two keys ONLY when include_description was passed:
-                    "description": "...", "description_truncated": false } ],
-    "In Review": [ /* ... */ ]
+                    "description": "...", "description_truncated": false } ]
   },
   "cards_window": {          // describes cards_by_stage above — ALWAYS present
     "total": 390,            // how many cards matched, BEFORE the cut
@@ -268,6 +285,62 @@ a `board_get_cards` / `board_search`-shaped membership control on this tool too;
 path this tool takes, so it would only cost an extra request. See the class docblock on
 `BoardMembershipControl`.)
 
+### Which cards are yours, and in what order (`selection`, card#11267 / DL-459)
+
+**Your cards are the cards ASSIGNED to your kanban user, in any lane or in none, plus the
+UNASSIGNED cards in your own swimlane** (rt#595). The assignee wins whenever it is set: a card in
+your lane that another user holds is theirs and is **not** in `cards_by_stage`, and a card you hold
+in a topic lane — or in no lane — **is**. Routing a card to you is one act: set its assignee. The
+rule lives in `SeatCardScope`; `board_take_card` takes a card assigned to you wherever it sits by
+the same rule, and `board_create_card` assigns the card it creates to you.
+
+- **Your kanban user is the coord roster's** (DL-450), for the seat the door sealed — never a value
+  from your arguments. `selection` says which of three states answered:
+
+  | `assignee_arm` | Meaning |
+  | --- | --- |
+  | `applied` | The roster gives your seat a kanban user. Your assigned cards are read from every lane, and a lane card another user holds is left out. |
+  | `no_kanban_user` | The roster gives your seat no kanban user **on this kanban host**, and `no_kanban_user_reason` says which case: `roster_seat_absent` (your seat is not in the roster) or `no_kanban_id_for_host` (it is, with no usable id for this host). Your seat may still hold cards under an id the roster has not recorded here, so whether a held card in your lane is yours cannot be told: ⚠ **your whole lane is returned**, cards other users hold included, as under `unavailable`. There is no id to match, so the board is not walked and no card outside your lane is listed. Tell your operator. |
+  | `unavailable` | The roster could not say who you are (unreadable, unset, or an id that does not identify one seat — `unavailable_reason` carries the same `install_fault.*` code `board_take_card` would refuse with). ⚠ **Your whole lane is returned, as before this rule**, because whether a card in it that somebody holds is yours cannot be told; nothing outside your lane is. Tell your operator. |
+
+- **What it costs.** kanban's search has no term that selects by assignee id (`@<initials>` matches
+  initials, which do not identify a user), so under `applied` the bridge **walks your whole board** —
+  a request per 200 live cards, and one more when the last page is full — and keeps only the rows assigned to you; your lane read is
+  unchanged beside it. `assigned_read_truncated: true` means that walk stopped at the bridge's page
+  ceiling (`KanbanClient::MAX_PAGES` × `SEARCH_LIMIT` rows), so cards assigned to you past it are
+  missing from the list; it is `null` when the board was not walked.
+- **The order is the same for every list in this response that groups by stage, and it is across
+  lanes:** stage rank, then the board's `position`, then card id (`BoardCardRank`). Stage rank is
+  what this install already declares about your board's columns, never a guess from a column's
+  name: the **In Progress** column (the writeback mapping's `stages.started`), then the **pull**
+  columns (its `started_from_stages` — the columns `board_take_card`'s start form moves a card
+  from), then every other column, then the **finished** ones (the board's terminal declaration
+  together with the mapping's Shipped/Released floor — the same finished set the take refuses to
+  replace an assignee in). Columns of one rank keep the board's column order. `stage_rank` names
+  the columns ranked first (`in_progress_stage_id`, `pull_stage_ids`); when no mapping on your
+  board names exactly one In Progress column, nothing is ranked first and `unmapped_reason` says
+  why (`no_mapping_on_board`, `start_unmapped`, `start_ambiguous`, `writeback_config_unreadable`).
+  ⛔ Not kanban's per-column `lane_type`: kanban creates every column `in_progress` unless told
+  otherwise, and the reference board types Shipped to dev `waiting`, so a rank read off it would
+  list a shipped card above your backlog. `cards_by_stage`'s keys come out in rank order and each
+  card carries its `swimlane_id` and `position`. ⭐ `position` is ONE order per column across every swimlane on kanban — its reorder
+  places a card column-wide (kanban DL-284), so the PM's reorder ranks your home-lane and assigned
+  cards together — and card id breaks ties, because two cards can share a position. Source-read
+  (kanban `BoardPositionService`), not measured against a live board here. A row with no `position`
+  sorts after the positioned rows of its column.
+- ⚠ **The cap still keeps the NEWEST cards** (§ The default is capped) and orders what it kept, so
+  on a truncated list the top of your rank order can be behind the cut — narrow with `stage`.
+- ⚠ **What moved for a lane you already read:** a card in your lane that another user holds has left
+  `cards_by_stage` under `applied`. To see your whole lane, read it with
+  `board_search` (`lane: "mine"`). `shared_swimlane` still selects its whole lane (only its order
+  and its cards' two new keys changed), so a card assigned to you in the shared lane appears in both.
+- **Cards in your lane that someone else holds are not listed here, and their assignee is not shown
+  separately** (rt#595 ask 1 asked for it). The FR's own rule makes them somebody else's cards. To
+  see them, read your lane with `board_search` (`lane: "mine"`): every card there carries its
+  `assigned_user_id`.
+- **The PM's routing queue — the unassigned cards in nobody's home lane — is `board_search`'s
+  `lane: "unrouted"`** (rt#595 ask 4), not a list on this tool.
+
 ### The default is capped (`cards_window`, `stage`, `limit`)
 
 ⚠ **Every card list in this response is cut to a fixed number of CARDS, and the response
@@ -309,9 +382,10 @@ for, and the old response gave no hint it was oversized or partial.
   `total` then reports **that column's** size. Raising `limit` grows the response in
   proportion to the cards it lets through; it is the deliberate escape hatch for a caller
   that genuinely needs a whole lane, not the routine path.
-- **Which cards you get is deterministic: the NEWEST — the highest card ids — emitted in
-  the board's own answer order.** Card ids are allocated globally and monotonically, so
-  the highest ids are your most recent work. ⛔ **The first cut of this kept the OLDEST
+- **Which cards you get is deterministic: the NEWEST — the highest card ids.** They are
+  emitted in your RANK order (stage rank, then `position`, then id — § Which cards are
+  yours), not in the board's answer order (card#11267). Card ids are allocated globally and
+  monotonically, so the highest ids are your most recent work. ⛔ **The first cut of this kept the OLDEST
   and was wrong in a way worth stating**, because a bounded response that answers the
   wrong question is still an unusable tool: on any board with a terminal column the
   default read came back as 52 finished cards, with the live column absent from
@@ -319,8 +393,9 @@ for, and the old response gave no hint it was oversized or partial.
   column existed. Descending keeps every property that mattered: a total order over a
   monotonic key, so two identical polls answer the same set and merely touching a card
   never reshuffles it. A row carrying no readable id sorts **last** (it is still counted
-  in `total`). A list that was *not* cut is byte-identical to what this tool returned
-  before the cap existed.
+  in `total`). ⛔ *A list that was not cut is byte-identical to what this tool returned
+  before the cap existed* is RETIRED (card#11267): every list is now emitted in rank order,
+  so an uncut list carries the same cards in a different order.
 - **`board_stages` names every column of your board, on every response, in the board's own
   column order** (kanban's `position` — not the order the board's workflows happen to be
   assembled in). The escape hatch has to be reachable from the response that advertises
@@ -405,8 +480,8 @@ three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could 
   count and the rows both come from its own `tags:"…"` match and differ only on the lane, so
   the check stands behind the lane count, never behind the tag match. A board with no lane but
   yours answers `other_swimlanes: 0` without a count search, still checked against the rows.
-- ⚠ **This read crosses the lane boundary on purpose.** The bridge-enforced read isolation
-  described below holds for your lane lists; `tag_cards` lists cards in other agents' lanes
+- ⚠ **This read crosses the lane boundary on purpose** (§ Reads that cross lanes). The
+  bridge-enforced read isolation described below holds for your lane lists; `tag_cards` lists cards in other agents' lanes
   that carry the tag you name, on your own board. It is one exact tag: `*` (a wildcard to kanban),
   `"`, and `%` (a wildcard to a kanban older than v0.36.0) are refused. `_` is accepted — agent
   names carry it — and kanban v0.36.0 and later match it literally; an older kanban reads it as
@@ -422,8 +497,9 @@ three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could 
 - **Cost:** a call with `tag` adds the tag read (paged) and one-row searches — the
   `other_swimlanes` count, the free-text disclosure check, and the `no_swimlane` count. The
   board structure read is the one the default call already makes.
-- ⛔ **Without `tag`, nothing changes:** the same keys and values, from the same requests (a coord
-  leg's tag search now also sends `page=1`), and no `swimlane_id` on the lane cards.
+- ⛔ **Without `tag`, nothing the tag read adds is present:** no `tag_cards` block and none of its
+  requests (a coord leg's tag search now also sends `page=1`). The lane cards' own `swimlane_id`
+  and `position` are card#11267's, not the tag read's, and ride every call.
 
 ### Where these cards are (`board_id` vs `configured_board_id`)
 
@@ -502,9 +578,29 @@ membership, never by swimlane — so the boundary keeping you out of another
 agent's lane is your `board_tools.swimlane_id` config plus a fail-closed row
 filter: every returned row is re-checked against your configured swimlane and any
 non-matching row is **dropped and logged**. The upstream `swimlane_id=` search
-term is efficiency + defense-in-depth, not the boundary. ⚠ **The `tag` read is the
-deliberate exception** (DL-383): it lists the cards on your board carrying the one
-tag you name, in any lane — see § Cards carrying a tag, in any lane.
+term is efficiency + defense-in-depth, not the boundary. The reads that cross it on purpose are
+listed in § Reads that cross lanes, below.
+
+### Reads that cross lanes
+
+This is the one list of reads on this door that reach past your own lane. Each stays on your own
+configured board. Elsewhere this doc and the code point here rather than repeating it.
+
+- **`board_search` with `lane: "any"`, the default**: the widest. It searches every lane on your
+  board, filtered by what you pass. See § `board_search`.
+- **`board_search` with `lane: "none"`**: the cards in no lane.
+- **`board_search` with `lane: "unrouted"`** (card#11267, rt#595 ask 4): the UNASSIGNED cards in
+  no lane or in a lane that is no agent's home lane on this install. It never returns a configured
+  home lane (yours included) or an assigned card. Both exclusions are a fail-closed row filter of
+  their own, not kanban's lane term: a row whose assignee or lane cannot be read is dropped, and a
+  home-lane row is dropped and logged. See § *`lane: "unrouted"`*.
+- **`board_get_cards`** (DL-435): the cards whose ids you name, in any lane. A card on another
+  board is a status with no content. See § `board_get_cards`.
+- **`board_my_cards`' `tag` read** (DL-383): the cards carrying the one exact tag you name, in any
+  lane. See § Cards carrying a tag, in any lane.
+- **`board_my_cards`' assigned arm** (card#11267): walks your whole board and keeps **only the rows
+  assigned to your own kanban user**, so a card in another lane reaches you only when it is yours by
+  assignment. See § Which cards are yours.
 
 ### An empty window is not always an empty lane
 
@@ -556,6 +652,28 @@ Any other key — a `swimlane_id`, an `assignee` — is **refused** (422) before
 - The card is created at your configured `create_stage_id`, in your configured
   `swimlane_id` (forced — args cannot name a lane or stage), with payload `{}`.
 - The bridge stamps `created-by:<you>` as the audit tag.
+- **The card is ASSIGNED TO YOU** (card#11267 / DL-459): after the create, one PATCH writes your
+  seat's kanban user — the coord roster's, never a value from your arguments, exactly as
+  `board_take_card` writes it — into `assigned_user_id`. It is a **separate write after the
+  create, and it never undoes it**: kanban refuses an assignee who is not a member of the board,
+  and sent inside the create that would refuse the card itself. So the card is created as before,
+  and when the assignment is not known to have been made the response says why
+  (`assignee_unset_reason`, with `assigned_user_id: null`): `no_kanban_user` — the roster gives
+  your seat none; an `install_fault.*` code — the roster could not say who you are;
+  `assign_failed` — the board **refused** the PATCH, so the card is unassigned; `assign_unconfirmed`
+  — the PATCH got **no answer**, so it **may have landed** (retry with the same `idempotency_key`
+  to find out: the retry reports, or completes, the assignment). Each is logged with the cause.
+  After a raced-duplicate collapse, the surviving card is the one assigned. ⚠ The PATCH needs
+  `task.update` on your board, the same ability a take or a correction needs; without it every
+  create answers `assign_failed`.
+- **An idempotent hit reports the same two keys.** It returns a card an earlier call created — and
+  that call may have died between the create and its assignee PATCH. So the hit reads the card's
+  holder off the same read-back its placement comes from: a card **nobody holds** is sent the same
+  PATCH a create sends, and answers exactly as a create does; a card **somebody holds** (you, or
+  whoever took it since) is reported as held (`assigned_user_id` is the holder) and is **not**
+  written — replacing a holder is `board_take_card`'s; a card whose holder **could not be read**
+  (the read-back failed, or carried no integer-or-null `assigned_user_id`) is not written either,
+  because it may be held, and answers `assignee_unreadable`.
 - **Pass an `idempotency_key`.** With one, the bridge runs the full duplicate-safe
   pattern: it correlates on `idem:<you>:<key>` *before* creating (a repeat returns
   the same **live** card, `"idempotent_hit": true`, no second card), and after
@@ -596,7 +714,9 @@ Any other key — a `swimlane_id`, an `assignee` — is **refused** (422) before
 ```jsonc
 { "created": true, "idempotent_hit": false, "card_id": 123,
   "board_id": 10, "swimlane_id": 4, "placement_observed": true,
-  "configured_board_id": 10, "configured_swimlane_id": 4 }
+  "configured_board_id": 10, "configured_swimlane_id": 4,
+  // card#11267 / DL-459, on a create and on an idempotent hit:
+  "assigned_user_id": 42, "assignee_unset_reason": null }
 ```
 
 **⚠ `board_id` / `swimlane_id` are WHERE THE CARD IS, read back from the card
@@ -910,9 +1030,9 @@ through the one privileged seat, which is the serial hub this door exists to rem
 **⭐ Which cards you can take — the scoping rule, and it is NOT the correction tool's.**
 
 `board_correct_card` scopes on a card being ALREADY yours — minted by you (`created-by:<you>`)
-or, since DL-376, assigned to you. A take is the opposite case: **the work somebody else
-queued for you, and that nobody holds yet, is exactly what you are claiming**, so neither
-relation is consulted. Two independent narrowings are checked instead, and **both** are required:
+or, since DL-376, assigned to you. A take is mostly the opposite case: **the work somebody else
+queued for you, and that nobody holds yet, is exactly what you are claiming**, so the mint stamp
+is never consulted. Two independent narrowings are checked instead, and **both** are required:
 
 1. **The card is on your configured board.** Established through a **board-scoped** search
    (`q=board_id=<yours> id=<n>`), with the verdict read off the returned **rows** — never
@@ -921,11 +1041,20 @@ relation is consulted. Two independent narrowings are checked instead, and **bot
    used: your `card_id` is caller-supplied against an id space that is **global across every
    board on the instance**.
 2. **The card is in a lane you work** — your own `swimlane_id`, or the configured
-   `shared_swimlane_id`. ⚠ That is the same **lane scope** `board_my_cards` reads, but it is
-   **not the same set of cards**, in either direction: `board_my_cards` **caps** its response
-   by card count (card#8985), so a card it did not list can still be takeable; and a card it
-   **does** list can be **refused** here because another user holds it and it is finished. What
-   makes the scope legible is the lane you work, not the listing you got.
+   `shared_swimlane_id` — **or it is already assigned to you**, in any lane or in none
+   (card#11267: a card routed to you in a topic lane is yours to start; the result's
+   `in_scope_by` says `lane` or `assigned`, and `swimlane_id` is then the lane the card is in,
+   `null` for none). "Assigned to you" is strict: the row's `assigned_user_id` must be an
+   **integer** equal to your seat's id — a numeric string never matches (`SeatCardScope::isAssignedTo`,
+   the same test `board_correct_card`'s assignee arm uses). An **archived** card that is yours by
+   either rule is refused with `reason: archived` — since card#11267 that includes one assigned to
+   you in a lane you do not work, which used to answer `out_of_scope`. ⚠ That is close to the set `board_my_cards` lists, but it is **not the same
+   set of cards**, in either direction: `board_my_cards` **caps** its response by card count
+   (card#8985), so a card it did not list can still be takeable, and a card in your lane that
+   another user holds is takeable here (with the takeover below) while `board_my_cards` leaves it
+   out; and a card it **does** list can still be **refused** — under `assignee_arm: unavailable` or
+   `no_kanban_user` it lists your whole lane, held cards included, and a held card in a finished column is refused
+   below. What makes the scope legible is the rule, not the listing you got.
 
 > ⛔ **Coordination cards are OUT of scope.** They live on a separately configured board and
 > are addressed by TAG rather than by lane, and reaching them would put a write on a second
@@ -1020,8 +1149,9 @@ knowing who is looking at a frozen card is useful rather than harmful.
   "taken": true,
   "card_id": 42,
   "board_id": 10,             // observed: the row was accepted only because it carried this
-  "swimlane_id": 4,           // observed: the lane the card was accepted in
-  "assigned_user_id": 815,    // YOUR id, from this bridge's config for your agent
+  "swimlane_id": 4,           // observed: the lane the card is in (null: none, possible under "assigned")
+  "in_scope_by": "lane",      // "lane" (a lane you work) or "assigned" (already yours) — card#11267
+  "assigned_user_id": 815,    // YOUR id, from the coord roster for your seat
   "already_held": false       // true ⇒ you already held it and NOTHING was written
 }
 ```
@@ -1099,7 +1229,7 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `bad_request` | the door, any tool | the request body is not a JSON object, is not labelled JSON (HTTP), names no `tool`, or (ssh) could not be read from stdin |
 | `unknown_tool` | the door, any tool | no such tool |
 | `bad_arguments` | the door and every tool | an undeclared argument, a malformed one (`card_id` not a positive integer, `start` not a boolean, a `ci_await` `repo` not `owner/name`, a `head_sha` not a full 40-hex SHA, `pr` not a positive integer), or a value over kanban's own bound |
-| `out_of_scope` | `board_take_card` | not a card on your board in a lane you work (or a board the writeback token cannot see — one answer) |
+| `out_of_scope` | `board_take_card` | not a card on your board in a lane you work or assigned to you (or a board the writeback token cannot see — one answer) |
 | `archived` | `board_take_card` | the card is archived |
 | `holder_unreadable` | `board_take_card` | the row says nothing readable about who holds the card |
 | `broken_read` | every card-id tool | the board-scoped lookup answered a row that is not this card |
@@ -1127,7 +1257,7 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `too_many_awaits` | `ci_await` | a NEW await would take you past `BRIDGE_CI_AWAIT_MAX_PER_SEAT`; nothing was stored (a refresh is never refused for it) |
 | `install_fault.ci_await_config_invalid` | `ci_await` | a `BRIDGE_CI_AWAIT_*` setting (`TTL`, `MAX_PER_SEAT`, `READ_COOLDOWN`) is outside its range |
 | `install_fault.ci_await_store_unavailable` | `ci_await`, `ci_await_cancel` | the `ci_awaits` table is missing (`php artisan migrate`) or the database did not answer |
-| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` (and `ci_await`, `install_fault.agent_config_unreadable` only: an agent config that will not load, so whether the repo is received cannot be told) | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
+| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` (and `install_fault.agent_config_unreadable` only: `ci_await`, an agent config that will not load, so whether the repo is received cannot be told; `board_search` with `lane: "unrouted"`, so the home lanes it leaves out cannot be told) | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
 
 A failure whose STATUS is the answer carries no code: the 502 `upstream board error` stays one
 body byte for byte for every cause (DL-387); the HTTP door's 401 (bearer) and 503 (install) answers
@@ -1260,7 +1390,8 @@ no write on a not-on-board refusal.
 
 **Read N cards you already know the ids of, in one call** (DL-435, card#10832; rt#572). A seat
 asking "what state are these ten cards in" used to read its lane, then every column one at a time,
-and still find cards in **no** read it could make — `board_my_cards` sees your own lane, a capped
+and still find cards in **no** read it could make — `board_my_cards` sees your own cards (since
+card#11267, the cards assigned to you in any lane plus the unassigned ones in your lane), a capped
 window and live cards only, and it cannot say whether a card it omits is archived, in another lane,
 on another board or gone. This tool answers **every id you name, with a status**.
 
@@ -1318,7 +1449,8 @@ disagreement kanban's current authorization does not produce; it is refused rath
 ```
 
 `card` is the same card shape `board_my_cards` returns (`BoardCardProjection`, one owner for both),
-plus two keys `board_my_cards`' lane lists do not carry:
+plus two keys — which `board_my_cards`' own and shared lists also carry since card#11267, its
+`tag_cards` carry `swimlane_id` alone, and its coord cards carry neither:
 
 - `swimlane_id` — present-and-`null` for a card in no lane, and **absent** (never `null`) when the
   row carried no readable lane field;
@@ -1333,8 +1465,7 @@ A key you did not select is absent.
 **⚠ No window.** Nothing is cut — the request is bounded instead — so there is no `cards_window`,
 `truncated` or `total_is_lower_bound` here. N in, N out is this tool's whole honesty contract.
 
-**⚠ It crosses lanes, deliberately** — the second read on this door that does, after `board_my_cards`'
-`tag` read (DL-383). You name each id, on your own board; a card anywhere else is a status with no
+**⚠ It crosses lanes, deliberately** (§ Reads that cross lanes). You name each id, on your own board; a card anywhere else is a status with no
 content.
 
 **Errors.** A permanent 4xx on the board-scoped search, the membership control (other than a not-readable answer — a 403, or a 200 it reads as unreadable — the membership refusal above) or the stage read is a
@@ -1360,7 +1491,8 @@ something this tool fixes — tracked separately as card#10849.
 ## `board_search`
 
 **Search your own board by filter and get the matches only** (DL-437, card#10832; rt#572 asks 3–5).
-`board_my_cards` answers "what is in my lane", with a lane list and a column list attached;
+`board_my_cards` answers "which cards are mine" — assigned to me anywhere, or unassigned in my lane
+— with a column list attached;
 `board_get_cards` answers "what state are these ids in". This answers "which cards on my board match
 these filters" — and, with `summary: true`, "how many, per column".
 
@@ -1375,7 +1507,7 @@ these filters" — and, with `summary: true`, "how many, per column".
 | `name_contains` | Non-empty text. Cards whose **name** contains it — kanban's own match (a `LIKE`, so case follows kanban's database collation). A `"` or a control character is refused: kanban's term carries the text inside quotes. |
 | `updated_since` | A calendar **date**, `YYYY-MM-DD`. Cards updated on or after it. kanban compares the **date part** of `updated_at` (its `whereDate`, in kanban's database time zone), so a timestamp is refused rather than rounded. |
 | `include_archived` | Boolean, default `false`. Also search the archived side; each card then carries `archived: true` or `false`. |
-| `lane` | `mine` (your own swimlane), `none` (cards in no lane) or `any` (every lane — **the default**). |
+| `lane` | `mine` (your own swimlane), `none` (cards in no lane), `any` (every lane — **the default**) or `unrouted` — the PM's routing queue (card#11267, rt#595 ask 4): the **unassigned** cards in no lane, or in a lane that is not the home lane (`board_tools.swimlane_id`) of any agent **this bridge install** configures on your board. See § *`lane: "unrouted"`* below. |
 | `summary` | Boolean, default `false`. Counts instead of cards — below. |
 | `summary_tags` | With `summary: true` only: a list of tags to count the matches of, each on its own. |
 | `fields` | As `board_get_cards`' `fields` (`BoardCardProjection::FIELDS`, `description` opt-in). `[]` is refused (it would return empty cards); not with `summary`. |
@@ -1395,6 +1527,14 @@ An argument that would change nothing on this call (`summary_tags` without `summ
   "cards": [ { "id": 104, "name": "…", "stage": "In Review", "swimlane_id": null, "position": 1024, "…": "…" } ],
   "window": { "total": 3, "returned": 3, "limit": 52, "truncated": false, "total_is_lower_bound": false }
 }
+```
+
+Under `lane: "unrouted"` only, two keys follow `filters`:
+
+```jsonc
+  "home_lanes": [4, 7],        // the lanes treated as home and left out: every agent on THIS install, on this board
+  "home_lanes_note": "home_lanes are the swimlane_id of every agent this bridge install configures on this board. …"
+                               // a lane that is home to an agent on ANOTHER install is listed as unrouted
 ```
 
 **Matches only**: no `board_stages`, no `cards_by_stage`, no lane block. `cards` are the **newest**
@@ -1426,7 +1566,8 @@ between two of them can make the columns disagree with `total` by the cards that
 ### The honesty contract, filter by filter
 
 ⭐ **Every filter is applied by kanban, never by reading more of the board and filtering in the
-bridge.** Source-read at kanban `origin/dev` 54a63399 (`QueryParser::applyStructuredFilter`,
+bridge — with one exception, `lane: "unrouted"`'s unassigned test (below), which kanban has no term
+for.** Source-read at kanban `origin/dev` 54a63399 (`QueryParser::applyStructuredFilter`,
 `TasksController::search` / `byRef`), not measured against a live instance:
 
 | Filter | How kanban applies it | Window |
@@ -1436,6 +1577,7 @@ bridge.** Source-read at kanban `origin/dev` 54a63399 (`QueryParser::applyStruct
 | `name_contains` | `name:"<text>"` (a `LIKE %text%`) | exact |
 | `updated_since` | `updated_at>=:<date>` (a date compare) | exact |
 | `lane` | `swimlane_id=<your lane>` / `swimlane_id=none` / no term | exact |
+| `lane: "unrouted"` | ⚠ **only half kanban's.** kanban narrows the lanes (`swimlane_id=<every lane but the home lanes>,none`); the **unassigned** test is the bridge's, applied to the rows kanban returns, because kanban's search has no unassigned term (its only assignee term is `@<initials>`) | **exact** when every search read all its matches in one page; otherwise `total` counts the unrouted cards in the page read, with `total_is_lower_bound: true` **and** `truncated: true`. Each search reads a whole page (`MAX_LIMIT` rows) whatever `limit` is, so the window covers as much as one request can |
 | `include_archived` | the `archived` switch — kanban has no both-sides mode, so one more search per archive side; the two sides are disjoint, so their totals add | exact |
 | `tags_any` | one search per tag, merged by id in the bridge | the **window** is exact (a card among the union's newest `limit` is among the newest `limit` of every tag it carries); the **total** is exact when every per-tag search was complete, and otherwise a **lower bound** — the larger of the distinct cards read and the largest single-tag count — with `total_is_lower_bound: true` **and** `truncated: true`, because a union kanban was not asked to size cannot be sized from per-tag counts without counting a card that carries two tags twice |
 | `pr_number` | kanban's by-ref index (`boards/{id}/tasks/by-ref.json`, the index the writeback correlates on — canonicalized, board-scoped, **live only**, unpaginated); with any other filter, each card it names is **re-asked through the search** with `id=<n>` and every other filter, so kanban still decides each one | exact (the index answers every live card carrying the PR) |
@@ -1459,11 +1601,45 @@ collection is the retryable `502`.
   canonicalized index the writeback correlates on). `board_get_cards` reads known ids on either side.
 - **`summary: true` with a `tags_any` of more than one tag** — kanban's search has no OR, and a sum of
   per-tag counts counts a card carrying two of them twice. Use `summary_tags` to count each tag.
+- **`summary: true` with `lane: "unrouted"`** — a count of unassigned cards is not one kanban can
+  give: its counts would include the assigned cards the bridge drops from rows. Search without
+  `summary`; the window says whether its `total` is exact.
 
-**⚠ It crosses lanes by default** (`lane: any`) — the third read on this door that does, after
-`board_my_cards`' `tag` read (DL-383) and `board_get_cards` (DL-435), and the first whose population
-you **filter** rather than name. It stays on your own configured board: every search carries
+**⚠ It crosses lanes by default** (`lane: any`; § Reads that cross lanes), and its population is
+one you **filter** rather than name. It stays on your own configured board: every search carries
 `board_id=<yours>`, and kanban's disclosure confirms it applied.
+
+### `lane: "unrouted"` (card#11267, rt#595 ask 4)
+
+**The PM's routing queue: cards nobody holds and no agent here owns by lane.** A card is unrouted
+when its `assigned_user_id` is `null` **and** it is in no lane or in a lane that is not a **home
+lane** — the `board_tools.swimlane_id` of any agent this bridge install configures on your board
+(yours included), read from the install's agent configuration through the loader every other
+reader uses, never a second list. On by default for every seat; no config key.
+
+- ⛔ **It never returns a card in a configured home lane, and never an assigned card.** kanban's
+  lane term narrows the search, but the boundary is the bridge's own **fail-closed row filter**: a
+  row is kept only when its `assigned_user_id` is present and `null` and its `swimlane_id` is
+  present and either `null` or a lane outside `home_lanes`. A row whose assignee or lane cannot be
+  read is dropped — it cannot be shown unrouted — and so is a home-lane row a kanban that ignored
+  the lane term returned; both are logged. An assigned row is dropped quietly: kanban cannot
+  filter on that, so it is the expected case.
+- ⚠ **A lane that is home to an agent on ANOTHER bridge install is listed as unrouted.** One install
+  sees only its own agents' config. Over-listing is the accepted direction (rt#595): a routed card
+  shown in the queue costs the PM a look; an unrouted card hidden from it is lost. The response names
+  the lanes it treated as home (`home_lanes`) and says this (`home_lanes_note`). An agent whose
+  `board_tools` block is disabled or retired declares no lane the bridge reads, so its lane counts as
+  unrouted too.
+- **Window and order follow every other search:** newest first, cut to `limit`. See the honesty
+  table above for when `total` is a lower bound.
+- **Combines** with every other filter (AND), including `pr_number` (each candidate is re-asked
+  through the search, then filtered) and `include_archived` (both sides filtered). `summary` is
+  refused.
+- ⛔ **An agent configuration the bridge cannot read refuses the call** (an INSTALL fault, nothing
+  returned): without it no lane can be shown not to be a home lane.
+- **Cost:** the board structure read (for the board's lane list) plus the searches every
+  `board_search` call sends — no more requests than `lane: "any"` with `fields` including `stage`
+  (the default).
 
 ⛔ **"No matches" is said only of a board the bridge can read.** kanban's search answers a token
 whose user is not a **member** of your board zero rows, at 200 — the same answer as "nothing
@@ -1481,8 +1657,8 @@ board failure keeps the retryable `502`.
 **Cost**, in kanban requests — every one against the per-user budget the writeback shares (§
 `board_get_cards` *Cost*):
 
-- one stage read (the board structure read) when `stage` is sent, `stage` is a selected field (it is by default), or `summary` is
-  set;
+- one stage read (the board structure read) when `stage` is sent, `stage` is a selected field (it is by default), `summary` is
+  set, or `lane` is `unrouted`;
 - a search: **(number of `tags_any` tags, or 1) × (2 with `include_archived`, else 1)**;
 - a summary: **(2 with `include_archived`, else 1) × (1 + columns counted + `summary_tags` tags)**;
 - `pr_number`: **1** by-ref read, plus, when any other filter is sent, **(cards the index names) × (number
@@ -1500,7 +1676,104 @@ read, plus the by-ref read on the `pr_number` path. A refused call has sent at m
 search. The ceiling is **borrowed**, not chosen:
 it is `board_get_cards`' worst case, `3 × MAX_IDS + 1`, the per-call ceiling this door already accepted
 against that shared budget (DL-435 bound (d)). Nothing is ever walked page by page: `limit` never
-exceeds one page, and every count is kanban's.
+exceeds one page, and every count is kanban's (under `lane: "unrouted"` every search reads exactly one
+whole page).
+
+## Scope-less agents: the CI tools without a board (card#11283 / DL-461)
+
+An enabled `board_tools` block with **no board scope** — `board_id`, `swimlane_id`,
+`create_stage_id`, `shared_swimlane_id`, `coord_board_id` and `address_tags` all ABSENT (by key: a
+key written with an empty value counts as present and is parsed, and refused, as a scoped block's) —
+is a valid **CI-only** agent:
+
+```yaml
+board_tools:
+  enabled: true            # EXPLICIT — a default-class block with no scope is still suppressed
+  # transport / auth / ssh_account / client_update: as for any block
+  # ci_tools: false        # opt out of the CI tools (a non-bool value also means OFF, and bridge:check FAILs)
+```
+
+It is an enabled board-tools agent in every other respect — the same doors and transports, the
+same ssh pin and its certification, the client-update door and the fleet — but it is **served only
+`ci_await` and `ci_await_cancel`**. `App\Bridge\Tools\ServedTools` is the one answer to "what does
+this agent get", and three readers use it: the dispatcher refuses any other registered tool with
+`reason: not_served` (422, ssh exit 1) **before** a writeback client is built or a board is read —
+an unknown name still answers `unknown_tool`; the update door's `served_tools` op (and the
+`served_tools` field of `client_manifest`) tells the seat's channel server what to advertise; and
+"may this agent take cards" (`board_take_card`) is that same set. So a scope-less agent gains **no
+board read or write**. `fleet_view` and `description_max_bytes` are refused on a scope-less block
+(load-time error), because each only means something to a scoped agent.
+
+**This is the implementation-seat setup.** Impl seats use `kbcard` and no board tools; a
+scope-less block serves no board tool, so that rule holds, and gives the seat `ci_await` instead
+of polling GitHub. The coordination framework's onboarding writes it.
+
+**⛔ THE CROSS-REPO CONTRACT — DECLARED HERE, for the framework that writes these blocks:**
+
+- **Minimum bridge.** A scope-less block **throws at load on a bridge that predates DL-461**,
+  and a config that throws takes the whole install's receiver down. Before writing one, send
+  `{"op": "served_tools"}` to the client-update door (ssh: the forced command's stdin; http:
+  `POST /agent-tools/client`). **The test is POSITIVE-ONLY — write the block on exactly these two
+  answers, and on NO other:**
+  - **`ok: true`**, asked with an already-enabled agent's credential (e.g. the PM's pinned key or
+    bearer). The answer is `{ok, op, agent, served: [...]}`, `agent` being the identity the door
+    resolved.
+  - **exit 2 with `reason: "door_closed"`**, asked with the would-be seat's own pinned key before its
+    block exists (ssh only). The door refuses that agent because it has no enabled block, and the
+    `door_closed` reason was added with DL-461, so its presence proves the bridge is new enough.
+
+  ⛔ **Each positive counts only for the install it came FROM.** One host can run several
+  installs (`CLAUDE_DEPLOYMENT.md` runs a prod and a dev side by side), each with its own
+  agent-config directory. A positive certifies the install the credential reached, and that
+  install is identified by the **`artisan` path in the pinned key's forced command** (ssh) or
+  the **vhost of the endpoint** (http). It licenses a block only in THAT install's agent-config
+  directory. A PM key pinned to an upgraded dev install answers `ok: true` whatever prod runs;
+  writing prod's block on it takes prod's receiver down. The same binding holds for
+  `door_closed`: the seat's key must be pinned to the forced command of the install that will
+  hold the block.
+
+  ⛔ **Ask only after the bridge update has COMPLETED, including its PHP-FPM reload.** The ssh
+  door runs the CLI from the checkout, so it serves new code as soon as the code is pulled; the
+  http door is served by FPM, which can keep serving the old code until it reloads. An answer
+  taken mid-update can be positive on one door while the other still runs the old release.
+
+  **Every other answer means do not write the block** — it is not a negative verdict to be
+  matched, it is the absence of a positive one. Known shapes, as examples and not as the
+  definition:
+  - ssh exit 1, no `reason`, error ``request must carry a non-empty `tool` `` — a bridge older
+    than the update door, which reads the body as a board-tools call. (Over http the same bridge
+    has no door route and answers 404, below. Later bridges add `reason: "bad_request"` to this
+    refusal, but every one of them already routes an `op` body to the door, so that variant
+    cannot come back from this ask.)
+  - exit 1 / HTTP 422, no `reason`, error starting `unknown client-update` — a bridge with the
+    door but without this op;
+  - HTTP **404** with no envelope — a bridge with no `/agent-tools/client` route;
+  - HTTP **401** — a bearer the door does not accept, which is what a seat with no enabled block
+    has over http, so it learns nothing;
+  - exit 2 with **no** `reason` — not a positive answer. Causes include an older bridge, an agent
+    name the bridge has no YAML for (`unknown agent`), a malformed agent YAML
+    (`agent config error`), or any 5xx.
+
+  `provision-board-tools.py`'s `predates_served_tools()` recognises a superset of the two
+  exit-1 refusal shapes above, for a different decision: whether `--self-cert` may fall back to
+  `board_my_cards`. It is not this test, and it is never a licence to write a block.
+- **Rollback.** Remove every scope-less block BEFORE rolling a bridge back below DL-461.
+- **What it serves:** `ci_await` and `ci_await_cancel` only, checked bridge-side by the dispatcher
+  gate (`BoardToolDispatcher`) and pinned by `ServedToolsTest` / `ScopelessDispatchTest`.
+- **What the bridge CANNOT verify:** that a scope-less block is written only on an implementation
+  seat. It cannot tell an impl seat from a PM or solo seat. `bridge:check`'s `ci_tools.agent` line
+  shows every enabled agent's block shape and served set, so a misplaced block is visible, not
+  refused.
+- **Seat side:** the ssh transport (`BRIDGE_TOOLS_SSH_TARGET`, optional `_KEY`/`_PORT`) and a key
+  pinned by `provision-board-tools.py --role a` (add `--from 127.0.0.1,::1` on a same-box seat;
+  re-runs must pass the same `--from`). The pin is an operator step. An existing impl seat needs
+  that pin once, then `--role b --bootstrap-client` once, to get onto the self-updating client.
+- **Advertisement:** from channel-server client 0.9.45 (DL-462) the server lists what the bridge
+  serves the agent — `ci_await` and `ci_await_cancel` for a scope-less agent — and its
+  instructions describe no board tool. The resolution ladder (launch cache, one `served_tools`
+  call, last good cache, the env rule) is owned by `examples/channel-servers/README.md`
+  § *Which tools are listed*. A seat on an older client lists every board tool, and each refuses
+  `not_served` with nothing read or written.
 
 ## `ci_await` and `ci_await_cancel`
 
@@ -1550,7 +1823,16 @@ register nor cancel another's.
    - the head is **rate limited** until a known instant (see *Read failures*): it answers `waiting`
      with `read_skipped: "rate_limited"` and `retry_not_before`, sends no request, and never answers
      `settled`. Your await carries the limit's error and reset like the rest of the head's, so the
-     sweep reads it after the reset.
+     sweep reads it after the reset;
+   - **your agent's registrations have already caused `BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR` reads in
+     the current window** (default 60; card#11283 / DL-461) — a FIXED one-hour window opened by the
+     agent's first counted read, not a rolling hour, so up to twice the value can land around a
+     window boundary: it answers `waiting` with `read_skipped: "seat_read_limited"` and
+     `retry_not_before` (when the window closes; the key is **omitted** when the limiter itself
+     could not be read, which also skips the read and is logged), and sends no request. ⛔ The await **is stored** — it is never refused for this — and the instant is in the
+     ANSWER only: it is not written to the head, so deliveries and the sweep read and settle it as
+     usual. The bound exists so a seat looping register/cancel, or registering fresh SHAs, cannot
+     spend the install's GitHub quota; a refusal would have sent that seat back to polling.
 
    Whatever this read answers, nothing depends on it: an await it leaves `waiting` is settled by a
    later delivery's read or by the sweep.
@@ -1568,8 +1850,8 @@ The answer:
   "runs_total": 3,           // null when the read failed
   "runs_completed": 1,
   "read_error": "…",         // only on state: unmeasured
-  "read_skipped": "cooldown", // only when no read was made: "cooldown" or "rate_limited"
-  "retry_not_before": "…",   // only when the head is rate limited (skipped, or your own read was) — when it is read again
+  "read_skipped": "cooldown", // only when no read was made: "cooldown", "rate_limited" or "seat_read_limited"
+  "retry_not_before": "…",   // when the head is rate limited (skipped, or your own read was), or your seat's read budget is spent — when a read is possible again
   "warning": "…"             // only when this bridge holds no stored workflow_run delivery from the repo
 }
 ```
@@ -1848,7 +2130,7 @@ two route classes are authorized differently:
 | **422** on a READ | **502** (retryable) | a read sends no value for a validator to reject, so a 422 there is a malformed-query/API-surface fault the bridge has no cause to name. Deliberately NOT in the set above. Nothing of the board's body is relayed. |
 | **any other 4xx** — **400**, 408, 429 … | **502** (retryable) | outside the permanent sets on purpose: the bridge has no diagnosis to offer for them, and a rate limit really does clear. |
 | **5xx** | **502** (retryable) | it may clear. This is the one you may retry — ⚠ **except a write with no key to correlate on**: `board_comment_card`'s POST has no idempotency key, so a 502 there may follow a comment that landed and a retry can post a duplicate; a `board_create_card` sent **without an `idempotency_key`** may follow a card that landed the same way, and a retry can create a second one. |
-| **2xx, read refused** — a paged search (`board_my_cards`' lane, coord and `tag` reads; `board_create_card`'s archived-side idempotency read and its post-create duplicate read) that the bridge could not report complete | **502** (retryable), the same body a 5xx gets — over ssh exit **2** (card#10653) | kanban answered, but the page walk could not use the answer. Which answers do that is owned by `KanbanClient::pagedSearch`'s docblock (*THE REFUSALS*), not restated here. One of them — two walks in a row falling short of the total kanban declared — is also what a card leaving the board mid-read looks like; the bridge re-reads once to absorb that, and a retry absorbs a second. The bridge log's `kanban_client.board_read_refused` line names which cause fired. On `board_create_card` it depends on which read was refused. The archived-side read runs before the create, so a refusal there created nothing. The duplicate read runs AFTER the card exists, so a 502 there follows a create that landed. Retrying with the same `idempotency_key` returns that card rather than making a second. |
+| **2xx, read refused** — a paged search (`board_my_cards`' lane, assigned-arm board walk, coord and `tag` reads; `board_create_card`'s archived-side idempotency read and its post-create duplicate read) that the bridge could not report complete | **502** (retryable), the same body a 5xx gets — over ssh exit **2** (card#10653) | kanban answered, but the page walk could not use the answer. Which answers do that is owned by `KanbanClient::pagedSearch`'s docblock (*THE REFUSALS*), not restated here. One of them — two walks in a row falling short of the total kanban declared — is also what a card leaving the board mid-read looks like; the bridge re-reads once to absorb that, and a retry absorbs a second. The bridge log's `kanban_client.board_read_refused` line names which cause fired. On `board_create_card` it depends on which read was refused. The archived-side read runs before the create, so a refusal there created nothing. The duplicate read runs AFTER the card exists, so a 502 there follows a create that landed. Retrying with the same `idempotency_key` returns that card rather than making a second. |
 | **no answer** — the connection failed or timed out | **502** (retryable), the same body a 5xx gets — over ssh the same envelope and exit **2** (DL-387) | the bridge's HTTP client raises one exception class for every request that got no response, and the dispatcher maps it beside the 5xx. The board may or may not have acted before the answer was lost — for a write, assume it may have landed. The `5xx` row's warnings hold here too: a retried `board_comment_card` can post twice, and a retried `board_create_card` without an `idempotency_key` can create twice. ⚠ One call keeps its own answer: `board_create_card`'s placement read-back runs after the card exists and reports `placement_observed: false` instead. |
 
 ⚠ **Every 422 above writes and creates NOTHING** — the refusal is the whole outcome.
@@ -1953,7 +2235,7 @@ bridge-board-call board_take_card '{"card_id":123,"start":true}'
 
 A seat's channel server updates itself from its own bridge at launch (card#10568, DL-434) — the seat half is `examples/channel-servers/entry.mjs` and `client-update.mjs`, described in that directory's README § *Installed and updated by the bridge*. The bridge half is a separate door, **not a board tool**: `POST /agent-tools/client` behind the same loopback gate and bearer as `/agent-tools/call`, and, on the ssh transport, the same pinned `bridge:tools-call` forced command given a body carrying `op` instead of `tool`. Both transports answer the same bytes. It never goes through the board-tools dispatcher, so no tool refusal, board outage or client-version rule can stand between a seat and the pack that fixes it.
 
-It serves `client_manifest` (what this bridge publishes, the release a seat should install, whether an approval is owed, and the last install-log entry this bridge holds for the seat), `client_pack` (that release's pack, base64), `client_report` (the seat's install-log lines, chain-checked) and `client_fleet` (every seat's reported client and state — only to an agent with `board_tools.fleet_view: true`). The request and response shapes, and every refusal, are owned by `App\Bridge\ClientUpdate\ClientUpdateDoor`'s class docblock; this section deliberately does not restate them. What it serves is whatever `php artisan bridge:client-pack:install` last published (CLAUDE_DEPLOYMENT.md § Commands); until that has run, `client_manifest` and `client_pack` answer `503` and a seat keeps its installed client. Each release's pack is attached to its GitHub release by the release workflow (DL-442), and `bridge:check`'s `board_tools.client_pack_source` leg warns until this checkout's release is the published one.
+It serves `client_manifest` (what this bridge publishes, the release a seat should install, whether an approval is owed, and the last install-log entry this bridge holds for the seat), `client_pack` (that release's pack, base64), `client_report` (the seat's install-log lines, chain-checked) `client_fleet` (every seat's reported client and state — only to an agent with `board_tools.fleet_view: true`) and `served_tools` (the tools this bridge serves the calling agent — § *Scope-less agents*; `client_manifest` carries the same list). The request and response shapes, and every refusal, are owned by `App\Bridge\ClientUpdate\ClientUpdateDoor`'s class docblock; this section deliberately does not restate them. What it serves is whatever `php artisan bridge:client-pack:install` last published (CLAUDE_DEPLOYMENT.md § Commands); until that has run, `client_manifest` and `client_pack` answer `503` and a seat keeps its installed client. Each release's pack is attached to its GitHub release by the release workflow (DL-442), and `bridge:check`'s `board_tools.client_pack_source` leg warns until this checkout's release is the published one.
 
 **The fleet ledger (DL-432) and approval (DL-433).** What each seat reports — through `client_report`, and through two optional keys on every board-tools call, `caller` (a caller that is not the seat's channel server declares one of `App\Bridge\ClientUpdate\ExemptCaller`'s cases — the enum is the list — and then never overwrites the seat's own report) and `launch` (`{id, bridge_release}`, sent by a client the updater started) — lands in one row per agent. `php artisan bridge:client-fleet` prints each seat's state, and `bridge:check`'s `board_tools.client_fleet` leg warns on the seats that need you. For an agent with `board_tools.client_update.approval_required: true`, `client_manifest` offers nothing until `php artisan bridge:client-approve` has approved the published pack's content for it; a seat that installs without that approval is reported, never blocked. **Client 0.9.29 sends both** (card#10568, DL-434), but only once it is started through its updater's entry point, `<root>/entry.mjs` — getting a seat there is the bootstrap, `provision-board-tools.py --role b --bootstrap-client` (DL-444; below). Until a seat is bootstrapped it sends neither, and a calling seat reads `off_update_path`.
 
@@ -2393,12 +2675,14 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 > measured; `seat_side_unreported` → steps 5 and 7, on the seat. ⛔ **The last one cannot
 > be cleared with `--probe-tools`** — step 6 explains why: that probe stamps the very
 > ledger row the state is read from, *from this box*, so it would silence the line without
-> the seat ever having called. **An agent that does not want board tools declares
-> `board_tools:` with `enabled: false` — while the block is present**; a declined capability
-> is a decision and the line stops printing. ⚠ **Deleting that YAML is a different act.** An
-> `enabled: false` block is a decision only while something states it, so deleting the file
-> re-opens the question — and if this install ever recorded an enabled block for that agent,
-> it re-opens as a **LOST** failure whose remedy is an explicit retirement. See
+> the seat ever having called. **Board tools are the default for a pm or solo seat; an impl
+> seat uses kbcard for its board work** (`CLAUDE_DEPLOYMENT.md` § Fresh install), **and gets
+> `ci_await` from a scope-less block** (§ *Scope-less agents*). **An agent
+> that needs no `board_tools:` block at all declares one with `enabled: false` — while the
+> block is present**; that is a decision and the line stops printing. ⚠ **Deleting
+> that YAML is a different act.** An `enabled: false` block is a decision only while something
+> states it, so deleting the file re-opens the question — and if this install ever recorded an
+> enabled block for that agent, it re-opens as a **LOST** failure whose remedy is an explicit retirement. See
 > **[A restored install](#a-restored-install)** and **[Retiring a seat](#retiring-a-seat)**.
 
 The end-to-end runbook for the common topology: the bridge served by an Apache
@@ -2526,7 +2810,7 @@ spelling the responder answered the header under, which is how a version skew st
 an identity fault — see **Which spelling the probe read** above.
 
 ⚠ **This step STAMPS the client-half ledger (DL-313), and step 7 has not run yet.**
-`--probe-tools` POSTs a real `board_my_cards` with that agent's own bearer, so it reaches
+`--probe-tools` POSTs a real `board_my_cards` (`ci_await_cancel` for a scope-less agent) with that agent's own bearer, so it reaches
 `BoardToolDispatcher`'s success point exactly as the seat would and writes the same row.
 `bridge:check` will therefore print `client half REPORTED` for the agent from here on —
 **including for a seat whose channel server is not running and whose `.mcp.json` has no
@@ -2584,9 +2868,9 @@ CLIENT-CALL ledger, which this leg never reads as a trigger — it quotes a clie
 the line as evidence and nothing more. The only things that move this verdict are re-adding
 the block and retiring the seat.
 
-**⚑ The `no_block` NEXT STEP is deliberately NOT printed for a lost agent.** That question
-("should this agent be able to read, file and correct its own cards?") offers `enabled: false`
-as one valid answer, which would MUTE the failure instead of answering it. One voice per
+**⚑ The `no_block` NEXT STEP is deliberately NOT printed for a lost agent.** That line
+offers `enabled: false` as the answer for an agent that needs no block at all, which would
+MUTE the failure instead of answering it. One voice per
 agent: the FAIL above carries the remedy.
 
 ## Retiring a seat

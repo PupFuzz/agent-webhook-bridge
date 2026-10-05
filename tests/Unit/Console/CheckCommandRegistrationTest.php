@@ -113,6 +113,9 @@ class CheckCommandRegistrationTest extends TestCase
         // rather than the bridge. Registered after the board-STATE plane and before the ssh
         // one, which is where its output lands.
         'board_tools.client_half',
+        // card#11283 / DL-461 — what the bridge serves each enabled agent, registered in the client-half slot
+        // because it runs over the same enabled subset outside the writeback-client guard.
+        'ci_tools.agent',
         'board_tools.ssh_pinned_line',
         'board_tools.ssh_flipped_default',
         // card#10567 B2 — compares the published client pack's release with VERSION, registered

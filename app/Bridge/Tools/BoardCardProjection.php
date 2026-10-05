@@ -16,8 +16,9 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
  * not to FIELDS (or the reverse) reds rather than becoming unselectable.
  *
  * ⚠ {@see withSwimlane} and {@see withPosition} are AUGMENTERS a read applies on top of
- * {@see project}, not part of it: `board_my_cards`' lane lists emit neither, and folding either
- * into {@see project} would change that tool's default answer on every card.
+ * {@see project}, not part of it: `board_my_cards`' own and shared lists apply both (card#11267),
+ * its `tag_cards` only {@see withSwimlane}, and its coord cards neither — so folding either into
+ * {@see project} would change the coord answer on every card.
  */
 final class BoardCardProjection
 {

@@ -180,6 +180,25 @@ final class SeatKanbanUser
     }
 
     /**
+     * {@see declaredForCallingSeat}'s answer WITH the roster's reason when it is null — the seat is
+     * absent from the roster ({@see RosterKanbanUser::ABSENT}), or present with no usable id for this
+     * kanban host (every other verdict) — for a reader that reports which of the two it was
+     * (`board_my_cards`' `selection`, card#11267). The same one lookup, so the id and the reason
+     * cannot answer about different configs; every state that is a refusal there is one here.
+     *
+     * @param  string  $tool  the tool name every refusal is prefixed with
+     *
+     * @throws ToolRefusalException
+     * @throws \LogicException if no front door established a seat for this process
+     */
+    public static function declaredVerdictForCallingSeat(string $tool): RosterKanbanUser
+    {
+        [$callingAgentName, , , $roster] = self::lookup($tool);
+
+        return $roster->verdictFor($callingAgentName);
+    }
+
+    /**
      * The coord roster SEAT name the calling seat's own YAML says it is — `identity.coord_seat`,
      * else its agent name (card#10869). Read from the same lookup as the id, so the two cannot
      * answer about different configs. `board_take_card` uses it to tell a legacy
@@ -252,12 +271,10 @@ final class SeatKanbanUser
         // ONE seat, but more than one agent here that can take cards as it — a copied
         // `identity.coord_seat`, typically. The id then names the seat and not WHICH agent holds
         // the card: the same unanswerable claim as one id on two seats, refused the same way.
-        $takers = [];
-        foreach ($configs as $config) {
-            if ($config->boardTools?->enabled === true && $config->identity->seatName($config->agentName) === $seatName) {
-                $takers[] = $config->agentName;
-            }
-        }
+        // card#11283: a taker is an agent SERVED the take — {@see ServedToolsRule::takersBySeat()}, the
+        // one derivation `AgentKanbanUserRosterCheck` reads too — so a scope-less agent sharing the
+        // seat is not counted against the scoped one that can actually take.
+        $takers = ServedToolsRule::takersBySeat($configs)[$seatName] ?? [];
         if (count($takers) > 1) {
             sort($takers);
             Log::warning('board tools: more than one board-tools agent serves the calling seat, so its kanban user id does not identify the caller', [

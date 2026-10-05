@@ -390,6 +390,38 @@ class AgentKanbanUserRosterCheckTest extends TestCase
         $this->assertSame([], array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Warn), 'the FAIL replaces the shared-seat warn');
     }
 
+    /**
+     * card#11283 MF-1: a SCOPE-LESS agent (CI tools only) on a scoped agent's seat cannot take, so
+     * it is not a second taker and the seat's id still names one agent. Control: the test above,
+     * where the second agent IS scoped and both fail.
+     */
+    public function test_a_scope_less_agent_on_a_scoped_agents_seat_is_not_a_second_taker(): void
+    {
+        $this->roster(['kanban' => 7]);
+
+        $findings = $this->agentFindings([
+            $this->boardToolsAgent('kanban', []),
+            AgentConfig::fromArray('kanban-ci', ['identity' => ['coord_seat' => 'kanban'], 'subscriptions' => [], 'board_tools' => ['enabled' => true, 'transport' => 'ssh']]),
+        ]);
+
+        $this->assertSame([], array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Fail)));
+    }
+
+    /** A scope-less agent is never failed for a take it cannot make. */
+    public function test_a_scope_less_agent_with_no_roster_seat_is_not_failed_for_the_take(): void
+    {
+        $this->roster(['kanban' => 7]);
+
+        $findings = $this->findingsOfConfigs([
+            AgentConfig::fromArray('impl', ['subscriptions' => [], 'board_tools' => ['enabled' => true, 'transport' => 'ssh']]),
+        ]);
+
+        $this->assertSame([], array_values(array_filter(
+            $findings,
+            fn (Finding $f): bool => $f->severity === Severity::Fail || str_contains($f->message, 'board_take_card'),
+        )));
+    }
+
     public function test_a_board_tools_agent_whose_roster_id_another_seat_has_fails(): void
     {
         $this->roster(['impl' => 7, 'twin' => 7]);

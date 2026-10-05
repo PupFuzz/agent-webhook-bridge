@@ -12,6 +12,7 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\KanbanInstanceKey;
 use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\RosterKanbanUser;
+use App\Bridge\Tools\ServedToolsRule;
 
 /**
  * The coord roster as the bridge's RUNTIME source of each agent's kanban user id (card#11172 /
@@ -109,12 +110,9 @@ final class AgentKanbanUserRosterCheck implements Check
             return;
         }
 
-        $takersBySeat = [];
-        foreach ($ctx->configs as $agent) {
-            if ($agent->boardTools?->enabled === true) {
-                $takersBySeat[(string) $users->seatOf($agent->agentName)][] = $agent->agentName;
-            }
-        }
+        // card#11283: the takers are the agents SERVED `board_take_card` — the one derivation
+        // `SeatKanbanUser` reads at call time, so this check and the refusal it predicts agree.
+        $takersBySeat = ServedToolsRule::takersBySeat($ctx->configs);
 
         yield from $this->sharedSeats($ctx->configs, $users, $takersBySeat);
 
@@ -126,13 +124,13 @@ final class AgentKanbanUserRosterCheck implements Check
     /**
      * The agents a kanban user id is READ for at runtime: one subscribed to a kanban-shaped
      * provider (attribution and self echo-suppression run on every such event — the same
-     * non-github split `AgentRegistry::actorFromEvent` draws) or with board tools enabled (the
-     * take and the correction). An install with neither never reads the roster, so this leg asks
+     * non-github split `AgentRegistry::actorFromEvent` draws) or served the board tools (the
+     * take and the correction; a scope-less `board_tools` block is served neither — card#11283). An install with neither never reads the roster, so this leg asks
      * it for nothing.
      */
     private static function needsKanbanUserIds(AgentConfig $agent): bool
     {
-        return $agent->boardTools?->enabled === true || self::subscribesToKanban($agent);
+        return ServedToolsRule::takesCards($agent) || self::subscribesToKanban($agent);
     }
 
     /**
@@ -145,7 +143,7 @@ final class AgentKanbanUserRosterCheck implements Check
         $seat = (string) $users->seatOf($name);
         $host = $users->host;
         $verdict = $users->verdictFor($name);
-        $takes = $agent->boardTools?->enabled === true;
+        $takes = ServedToolsRule::takesCards($agent);
         $isSeat = $verdict->why !== RosterKanbanUser::ABSENT;
         $peer = $agent->identity->peerKanbanUserId;
 
@@ -210,9 +208,9 @@ final class AgentKanbanUserRosterCheck implements Check
         } elseif ($used !== null) {
             yield Finding::fail("agent {$name}: identity.kanban_user_id is {$retired}, but the bridge reads {$where} (DL-450), which is {$used} on '{$host}' — so the bridge acts as kanban user {$used}. Correct whichever is wrong THERE, then remove the key from {$name}.yml.");
         } elseif ($verdict->why === RosterKanbanUser::ABSENT && $agent->identity->coordSeat === null) {
-            yield Finding::fail("agent {$name}: identity.kanban_user_id {$retired} is no longer read (DL-450), and this agent is no seat of the coord roster (no seat named '{$name}') — so it has NO kanban user now: kanban events from {$retired} are not attributed to it or suppressed as its echoes".($agent->boardTools?->enabled === true ? ', and board_take_card refuses every call from it' : '').". If it is a peer whose seat ANOTHER roster owns, move the id to identity.peer_kanban_user_id: {$retired}; if it IS a seat of this roster, set identity.coord_seat to that seat and give the seat its id in the roster. Then remove identity.kanban_user_id from {$name}.yml.");
+            yield Finding::fail("agent {$name}: identity.kanban_user_id {$retired} is no longer read (DL-450), and this agent is no seat of the coord roster (no seat named '{$name}') — so it has NO kanban user now: kanban events from {$retired} are not attributed to it or suppressed as its echoes".(ServedToolsRule::takesCards($agent) ? ', and board_take_card refuses every call from it' : '').". If it is a peer whose seat ANOTHER roster owns, move the id to identity.peer_kanban_user_id: {$retired}; if it IS a seat of this roster, set identity.coord_seat to that seat and give the seat its id in the roster. Then remove identity.kanban_user_id from {$name}.yml.");
         } else {
-            yield Finding::fail("agent {$name}: identity.kanban_user_id {$retired} is no longer read (DL-450), and the coord roster gives seat '{$seat}' no kanban user id on '{$host}' — so this agent has NO kanban user now: kanban events are not attributed to it, its own kanban writes are not suppressed as its echoes".($agent->boardTools?->enabled === true ? ', and board_take_card refuses every call from it' : '').". If {$retired} is that seat's kanban user, write it into the roster (\"{$host}\": {$retired} in seat '{$seat}''s kanban_user_id; if this agent is not its own seat, set identity.coord_seat to the seat it is), then remove the key from {$name}.yml.");
+            yield Finding::fail("agent {$name}: identity.kanban_user_id {$retired} is no longer read (DL-450), and the coord roster gives seat '{$seat}' no kanban user id on '{$host}' — so this agent has NO kanban user now: kanban events are not attributed to it, its own kanban writes are not suppressed as its echoes".(ServedToolsRule::takesCards($agent) ? ', and board_take_card refuses every call from it' : '').". If {$retired} is that seat's kanban user, write it into the roster (\"{$host}\": {$retired} in seat '{$seat}''s kanban_user_id; if this agent is not its own seat, set identity.coord_seat to the seat it is), then remove the key from {$name}.yml.");
         }
     }
 

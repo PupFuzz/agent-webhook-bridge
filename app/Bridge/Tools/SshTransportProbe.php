@@ -276,8 +276,25 @@ final class SshTransportProbe
      */
     public function probeLive(string $target, array $expectedScopes): array
     {
+        // card#11283: a target whose configured ssh agents are ALL scope-less cannot be sent
+        // board_my_cards — it would be refused `not_served` — so it gets the write-nothing CI
+        // probe instead. A mixed set keeps board_my_cards: its scope header is the only identity
+        // echo there is, and a `not_served` answer to it (exit 1) is itself the news that the
+        // pinned key resolved to a scope-less agent, which is followed up below.
+        $scopeless = array_values(array_filter($expectedScopes, static fn (array $s): bool => $s['board_id'] === null));
+        if ($scopeless !== [] && count($scopeless) === count($expectedScopes)) {
+            return $this->probeLiveScopeless($target, $scopeless);
+        }
         // Declared a probe (card#10567 B4), so the fleet ledger keeps the seat's own report of its client.
         $r = $this->env->sshRoundTrip($target, (string) json_encode(ExemptCaller::probeBody()));
+        // A `not_served` refusal is a 422, which the forced command exits 1 with — so it is read
+        // BEFORE the exit gate, or a scope-less pin on a mixed bridge would read as unreachable.
+        if ($r['exit'] === 1 && $scopeless !== []) {
+            $refusal = json_decode($r['stdout'], true);
+            if (is_array($refusal) && ($refusal['reason'] ?? null) === 'not_served') {
+                return $this->probeLiveScopeless($target, $scopeless);
+            }
+        }
         if ($r['exit'] !== 0) {
             // ⛔ ESCAPED AT THE INTERPOLATION (card#9200, DL-366). Everything this leg
             // echoes below crossed the wire from a REMOTE host: its stderr, its stdout, and
@@ -582,5 +599,37 @@ final class SshTransportProbe
         $echo = '`'.UntrustedText::forOperator($cut).'`';
 
         return $cut === $algorithm ? $echo : $echo.' (truncated)';
+    }
+
+    /**
+     * The live leg for a scope-less agent (card#11283): one `ci_await_cancel` on a head nobody
+     * awaits, which writes nothing. ⚠ IT CERTIFIES LESS THAN THE SCOPED LEG: a CI tool answers
+     * with no identity echo, so a success proves the pinned key reached a live door serving the
+     * CI tools — not WHICH of `$scopeless` it resolved to.
+     *
+     * @param  list<array{agent: string, board_id: ?int, swimlane_id: ?int}>  $scopeless
+     * @return list<Finding>
+     */
+    private function probeLiveScopeless(string $target, array $scopeless): array
+    {
+        $r = $this->env->sshRoundTrip($target, (string) json_encode(ExemptCaller::scopelessProbeBody()));
+        if ($r['exit'] === 1) {
+            $refusal = json_decode($r['stdout'], true);
+            if (is_array($refusal) && ($refusal['reason'] ?? null) === 'not_served') {
+                // The door is live and the key resolved, to an agent not served the CI tools
+                // (`ci_tools: false`, on a scope-less block or on a mis-pinned scoped one).
+                return [Finding::fail("ssh {$target}: the door answered, but ci_await_cancel was refused not_served — the agent behind the pinned key is not served the CI tools (its block sets ci_tools: false). bridge:check's ci_tools.agent lines show each agent's served set; check which agent this key is pinned to.")];
+            }
+        }
+        if ($r['exit'] !== 0) {
+            return [Finding::fail("ssh {$target} exited {$r['exit']} on the scope-less (ci_await_cancel) probe — unreachable or the forced command failed (stderr: ".UntrustedText::forOperator(trim($r['stderr'])).')')];
+        }
+        $decoded = json_decode($r['stdout'], true);
+        if (! is_array($decoded) || ($decoded['ok'] ?? null) !== true || ! is_array($decoded['result'] ?? null) || ! array_key_exists('cancelled', $decoded['result'])) {
+            return [Finding::fail("ssh {$target}: the scope-less probe's ci_await_cancel did not answer as one — got: ".UntrustedText::forOperator(substr(trim($r['stdout']), 0, 200)))];
+        }
+        $agents = implode(', ', array_map(static fn (array $s): string => $s['agent'], $scopeless));
+
+        return [Finding::ok("ssh {$target}: ci_await_cancel ok (scope-less, CI tools only; nothing written). A CI tool carries no identity echo, so this certifies a live door serving the CI tools, not which of [{$agents}] the pinned key resolved to.")];
     }
 }

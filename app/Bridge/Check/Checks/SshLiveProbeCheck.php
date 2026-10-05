@@ -15,7 +15,10 @@ use App\Bridge\Tools\SshTransportProbe;
  * out of `CheckCommand::probeBoardToolsSsh()` (DL-242 stage 1).
  *
  * Round-trips a real `board_my_cards` over the ssh-forced-command transport and certifies
- * the scope header matches a configured ssh agent's lane. A failure is HARD (→ non-zero
+ * the scope header matches a configured ssh agent's lane. When every configured ssh agent is
+ * scope-less (card#11283) it sends the write-nothing `ci_await_cancel` instead, and it follows a
+ * `not_served` refusal of `board_my_cards` with that call; either certifies a live door serving
+ * the CI tools, not which agent the key resolved to. A failure is HARD (→ non-zero
  * exit), like `--probe-tools`: it certifies the enablement.
  *
  * REGISTERED UNCONDITIONALLY, RUN UNCONDITIONALLY, SILENT WHEN NOT REQUESTED (plan

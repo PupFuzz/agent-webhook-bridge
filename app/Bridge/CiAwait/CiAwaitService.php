@@ -24,6 +24,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\RateLimiter;
 use Throwable;
 use UnexpectedValueException;
 
@@ -91,6 +92,12 @@ final class CiAwaitService
     public const SETTLED = 'ci_settled';
 
     public const EXPIRED = 'ci_await_expired';
+
+    /** `read_skipped` when the calling seat's registration read budget is spent (card#11283). */
+    public const SEAT_READ_LIMITED = 'seat_read_limited';
+
+    /** The rate-limiter key prefix of a seat's registration reads; `bridge:check` probes the same store. */
+    public const SEAT_READ_LIMITER_PREFIX = 'ci-await-seat-reads:';
 
     /** Inside the webhook's after-response callback and a job pass, never a human's patience. */
     public const TIMEOUT_SECONDS = 8;
@@ -183,23 +190,32 @@ final class CiAwaitService
      * `waiting` with `read_skipped: 'cooldown'`. That is a cost knob, nothing more — the cooldown
      * says the head was read recently, not that this await was in that read, and the sweep reads
      * the head like any other ({@see sweepUnsettled()}). A head rate limited until a known instant
-     * is not read either: `waiting`, `read_skipped: 'rate_limited'`, with `retry_not_before`. A read
+     * is not read either: `waiting`, `read_skipped: 'rate_limited'`, with `retry_not_before`. A seat
+     * past its own registration read budget (`$seatReadsPerHour`, card#11283) is not read either:
+     * `waiting`, `read_skipped: 'seat_read_limited'`, with `retry_not_before` naming when the budget
+     * frees (null when the limiter could not be read). A read
      * this call made that GitHub rate limited answers `unmeasured` with its `retry_not_before`. An
      * await that is gone by the time the answer is built was claimed — by this call's read or a
      * concurrent one — so it answers `settled`.
      *
      * @return array{state: string, pr: ?int, expires_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string, read_skipped: ?string, retry_not_before: ?string}
      */
-    public function evaluateRegistration(string $agent, string $repoName, string $headSha, ?int $pr, int $cooldownSeconds): array
+    public function evaluateRegistration(string $agent, string $repoName, string $headSha, ?int $pr, int $cooldownSeconds, int $seatReadsPerHour): array
     {
         $key = self::key($repoName);
         $read = self::noRead();
         $skipped = null;
+        $seatRetryAt = null;
         try {
             $cooling = $cooldownSeconds > 0 && CiAwait::query()->where('repo', $key)->where('head_sha', $headSha)
                 ->whereNull('last_error')->where('last_read_at', '>=', Carbon::now()->subSeconds($cooldownSeconds))->exists();
             if ($cooling) {
                 $skipped = 'cooldown';
+            } elseif (! self::seatMayRead($agent, $seatReadsPerHour, $seatRetryAt)) {
+                // card#11283: the await is stored; only THIS read is skipped. The instant goes in
+                // the answer and never in the `retry_not_before` column, which is the head's
+                // GitHub rate-limit record and would stop delivery and sweep reads too.
+                $skipped = self::SEAT_READ_LIMITED;
             } else {
                 $read = $this->evaluate($key, $headSha, null);
                 $skipped = ! $read['read'] && $read['retry_not_before'] !== null ? 'rate_limited' : null;
@@ -231,8 +247,35 @@ final class CiAwaitService
                 ? 'the await is stored and every run is terminal, but ci_settled could not be written to your inbox — the await is kept and the ci_await sweep emits it again'
                 : $read['error'],
             'read_skipped' => $skipped,
-            'retry_not_before' => $read['retry_not_before'] === null ? null : self::instant($read['retry_not_before']),
+            'retry_not_before' => $seatRetryAt !== null ? self::instant($seatRetryAt) : ($read['retry_not_before'] === null ? null : self::instant($read['retry_not_before'])),
         ];
+    }
+
+    /**
+     * Whether `$agent`'s registration may read GitHub now, under its per-agent budget of
+     * `$perHour` reads (card#11283), counting this read when it may. When it may not,
+     * `$retryAt` is when the budget frees — or stays null when the limiter itself failed, which
+     * is logged and also skips the read: an unmeasured budget is not read as an unbounded one.
+     */
+    private static function seatMayRead(string $agent, int $perHour, ?Carbon &$retryAt): bool
+    {
+        $limiterKey = self::SEAT_READ_LIMITER_PREFIX.$agent;
+        try {
+            if (RateLimiter::tooManyAttempts($limiterKey, $perHour)) {
+                $retryAt = Carbon::now()->addSeconds(RateLimiter::availableIn($limiterKey));
+
+                return false;
+            }
+            RateLimiter::hit($limiterKey, 3600);
+
+            return true;
+        } catch (Throwable $e) {
+            Log::warning('bridge ci_await: the per-agent read limiter could not be read, so this registration skips its own runs read — the sweep and a workflow_run delivery still settle the await', [
+                'agent' => $agent,
+            ] + RedactedErrorText::logContext($e));
+
+            return false;
+        }
     }
 
     /** Remove `$agent`'s own await on the head. Returns whether there was one. */

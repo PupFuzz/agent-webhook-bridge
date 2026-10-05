@@ -8,8 +8,8 @@ namespace App\Bridge\Tools;
  *
  * WHAT IT REPLACES AND WHY. The command used to print two ready-to-run
  * `provision-board-tools.py --role a|b` invocations. Both are still there, but two
- * invocations are not the job: enabling an impl seat is a FIVE-step exchange between
- * THREE actors on TWO boxes — the PM agent on host A, the impl agent on its own seat,
+ * invocations are not the job: enabling a seat is a FIVE-step exchange between
+ * THREE actors on TWO boxes — the PM agent on host A, the seat's agent on its own seat,
  * and a HUMAN operator who decides the posted key is really that seat's — and every
  * value that has to cross between them (the key line, the fingerprint, the seat's
  * project dir, the ref this box runs) was left for the reader to invent. The packet
@@ -168,7 +168,7 @@ final class BoardToolsSetupPacket
         $port = $this->sshPort === null ? '' : " --ssh-port {$this->sshPort}";
 
         return [
-            "STEP 1 — IMPL AGENT {$this->agent}, on its seat. Prerequisites: python3 ≥ 3.8; ssh, ssh-keygen, "
+            "STEP 1 — SEAT AGENT {$this->agent}, on its seat. Prerequisites: python3 ≥ 3.8; ssh, ssh-keygen, "
                 .'ssh-keyscan; Node ≥ 20 + npm + a reachable registry/cache; its own clone at the ref above.',
             '    python3 '.self::CHECKOUT."/bin/provision-board-tools.py --role b --agent {$this->agent}"
                 ." --ssh-target {$target}{$port} --project-dir ".self::PROJECT_DIR.' --channel-name '.self::CHANNEL_KEY,
@@ -279,7 +279,7 @@ final class BoardToolsSetupPacket
     private function stepFour(): array
     {
         return [
-            "STEP 4 — IMPL AGENT {$this->agent}: certify from the seat, then bootstrap its self-updating client (no "
+            "STEP 4 — SEAT AGENT {$this->agent}: certify from the seat, then bootstrap its self-updating client (no "
                 .'keygen, no snapshot deploy — it reads the target and key THIS seat recorded in its own .mcp.json; once '
                 .'the round-trip succeeds it installs the client pack this bridge publishes and points .mcp.json at it, '
                 .'and if this bridge offers none it keeps STEP 1\'s copy and says CLIENT NOT BOOTSTRAPPED):',

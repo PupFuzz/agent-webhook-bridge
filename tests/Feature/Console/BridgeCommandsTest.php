@@ -1256,6 +1256,60 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_event_consumer_counts_ci_await_as_a_workflow_run_consumer_when_board_tools_are_enabled(): void
+    {
+        // DL-460 (gap since DL-452): `CiAwaitGate` consumes `workflow_run.completed` for
+        // EVERY github scope the install receives, whichever agent subscribes it, once any
+        // agent has board tools enabled and so can call `ci_await`. Without it in the
+        // consumer list this leg told the operator to drop `workflow_run` from the
+        // subscription — which would break `ci_await` on that repo. The same install shape
+        // with no board-tools block is the warn case above.
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        File::append($this->dir.'/wb.yml', "board_tools:\n  transport: ssh\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('workflow_run.completed', 'e2');
+
+        // Read the WHOLE output: PendingCommand's line matcher lets an
+        // expectsOutputToContain claim the very line a doesntExpect… would have caught.
+        Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString('board_tools ssh:', $out, 'the fixture must reach an enabled board-tools block');
+        $this->assertStringNotContainsString("has received 'workflow_run'", $out);
+    }
+
+    /**
+     * card#11283 / DL-461: a SCOPE-LESS-only install (CI tools, no board scope) can call
+     * `ci_await`, so `workflow_run` is consumed and the drop warning must not print.
+     */
+    public function test_check_event_consumer_counts_ci_await_for_a_scope_less_only_install(): void
+    {
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        File::append($this->dir.'/wb.yml', "board_tools:\n  enabled: true\n  transport: ssh\n");
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('workflow_run.completed', 'e2');
+
+        Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString('ci_tools: agent wb: block is scope-less', $out, 'the fixture must reach an enabled scope-less block');
+        $this->assertStringNotContainsString("has received 'workflow_run'", $out);
+    }
+
+    public function test_check_event_consumer_still_warns_on_workflow_run_when_the_only_board_tools_block_is_disabled(): void
+    {
+        // The other side of the gate above: an `enabled: false` block cannot call
+        // `ci_await`, so nothing consumes the arrival and the warn must stand.
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        File::append($this->dir.'/wb.yml', "board_tools:\n  enabled: false\n");
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('workflow_run.completed', 'e2');
+
+        Artisan::call('bridge:check');
+
+        $this->assertStringContainsString("has received 'workflow_run' (1x, last", Artisan::output());
+    }
+
     public function test_check_event_consumer_warn_carries_occurrences_and_last_seen(): void
     {
         // #4321: the observed set is unbounded (retention is event-gated or manual),
@@ -4018,8 +4072,9 @@ class BridgeCommandsTest extends TestCase
         $this->assertNull($row->retired_reason);
 
         // 2. The block is gone from a config that is still there: FAIL, and the NEXT STEPS
-        //    block must NOT also ask the `no_block` question for that agent — its own answer
-        //    ("NO ⇒ set enabled: false") would MUTE the failure printed two lines above.
+        //    block must NOT also print the `no_block` line for that agent — its own advice
+        //    ("put `board_tools:` with `enabled: false`") would MUTE the failure printed two
+        //    lines above.
         File::put($this->dir.'/impl.yml', "subscriptions: []\n");
         $this->artisan('bridge:check')
             ->expectsOutputToContain('board_tools: agent impl: block LOST')
@@ -4261,7 +4316,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('--role b --agent impl --ssh-target bridge-user@<host-A>', $out);
         $this->assertStringContainsString("python3 {$script} --role a --agent impl", $out);
         // The five actors-and-steps spine.
-        foreach (['STEP 1 — IMPL AGENT impl', 'STEP 2 — PM', 'STEP 4 — IMPL AGENT impl', 'STEP 5 — PM'] as $step) {
+        foreach (['STEP 1 — SEAT AGENT impl', 'STEP 2 — PM', 'STEP 4 — SEAT AGENT impl', 'STEP 5 — PM'] as $step) {
             $this->assertStringContainsString($step, $out);
         }
         // The old generated-bash scaffold (+ its prefix-only pubkey guard, #5033) is gone.

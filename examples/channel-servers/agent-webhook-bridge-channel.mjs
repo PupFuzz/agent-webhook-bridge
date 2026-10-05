@@ -56,6 +56,9 @@ import {
   clientUpdateInstruction,
   errorDetail,
   readClientVersion,
+  askServedTools,
+  readServedToolsCache,
+  resolveServedTools,
 } from './channel-lib.mjs';
 import { channelSocketPath, failureMarkerPath } from './entry.mjs';
 
@@ -142,7 +145,9 @@ function shouldAdvertiseTools() {
   return kind === 'ssh' || kind === 'http' || kind === 'invalid';
 }
 
-const TOOLS_ENABLED = shouldAdvertiseTools();
+// What the environment says. Which of the bridge tools are then advertised is the bridge's own
+// answer for this agent (card#11283), resolved below once TOOL_DEFINITIONS exists.
+const ENV_TOOLS_ON = shouldAdvertiseTools();
 
 // clear_context is a LOCAL-EXEC self-management tool (card 5089), advertised on a gate
 // that is ORTHOGONAL to the board tools above: it NEVER proxies to the bridge, so it has
@@ -184,10 +189,6 @@ function shouldAdvertiseClearContext() {
 
 const CLEAR_CONTEXT_ENABLED = shouldAdvertiseClearContext();
 
-// The tools MCP capability + the tools/list and tools/call handlers come on when EITHER
-// tool family is advertised — the two gates are independent.
-const ADVERTISE_ANY_TOOL = TOOLS_ENABLED || CLEAR_CONTEXT_ENABLED;
-
 // The tool surface, hard-coded to mirror the bridge contract (DL-217; the
 // correction tool is DL-326). Kept
 // here because tools/list must advertise a schema; the bridge remains the single
@@ -197,23 +198,33 @@ const TOOL_DEFINITIONS = [
   {
     name: 'board_my_cards',
     description:
-      'Return YOUR OWN cards on the board (your product swimlane grouped by stage, ' +
-      'plus any shared/coordination cards your bridge identity is scoped to). Read-only; ' +
+      'Return YOUR OWN cards on the board: every card ASSIGNED to you, in any lane or in ' +
+      'none, plus the UNASSIGNED cards in your own swimlane (a card in your lane that ' +
+      'another user holds is theirs, not yours). They are grouped by stage and ordered ' +
+      'ACROSS lanes the way you should work them: the In Progress column, then the columns ' +
+      'work is pulled from, then the rest, then finished ones (stage_rank names them); within ' +
+      'a column by the board\'s own position (the PM\'s ranking), then card id. Each card carries swimlane_id and ' +
+      'position. The selection block says whether your assigned cards could be read ' +
+      '(assignee_arm). Also returns any shared/coordination cards your bridge identity is ' +
+      'scoped to. Read-only; ' +
       'the kanban token never leaves the bridge. Titles only by default — pass ' +
       'include_description when you need the SCOPE written on a card. EACH card list is ' +
       'CAPPED by default; every list carries a window block (total / returned / limit / ' +
-      'truncated) and truncated: true means there is more behind it — narrow with stage, ' +
-      'or raise limit deliberately. NEVER read a truncated list as the whole board. ' +
+      'truncated) and truncated: true means there is more behind it. The cap keeps the ' +
+      'NEWEST cards (highest ids) before ordering, so on a truncated list your top-ranked ' +
+      'card can be behind the cut — narrow with stage (e.g. the In Progress column), or ' +
+      'raise limit deliberately. NEVER read a truncated list as the whole board. ' +
       'Each card carries assigned_user_id: the raw kanban user id holding it, or null ' +
       'when nobody does. That is how you tell a card another seat is already working ' +
       'from a free one WHEN THE COLUMN NEVER MOVED — the bridge resolves no name for ' +
       'it, so an id you do not recognise is somebody else. board_take_card is how you ' +
-      'claim a free one — but ONLY in your own lanes: coordination cards appear in the ' +
+      'claim a free one — but ONLY in your own lanes or one already assigned to you: coordination cards appear in the ' +
       'coord_cards block of this same response, they are on a different board, and they ' +
       'are NOT takeable (the attempt is refused write-free and says so). ' +
-      'Your lane read NEVER shows a card that is in another lane or in NO lane, so ' +
-      '"none of my cards carry tag X" is not something the lane read can tell you: pass ' +
-      'tag to read every card on your board carrying that tag, whatever lane it is in. ' +
+      'A card outside your lane (another lane, or no lane) is listed only when it is ' +
+      'ASSIGNED to you, so "none of my cards carry tag X" is not something this read can ' +
+      'tell you about unassigned cards: pass tag to read every card on your board carrying ' +
+      'that tag, whatever lane it is in and whoever holds it. ' +
       'A board fault ' +
       'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
       'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
@@ -291,7 +302,12 @@ const TOOL_DEFINITIONS = [
     description:
       'Create a card in YOUR OWN swimlane (the swimlane is forced from your bridge ' +
       'identity — you cannot target another lane). The card is born untriaged and ' +
-      'surfaces to the triage pass. Pass an idempotency_key to make retries safe. ' +
+      'surfaces to the triage pass, and it is ASSIGNED TO YOU (your own kanban user, ' +
+      'resolved from your bridge identity): the result\'s assigned_user_id says so, or is ' +
+      'null with assignee_unset_reason naming why it is not known to be yours ' +
+      '(assign_unconfirmed means the assignment got no answer and may have landed) — the ' +
+      'card is created either way. Pass an idempotency_key to make retries safe: a retry ' +
+      'that finds the card already created returns it, and assigns it to you if nobody holds it. ' +
       'The returned board_id/swimlane_id are READ BACK from the card and can differ ' +
       'from the scope you are configured for, which is returned beside them as ' +
       'configured_board_id/configured_swimlane_id. placement_observed: false means ' +
@@ -420,8 +436,9 @@ const TOOL_DEFINITIONS = [
       'nobody else. Sending assigned_user_id, assignee, user_id or any other ' +
       'user-naming argument is REFUSED and nothing is written. ' +
       'Scoped to cards on YOUR board in a lane you work (your own swimlane, or the ' +
-      'shared one if your bridge is configured for it). You do NOT have to have filed ' +
-      'the card: taking work somebody else queued for you is the point. ' +
+      'shared one if your bridge is configured for it), or already ASSIGNED to you in any ' +
+      'lane or in none (the result\'s in_scope_by says which: lane or assigned). You do NOT ' +
+      'have to have filed the card: taking work somebody else queued for you is the point. ' +
       '⚠ NOT every card board_my_cards shows you — the coord_cards block of that ' +
       'response is a DIFFERENT board, addressed to you by tag rather than held in a ' +
       'lane, and those cards are not takeable here. The refusal names that as the likely ' +
@@ -557,12 +574,18 @@ const TOOL_DEFINITIONS = [
     name: 'board_search',
     description:
       'Search the cards on YOUR board by filter and get the MATCHES ONLY — no lane list, no column ' +
-      'list, no grouping. Every filter is applied by the board itself, and the filters combine ' +
+      'list, no grouping. Every filter is applied by the board itself (except lane: unrouted\'s ' +
+      'unassigned test, which the board has no term for: the bridge applies it to the rows the ' +
+      'board returns), and the filters combine ' +
       '(AND). lane defaults to any: cards in every lane of your board, each with its swimlane_id ' +
-      '(null means no lane). Results are the NEWEST matches first, cut to limit; window says ' +
+      '(null means no lane). lane: unrouted is the routing queue — the UNASSIGNED cards in no ' +
+      'lane, or in a lane that is no agent\'s home lane on this bridge; home_lanes names the lanes ' +
+      'it left out, and a lane that is home to an agent on ANOTHER bridge shows up as unrouted. ' +
+      'Results are the NEWEST matches first, cut to limit; window says ' +
       'total (how many matched), returned, truncated (true when more matched than were returned) ' +
-      'and total_is_lower_bound (true only when a tags_any union could not be sized exactly — ' +
-      'truncated is then true too). summary: true returns counts instead of cards: total and ' +
+      'and total_is_lower_bound (true when the total could not be sized exactly — a tags_any ' +
+      'union, or an unrouted search that matched more than one page — and truncated is then ' +
+      'true too). summary: true returns counts instead of cards (not with lane: unrouted): total and ' +
       'by_stage, plus by_tag for the tags you name in summary_tags. Read-only. Where the board ' +
       'cannot show it applied a filter, the call is REFUSED (422) rather than answered with a ' +
       'count of something else. A board fault that cannot clear (the bridge token revoked/rotated, ' +
@@ -614,8 +637,10 @@ const TOOL_DEFINITIONS = [
         },
         lane: {
           type: 'string',
-          enum: ['mine', 'any', 'none'],
-          description: 'mine = your own swimlane, none = cards in no lane, any = every lane (default).',
+          enum: ['mine', 'any', 'none', 'unrouted'],
+          description:
+            'mine = your own swimlane, none = cards in no lane, any = every lane (default), ' +
+            'unrouted = unassigned cards in no lane or in no home lane of an agent on this bridge.',
         },
         summary: {
           type: 'boolean',
@@ -663,8 +688,11 @@ const TOOL_DEFINITIONS = [
       'expires (6 h by default), you get ONE ci_await_expired event instead, with the last read ' +
       'error if a read failed. The wait is YOURS — no argument names a seat. Calling it again for ' +
       'the same head refreshes the wait and reads the runs again (not within the read cooldown). ' +
-      'It reads the runs once now (not within the read cooldown, nor while GitHub rate-limits ' +
-      'the head; read_skipped then says which, and state stays waiting): if ' +
+      'It reads the runs once now — except within the read cooldown (read_skipped: cooldown), ' +
+      'while GitHub rate-limits the head (rate_limited), or once YOUR registrations have used ' +
+      'this hour\'s read budget (seat_read_limited); then state stays waiting, the wait is still ' +
+      'stored, retry_not_before says when a read is possible again, and the bridge\'s own sweep ' +
+      'or the run\'s completion settles it. Otherwise, if ' +
       'they have already all finished, ci_settled is sent immediately (state: settled). A head ' +
       'with no runs yet keeps waiting. A repo this bridge receives no GitHub events for is ' +
       'REFUSED (reason repo_not_received) — poll with ci-read there. A workflow that only starts ' +
@@ -717,6 +745,42 @@ const TOOL_DEFINITIONS = [
     },
   },
 ];
+
+// The bridge tools this launch advertises: the served set ∩ TOOL_DEFINITIONS (card#11283 /
+// DL-462). Resolved ONCE, before INSTRUCTIONS and the Server, down channel-lib's
+// `resolveServedTools` ladder: this launch's cache, one served_tools call, the last good cache,
+// the env rule. Only on a seat whose environment turns the tools on and names a transport: an
+// explicit BRIDGE_CHANNEL_TOOLS=0 still asks nothing. The bridge enforces the same set
+// (`not_served`), so a fallback can only ever advertise a tool that refuses — never grant one.
+const SERVED_TOOLS_DEADLINE_MS = 5000;
+
+async function resolveAdvertisedTools() {
+  if (!ENV_TOOLS_ON) {
+    return { tools: [], source: 'board tools are off in this environment' };
+  }
+  const transport = boardToolsTransport(process.env);
+  if (transport.kind !== 'ssh' && transport.kind !== 'http') {
+    return { tools: TOOL_DEFINITIONS, source: 'the env rule: no usable board-tools transport to ask' };
+  }
+  const root = process.env.AWB_CLIENT_ROOT;
+  const { served, source } = await resolveServedTools({
+    launchId: process.env.AWB_LAUNCH_ID,
+    cache: root ? readServedToolsCache(root) : null,
+    ask: () => askServedTools(transport, { deadlineMs: SERVED_TOOLS_DEADLINE_MS }),
+  });
+  return { tools: served === null ? TOOL_DEFINITIONS : TOOL_DEFINITIONS.filter((tool) => served.includes(tool.name)), source };
+}
+
+const ADVERTISED = await resolveAdvertisedTools();
+const BRIDGE_TOOLS = ADVERTISED.tools;
+const TOOLS_ENABLED = BRIDGE_TOOLS.length > 0;
+// Only CI tools, no board tool: an implementation seat (a scope-less block, DL-461). Its
+// instructions must not tell it it has board tools — it has none.
+const CI_TOOLS_ONLY = TOOLS_ENABLED && BRIDGE_TOOLS.every((tool) => tool.name.startsWith('ci_'));
+
+// The tools MCP capability + the tools/list and tools/call handlers come on when EITHER
+// tool family is advertised — the two gates are independent.
+const ADVERTISE_ANY_TOOL = TOOLS_ENABLED || CLEAR_CONTEXT_ENABLED;
 
 // LOCAL-EXEC self-management tool (card 5089). NOT part of TOOL_DEFINITIONS — those are
 // proxied to the bridge; this one is spawned locally and never leaves the host. The
@@ -894,9 +958,16 @@ const INSTRUCTIONS = [
   'The body is JSON: {"intent": {kind, subject_id, summary, payload, ...}}; the kind and target_id attributes are copied from it (target_id is intent.subject_id) and are absent when a body carries no intent.',
   'These channel EVENTS are one-way notifications: read them and act — no reply is sent back through the event.',
   'kind identifies what happened upstream (e.g. new_card, column_move, content_edit); target_id names the resource the event is about; summary describes the event in prose; payload carries kind-specific data.',
-  ...(TOOLS_ENABLED
+  ...(CI_TOOLS_ONLY
     ? [
-        `This server ALSO exposes request/response board tools scoped to YOUR channel identity: ${TOOL_DEFINITIONS.map((tool) => tool.name).join(', ')} —`,
+        `This server ALSO exposes request/response CI tools for YOUR channel identity: ${BRIDGE_TOOLS.map((tool) => tool.name).join(', ')} —`,
+        'call ci_await to be told when CI on a commit finishes instead of polling GitHub, and ci_await_cancel to stop waiting (each tool\'s own description says what it does).',
+        'No board tool is served to this agent.',
+      ]
+    : []),
+  ...(TOOLS_ENABLED && !CI_TOOLS_ONLY
+    ? [
+        `This server ALSO exposes request/response board tools scoped to YOUR channel identity: ${BRIDGE_TOOLS.map((tool) => tool.name).join(', ')} —`,
         'call them to see, capture, fix or annotate board work without a kanban token (each tool\'s own description says what it does);',
         'never mint a second card to say the first is wrong — correct it, or comment on it;',
         'every write is confined by the bridge to your own board, and each tool\'s description states its scope.',
@@ -1032,7 +1103,7 @@ function handleClearContext() {
 if (ADVERTISE_ANY_TOOL) {
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      ...(TOOLS_ENABLED ? TOOL_DEFINITIONS : []),
+      ...BRIDGE_TOOLS,
       ...(CLEAR_CONTEXT_ENABLED ? [CLEAR_CONTEXT_TOOL] : []),
     ],
   }));
@@ -1119,8 +1190,10 @@ if (TOOLS_ENABLED) {
         ? 'ssh target present (default-on)'
         : 'endpoint+bearer present (default-on)';
   console.error(
-    `[${SERVER_NAME}] board tools ENABLED (${why}) — proxying tools/call to ${target}`,
+    `[${SERVER_NAME}] board tools ENABLED (${why}) — advertising ${BRIDGE_TOOLS.map((tool) => tool.name).join(', ')} from ${ADVERTISED.source}; proxying tools/call to ${target}`,
   );
+} else if (ENV_TOOLS_ON) {
+  console.error(`[${SERVER_NAME}] no bridge tool advertised: ${ADVERTISED.source}`);
 }
 
 if (CLEAR_CONTEXT_ENABLED) {

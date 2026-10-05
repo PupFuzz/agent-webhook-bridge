@@ -712,6 +712,43 @@ test('through the real server: the handshake, the INSTRUCTIONS line, and a call 
   assert.deepEqual(bridge.calls[0].launch, { id: state.launch_id, bridge_release: '1.0.0' });
 });
 
+test('card#11283: a manifest answer carrying served_tools writes this launch\'s served-tools.json', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0'), servedTools: ['ci_await', 'ci_await_cancel'] });
+  const run = await launch(root, seatEnv(t, bridge));
+
+  assert.equal(run.code, 0, run.stderr);
+  const cache = read(root, 'served-tools.json');
+  assert.equal(cache.launch_id, read(root, 'state.json').launch_id, 'the cache names the launch that wrote it');
+  assert.deepEqual(cache.served, ['ci_await', 'ci_await_cancel']);
+});
+
+test('card#11283: a manifest answer without served_tools writes nothing and leaves an earlier cache alone', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const earlier = { launch_id: 'an-earlier-launch', agent: null, served: ['ci_await'], written_at: '2026-10-01T00:00:00.000Z' };
+  fs.writeFileSync(path.join(root, 'served-tools.json'), JSON.stringify(earlier));
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
+  const run = await launch(root, seatEnv(t, bridge));
+
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(read(root, 'served-tools.json'), earlier);
+});
+
+test('card#11283, through the real server: the launch\'s cache decides what is listed, and served_tools is not asked again', async (t) => {
+  const root = fs.mkdtempSync(path.join(SOURCE_DIR, 'tests', '.client-root-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  assert.equal(bootstrap(t, root, goodPack('1.0.0', { realServer: true })).status, 0);
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0', { realServer: true }), servedTools: ['ci_await', 'ci_await_cancel'] });
+  const env = seatEnv(t, bridge);
+  const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'entry.mjs')], env, stderr: 'ignore' });
+  const client = new Client({ name: 'cu-e2e-served', version: '1.0.0' }, { capabilities: {} });
+  await client.connect(transport);
+  t.after(() => client.close());
+
+  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ['ci_await', 'ci_await_cancel']);
+  assert.ok(!bridge.requests.some((r) => r.body.op === 'served_tools'), `asked: ${bridge.requests.map((r) => r.body.op).join(', ')}`);
+});
+
 // ---------------------------------------------------------------------------------------------
 // Units: the pure pieces, and what the Windows job exercises
 

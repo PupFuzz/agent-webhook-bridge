@@ -29,6 +29,7 @@ use App\Bridge\Check\Checks\ChannelTokenPathCheck;
 use App\Bridge\Check\Checks\ChannelTransportCheck;
 use App\Bridge\Check\Checks\CiAwaitsCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
+use App\Bridge\Check\Checks\CiToolsStateCheck;
 use App\Bridge\Check\Checks\ClientFleetCheck;
 use App\Bridge\Check\Checks\ClientPackSourceCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
@@ -91,8 +92,8 @@ use Throwable;
  */
 class CheckCommand extends BridgeCommand
 {
-    protected $signature = 'bridge:check {--probe-tools= : POST a live board_my_cards to this /agent-tools/call endpoint per enabled agent (opt-in — verifies the same-box loopback recipe end to end; the endpoint is the value the channel server uses, e.g. https://<bridge-hostname>/agent-tools/call)}
-                            {--probe-tools-ssh= : round-trip a live board_my_cards over ssh to this <user@host> (opt-in — certifies the SSH-forced-command board-tools transport end to end; card 4952)}
+    protected $signature = 'bridge:check {--probe-tools= : POST a live board_my_cards (ci_await_cancel to a scope-less, CI-only agent) to this /agent-tools/call endpoint per enabled agent (opt-in — verifies the same-box loopback recipe end to end; the endpoint is the value the channel server uses, e.g. https://<bridge-hostname>/agent-tools/call)}
+                            {--probe-tools-ssh= : round-trip a live board_my_cards over ssh to this <user@host> — ci_await_cancel when every ssh agent is scope-less, and as the follow-up when the door answers not_served (opt-in — certifies the SSH-forced-command board-tools transport end to end; card 4952)}
                             {--format=text : output format — `text` (the operator report) or `json` (a versioned machine-readable document; see docs/check-json-contract.md). The checks that run, and the exit code, are identical either way.}';
 
     protected $description = 'Validate the bridge install config (dirs, DB connectivity, agent YAMLs)';
@@ -559,7 +560,19 @@ class CheckCommand extends BridgeCommand
         // The check turns it into prose; the JSON document emits it as data. A check
         // deriving its own would re-run the per-scope query behind the other renderer's
         // back and could disagree with it (card#5229).
-        $eventConsumers = (new EventConsumerReconciler)->reconcile($ctx->githubScopeConsumers);
+        //
+        // DL-460: `CiAwaitGate` is an install-wide consumer of `workflow_run.completed` once any
+        // agent can call `ci_await` — an ENABLED board_tools block — so that set is derived
+        // here, before the reconciliation that reads it, rather than in the board-tools plane
+        // below that also reads it.
+        $ctx->boardToolsEnabled = array_values(array_filter(
+            $configs,
+            fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
+        ));
+        $eventConsumers = (new EventConsumerReconciler)->reconcile(
+            $ctx->githubScopeConsumers,
+            EventConsumerReconciler::installWideConsumed($ctx->boardToolsEnabled),
+        );
         $ctx->eventConsumers = $eventConsumers;
         if (! $this->emitReport($runner->run(CheckSlot::EventConsumer, $ctx))) {
             $ok = false;
@@ -596,12 +609,9 @@ class CheckCommand extends BridgeCommand
         // membership) NEVER FAIL (DL-220 split — a transient/empty kanban read must not
         // FAIL the install check). They said "stay WARN" until DL-251 split them: `warn`
         // where the leg answered badly, `unvalidated` where the read never resolved.
-        // What stays here is derivation: which agents have the block enabled, the bearer
-        // index, the SECOND kanban client, and the ssh subset.
-        $ctx->boardToolsEnabled = array_values(array_filter(
-            $configs,
-            fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
-        ));
+        // What stays here is derivation: the bearer index, the SECOND kanban client, and the
+        // ssh subset. Which agents have the block enabled is derived above the event-consumer
+        // reconciliation, which reads it (DL-460).
 
         // ⚑ A WRITE, INSIDE A CHECK COMMAND, ON PURPOSE (card#8973 / DL-360). `bridge:check`
         // is the one path that already parses every agent's block AND touches this bridge's
@@ -624,7 +634,7 @@ class CheckCommand extends BridgeCommand
         // subject is an agent that is NOT in the enabled subset at all, and the install it
         // was written for had lost EVERY block — so an empty subset is precisely the state
         // it must speak in. It also populates `$ctx->boardToolsLost`, which the NEXT STEPS
-        // derivation below reads to withhold the `no_block` question for a seat just
+        // derivation below reads to withhold the `no_block` line for a seat just
         // reported LOST.
         if (! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))) {
             $ok = false;
@@ -656,11 +666,21 @@ class CheckCommand extends BridgeCommand
             // forced-command line exits 1 with the token present, and USED TO exit 0,
             // saying nothing, without it. The skip set is now exactly this client's
             // dependents.
-            try {
-                $ctx->boardToolsClient = WritebackClientFactory::make();
-            } catch (Throwable $e) {
-                $runner->noteNotRun(CheckSlot::BoardToolsState, 'the board-tools kanban client is unavailable (see the warning above)');
-                $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.RedactedErrorText::of($e).') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
+            //
+            // card#11283: ONLY A SCOPED AGENT NEEDS THIS CLIENT. A scope-less block is served the
+            // CI tools, which never build it, so an install whose enabled agents are all
+            // scope-less is not told its tools "will fail at call time" for want of a token they
+            // never use, and the count names the agents that would.
+            $scopedAgents = array_values(array_filter($ctx->boardToolsEnabled, static fn (AgentConfig $c): bool => $c->boardTools?->isScopeless() === false));
+            if ($scopedAgents === []) {
+                $runner->noteNotRun(CheckSlot::BoardToolsState, 'every enabled board_tools agent is scope-less (CI tools only), so there is no board to read');
+            } else {
+                try {
+                    $ctx->boardToolsClient = WritebackClientFactory::make();
+                } catch (Throwable $e) {
+                    $runner->noteNotRun(CheckSlot::BoardToolsState, 'the board-tools kanban client is unavailable (see the warning above)');
+                    $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($scopedAgents).' agent(s) with a board scope but the kanban writeback client is unavailable ('.RedactedErrorText::of($e).') — the board tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
+                }
             }
 
             if ($ctx->boardToolsClient !== null) {
@@ -959,7 +979,7 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::BoardToolsLost, new BoardToolsLostCheck)
             ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
             ->registerPerAgent(CheckSlot::BoardToolsState, new BoardToolsBoardStateCheck)
-            ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck(base_path('examples/channel-servers')))
+            ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck(base_path('examples/channel-servers')), new CiToolsStateCheck)
             ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
             ->registerPerAgent(CheckSlot::BoardToolsSshAdvisory, new BoardToolsSshDefaultAdvisoryCheck)
             ->register(CheckSlot::ClientFleet, new ClientPackSourceCheck(base_path('VERSION')), new ClientFleetCheck)
@@ -1216,12 +1236,15 @@ class CheckCommand extends BridgeCommand
         $escapedScope = UntrustedText::forOperator((string) $step->scope);
 
         return match ($step->state) {
-            // ⛔ THE OPT-OUT IS NAMED, and it is what keeps this from being a nag. This is
-            // the only state a correctly-configured install can sit in forever — an agent
-            // that is deliberately notification-only owes nothing and would otherwise be
-            // told to provision on every run, with no action available to silence it. That
-            // is the shape `emitFinding()` refuses `warn` for, one level down.
-            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — and that is a QUESTION FOR YOU, not a defect this run found: should {$step->agent} be able to read, file and correct its own cards from inside its session? YES ⇒ run `{$step->command}` — it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. NO ⇒ put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — a declined capability is a decision, and this line goes away. Either answer finishes it; leaving it unanswered is the only outcome that does not. {$doc}",
+            // ⛔ THE DEFAULT IS STATED BY ROLE, NOT ASKED (DL-460). A pm or solo seat
+            // always gets board tools — it is where `ci_await` comes from — and an impl seat
+            // uses kbcard for its board work. The bridge cannot read a seat's role from its
+            // YAML, so the line names both roles and lets the operator apply the one that fits.
+            // ⛔ THE OPT-OUT IS STILL NAMED, and it is what keeps this from being a nag: an
+            // agent that needs no block at all owes nothing and would otherwise be told to
+            // provision on every run, with no action available to silence it. That is the
+            // shape `emitFinding()` refuses `warn` for, one level down.
+            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — no reading, filing or correcting its own cards from inside its session, and no `ci_await`. Whether it needs one is decided by the seat's ROLE, which this run cannot read from the YAML: A PM OR SOLO SEAT ALWAYS GETS BOARD TOOLS — run `{$step->command}`; it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. An IMPL seat uses kbcard for its board work, and gets `ci_await` from a scope-less block — `board_tools:` with `enabled: true` and no board scope, which serves no board tool. For an agent that needs no `board_tools:` block at all, put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — that records the decision, and this line goes away. {$doc}",
 
             // ⛔ THE UNMEASURED ARM SAYS SO, AND SENDS THE READER TO `sudo`, NOT TO
             // PROVISION. This is the line that, before the split, told an install whose only
@@ -1233,7 +1256,7 @@ class CheckCommand extends BridgeCommand
 
             // The bound is PRINTED, not merely known, because this is the one state whose
             // remedy an operator can get wrong in a way that looks like success.
-            NextStepState::SeatSideUnreported => "the bridge half is wired and the CALLING SEAT's half is NOT VERIFIABLE FROM HERE — the bridge may not read the seat's own .mcp.json or keypair (DL-229, an account may only read its own files) — and this install has recorded no successful board-tools call for this agent. Wire the seat, then ask the seat to make ONE board_my_cards call and re-run `{$step->command}`. Do NOT clear this line with --probe-tools: that probe stamps the same ledger row from THIS box, so it would report the seat as reporting without the seat ever having called. {$doc}",
+            NextStepState::SeatSideUnreported => "the bridge half is wired and the CALLING SEAT's half is NOT VERIFIABLE FROM HERE — the bridge may not read the seat's own .mcp.json or keypair (DL-229, an account may only read its own files) — and this install has recorded no successful board-tools call for this agent. Wire the seat, then ask the seat to make ".($step->seatCall !== null ? "ONE {$step->seatCall} call" : 'ONE call (but this agent is served NO tool — its ci_tools line says why)')." and re-run `{$step->command}`. Do NOT clear this line with --probe-tools: that probe stamps the same ledger row from THIS box, so it would report the seat as reporting without the seat ever having called. {$doc}",
 
             // ⛔ THE ONLY ARM WHOSE FAULT IS A `fail` ABOVE IT, and the sentence says so
             // rather than reading like the board-tools advisories it sits with. It also says what
