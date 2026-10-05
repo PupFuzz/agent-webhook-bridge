@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Check\EventConsumers;
 
+use App\Bridge\CiAwait\CiAwaitGate;
+use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RedactedErrorText;
 use App\Models\WebhookEvent;
 use Throwable;
@@ -31,13 +33,41 @@ use Throwable;
  * ({@see EventConsumerReconciliation::$error}). A per-scope `catch` would be a behavior
  * change dressed as an extraction: it would keep walking past a DB failure and report on
  * scopes the run never actually measured.
+ *
+ * ⭐ NOT EVERY CONSUMER IS A CLASSIFIER (DL-460; the gap opened with DL-452). `CiAwaitGate`
+ * acts on `workflow_run.completed` for EVERY github scope this install receives, beside the
+ * dispatch loop and whichever agent subscribes the scope, so a reconciliation built from
+ * classifiers alone called that event dropped and told the operator to unsubscribe it —
+ * which would break `ci_await`. {@see self::installWideConsumed()} is the one place an
+ * install-wide consumer is declared; its declarations join every scope's `consumed` /
+ * `bare` / `qualified`, and never its `agents`, because no agent subscribed for them.
  */
 final class EventConsumerReconciler
 {
     /**
-     * @param  array<string, list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>>  $scopeConsumers
+     * What the install consumes on EVERY github scope, outside any classifier.
+     *
+     * `CiAwaitGate` counts only where some agent has an ENABLED `board_tools` block: that is
+     * the population that can call `ci_await`, so with none the gate has no await to settle
+     * and the event really is dropped. Qualified on purpose — the gate acts on the
+     * `completed` action only, so the other `workflow_run` actions stay in the INFO
+     * action inventory rather than reading as consumed.
+     *
+     * @param  list<AgentConfig>  $boardToolsEnabled  the agents whose `board_tools` block is enabled
+     * @return list<string>
      */
-    public function reconcile(array $scopeConsumers): EventConsumerReconciliation
+    public static function installWideConsumed(array $boardToolsEnabled): array
+    {
+        return $boardToolsEnabled === [] ? [] : [CiAwaitGate::CONSUMED_EVENT_TYPE];
+    }
+
+    /**
+     * @param  array<string, list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>>  $scopeConsumers
+     * @param  list<string>  $installWideConsumed  {@see self::installWideConsumed()} — REQUIRED, with no
+     *                                             default: a caller that omitted it would silently bring
+     *                                             back the DL-452 false "dropped" warning on `workflow_run`
+     */
+    public function reconcile(array $scopeConsumers, array $installWideConsumed): EventConsumerReconciliation
     {
         $scopes = [];
 
@@ -46,7 +76,7 @@ final class EventConsumerReconciler
                 // The DB read runs FIRST, before the pure declaration walk below, so a
                 // failure truncates this scope exactly where the inline loop did.
                 [$observed, $observedActions] = $this->arrivals((string) $scope);
-                $declared = $this->declarations($consumers);
+                $declared = $this->declarations($consumers, $installWideConsumed);
 
                 $scopes[] = new EventConsumerScope(
                     scope: (string) $scope,
@@ -125,9 +155,10 @@ final class EventConsumerReconciler
      * dispatches to both.
      *
      * @param  list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>  $consumers
+     * @param  list<string>  $installWideConsumed
      * @return array{consumed: list<string>, bare: list<string>, qualified: array<string, list<string>>, undeclared: list<array{agent: string, class: string}>, unreadable: list<array{agent: string, class: string}>, agents: list<string>}
      */
-    private function declarations(array $consumers): array
+    private function declarations(array $consumers, array $installWideConsumed): array
     {
         /** @var array<string, true> $consumed */
         $consumed = [];
@@ -142,15 +173,19 @@ final class EventConsumerReconciler
         /** @var array<string, true> $agents */
         $agents = [];
 
+        $declare = static function (string $eventType) use (&$consumed, &$qualified, &$bare): void {
+            $parts = explode('.', $eventType, 2);
+            $consumed[$parts[0]] = true;
+            if (isset($parts[1]) && $parts[1] !== '') {
+                $qualified[$parts[0]][$parts[1]] = true;
+            } else {
+                $bare[$parts[0]] = true;
+            }
+        };
+
         foreach ($consumers as $c) {
             foreach ($c['consumed'] as $eventType) {
-                $parts = explode('.', $eventType, 2);
-                $consumed[$parts[0]] = true;
-                if (isset($parts[1]) && $parts[1] !== '') {
-                    $qualified[$parts[0]][$parts[1]] = true;
-                } else {
-                    $bare[$parts[0]] = true;
-                }
+                $declare($eventType);
             }
             // Keyed on the (class, agent) pair the renderer names, so one classifier
             // shared by two agents is disclosed once per agent — each is a separate
@@ -166,6 +201,9 @@ final class EventConsumerReconciler
                 $undeclared[$c['class'].'|'.$c['agent']] = ['agent' => $c['agent'], 'class' => $c['class']];
             }
             $agents[$c['agent']] = true;
+        }
+        foreach ($installWideConsumed as $eventType) {
+            $declare($eventType);
         }
 
         return [

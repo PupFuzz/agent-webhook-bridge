@@ -101,8 +101,8 @@ class BridgeServiceProvider extends ServiceProvider
         $this->app->bind(SshProbeEnvironment::class, SystemSshProbeEnvironment::class);
 
         // The git-ref seam behind the board-tools setup packet (card#8971 / DL-357) —
-        // the default asks the real checkout WHICH REF IT RUNS, so the packet can tell an
-        // impl seat what to clone; a test binds a fake, because a fixture that inherited
+        // the default asks the real checkout WHICH REF IT RUNS, so the packet can tell the
+        // seat being enabled what to clone; a test binds a fake, because a fixture that inherited
         // the answer would capture the runner's git state rather than an install shape.
         $this->app->bind(GitRefProbe::class, SystemGitRefProbe::class);
 

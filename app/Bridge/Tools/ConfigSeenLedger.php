@@ -67,8 +67,8 @@ final class ConfigSeenLedger
      * ⛔ AN `enabled: false` BLOCK AND A SUPPRESSED ONE RECORD NOTHING, and that is the rule
      * the whole leg turns on. A present block in any form is not lost, so it needs no
      * witness; recording `enabled: false` as a durable decision was tried and withdrawn
-     * (DL-360), because it would have made `bridge:check`'s own `no_block` advice — "NO ⇒ put
-     * board_tools: with enabled: false" — a permanent silent mute for that seat.
+     * (DL-360), because it would have made `bridge:check`'s own `no_block` advice — "put
+     * `board_tools:` with `enabled: false`" — a permanent silent mute for that seat.
      *
      * @param  list<AgentConfig>  $configs
      */

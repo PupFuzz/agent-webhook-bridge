@@ -152,7 +152,7 @@ class ProvisionToolsPacketTest extends TestCase
         $this->assertStringContainsString('Run bridge:provision-tools as the bridge user, or set board_tools.ssh_account in impl.yml', $out);
         $this->assertStringNotContainsString('--role a --agent impl', $out);
         // The rest of the packet still prints — the PM needs STEP 1 to brief the seat.
-        $this->assertStringContainsString('STEP 1 — IMPL AGENT impl', $out);
+        $this->assertStringContainsString('STEP 1 — SEAT AGENT impl', $out);
     }
 
     public function test_a_configured_ssh_account_of_root_names_itself_as_the_cause(): void

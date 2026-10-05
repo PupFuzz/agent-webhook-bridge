@@ -2,6 +2,7 @@
 
 namespace App\Bridge\CiAwait;
 
+use App\Bridge\Check\EventConsumers\EventConsumerReconciler;
 use Illuminate\Contracts\Foundation\Application;
 
 /**
@@ -17,6 +18,13 @@ use Illuminate\Contracts\Foundation\Application;
  */
 final class CiAwaitGate
 {
+    /**
+     * The one event this gate acts on — also what `bridge:check`'s event-consumer
+     * reconciliation counts it as consuming ({@see EventConsumerReconciler::installWideConsumed()}),
+     * so the two cannot disagree.
+     */
+    public const CONSUMED_EVENT_TYPE = 'workflow_run.completed';
+
     private const FULL_SHA = '/\A[0-9a-f]{40}\z/';
 
     public function __construct(
@@ -27,7 +35,7 @@ final class CiAwaitGate
     /** @param  array<mixed>  $payload */
     public function schedule(string $provider, string $eventType, string $scopeId, array $payload): void
     {
-        if ($provider !== 'github' || $eventType !== 'workflow_run.completed') {
+        if ($provider !== 'github' || $eventType !== self::CONSUMED_EVENT_TYPE) {
             return;
         }
         $run = $payload['workflow_run'] ?? null;

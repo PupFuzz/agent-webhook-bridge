@@ -13,7 +13,7 @@ use App\Bridge\Support\Severity;
  * past board tools by card#9150).
  *
  * WHAT IT CLOSES. A fresh install ends with a check inventory and a tally, and nothing in
- * it says the two-way board window EXISTS — so an impl agent that could read, file and
+ * it says the two-way board window EXISTS — so an agent that could read, file and
  * correct its own cards through the bridge is never told the capability is there or how to
  * turn it on. The runbook has existed since DL-217; nothing pointed at it from the one
  * command a fresh install is told to run.
@@ -158,10 +158,10 @@ final class NextSteps
             // ⛔ ONE VOICE PER AGENT, AND THIS IS THE ONE STATE THAT CAN CONTRADICT A
             // FINDING ABOVE IT (card#8973 / DL-360). DL-357 Decision 8 ratified the
             // `no_block` wording on the premise that it is "the one state a
-            // correctly-configured install can sit in forever" — a QUESTION for the
-            // operator, never a defect this run found. A LOST FAIL two lines above breaks
-            // that premise outright, and the advice underneath it ("NO ⇒ put board_tools:
-            // with enabled: false") would MUTE the failure rather than answer it. The
+            // correctly-configured install can sit in forever" — never a defect this run
+            // found. A LOST FAIL two lines above breaks that premise outright, and the advice
+            // underneath it (an agent that needs no block at all puts `board_tools:` with
+            // `enabled: false`) would MUTE the failure rather than answer it. The
             // remedy for a lost block is in the FAIL line; this block stays quiet about it.
             if ($state === NextStepState::NoBlock && in_array($name, $ctx->boardToolsLost, true)) {
                 continue;

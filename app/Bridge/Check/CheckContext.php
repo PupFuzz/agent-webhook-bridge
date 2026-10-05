@@ -434,7 +434,9 @@ final class CheckContext
 
     /**
      * The agents whose `board_tools` block is ENABLED — the subset the whole board-tools
-     * plane below the suppression scan is bounded by.
+     * plane below the suppression scan is bounded by, and the set the event-consumer
+     * reconciliation reads to decide whether `CiAwaitGate` consumes `workflow_run`
+     * (DL-460), which is why `CheckCommand` derives it before that reconciliation.
      *
      * NOT THE SUBSET THE SUPPRESSION SCAN READS: a block that could not satisfy itself is
      * `enabled === false`, so it is absent here and its own check reads
