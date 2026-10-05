@@ -1216,12 +1216,15 @@ class CheckCommand extends BridgeCommand
         $escapedScope = UntrustedText::forOperator((string) $step->scope);
 
         return match ($step->state) {
-            // ⛔ THE OPT-OUT IS NAMED, and it is what keeps this from being a nag. This is
-            // the only state a correctly-configured install can sit in forever — an agent
-            // that is deliberately notification-only owes nothing and would otherwise be
-            // told to provision on every run, with no action available to silence it. That
-            // is the shape `emitFinding()` refuses `warn` for, one level down.
-            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — and that is a QUESTION FOR YOU, not a defect this run found: should {$step->agent} be able to read, file and correct its own cards from inside its session? YES ⇒ run `{$step->command}` — it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. NO ⇒ put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — a declined capability is a decision, and this line goes away. Either answer finishes it; leaving it unanswered is the only outcome that does not. {$doc}",
+            // ⛔ THE DEFAULT IS STATED BY ROLE, NOT ASKED (DL-460). A pm or solo seat
+            // always gets board tools — it is where `ci_await` comes from — and an impl seat
+            // uses kbcard. The bridge cannot read a seat's role from its YAML, so the line
+            // names both roles and lets the operator apply the one that fits.
+            // ⛔ THE OPT-OUT IS STILL NAMED, and it is what keeps this from being a nag: an
+            // agent that is not a pm or solo seat owes nothing and would otherwise be told to
+            // provision on every run, with no action available to silence it. That is the
+            // shape `emitFinding()` refuses `warn` for, one level down.
+            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — no reading, filing or correcting its own cards from inside its session, and no `ci_await`. Whether it needs one is decided by the seat's ROLE, which this run cannot read from the YAML: A PM OR SOLO SEAT ALWAYS GETS BOARD TOOLS — run `{$step->command}`; it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. An IMPL seat uses kbcard instead: for it, and for any other agent that is not a pm or solo seat, put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — that records the decision, and this line goes away. {$doc}",
 
             // ⛔ THE UNMEASURED ARM SAYS SO, AND SENDS THE READER TO `sudo`, NOT TO
             // PROVISION. This is the line that, before the split, told an install whose only

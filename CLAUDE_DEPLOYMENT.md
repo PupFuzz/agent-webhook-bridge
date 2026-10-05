@@ -104,17 +104,23 @@ php artisan bridge:provision                      # register kanban webhook subs
                                                   # A BRIDGE_RECEIVER_BASE_URL bridge:check rejects as a URL (e.g.
                                                   # ftp://…) is REFUSED for the whole run in every mode except
                                                   # --list, and the override does not apply (card#9510).
-php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
-                                                  # this agent read, file and correct its own cards from inside its
-                                                  # session? YES -> run this; it prints a paste-ready board_tools:
-                                                  # block, and for an ssh-transport agent the whole SETUP PACKET
-                                                  # (five steps, three actors — one of them a human).
-                                                  # NO -> declare `board_tools:` with `enabled: false` in its YAML;
-                                                  # a declined capability is a decision WHILE THE BLOCK IS PRESENT.
-                                                  # Either answer finishes it. Deleting that YAML later is a
+php artisan bridge:provision-tools --agent=<name>  # BOARD TOOLS ARE THE DEFAULT FOR A PM OR SOLO SEAT, not a
+                                                  # per-agent question. pm and solo seats: ALWAYS run this — it is
+                                                  # what gives the seat its board window and `ci_await` (wait for CI
+                                                  # without polling GitHub; docs/board-tools.md § ci_await). It prints
+                                                  # a paste-ready board_tools: block, and for an ssh-transport agent
+                                                  # the whole SETUP PACKET (five steps, three actors — one a human).
+                                                  # impl seats: no — they use kbcard. For an impl seat, or
+                                                  # any other agent that is not a pm or solo seat, declare
+                                                  # `board_tools:` with `enabled: false` in its YAML; that records the
+                                                  # decision WHILE THE BLOCK IS PRESENT. Deleting that YAML later is a
                                                   # decommission, not a decline: docs/board-tools.md § Retiring a seat.
-                                                  # `bridge:check` above prints a NEXT STEPS line for every agent
-                                                  # that has answered neither way, and that block is the entry point.
+                                                  # `bridge:check` above prints a NEXT STEPS line for every agent that
+                                                  # has neither, and that block is the entry point.
+                                                  # ⚠ ci_await settles when a `workflow_run` delivery arrives; with
+                                                  # none, only its sweep's own GitHub reads settle it. So the repo
+                                                  # webhook for a pm or solo seat sends *Workflow runs* beside *Pushes*
+                                                  # (docs/writeback.md § 4. The repo webhook).
                                                   # Roles/handoff (ssh door): docs/board-tools-enablement.md
                                                   # HTTP-door runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
 php artisan bridge:client-pack:install            # publish this release's channel-server client pack, which board-tools

@@ -2567,12 +2567,13 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 > measured; `seat_side_unreported` → steps 5 and 7, on the seat. ⛔ **The last one cannot
 > be cleared with `--probe-tools`** — step 6 explains why: that probe stamps the very
 > ledger row the state is read from, *from this box*, so it would silence the line without
-> the seat ever having called. **An agent that does not want board tools declares
-> `board_tools:` with `enabled: false` — while the block is present**; a declined capability
-> is a decision and the line stops printing. ⚠ **Deleting that YAML is a different act.** An
-> `enabled: false` block is a decision only while something states it, so deleting the file
-> re-opens the question — and if this install ever recorded an enabled block for that agent,
-> it re-opens as a **LOST** failure whose remedy is an explicit retirement. See
+> the seat ever having called. **Board tools are the default for a pm or solo seat; an impl
+> seat uses kbcard instead** (`CLAUDE_DEPLOYMENT.md` § Fresh install). **An impl seat, or any
+> other agent that is not a pm or solo seat, declares `board_tools:` with `enabled: false` —
+> while the block is present**; that is a decision and the line stops printing. ⚠ **Deleting
+> that YAML is a different act.** An `enabled: false` block is a decision only while something
+> states it, so deleting the file re-opens the question — and if this install ever recorded an
+> enabled block for that agent, it re-opens as a **LOST** failure whose remedy is an explicit retirement. See
 > **[A restored install](#a-restored-install)** and **[Retiring a seat](#retiring-a-seat)**.
 
 The end-to-end runbook for the common topology: the bridge served by an Apache
@@ -2758,9 +2759,9 @@ CLIENT-CALL ledger, which this leg never reads as a trigger — it quotes a clie
 the line as evidence and nothing more. The only things that move this verdict are re-adding
 the block and retiring the seat.
 
-**⚑ The `no_block` NEXT STEP is deliberately NOT printed for a lost agent.** That question
-("should this agent be able to read, file and correct its own cards?") offers `enabled: false`
-as one valid answer, which would MUTE the failure instead of answering it. One voice per
+**⚑ The `no_block` NEXT STEP is deliberately NOT printed for a lost agent.** That line
+offers `enabled: false` as the answer for an agent that is not a pm or solo seat, which would
+MUTE the failure instead of answering it. One voice per
 agent: the FAIL above carries the remedy.
 
 ## Retiring a seat

@@ -158,10 +158,10 @@ final class NextSteps
             // ⛔ ONE VOICE PER AGENT, AND THIS IS THE ONE STATE THAT CAN CONTRADICT A
             // FINDING ABOVE IT (card#8973 / DL-360). DL-357 Decision 8 ratified the
             // `no_block` wording on the premise that it is "the one state a
-            // correctly-configured install can sit in forever" — a QUESTION for the
-            // operator, never a defect this run found. A LOST FAIL two lines above breaks
-            // that premise outright, and the advice underneath it ("NO ⇒ put board_tools:
-            // with enabled: false") would MUTE the failure rather than answer it. The
+            // correctly-configured install can sit in forever" — never a defect this run
+            // found. A LOST FAIL two lines above breaks that premise outright, and the advice
+            // underneath it (an agent that is not a pm or solo seat puts `board_tools:` with
+            // `enabled: false`) would MUTE the failure rather than answer it. The
             // remedy for a lost block is in the FAIL line; this block stays quiet about it.
             if ($state === NextStepState::NoBlock && in_array($name, $ctx->boardToolsLost, true)) {
                 continue;

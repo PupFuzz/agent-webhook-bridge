@@ -4018,8 +4018,9 @@ class BridgeCommandsTest extends TestCase
         $this->assertNull($row->retired_reason);
 
         // 2. The block is gone from a config that is still there: FAIL, and the NEXT STEPS
-        //    block must NOT also ask the `no_block` question for that agent — its own answer
-        //    ("NO ⇒ set enabled: false") would MUTE the failure printed two lines above.
+        //    block must NOT also print the `no_block` line for that agent — its own advice
+        //    ("put `board_tools:` with `enabled: false`") would MUTE the failure printed two
+        //    lines above.
         File::put($this->dir.'/impl.yml', "subscriptions: []\n");
         $this->artisan('bridge:check')
             ->expectsOutputToContain('board_tools: agent impl: block LOST')

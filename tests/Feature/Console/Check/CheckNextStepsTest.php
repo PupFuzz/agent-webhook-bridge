@@ -124,6 +124,22 @@ class CheckNextStepsTest extends TestCase
         $this->assertStringNotContainsString('not usable yet', $lines[4]);
     }
 
+    public function test_the_no_block_entry_states_the_role_default_instead_of_asking(): void
+    {
+        // DL-460: board tools are the DEFAULT for a pm or solo seat (it is where
+        // `ci_await` comes from), and an impl seat uses kbcard. The line used to put that
+        // to the operator as an open yes/no question, which is how a pm or solo seat came
+        // out of an install with board tools declined and kept polling CI.
+        $lines = $this->nextStepLines($this->runCheck());
+
+        $this->assertStringContainsString('agent-a:', $lines[1]);
+        $this->assertStringContainsString('A PM OR SOLO SEAT ALWAYS GETS BOARD TOOLS', $lines[1]);
+        $this->assertStringContainsString('ci_await', $lines[1]);
+        $this->assertStringContainsString('An IMPL seat uses kbcard instead', $lines[1]);
+        $this->assertStringContainsString('`enabled: false`', $lines[1]);
+        $this->assertStringNotContainsString('QUESTION FOR YOU', $lines[1]);
+    }
+
     public function test_the_seat_side_entry_states_the_bridge_cannot_verify_it_and_refuses_the_probe_shortcut(): void
     {
         // DL-229 IS THE WHOLE POINT OF THIS ENTRY. The bridge may not read the seat's own
