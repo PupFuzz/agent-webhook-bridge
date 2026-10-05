@@ -63,9 +63,11 @@ final class EventConsumerReconciler
 
     /**
      * @param  array<string, list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>>  $scopeConsumers
-     * @param  list<string>  $installWideConsumed  {@see self::installWideConsumed()}
+     * @param  list<string>  $installWideConsumed  {@see self::installWideConsumed()} — REQUIRED, with no
+     *                                             default: a caller that omitted it would silently bring
+     *                                             back the DL-452 false "dropped" warning on `workflow_run`
      */
-    public function reconcile(array $scopeConsumers, array $installWideConsumed = []): EventConsumerReconciliation
+    public function reconcile(array $scopeConsumers, array $installWideConsumed): EventConsumerReconciliation
     {
         $scopes = [];
 

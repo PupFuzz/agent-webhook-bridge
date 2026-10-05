@@ -621,7 +621,7 @@ class EventFollowsConsumerCheckTest extends TestCase
      */
     private function findings(CheckContext $ctx): array
     {
-        $ctx->eventConsumers = (new EventConsumerReconciler)->reconcile($ctx->githubScopeConsumers);
+        $ctx->eventConsumers = (new EventConsumerReconciler)->reconcile($ctx->githubScopeConsumers, []);
 
         return $this->findingsOf((new EventFollowsConsumerCheck), $ctx);
     }

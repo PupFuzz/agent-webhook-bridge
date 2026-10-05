@@ -1278,6 +1278,20 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString("has received 'workflow_run'", $out);
     }
 
+    public function test_check_event_consumer_still_warns_on_workflow_run_when_the_only_board_tools_block_is_disabled(): void
+    {
+        // The other side of the gate above: an `enabled: false` block cannot call
+        // `ci_await`, so nothing consumes the arrival and the warn must stand.
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        File::append($this->dir.'/wb.yml', "board_tools:\n  enabled: false\n");
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('workflow_run.completed', 'e2');
+
+        Artisan::call('bridge:check');
+
+        $this->assertStringContainsString("has received 'workflow_run' (1x, last", Artisan::output());
+    }
+
     public function test_check_event_consumer_warn_carries_occurrences_and_last_seen(): void
     {
         // #4321: the observed set is unbounded (retention is event-gated or manual),

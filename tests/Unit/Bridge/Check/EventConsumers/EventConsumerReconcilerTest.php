@@ -166,7 +166,7 @@ class EventConsumerReconcilerTest extends TestCase
         $result = (new EventConsumerReconciler)->reconcile([
             'owner/a' => [$this->consumer('wb', consumed: [])],
             'owner/b' => [$this->consumer('wb', consumed: [])],
-        ]);
+        ], []);
 
         $this->assertSame('db hiccup', $result->error);
         $this->assertCount(1, $result->scopes);
@@ -180,7 +180,7 @@ class EventConsumerReconcilerTest extends TestCase
         // unable to tell a failed measurement from a clean one — which is the ONLY thing
         // the field exists to let them do.
         $this->assertNull($this->reconcile([$this->consumer('wb', consumed: [])])->error);
-        $this->assertNull((new EventConsumerReconciler)->reconcile([])->error);
+        $this->assertNull((new EventConsumerReconciler)->reconcile([], [])->error);
     }
 
     public function test_a_case_variant_scope_spelling_is_not_credited_to_the_declared_scope(): void
@@ -197,9 +197,6 @@ class EventConsumerReconcilerTest extends TestCase
         $this->assertSame([], $result->scopes[0]->observed);
     }
 
-    /**
-     * @param  list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>  $consumers
-     */
     public function test_an_install_wide_consumer_joins_every_scopes_declarations_but_not_its_agents(): void
     {
         // DL-460: `CiAwaitGate` consumes `workflow_run.completed` on every scope the install
@@ -221,7 +218,7 @@ class EventConsumerReconcilerTest extends TestCase
         $this->assertSame(['requested'], array_keys($scope->unlistedActions()['workflow_run']));
     }
 
-    public function test_ci_await_counts_as_a_consumer_only_where_an_agent_has_board_tools_enabled(): void
+    public function test_ci_await_is_declared_install_wide_exactly_when_the_enabled_board_tools_set_is_non_empty(): void
     {
         $this->assertSame([], EventConsumerReconciler::installWideConsumed([]));
         $this->assertSame(
@@ -230,9 +227,12 @@ class EventConsumerReconcilerTest extends TestCase
         );
     }
 
+    /**
+     * @param  list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>  $consumers
+     */
     private function reconcile(array $consumers): EventConsumerReconciliation
     {
-        return (new EventConsumerReconciler)->reconcile([self::SCOPE => $consumers]);
+        return (new EventConsumerReconciler)->reconcile([self::SCOPE => $consumers], []);
     }
 
     /**
