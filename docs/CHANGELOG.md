@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.98.0] - 2026-10-05
+
 ### Changed
 
 - **card#11328 / DL-463** — **The channel launcher ships in the client pack, and a seat's `~/start-claude.sh` becomes a shim that runs the launcher its client installed, so a launcher fix reaches every bootstrapped seat with the client.** One launcher replaces the bridge's `examples/start-channel-session.sh` and the coord plugin's `templates/bridge/start-claude.sh`, taking the guards of both: `examples/channel-servers/bin/start-claude.sh` (Linux) and `start-claude.ps1` + `.bat` (Windows), moved there from `examples/`. The client updater shims it at `<root>/bin/start-claude` (`start-claude.cmd` on Windows) at every pack install. New `provision-board-tools.py --role b --write-launcher-shim` writes the seat's `~/start-claude.sh` (`%USERPROFILE%\start-claude.bat` + `.ps1`), which sets `BRIDGE_CHANNEL_NAME` and runs that; `--bootstrap-client`, `--certify-only` and `--self-cert` write it too. `examples/channel-servers/README.md` § The seat's launcher is the contract.
@@ -27,8 +29,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - Reads a new kanban search-row field, `priority` (declared in [`docs/kanban-integration-contract.md`](kanban-integration-contract.md)); no new request. No migration, config key, route or token scope.
   - **Reference channel-server snapshot 0.9.46 → 0.9.47**: `board_my_cards`' description and its `limit` description.
 
+- **Dependabot PRs #868 · #866 · #867** — `laravel/framework` 13.33.0 → 13.34.0 and `symfony/yaml` 8.1.6 → 8.1.8 (runtime), `phpunit/phpunit` 13.3.5 → 13.4.0 (dev). No migration, no config key.
+
 ### Upgrade warnings
 
+- ⚠ **Reference channel-server snapshot 0.9.48 — run `php artisan bridge:client-pack:install`** once this release is deployed, to publish the pack that carries it (and the launcher). Seats on the self-updating client take it at their next launch.
 - ⚠ **card#11328 — the first `--write-launcher-shim` (or `--bootstrap-client` / `--certify-only` / `--self-cert`) run after this release REPLACES a full `~/start-claude.sh` with the shim.** A file there without the shim's marker line — every launcher copied by hand or by `/coord:setup-bridge` before this release — is first renamed to `~/start-claude.sh.pre-shim-<UTC stamp>` beside it, the run prints that path, and nothing is deleted. On Windows the same applies to `start-claude.bat` and `start-claude.ps1` under `%USERPROFILE%`. **Port any edit you made to the copy into the environment** — on Windows set `TUNNEL_HOST` (and `SSH_KEY`, `REMOTE_PORT`, `LOCAL_PORT` if not the defaults) as user environment variables (`setx`), because the edited CONFIG block now lives only in the backup.
 - ⚠ **A seat runs a changed launcher one launch after it installs it**, and a seat updating from an older client gets `<root>/bin/start-claude` one launch after installing 0.9.48 (or at once from `--bootstrap-client`). Until then `--write-launcher-shim` refuses with exit 3 (`retry_after_launch`) and names those steps; it never writes a shim whose target does not exist. A seat still on a copied channel server has no client root and is refused with exit 4 (`needs_bootstrap`): bootstrap it first.
 - ⚠ **A `~/start-claude.sh` that execs a launcher in a bridge CHECKOUT** (e.g. `exec "$HOME/<bridge-checkout>/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"`) **keeps working after the pull**: `examples/start-channel-session.sh` (and `examples/start-claude.ps1` / `.bat`) is now a compatibility stub that runs the moved launcher, which reads `BRIDGE_CHANNEL_SERVER_DIR` as before. Move such a seat onto its self-updating shim, on the seat, as its OS user, in this order:
