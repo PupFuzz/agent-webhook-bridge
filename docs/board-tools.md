@@ -3,10 +3,17 @@
 The bridge is push-only no longer. When an install enables **board tools**, an
 agent gets a small, channel-identity-scoped **request/response** surface over the
 same channel that already delivers wake events — so a seat with **no kanban token and
-no toolkit** can see and capture its own board work directly. Which seats get it is a
-deployment default: every pm and solo seat, while an impl seat uses kbcard for its board
-work (`CLAUDE_DEPLOYMENT.md` § Fresh install, DL-460) and gets `ci_await` from a **scope-less**
-block — no board tool at all ([§ Scope-less agents](#scope-less-agents-the-ci-tools-without-a-board-card11283--dl-461), DL-461).
+no toolkit** can see and capture its own board work directly. Every pm and solo seat gets it
+by default (`CLAUDE_DEPLOYMENT.md` § Fresh install, DL-460). An impl seat needs no kanban token
+either way: every card write through the bridge — a move from a repo webhook, every board-tool
+call — is made with the bridge's **writeback token**, and the seat's own kanban user (roster
+`kanban_user_id`) is only an identity, the assignee and the "whose card" key, that nothing
+authenticates as. The framework gives an impl seat no kanban token; a seat may still hold one
+outside it, which the bridge cannot see. Either block shape is valid for an impl seat: the
+**scope-less** one, CI tools and no board tool, which a fresh framework install writes
+([§ Scope-less agents](#scope-less-agents-the-ci-tools-without-a-board-card11283--dl-461), DL-461),
+or a scoped one. Which an impl seat should run is the coordination framework's policy; the bridge
+serves both (DL-465 corrects DL-460's wording here).
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
@@ -1766,9 +1773,11 @@ an unknown name still answers `unknown_tool`; the update door's `served_tools` o
 board read or write**. `fleet_view` and `description_max_bytes` are refused on a scope-less block
 (load-time error), because each only means something to a scoped agent.
 
-**This is the implementation-seat setup.** Impl seats use `kbcard` and no board tools; a
-scope-less block serves no board tool, so that rule holds, and gives the seat `ci_await` instead
-of polling GitHub. The coordination framework's onboarding writes it.
+**This is the implementation-seat setup a fresh framework install writes** — only where the seat
+has no block yet. It serves no board tool and gives the seat `ci_await` instead of polling GitHub.
+A scoped block is equally valid for an impl seat; which one it runs is the framework's policy,
+not the bridge's. Neither needs a kanban token on the seat, because the bridge makes every card
+write with its writeback token.
 
 **⛔ THE CROSS-REPO CONTRACT — DECLARED HERE, for the framework that writes these blocks:**
 
@@ -2749,9 +2758,10 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 > measured; `seat_side_unreported` → steps 5 and 7, on the seat. ⛔ **The last one cannot
 > be cleared with `--probe-tools`** — step 6 explains why: that probe stamps the very
 > ledger row the state is read from, *from this box*, so it would silence the line without
-> the seat ever having called. **Board tools are the default for a pm or solo seat; an impl
-> seat uses kbcard for its board work** (`CLAUDE_DEPLOYMENT.md` § Fresh install), **and gets
-> `ci_await` from a scope-less block** (§ *Scope-less agents*). **An agent
+> the seat ever having called. **Board tools are the default for a pm or solo seat**
+> (`CLAUDE_DEPLOYMENT.md` § Fresh install). **An impl seat needs no kanban token — the bridge
+> makes every card write with its writeback token — and may run a scope-less block (CI tools
+> only, § *Scope-less agents*) or a scoped one.** **An agent
 > that needs no `board_tools:` block at all declares one with `enabled: false` — while the
 > block is present**; that is a decision and the line stops printing. ⚠ **Deleting
 > that YAML is a different act.** An `enabled: false` block is a decision only while something

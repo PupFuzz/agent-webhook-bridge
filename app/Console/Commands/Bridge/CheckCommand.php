@@ -1237,14 +1237,15 @@ class CheckCommand extends BridgeCommand
 
         return match ($step->state) {
             // ⛔ THE DEFAULT IS STATED BY ROLE, NOT ASKED (DL-460). A pm or solo seat
-            // always gets board tools — it is where `ci_await` comes from — and an impl seat
-            // uses kbcard for its board work. The bridge cannot read a seat's role from its
+            // always gets board tools — it is where `ci_await` comes from. An impl seat needs no
+            // kanban token: every card write through the bridge is made with the writeback token,
+            // and either block shape is valid for it. The bridge cannot read a seat's role from its
             // YAML, so the line names both roles and lets the operator apply the one that fits.
             // ⛔ THE OPT-OUT IS STILL NAMED, and it is what keeps this from being a nag: an
             // agent that needs no block at all owes nothing and would otherwise be told to
             // provision on every run, with no action available to silence it. That is the
             // shape `emitFinding()` refuses `warn` for, one level down.
-            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — no reading, filing or correcting its own cards from inside its session, and no `ci_await`. Whether it needs one is decided by the seat's ROLE, which this run cannot read from the YAML: A PM OR SOLO SEAT ALWAYS GETS BOARD TOOLS — run `{$step->command}`; it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. An IMPL seat uses kbcard for its board work, and gets `ci_await` from a scope-less block — `board_tools:` with `enabled: true` and no board scope, which serves no board tool. For an agent that needs no `board_tools:` block at all, put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — that records the decision, and this line goes away. {$doc}",
+            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — no reading, filing or correcting its own cards from inside its session, and no `ci_await`. Whether it needs one is decided by the seat's ROLE, which this run cannot read from the YAML: A PM OR SOLO SEAT ALWAYS GETS BOARD TOOLS — run `{$step->command}`; it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. An IMPL seat needs no kanban token — every card write through the bridge is made with the bridge's writeback token — and either block works for it: a scope-less one (`board_tools:` with `enabled: true` and no board scope, serving only the CI tools) or a scoped one. For an agent that needs no `board_tools:` block at all, put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — that records the decision, and this line goes away. {$doc}",
 
             // ⛔ THE UNMEASURED ARM SAYS SO, AND SENDS THE READER TO `sudo`, NOT TO
             // PROVISION. This is the line that, before the split, told an install whose only
