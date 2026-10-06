@@ -64,7 +64,12 @@ nothing for a person to adjudicate there, and the packet does not ask them to.
   once the round-trip succeeds it installs the client pack this bridge publishes and points
   the args at the seat's client root (`…/agent-webhook-bridge/client/<channel>/entry.mjs`),
   which updates itself at each launch — or, when the bridge offers none (nothing published,
-  a 5xx, a bridge older than the client-update door, approval owed), keeps STEP 1's copy and prints `CLIENT NOT BOOTSTRAPPED`. If a
+  a 5xx, a bridge older than the client-update door, approval owed), keeps STEP 1's copy and prints `CLIENT NOT BOOTSTRAPPED`.
+  On a seat whose client root carries the launcher, the same run then writes the seat's
+  launcher shim, `~/start-claude.sh` (`start-claude.bat` + `.ps1` on Windows), backing up a
+  file of the operator's that sits there (card#11328, DL-463);
+  [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0948-and-later)
+  owns that contract. If a
   session is **already running** on that seat, see
   [§ Activating on a running seat](#activating-on-a-running-seat) — it owns what activation
   takes and who does it.
@@ -99,7 +104,8 @@ words that name the seat and the channel:
 > then start it again with `claude --dangerously-load-development-channels
 > server:<its-mcp-servers-key>`."
 
-It is **two steps, not one**, and the order matters: `examples/start-channel-session.sh`
+It is **two steps, not one**, and the order matters: the seat's launcher (`~/start-claude.sh`,
+which runs `examples/channel-servers/bin/start-claude.sh` from the client pack)
 **refuses** to start a second session while one is running this channel, which is the same
 constraint stated by the launcher rather than by the connector.
 

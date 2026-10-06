@@ -180,7 +180,7 @@ def child_env(parent_env, socket_path: str, runtime_dir: str) -> dict:
     two separate reasons.
 
     CORRECTNESS. The entry defaults it to `unix` when unset. On a Windows seat the value
-    is set by the LAUNCHER's process (`examples/start-claude.ps1` exports it) and/or by
+    is set by the LAUNCHER's process (`examples/channel-servers/bin/start-claude.ps1` exports it) and/or by
     the `env` block of `.mcp.json` — neither of which a freshly-opened PowerShell
     inherits. An unpinned child there therefore sees it unset, defaults to `unix`, binds
     a filesystem socket, and Node on Win32 rejects that with EACCES: this tool would
