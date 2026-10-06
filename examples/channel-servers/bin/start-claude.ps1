@@ -119,7 +119,7 @@ $liveSession = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                Where-Object { $_.CommandLine -and $_.CommandLine -match $channelArg }
 if ($liveSession) {
   Write-Host "A Claude Code session is already running channel '$Channel' (PID $(@($liveSession)[0].ProcessId)). Refusing to start a second -- it would come up deaf to live-wake. Close the other session first."
-  Write-Host "  If you just re-provisioned: /mcp reconnect does not stop the previous channel server -- restart the session (close that session, then re-run this). Details: docs/board-tools-enablement.md, section Activating on a running seat"
+  Write-Host "  If you just re-provisioned: restart that session (close it, then re-run this). Why, and the other causes: docs/board-tools-enablement.md, section Activating on a running seat"
   exit 1
 }
 
