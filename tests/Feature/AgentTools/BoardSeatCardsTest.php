@@ -113,11 +113,12 @@ class BoardSeatCardsTest extends TestCase
     }
 
     /** @return array<string, mixed> */
-    private static function row(int $id, int $stage, ?int $lane, ?int $assignee, float $position): array
+    private static function row(int $id, int $stage, ?int $lane, ?int $assignee, float $position, int $priority = 0): array
     {
         return [
             'id' => $id, 'board_id' => 10, 'swimlane_id' => $lane, 'workflow_stage_id' => $stage,
             'name' => "card {$id}", 'tags' => [], 'assigned_user_id' => $assignee, 'position' => $position,
+            'priority' => $priority,
         ];
     }
 
@@ -126,14 +127,15 @@ class BoardSeatCardsTest extends TestCase
      * every row. Rows are returned in descending id, as kanban's search answers.
      *
      * @param  list<array<string, mixed>>  $rows
+     * @param  array<string, mixed>|null  $preload  the structure read's answer; {@see preload} when null
      */
-    private function board(array $rows): void
+    private function board(array $rows, ?array $preload = null): void
     {
         usort($rows, fn (array $a, array $b): int => $b['id'] <=> $a['id']);
-        Http::fake(function (Request $request) use ($rows) {
+        Http::fake(function (Request $request) use ($rows, $preload) {
             $url = urldecode($request->url());
             if (str_contains($url, '/preload.json')) {
-                return Http::response(self::preload());
+                return Http::response($preload ?? self::preload());
             }
             if (str_contains($url, '/tasks/search.json')) {
                 parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
@@ -519,5 +521,232 @@ class BoardSeatCardsTest extends TestCase
         $this->assertNull($res['body']['result']['assigned_user_id']);
         $this->assertSame('no_kanban_user', $res['body']['result']['assignee_unset_reason']);
         Http::assertNotSent(fn (Request $r): bool => $r->method() === 'PATCH');
+    }
+
+    // ─── the triage view (card#11268 / DL-464): one order, top tier first, a per-column cut ──
+
+    public function test_a_top_tier_card_leads_the_triage_order_ahead_of_in_progress(): void
+    {
+        $this->board([
+            self::row(301, 49, self::HOME, null, 10),           // In Progress
+            self::row(302, 48, self::HOME, null, 500, 1),       // Backlog, High: top tier
+            self::row(303, 54, self::HOME, null, 1),            // Prioritized (a pull column)
+            self::row(306, 48, self::HOME, null, 2),            // Backlog
+            self::row(307, 53, self::HOME, null, 1),            // Done
+        ]);
+
+        $res = $this->tool('board_my_cards');
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertSame(['order' => [302, 301, 303, 306, 307], 'top_tier' => [302], 'priority_unread' => 0], $res['body']['result']['triage']);
+        // cards_by_stage keeps its shape: the top-tier card stays in its own column, in rank order.
+        $this->assertSame([301, 303, 306, 302, 307], self::listed($res['body']));
+    }
+
+    /**
+     * kanban's `priority` is -1 Low, 0 Normal, 1 High — so a truthiness test puts every LOW card on
+     * top, which is the defect framework card#11293 carries. And a High card already in a finished
+     * column is not something to do next.
+     */
+    public function test_only_priority_one_in_an_unfinished_column_is_top_tier(): void
+    {
+        $this->board([
+            self::row(311, 48, self::HOME, null, 1, -1),        // Low
+            self::row(312, 48, self::HOME, null, 2, 0),         // Normal
+            self::row(313, 48, self::HOME, null, 3, 1),         // High
+            self::row(314, 53, self::HOME, null, 1, 1),         // High, but Done
+            self::row(315, 49, self::HOME, null, 1, -1),        // Low, In Progress
+        ]);
+
+        $res = $this->tool('board_my_cards');
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertSame([313], $res['body']['result']['triage']['top_tier']);
+        $this->assertSame([313, 315, 311, 312, 314], $res['body']['result']['triage']['order']);
+    }
+
+    /**
+     * limit 10 over In Progress 2, Prioritized 10, Backlog 30 + one High card at the BOTTOM of
+     * Backlog, Done 5. The High card is the oldest in Backlog and the last by position, so neither
+     * the newest-id cut nor Backlog's own share would keep it — it survives as top tier. The other
+     * nine slots: one per column in column order (4), then the unfinished columns in rounds
+     * (In Progress takes its 2nd, Prioritized and Backlog their 2nd and 3rd). Done's one slot is its
+     * LAST card by position — the one most recently moved in.
+     */
+    public function test_the_cut_shares_the_limit_by_column_and_never_cuts_a_top_tier_card(): void
+    {
+        $rows = [self::row(401, 49, self::HOME, null, 1), self::row(402, 49, self::HOME, null, 2)];
+        for ($i = 0; $i < 10; $i++) {
+            $rows[] = self::row(411 + $i, 54, self::HOME, null, 1 + $i);
+        }
+        $rows[] = self::row(430, 48, self::HOME, null, 1000, 1);
+        for ($i = 0; $i < 30; $i++) {
+            $rows[] = self::row(431 + $i, 48, self::HOME, null, 1 + $i);
+        }
+        for ($i = 0; $i < 5; $i++) {
+            $rows[] = self::row(501 + $i, 53, self::HOME, null, 1 + $i);
+        }
+        $this->board($rows);
+
+        $res = $this->tool('board_my_cards', ['limit' => 10]);
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $result = $res['body']['result'];
+        $this->assertSame([401, 402, 411, 412, 413, 431, 432, 433, 430, 505], self::listed($res['body']));
+        $this->assertSame([430, 401, 402, 411, 412, 413, 431, 432, 433, 505], $result['triage']['order']);
+        $this->assertSame([430], $result['triage']['top_tier']);
+        $window = $result['cards_window'];
+        $this->assertSame([48, 10, 10, true], [$window['total'], $window['returned'], $window['limit'], $window['truncated']]);
+        $this->assertSame([
+            ['stage_id' => 49, 'stage' => 'In Progress', 'total' => 2, 'returned' => 2],
+            ['stage_id' => 54, 'stage' => 'Prioritized', 'total' => 10, 'returned' => 3],
+            ['stage_id' => 48, 'stage' => 'Backlog', 'total' => 31, 'returned' => 4],
+            ['stage_id' => 53, 'stage' => 'Done', 'total' => 5, 'returned' => 1],
+        ], $window['per_stage']);
+    }
+
+    public function test_a_finished_column_gets_one_card_even_with_budget_left_over(): void
+    {
+        $rows = [self::row(601, 49, self::HOME, null, 1), self::row(602, 49, self::HOME, null, 2)];
+        for ($i = 0; $i < 60; $i++) {
+            $rows[] = self::row(610 + $i, 53, self::HOME, null, 1 + $i);
+        }
+        $this->board($rows);
+
+        $res = $this->tool('board_my_cards');
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $result = $res['body']['result'];
+        $this->assertSame([601, 602, 669], self::listed($res['body']), 'the finished column shows its last card by position: the one most recently moved in');
+        $this->assertSame([62, 3, true], [$result['cards_window']['total'], $result['cards_window']['returned'], $result['cards_window']['truncated']]);
+        $this->assertSame([
+            ['stage_id' => 49, 'stage' => 'In Progress', 'total' => 2, 'returned' => 2],
+            ['stage_id' => 53, 'stage' => 'Done', 'total' => 60, 'returned' => 1],
+        ], $result['cards_window']['per_stage']);
+    }
+
+    public function test_top_tier_cards_are_kept_past_the_limit_and_the_rest_is_hidden(): void
+    {
+        $this->board([
+            self::row(701, 48, self::HOME, null, 1, 1),
+            self::row(702, 48, self::HOME, null, 2, 1),
+            self::row(703, 49, self::HOME, null, 1),
+        ]);
+
+        $hidden = $this->tool('board_my_cards', ['limit' => 1])['body']['result'];
+        $this->assertSame([3, 2, 1, true], [$hidden['cards_window']['total'], $hidden['cards_window']['returned'], $hidden['cards_window']['limit'], $hidden['cards_window']['truncated']]);
+        $this->assertSame([701, 702], $hidden['triage']['order']);
+        $this->assertSame(['stage_id' => 49, 'stage' => 'In Progress', 'total' => 1, 'returned' => 0], $hidden['cards_window']['per_stage'][0]);
+    }
+
+    public function test_an_all_top_tier_set_past_the_limit_is_returned_whole_and_not_truncated(): void
+    {
+        // More than `limit` come back and nothing is hidden, so nothing was cut.
+        $this->board([self::row(701, 48, self::HOME, null, 1, 1), self::row(702, 48, self::HOME, null, 2, 1)]);
+        $whole = $this->tool('board_my_cards', ['limit' => 1])['body']['result'];
+        $this->assertSame([2, 2, false], [$whole['cards_window']['total'], $whole['cards_window']['returned'], $whole['cards_window']['truncated']]);
+        $this->assertArrayNotHasKey('remedy', $whole['cards_window']);
+    }
+
+    /**
+     * `stage` names one column, and the caller asked for it: it gets the whole `limit`, finished or
+     * not — which is how a finished column is read past its one slot. A finished column's cut keeps
+     * its TAIL, the cards moved in most recently, so the read advances as work ships.
+     */
+    public function test_a_stage_narrowed_finished_column_gets_the_whole_limit(): void
+    {
+        $rows = [self::row(801, 49, self::HOME, null, 1)];
+        for ($i = 0; $i < 60; $i++) {
+            $rows[] = self::row(810 + $i, 53, self::HOME, null, 1 + $i);
+        }
+        $this->board($rows);
+
+        $res = $this->tool('board_my_cards', ['stage' => 53, 'limit' => 20]);
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertSame(range(850, 869), self::listed($res['body']));
+        $this->assertSame([['stage_id' => 53, 'stage' => 'Done', 'total' => 60, 'returned' => 20]], $res['body']['result']['cards_window']['per_stage']);
+    }
+
+    public function test_a_set_that_fits_is_returned_whole_finished_columns_included(): void
+    {
+        $this->board([
+            self::row(901, 49, self::HOME, null, 1),
+            self::row(902, 53, self::HOME, null, 1),
+            self::row(903, 53, self::HOME, null, 2),
+            self::row(904, 53, self::HOME, null, 3),
+        ]);
+
+        $window = $this->tool('board_my_cards')['body']['result']['cards_window'];
+
+        $this->assertSame([4, 4, false], [$window['total'], $window['returned'], $window['truncated']]);
+        $this->assertSame(['stage_id' => 53, 'stage' => 'Done', 'total' => 3, 'returned' => 3], $window['per_stage'][1]);
+    }
+
+    /**
+     * A row with no integer `priority` is read as not top tier — and COUNTED, so "no High cards" and
+     * "the board sent no priority" do not read alike.
+     */
+    public function test_a_card_whose_row_carries_no_priority_is_counted_as_unread(): void
+    {
+        $noPriority = self::row(951, 48, self::HOME, null, 1);
+        unset($noPriority['priority']);
+        $stringPriority = self::row(952, 48, self::HOME, null, 2);
+        $stringPriority['priority'] = '1';
+        $this->board([$noPriority, $stringPriority, self::row(953, 48, self::HOME, null, 3, 1)]);
+
+        $triage = $this->tool('board_my_cards')['body']['result']['triage'];
+
+        $this->assertSame(['order' => [953, 951, 952], 'top_tier' => [953], 'priority_unread' => 2], $triage);
+    }
+
+    /**
+     * A structure read that carried no columns leaves every stage uncarried. The rank tier needs only
+     * the stage id and the mappings, so In Progress still leads and the pull column follows.
+     */
+    public function test_a_degraded_structure_read_still_lists_in_progress_first(): void
+    {
+        $this->board([
+            self::row(1001, 48, self::HOME, null, 1),   // Backlog
+            self::row(1002, 53, self::HOME, null, 1),   // Done (the mapping's merged stage)
+            self::row(1003, 49, self::HOME, null, 1),   // In Progress
+            self::row(1004, 54, self::HOME, null, 1),   // Prioritized
+        ], ['data' => ['swimlanes' => [['id' => self::HOME]], 'workflows' => null]]);
+
+        $res = $this->tool('board_my_cards');
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertSame([1003, 1004, 1001, 1002], self::listed($res['body']));
+        $this->assertSame([1003, 1004, 1001, 1002], $res['body']['result']['triage']['order']);
+    }
+
+    /**
+     * Top-tier cards take the budget first, so `B` can be smaller than the column count: the
+     * earliest columns get their one slot, later ones and the finished column get none, and
+     * `per_stage` says so.
+     */
+    public function test_a_budget_smaller_than_the_column_count_reaches_the_earliest_columns_only(): void
+    {
+        $this->board([
+            self::row(1101, 49, self::HOME, null, 1),
+            self::row(1102, 49, self::HOME, null, 2),
+            self::row(1111, 54, self::HOME, null, 1),
+            self::row(1112, 54, self::HOME, null, 2),
+            self::row(1121, 48, self::HOME, null, 1),
+            self::row(1122, 48, self::HOME, null, 2),
+            self::row(1123, 48, self::HOME, null, 3, 1),    // High: top tier
+            self::row(1131, 53, self::HOME, null, 1),
+        ]);
+
+        $res = $this->tool('board_my_cards', ['limit' => 3]);
+
+        $this->assertSame(200, $res['status'], json_encode($res['body']));
+        $this->assertSame([1123, 1101, 1111], $res['body']['result']['triage']['order']);
+        $this->assertSame([
+            ['stage_id' => 49, 'stage' => 'In Progress', 'total' => 2, 'returned' => 1],
+            ['stage_id' => 54, 'stage' => 'Prioritized', 'total' => 2, 'returned' => 1],
+            ['stage_id' => 48, 'stage' => 'Backlog', 'total' => 3, 'returned' => 1],
+            ['stage_id' => 53, 'stage' => 'Done', 'total' => 1, 'returned' => 0],
+        ], $res['body']['result']['cards_window']['per_stage']);
     }
 }

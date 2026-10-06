@@ -952,7 +952,7 @@ class SocketGuard(_TreeCase):
     def test_the_parents_transport_never_reaches_the_child(self):
         # THE WINDOWS FALSE-FAIL, at its mechanism. The entry defaults TRANSPORT to
         # `unix` when unset, and on a Windows seat the real value is exported by the
-        # LAUNCHER process (examples/start-claude.ps1) and/or .mcp.json's `env` block —
+        # LAUNCHER process (examples/channel-servers/bin/start-claude.ps1) and/or .mcp.json's `env` block —
         # neither of which a freshly-opened PowerShell inherits. Unpinned, the child
         # there binds a filesystem socket, Win32 rejects it with EACCES, and this tool
         # prints LAUNCH FAILED about a healthy deployment.

@@ -1,6 +1,6 @@
 {
   "name": "agent-webhook-bridge-channel-server",
-  "version": "0.9.45",
+  "version": "0.9.48",
   "private": true,
   "description": "Reference Claude Code channel MCP server for the agent-webhook-bridge channel_push handler.",
   "type": "module",
@@ -15,6 +15,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.1"
+    "@modelcontextprotocol/sdk": "^1.32.1"
   }
 }

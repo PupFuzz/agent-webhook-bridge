@@ -1936,6 +1936,7 @@ class AgentToolsCallTest extends TestCase
             'truncated' => true,
             'stage_filter' => null,
             'remedy' => $result['cards_window']['remedy'] ?? null,
+            'per_stage' => [['stage_id' => 50, 'stage' => 'Backlog', 'total' => 500, 'returned' => BoardMyCardsTool::DEFAULT_MAX_CARDS]],
         ], $result['cards_window']);
     }
 
@@ -1955,33 +1956,27 @@ class AgentToolsCallTest extends TestCase
             'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS,
             'truncated' => false,
             'stage_filter' => null,
+            'per_stage' => [['stage_id' => 50, 'stage' => 'Backlog', 'total' => 3, 'returned' => 3]],
         ], $result['cards_window']);
     }
 
-    public function test_my_cards_keeps_the_seats_newest_work_when_it_cuts(): void
+    public function test_my_cards_keeps_the_head_of_an_unfinished_column_by_board_position_when_it_cuts(): void
     {
-        // ⛔ THE PROPERTY, NOT THE DIRECTION. Card ids are allocated globally and
-        // monotonically, so "oldest first" means a lane with a terminal column returns 52
-        // finished cards and the seat's live work is structurally invisible on the default
-        // call, permanently — a bounded response that answers the wrong question. The
-        // assertion is therefore about WHAT SURVIVES (the newest work), which reds on a
-        // silent flip in EITHER direction, not about the comparator's spelling.
-        $this->fakeLaneOf(500);
+        // ⛔ THE PROPERTY, NOT THE DIRECTION (card#11268 / DL-464, which retired DL-365 Decision 7's
+        // newest-id cut for this list). An unfinished column keeps its HEAD by the board's own
+        // `position` — the PM's priority order — so the positions here run AGAINST the ids: a cut
+        // by id in either direction keeps a different set.
+        $positions = [];
+        for ($id = 1; $id <= 500; $id++) {
+            $positions[$id] = ['position' => (float) (501 - $id)];
+        }
+        $this->fakeLaneOf(500, $positions);
 
         $cards = $this->callTool(['tool' => 'board_my_cards'])
             ->assertStatus(200)
             ->json('result.cards_by_stage.Backlog');
 
-        $ids = array_column($cards, 'id');
-        $this->assertCount(BoardMyCardsTool::DEFAULT_MAX_CARDS, $ids);
-        $this->assertSame(500, max($ids), 'the newest card in the lane must survive the cut');
-        $this->assertSame(500 - BoardMyCardsTool::DEFAULT_MAX_CARDS + 1, min($ids), 'the cut must take the newest N, contiguously');
-        // WHICH cards survive is decided by id; the ORDER they are emitted in is the seat's rank
-        // order (card#11267): stage rank, then `position`, then id. These rows carry no position,
-        // so within the one column the id decides, ascending.
-        $ranked = $ids;
-        sort($ranked);
-        $this->assertSame($ranked, $ids, 'the kept rows are emitted in rank order');
+        $this->assertSame(range(500, 500 - BoardMyCardsTool::DEFAULT_MAX_CARDS + 1), array_column($cards, 'id'), 'the column\'s top cards by position survive, emitted in that order');
     }
 
     public function test_my_cards_default_read_shows_the_live_column_not_a_wall_of_done(): void
@@ -2056,7 +2051,7 @@ class AgentToolsCallTest extends TestCase
         ], $result['board_stages']);
     }
 
-    public function test_my_cards_selection_is_by_card_id_not_by_the_order_the_board_answered_in(): void
+    public function test_my_cards_selection_is_by_board_order_not_by_the_order_the_board_answered_in(): void
     {
         // ⛔ THE FIXTURE IS SHUFFLED, AND THAT IS THE WHOLE TEST. An ASCENDING lane cannot
         // tell "highest 52 ids" from "last 52 as answered"; a DESCENDING one cannot tell it
@@ -2069,9 +2064,9 @@ class AgentToolsCallTest extends TestCase
         //   take-first-N              => 1,3,5,…,19       — a different SET
         //   emission in answer order  => 51,53,…,59,52,…,60 — a different ORDER
         //
-        // Since card#11267 the kept rows are emitted in the seat's rank order — stage rank, then
-        // `position`, then id — not in the board's answer order; these rows carry no position, so
-        // the id decides, ascending.
+        // Since card#11268 (DL-464) the cut keeps the column's head in the seat's rank order — stage
+        // rank, then `position`, then id — not the highest ids; these rows carry no position, so the
+        // id decides, ascending: 1..10, against take-first-N's 1,3,…,19.
         $ids = array_merge(range(1, 59, 2), range(2, 60, 2));
         $rows = [];
         foreach ($ids as $id) {
@@ -2089,7 +2084,7 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200)
             ->json('result.cards_by_stage.Backlog');
 
-        $this->assertSame(range(51, 60), array_column($cards, 'id'));
+        $this->assertSame(range(1, 10), array_column($cards, 'id'));
     }
 
     public function test_my_cards_never_lets_an_unidentifiable_row_displace_a_card_that_has_an_id(): void
@@ -2104,7 +2099,7 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200)->json('result');
 
         $this->assertSame(
-            [2, 4, 6],
+            [1, 2, 4],
             array_map(static fn (array $card): mixed => $card['id'], $result['cards_by_stage']['Backlog'])
         );
         $this->assertSame(6, $result['cards_window']['total']);
@@ -2292,8 +2287,9 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame([
             'total' => 500, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'stage_filter' => 50,
             'remedy' => $result['cards_window']['remedy'] ?? null,
+            'per_stage' => [['stage_id' => 50, 'stage' => 'Backlog', 'total' => 500, 'returned' => 4]],
         ], $result['cards_window']);
-        $this->assertSame([497, 498, 499, 500], array_column($result['cards_by_stage']['Backlog'], 'id'));
+        $this->assertSame([1, 2, 3, 4], array_column($result['cards_by_stage']['Backlog'], 'id'));
     }
 
     public function test_my_cards_refuses_an_ambiguous_stage_name_rather_than_guessing(): void
