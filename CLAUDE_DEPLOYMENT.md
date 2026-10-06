@@ -110,10 +110,12 @@ php artisan bridge:provision-tools --agent=<name>  # BOARD TOOLS ARE THE DEFAULT
                                                   # without polling GitHub; docs/board-tools.md § ci_await). It prints
                                                   # a paste-ready board_tools: block, and for an ssh-transport agent
                                                   # the whole SETUP PACKET (five steps, three actors — one a human).
-                                                  # impl seats use kbcard for their board work, and get ci_await from
-                                                  # a SCOPE-LESS block (enabled: true, no board scope — no board tool;
-                                                  # docs/board-tools.md § Scope-less agents, DL-461). For an agent that
-                                                  # needs no board_tools: block at all, declare `board_tools:` with
+                                                  # impl seats need no kanban token: every card write through the
+                                                  # bridge is made with the WRITEBACK token. Either block shape is
+                                                  # valid for one — a SCOPE-LESS block (enabled: true, no board
+                                                  # scope — CI tools only; docs/board-tools.md § Scope-less agents,
+                                                  # DL-461) or a scoped one (DL-465). For an agent that needs no
+                                                  # board_tools: block at all, declare `board_tools:` with
                                                   # `enabled: false` in its YAML to silence the NEXT STEPS line; that
                                                   # records the decision WHILE THE BLOCK IS PRESENT. Deleting that
                                                   # YAML later is a decommission, not a decline: docs/board-tools.md
