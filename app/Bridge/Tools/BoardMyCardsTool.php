@@ -82,12 +82,17 @@ use Illuminate\Support\Facades\Log;
  * a plain call, and the named column when `stage` is passed, because `onStage()` runs
  * before the cut.
  *
- * ⛔ THE CUT KEEPS THE NEWEST CARDS, AND THAT IS THE DIFFERENCE BETWEEN A BOUNDED
- * RESPONSE AND A USEFUL ONE (r1). Card ids here are allocated globally and
- * monotonically, so keeping the LOWEST ids returns a lane's first-created cards — on
- * any board with a terminal column, 52 finished ones — and the seat's live work is
- * structurally invisible on the default call, permanently, because the window is stable
- * and never advances. See DEFAULT_MAX_CARDS and `cardWindow` for the ordering rule.
+ * ⛔ WHICH CARDS A CUT KEEPS IS THE DIFFERENCE BETWEEN A BOUNDED RESPONSE AND A USEFUL ONE
+ * (r1). The seat's OWN list is cut by {@see SeatCardTriage} (card#11268, DL-464): every
+ * High-priority card outside a finished column kept, at most one card per finished column, the other
+ * columns sharing the rest of `limit` — so its live work and its next card are on the default
+ * read, and `cards_window.per_stage` shows each column's share. The shared lane, `tag_cards` and
+ * the coord cards keep the NEWEST ids ({@see cardWindow}, DL-365 Decision 7): keeping the LOWEST
+ * returns a lane's first-created cards — on any board with a terminal column, 52 finished ones —
+ * and live work is structurally invisible, permanently, because the window never advances.
+ *
+ * ⚠ ONE LIST CAN EXCEED `limit`: the seat's own, by its top-tier cards, which are never cut
+ * (the operator's rule). That list's size is `max(limit, top-tier cards)`.
  *
  * ⛔ AND THE RESPONSE NAMES EVERY COLUMN OF THE BOARD (`board_stages`), whether or not a
  * card in it survived the cut. `cards_by_stage` only carries the columns the RETURNED
@@ -140,9 +145,11 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      * return three saturated lists, and a call passing `tag` a fourth; that is a
      * bound, not a promise of the budget.
      *
-     * ⛔ WHICH 52 IS NOT A DETAIL — see `cardWindow`. A cap that kept the OLDEST cards
-     * bounds the response and answers the wrong question, which is the same defect this
-     * constant exists to fix wearing a smaller number.
+     * ⛔ WHICH 52 IS NOT A DETAIL — see {@see SeatCardTriage} for the seat's own list and
+     * `cardWindow` for the others. A cap that kept the OLDEST cards bounds the response and
+     * answers the wrong question, which is the same defect this constant exists to fix wearing a
+     * smaller number. ⚠ The seat's own list keeps every top-tier card past it (DL-464), so this
+     * bounds that list only when the seat holds no more High-priority cards than this.
      */
     public const DEFAULT_MAX_CARDS = 52;
 
@@ -154,6 +161,19 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
 
     /** How a caller lets more of a capped list through — shared by every truncated window's remedy. */
     private const RAISE_LIMIT = 'raise `limit` (the response grows in proportion)';
+
+    /** What a newest-id cut did (DL-365 Decision 7): the shared lane, `tag_cards` and the coord cards. */
+    private const CUT_NEWEST = 'this list was cut to the newest `limit` of `total` cards';
+
+    /** What {@see SeatCardTriage}'s cut did to the seat's own list (card#11268, DL-464). */
+    private const CUT_BY_COLUMN = 'this list was cut by column: High-priority cards outside finished columns are all kept, each finished column shows at most its most recent card, and the other columns share the rest of `limit` from the top of each — `per_stage` says what each column holds';
+
+    /**
+     * How the seat's own whole list gets the rest. Not {@see RAISE_LIMIT}'s "grows in proportion": a
+     * finished column shows at most one card until `limit` reaches `total`, so raising it below that
+     * can return nothing more ({@see SeatCardTriage}).
+     */
+    private const TRIAGE_HOW = 'narrow with `stage` (one column, up to `limit` of its cards: an id or name from `board_stages`), or raise `limit` — a finished column shows more than one card only once `limit` reaches `total`';
 
     /** The board's preload read carried no swimlane collection, so there is no lane list to count against. */
     public const UNMEASURED_SWIMLANES_UNREADABLE = 'board_swimlanes_unreadable';
@@ -283,8 +303,8 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             implode('+', array_keys(array_filter(['own' => true, 'assigned' => $assignedRead !== null, 'shared' => $sharedRead !== null, 'tag' => $tagRead !== null]))),
         );
 
-        [$ownCards, $ownWindow] = $this->filteredWindow($this->onStage($mine, $stageFilter), $limit, $stageFilter);
         $rank = BoardCardRank::forBoard($structure, $boardId, $agentName);
+        $triage = SeatCardTriage::cut($this->onStage($mine, $stageFilter), $rank, $limit, $stageFilter !== null);
         $result = [
             'board_id' => $observedBoard,
             'board_observed' => $boardObserved,
@@ -293,8 +313,9 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             'selection' => $scope->block($assignedRead?->truncated),
             'stage_rank' => $rank->block(),
             'board_stages' => $this->boardStages($stageNames),
-            'cards_by_stage' => $this->groupByStage($ownCards, $stageNames, $rank, $descriptionCap),
-            'cards_window' => $ownWindow,
+            'cards_by_stage' => $this->groupByStage($triage->kept, $stageNames, $rank, $descriptionCap),
+            'cards_window' => $this->triageWindow($triage, $limit, $stageFilter, $stageNames),
+            'triage' => $triage->block(),
         ];
 
         if ($sharedRead !== null) {
@@ -805,9 +826,6 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
     private function filteredWindow(array $rows, int $limit, ?int $stageFilter): array
     {
         [$cards, $window] = $this->cardWindow($rows, $limit);
-        [$remedy, $advised] = $stageFilter === null
-            ? [self::NARROW_WITH_STAGE.' (one column: an id or name from `board_stages`) or '.self::RAISE_LIMIT, ['stage', 'limit']]
-            : [self::RAISE_LIMIT.' — this list is already narrowed to one column by `stage`', ['limit']];
 
         return [$cards, [
             'total' => $window['total'],
@@ -815,8 +833,51 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             'limit' => $window['limit'],
             'truncated' => $window['truncated'],
             'stage_filter' => $stageFilter,
-            ...$this->remedy($window['truncated'], $remedy, $advised),
+            ...$this->stageListRemedy($window['truncated'], self::CUT_NEWEST, $stageFilter),
         ]];
+    }
+
+    /**
+     * The seat's own list's window (card#11268, DL-464): the keys {@see filteredWindow} states for
+     * every list `stage` can narrow, read off {@see SeatCardTriage}'s cut rather than the newest-id
+     * one, plus `per_stage` — every column the seat's cards sit in, with how many it holds and how
+     * many came back, so a column's share of the cut is visible. `stage` on each entry is the
+     * column's `cards_by_stage` key ({@see stageLabel}, the one spelling both use).
+     *
+     * @param  array<int, string>  $stageNames
+     * @return array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, remedy?: string, per_stage: list<array{stage_id: ?int, stage: string, total: int, returned: int}>}
+     */
+    private function triageWindow(SeatCardTriage $triage, int $limit, ?int $stageFilter, array $stageNames): array
+    {
+        return [
+            'total' => $triage->total,
+            'returned' => count($triage->kept),
+            'limit' => $limit,
+            'truncated' => $triage->truncated(),
+            'stage_filter' => $stageFilter,
+            ...($stageFilter === null
+                ? $this->remedy($triage->truncated(), self::CUT_BY_COLUMN, self::TRIAGE_HOW, ['stage', 'limit'])
+                : $this->stageListRemedy($triage->truncated(), self::CUT_BY_COLUMN, $stageFilter)),
+            'per_stage' => array_map(
+                fn (array $column): array => ['stage_id' => $column['stage_id'], 'stage' => $this->stageLabel($column['stage_id'], $stageNames), 'total' => $column['total'], 'returned' => $column['returned']],
+                $triage->perStage,
+            ),
+        ];
+    }
+
+    /**
+     * The `remedy` of a list `stage` can narrow: `stage` and `limit` on a whole list, `limit` alone
+     * on one already narrowed.
+     *
+     * @return array{remedy?: string}
+     */
+    private function stageListRemedy(bool $truncated, string $cut, ?int $stageFilter): array
+    {
+        [$how, $advised] = $stageFilter === null
+            ? [self::NARROW_WITH_STAGE.' (one column: an id or name from `board_stages`) or '.self::RAISE_LIMIT, ['stage', 'limit']]
+            : [self::RAISE_LIMIT.' — this list is already narrowed to one column by `stage`', ['limit']];
+
+        return $this->remedy($truncated, $cut, $how, $advised);
     }
 
     /**
@@ -844,14 +905,14 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      * @param  list<string>  $advised
      * @return array{remedy?: string}
      */
-    private function remedy(bool $truncated, string $how, array $advised): array
+    private function remedy(bool $truncated, string $cut, string $how, array $advised): array
     {
         if (! $truncated) {
             return [];
         }
         $clause = ClientUpdateClause::fromBundledTable($this->clientVersion, $this->name(), $advised);
 
-        return ['remedy' => 'this list was cut to the newest `limit` of `total` cards; to see more, '.$how.($clause === '' ? '' : '.'.$clause)];
+        return ['remedy' => $cut.'; to see more, '.$how.($clause === '' ? '' : '.'.$clause)];
     }
 
     /**
@@ -865,7 +926,10 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      * separately because they differ in the ordinary case — a list shorter than
      * the cap returns everything under a cap that never bit.
      *
-     * ⛔ WHICH cards survive is deterministic and is the HIGHEST CARD IDS — the seat's
+     * ⛔ THE SEAT'S OWN LIST IS NOT CUT HERE since card#11268 (DL-464) — {@see SeatCardTriage} cuts
+     * it by column. This cut serves the shared lane, `tag_cards` and the coord cards.
+     *
+     * ⛔ WHICH cards survive is deterministic and is the HIGHEST CARD IDS — the list's
      * NEWEST work — not whatever order the upstream search happened to answer in.
      * ⚠ THE FIRST CUT OF THIS TOOK THE LOWEST IDS AND WAS WRONG IN A WAY THE CAP'S OWN
      * GOAL DEFINES (r1): card ids here are allocated globally and monotonically, so the
@@ -1103,7 +1167,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         [$coordCards, $coordWindow] = $this->cardWindow($rows, $limit);
         // ⛔ NOT the product-board remedy: `stage` never reaches this block (see above), so
         // naming it here would send a caller to an argument that cannot narrow these cards.
-        $coordWindow = [...$coordWindow, ...$this->remedy($coordWindow['truncated'], self::RAISE_LIMIT.'. `stage` does not narrow this list: these cards are on the coordination board, whose columns are not yours', ['limit'])];
+        $coordWindow = [...$coordWindow, ...$this->remedy($coordWindow['truncated'], self::CUT_NEWEST, self::RAISE_LIMIT.'. `stage` does not narrow this list: these cards are on the coordination board, whose columns are not yours', ['limit'])];
 
         return [
             'coord_board_id' => $observedBoard,
@@ -1160,13 +1224,23 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         $grouped = [];
         foreach ($rank->sort($rows) as $row) {
             $stageId = is_numeric($row['workflow_stage_id'] ?? null) ? (int) $row['workflow_stage_id'] : null;
-            $stageName = $stageId !== null && isset($stageNames[$stageId]) ? $stageNames[$stageId] : ('stage:'.($stageId ?? '?'));
-            $grouped[$stageName][] = BoardCardProjection::withPosition(
+            $grouped[$this->stageLabel($stageId, $stageNames)][] = BoardCardProjection::withPosition(
                 BoardCardProjection::withSwimlane(BoardCardProjection::project($row, $stageNames, $descriptionCap), $row),
                 $row,
             );
         }
 
         return $grouped;
+    }
+
+    /**
+     * A column's key in `cards_by_stage` — and in `per_stage`, which names the same columns by it:
+     * the stage's name, or `stage:<id>` (`stage:?` for no stage) when the board read carried none.
+     *
+     * @param  array<int, string>  $stageNames
+     */
+    private function stageLabel(?int $stageId, array $stageNames): string
+    {
+        return $stageId !== null && isset($stageNames[$stageId]) ? $stageNames[$stageId] : ('stage:'.($stageId ?? '?'));
     }
 }
