@@ -41,6 +41,7 @@ on:
   pull_request:
     paths:
       - 'examples/channel-servers/**'
+      - 'examples/start-*'
       - '.github/workflows/channel-server-supply-chain.yml'
   schedule:
     - cron: "23 5 * * 1"   # Mondays 05:23 UTC (off-peak; offset from the other crons)
@@ -110,6 +111,20 @@ jobs:
 
       - name: Reproducible install
         run: npm ci --ignore-scripts
+
+      # The launcher's PowerShell half has no other automated check (card#11328): a parse
+      # error here is a seat that cannot start. Parse only — nothing is executed.
+      - name: The PowerShell launcher and its compatibility stub parse
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @('bin/start-claude.ps1', '../start-claude.ps1')) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file).Path, [ref]$tokens, [ref]$errors)
+            if ($errors) { $failed = $true; $errors | ForEach-Object { Write-Host "::error file=$file::$($_.Message) (line $($_.Extent.StartLineNumber))" } }
+            else { Write-Host "$file parses" }
+          }
+          if ($failed) { exit 1 }
 
       - name: The seat updater's suite (node --test)
         run: node --test tests/client-update.test.mjs

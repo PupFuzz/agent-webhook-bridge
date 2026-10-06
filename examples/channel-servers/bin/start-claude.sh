@@ -155,7 +155,9 @@ _reclaim_stale_channel_server() {   # kill ONLY a verified awb channel server ho
         # the first match and SIGPIPEs `ps`, so under `pipefail` a cmdline that DOES match reads as
         # "not an awb channel server" — the safe direction, which is why it would go unnoticed.
         _pid_args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-        if [[ $_pid_args == *agent-webhook-bridge-channel* || $_pid_args == *agent-webhook-bridge/client/*/entry.mjs* ]]; then
+        # A copied server shows only its file name; a client root's shows THIS channel's root, so a
+        # root-run orphan of another channel on the same port is never this launch's to kill.
+        if [[ $_pid_args == *agent-webhook-bridge-channel* || $_pid_args == *"agent-webhook-bridge/client/${CHANNEL}/entry.mjs"* ]]; then
             echo "Reclaiming port $port: killing orphan channel server PID $pid." >&2
             kill -TERM "$pid" 2>/dev/null; sleep 0.5; kill -KILL "$pid" 2>/dev/null || true
             killed=1
@@ -173,30 +175,37 @@ _reclaim_stale_channel_server() {   # kill ONLY a verified awb channel server ho
 _refuse_held_port() {
     echo "The channel port is already held by a process on 127.0.0.1:${PORT} (a running session, or a channel server left behind by one) — refusing to start a second." >&2
 }
+_http_answers() {   # 0 when anything answers HTTP on $1 within 1 s (the plain probe; no curl ⇒ 1)
+    command -v curl >/dev/null 2>&1 && curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$1/" 2>/dev/null
+}
+_port_held_unattributed() {   # 0 when `ss` shows a LISTEN socket on $1 — PID or not (no -p)
+    command -v ss >/dev/null 2>&1 && [ -n "$(ss -H -ltn "sport = :$1" 2>/dev/null)" ]
+}
 
 if [ "$TRANSPORT" = "http" ]; then
-    if command -v ss >/dev/null 2>&1 || command -v lsof >/dev/null 2>&1; then
-        if [ -n "$(_port_listeners "$PORT")" ]; then
-            if _bridge_responding "$PORT"; then
-                _refuse_held_port
-                for pid in $(_port_listeners "$PORT"); do echo "  port ${PORT} held by PID ${pid}: $(ps -p "$pid" -o args= 2>/dev/null)" >&2; done
-                exit 1
-            fi
-            echo "Port ${PORT} is held but not responding as a healthy bridge — stale orphan from a prior session. Reclaiming." >&2
-            if ! _reclaim_stale_channel_server "$PORT"; then
-                echo "Could not reclaim port ${PORT} (holder is not a recognizable channel server, or it did not release). Clear it manually, then relaunch." >&2
-                exit 1
-            fi
-            echo "Reclaimed port ${PORT}; continuing startup." >&2
-        fi
-    else
-        # No port-inspection tool: the orphan reclaim cannot run, so fall back to the plain probe
-        # (refuse on any answer) and say why a crashed-session orphan will not be self-healed.
+    command -v ss >/dev/null 2>&1 || command -v lsof >/dev/null 2>&1 || \
         echo "WARNING: neither 'ss' nor 'lsof' found — cannot detect a stale channel-server orphan on 127.0.0.1:${PORT}; a crashed-session orphan would resurface as EADDRINUSE-deaf. Install iproute2 (ss) or lsof to enable self-heal." >&2
-        if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${PORT}/" 2>/dev/null; then
+    if [ -n "$(_port_listeners "$PORT")" ]; then
+        if _bridge_responding "$PORT"; then
             _refuse_held_port
+            for pid in $(_port_listeners "$PORT"); do echo "  port ${PORT} held by PID ${pid}: $(ps -p "$pid" -o args= 2>/dev/null)" >&2; done
             exit 1
         fi
+        echo "Port ${PORT} is held but not responding as a healthy bridge — stale orphan from a prior session. Reclaiming." >&2
+        if ! _reclaim_stale_channel_server "$PORT"; then
+            echo "Could not reclaim port ${PORT} (holder is not a recognizable channel server, or it did not release). Clear it manually, then relaunch." >&2
+            exit 1
+        fi
+        echo "Reclaimed port ${PORT}; continuing startup." >&2
+    # No PID this user can see is NOT a free port: another user's socket shows none to a non-root
+    # `ss -p` / `lsof`. So the plain probe still runs, and a LISTEN line with no PID still refuses —
+    # starting here would bind-fail and come up deaf.
+    elif _http_answers "$PORT"; then
+        _refuse_held_port
+        exit 1
+    elif _port_held_unattributed "$PORT"; then
+        echo "Port ${PORT} on 127.0.0.1 is held by a process whose PID this user cannot see (another user's, most often) and that does not answer HTTP — refusing to start a session that would come up deaf. Free the port or move BRIDGE_CHANNEL_PORT, then relaunch." >&2
+        exit 1
     fi
 elif [ -S "$SOCK" ]; then
     if ! command -v curl >/dev/null 2>&1; then
@@ -242,4 +251,8 @@ fi
 
 # ── 8. Launch ─────────────────────────────────────────────────────────────────────────
 cd "$HOME"   # so a home-rooted ~/.mcp.json is loaded
-exec claude --dangerously-load-development-channels "server:${CHANNEL}" "$@"
+# BRIDGE_CLAUDE_EXTRA_ARGS: extra `claude` arguments a seat keeps across launcher updates (its
+# ~/start-claude.sh shim sets it). Split on whitespace — no quoting; the provisioner only writes
+# plain tokens. Arguments given on the command line follow it.
+read -r -a EXTRA_ARGS <<< "${BRIDGE_CLAUDE_EXTRA_ARGS:-}"
+exec claude --dangerously-load-development-channels "server:${CHANNEL}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"

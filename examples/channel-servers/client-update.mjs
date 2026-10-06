@@ -98,7 +98,14 @@ const REQUIRED_ENTRIES = REQUIRED_CLIENT_FILES.map((name) => `client/${name}`);
 const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
 /** A bootstrap's budget, and so how long it holds the lock before a launch may take it over. */
 const INSTALL_LOCK_MS = 10 * 60 * 1000;
-const SHIM_MARKER = 'agent-webhook-bridge client updater: seat-tool shim';
+/**
+ * Every shim the updater writes carries SHIM_MARKER_PREFIX followed by its kind, and the sweep in
+ * `settleRoot` removes only files carrying the prefix, so it still recognises every shim an earlier
+ * updater wrote (all of them carry the seat-tool wording, which the non-launcher kinds keep).
+ */
+const SHIM_MARKER_PREFIX = 'agent-webhook-bridge client updater:';
+const SHIM_MARKER = `${SHIM_MARKER_PREFIX} seat-tool shim`;
+const LAUNCHER_SHIM_MARKER = `${SHIM_MARKER_PREFIX} launcher shim`;
 
 /** The pack or the offer is refused: logged `refuse` / `refused`. */
 export class Refusal extends Error {}
@@ -1093,12 +1100,16 @@ export function shimFor(root, tool, platform = process.platform, kind = 'seat-to
     name = win ? `${tool}.cmd` : tool;
     run = win ? `python "${root}\\versions\\%AWB_RELEASE%\\seat-tools\\bin\\${tool}" %*\r\n` : `exec "$root/versions/$release/seat-tools/bin/${tool}" "$@"\n`;
   }
+  const marker = kind === 'launcher' ? LAUNCHER_SHIM_MARKER : SHIM_MARKER;
   if (win) {
+    // setlocal + a cleared AWB_RELEASE: an AWB_RELEASE inherited from the caller (or left by an
+    // earlier shim in the same console) would otherwise survive a current.json the resolve could
+    // not read, and the shim would run that stale release instead of refusing.
     return {
       name,
       body:
-        `@echo off\r\nrem ${SHIM_MARKER}\r\n` +
-        `for /f "usebackq delims=" %%r in (\`node -e "${RELEASE_RESOLVER.replace(/"/g, '\\"')}" "${root}\\current.json"\`) do set "AWB_RELEASE=%%r"\r\n` +
+        `@echo off\r\nrem ${marker}\r\nsetlocal\r\nset "AWB_RELEASE="\r\n` +
+        `for /f "usebackq delims=" %%r in (\`node -e "${RELEASE_RESOLVER.replace(/"/g, '\\"')}" "${root}\\current.json" 2^>nul\`) do set "AWB_RELEASE=%%r"\r\n` +
         'if not defined AWB_RELEASE (echo the agent-webhook-bridge client root has no readable current.json 1>&2 & exit /b 2)\r\n' +
         run,
     };
@@ -1106,9 +1117,9 @@ export function shimFor(root, tool, platform = process.platform, kind = 'seat-to
   return {
     name,
     body:
-      `#!/bin/sh\n# ${SHIM_MARKER} — runs ${tool} from the release ${root}/current.json names.\n` +
+      `#!/bin/sh\n# ${marker} — runs ${tool} from the release ${root}/current.json names.\n` +
       `root=${shellQuote(root)}\n` +
-      `release=$(node -e ${shellQuote(RELEASE_RESOLVER)} "$root/current.json") || { echo "$root/current.json is unreadable or names no release; this seat's client needs re-bootstrapping" >&2; exit 2; }\n` +
+      `release=$(node -e ${shellQuote(RELEASE_RESOLVER)} "$root/current.json" 2>/dev/null) || { echo "$root/current.json is unreadable or names no release; this seat's client needs re-bootstrapping" >&2; exit 2; }\n` +
       run,
   };
 }
@@ -1178,7 +1189,7 @@ function settleRoot(ctx, release) {
     for (const name of fs.readdirSync(bin)) {
       if (!wanted.has(name)) {
         try {
-          if (fs.readFileSync(path.join(bin, name), 'utf8').includes(SHIM_MARKER)) {
+          if (fs.readFileSync(path.join(bin, name), 'utf8').includes(SHIM_MARKER_PREFIX)) {
             fs.rmSync(path.join(bin, name), { force: true });
           }
         } catch {

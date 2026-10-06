@@ -103,6 +103,26 @@ if (-not $Channel) {
 }
 if ($ResolveOnly) { Write-Output $Channel; exit 0 }
 
+# TUNNEL_HOST has no generic default: with the placeholder the tunnel loops on a failing ssh in a
+# hidden window and the session comes up deaf with nothing said. Refuse instead.
+if (-not $TunnelHost -or $TunnelHost -eq '<agent>@<bridge-host>') {
+  Write-Error "TUNNEL_HOST is not set -- run: setx TUNNEL_HOST <agent>@<bridge-host>  then open a new terminal and relaunch."
+  exit 1
+}
+
+# ===== 1b. single-session guard (mirrors the bash launcher's pgrep on the claude argv) =====
+# A live session's channel server holds the port and answers HTTP, but a session whose server is
+# still starting may not -- and the reclaim below would kill a live client-root server. So a
+# claude process already running THIS channel refuses first, whatever the port says.
+$channelArg = '--dangerously-load-development-channels\s+"?server:' + [regex]::Escape($Channel) + '("|\s|$)'
+$liveSession = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+               Where-Object { $_.CommandLine -and $_.CommandLine -match $channelArg }
+if ($liveSession) {
+  Write-Host "A Claude Code session is already running channel '$Channel' (PID $(@($liveSession)[0].ProcessId)). Refusing to start a second -- it would come up deaf to live-wake. Close the other session first."
+  Write-Host "  If you just re-provisioned: /mcp reconnect does not stop the previous channel server -- restart the session (close that session, then re-run this). Details: docs/board-tools-enablement.md, section Activating on a running seat"
+  exit 1
+}
+
 # ===== 2. single-session / stale-orphan guard (a LISTENING local port is held by a process: a
 #          running session, or a channel server left behind by one -> probe to tell them apart,
 #          reclaim only a dead orphan; never kill a possibly-live session). =====
@@ -139,7 +159,7 @@ function Clear-StaleChannelServer {
     # server, or a client root's entry.mjs -- never an arbitrary listener. taskkill /T also reaps
     # any children of the orphan.
     if ($p.Name -eq 'node.exe' -and ($p.CommandLine -match 'agent-webhook-bridge-channel' -or
-        $p.CommandLine -match 'agent-webhook-bridge[\\/]client[\\/][^\\/]+[\\/]entry\.mjs')) {
+        $p.CommandLine -match ('agent-webhook-bridge[\\/]client[\\/]' + [regex]::Escape($Channel) + '[\\/]entry\.mjs'))) {
       Write-Warning ("Reclaiming port {0}: killing orphan channel server PID {1}." -f $Port, $procId)
       taskkill /PID $procId /T /F | Out-Null
       $killedAny = $true
@@ -229,7 +249,10 @@ $env:BRIDGE_CHANNEL_PORT      = "$LocalPort"
 # ===== 7. launch Claude Code with the channel; 8. tear the tunnel down (by PID tree) on exit =====
 try {
   Set-Location $env:USERPROFILE
-  & claude --dangerously-load-development-channels "server:$Channel" @PassthroughArgs
+  # BRIDGE_CLAUDE_EXTRA_ARGS: extra claude arguments the seat keeps across launcher updates (its
+  # shim sets it); split on whitespace, no quoting. Arguments given on the command line follow it.
+  $extraArgs = @(if ($env:BRIDGE_CLAUDE_EXTRA_ARGS) { $env:BRIDGE_CLAUDE_EXTRA_ARGS -split '\s+' | Where-Object { $_ } })
+  & claude --dangerously-load-development-channels "server:$Channel" @extraArgs @PassthroughArgs
 } finally {
   Write-Host "Claude exited; stopping tunnel..."
   if ($tunnelProc -and -not $tunnelProc.HasExited) {

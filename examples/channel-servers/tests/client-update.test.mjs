@@ -252,6 +252,37 @@ test('the launcher is shimmed at the fixed <root>/bin/start-claude and runs the 
   assert.equal(out.stdout.trim(), `launcher of 2.0.0 (changed) root=${root} channel= args=--channel x`, 'the same path now runs pack N+1\'s launcher');
 });
 
+test('Windows: start-claude.cmd runs the release current.json names through powershell, and pack N+1 replaces it (card#11328)', { skip: process.platform !== 'win32' && 'runs the .cmd shim; its text is asserted on every platform below' }, async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const run = (env = {}) => spawnSync(path.join(root, 'bin', 'start-claude.cmd'), ['--x'], { encoding: 'utf8', shell: true, env: { ...process.env, ...env } });
+
+  let out = run();
+  assert.equal(out.status, 0, out.stderr);
+  assert.equal(out.stdout.trim(), `launcher of 1.0.0 root=${root} args=--x`);
+
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0', { launcherMarker: ' (changed)' }) });
+  const launched = await launch(root, seatEnv(t, bridge));
+  assert.equal(launched.code, 0, launched.stderr);
+  out = run();
+  assert.equal(out.stdout.trim(), `launcher of 2.0.0 (changed) root=${root} args=--x`);
+
+  // An AWB_RELEASE inherited from the caller must not stand in for an unreadable current.json.
+  fs.writeFileSync(path.join(root, 'current.json'), '{not json');
+  out = run({ AWB_RELEASE: '2.0.0' });
+  assert.equal(out.status, 2, out.stdout);
+  assert.match(out.stderr, /no readable current\.json/);
+});
+
+test('a shim whose current.json is unreadable exits 2 with one line and no node stack trace', { skip: process.platform === 'win32' && 'the .cmd shim is run by its own Windows case' }, async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  fs.writeFileSync(path.join(root, 'current.json'), '{not json');
+  for (const shim of ['start-claude', 'bridge-board-call', 'check-channel-snapshot.py']) {
+    const out = spawnSync(path.join(root, 'bin', shim), [], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+    assert.equal(out.status, 2, shim);
+    assert.equal(out.stderr.trim(), `${root}/current.json is unreadable or names no release; this seat's client needs re-bootstrapping`, shim);
+  }
+});
+
 test('a release that carries no launcher leaves no launcher shim behind (card#11328)', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const name = process.platform === 'win32' ? 'start-claude.cmd' : 'start-claude';
@@ -907,6 +938,18 @@ test('Windows: the launcher\'s shim is start-claude.cmd, running the release\'s 
   assert.match(shim.body, /current\.json/);
   assert.match(shim.body, /set "AWB_LAUNCHER_CLIENT_ROOT=C:\\r"/);
   assert.match(shim.body, /powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\versions\\%AWB_RELEASE%\\client\\bin\\start-claude\.ps1" %\*/);
+});
+
+test('Windows: every shim kind is setlocal and clears AWB_RELEASE before it resolves (card#11328 review S5)', () => {
+  for (const [tool, kind] of [['start-claude.ps1', 'launcher'], ['bridge-board-call.mjs', 'client-bin'], ['check-channel-snapshot.py', 'seat-tool']]) {
+    const { body } = shimFor('C:\\r', tool, 'win32', kind);
+    const lines = body.split('\r\n');
+    assert.equal(lines[2], 'setlocal', kind);
+    assert.equal(lines[3], 'set "AWB_RELEASE="', kind);
+    assert.match(lines[4], /^for \/f /, kind);
+    assert.match(lines[4], /2\^>nul`\)/, `${kind}: node's stderr is not printed`);
+  }
+  assert.match(shimFor('C:\\r', 'start-claude.ps1', 'win32', 'launcher').body, /^rem agent-webhook-bridge client updater: launcher shim\r$/m);
 });
 
 test('Windows: the shim is a .cmd that resolves current.json at run time', () => {

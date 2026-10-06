@@ -3494,11 +3494,15 @@ class LauncherShim(unittest.TestCase):
             os.chmod(path, 0o755)
 
     def _write(self, *extra):
-        out = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home, "XDG_DATA_HOME": self.data}), \
-             contextlib.redirect_stdout(out):
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = pbt.main(["--role", "b", "--agent", "a", "--write-launcher-shim", "--channel-name", "chan", *extra])
+        self.err = err.getvalue()
         return rc, out.getvalue()
+
+    def _status(self, out):
+        return out.strip().splitlines()[-1]
 
     def _home_files(self):
         return sorted(os.listdir(self.home))
@@ -3604,9 +3608,10 @@ class LauncherShim(unittest.TestCase):
         [(_, other)] = pbt.launcher_shims("other", self.root, "posix")
         with open(self.shim, "w", encoding="utf-8") as fh:
             fh.write(other)
-        with self.assertRaises(SystemExit) as cm:
-            self._write()
-        self.assertIn("is the launcher shim for channel other, not chan", str(cm.exception))
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (5, "launcher-shim-status: conflict"))
+        self.assertIn("is the launcher shim for channel other, not chan", self.err)
+        self.assertIn("--channel chan", self.err)
         with open(self.shim, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), other)
         self.assertEqual(self._home_files(), ["start-claude.sh"])
@@ -3617,19 +3622,108 @@ class LauncherShim(unittest.TestCase):
                 self.assertEqual(pbt.shim_channel(body), "kb-x_1", (os_name, _name))
 
     def test_no_client_root_is_refused_naming_the_bootstrap_and_writes_nothing(self):
-        with self.assertRaises(SystemExit) as cm:
-            self._write()
-        self.assertIn("launcher shim NOT written", str(cm.exception))
-        self.assertIn("--role b --bootstrap-client --agent a", str(cm.exception))
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (4, "launcher-shim-status: needs_bootstrap"))
+        self.assertIn("launcher shim NOT written", self.err)
+        self.assertIn("--role b --bootstrap-client --agent a", self.err)
         self.assertEqual(self._home_files(), [])
 
-    def test_a_root_without_its_launcher_shim_is_refused_and_writes_nothing(self):
+    def test_a_root_without_its_launcher_shim_is_refused_as_retry_after_launch_and_writes_nothing(self):
         self._root(launcher=False)
-        with self.assertRaises(SystemExit) as cm:
-            self._write()
-        self.assertIn("has no launcher shim at", str(cm.exception))
-        self.assertIn("--bootstrap-client", str(cm.exception))
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (3, "launcher-shim-status: retry_after_launch"))
+        self.assertIn("has no launcher shim at", self.err)
+        self.assertIn("--bootstrap-client", self.err)
         self.assertEqual(self._home_files(), [])
+
+    def test_a_directory_at_the_shim_path_is_a_conflict(self):
+        self._root()
+        os.makedirs(self.shim)
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (5, "launcher-shim-status: conflict"))
+
+    def test_status_tokens_on_success(self):
+        self._root()
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: written"))
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: up_to_date"))
+
+    def test_the_exit_codes_are_distinct_per_kind_of_refusal(self):
+        codes = pbt.LAUNCHER_SHIM_EXIT
+        self.assertEqual(len({codes["retry_after_launch"], codes["needs_bootstrap"], codes["conflict"], 0, 1, 2}), 6)
+
+    @unittest.skipIf(os.name == "nt", "runs the POSIX shim")
+    def test_a_hand_shim_s_extra_claude_args_are_carried_and_reach_the_launcher(self):
+        # This host's shape (card#11328 review S3): a hand shim baking --dangerously-skip-permissions in.
+        self._root()
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write('#!/usr/bin/env bash\nexport BRIDGE_CHANNEL_NAME=chan\n'
+                     'exec "$HOME/agent-webhook-bridge-prod/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"\n')
+        rc, out = self._write()
+        self.assertEqual(rc, 0)
+        self.assertIn("carried the claude arguments `--dangerously-skip-permissions`", out)
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertIn("BRIDGE_CLAUDE_EXTRA_ARGS='--dangerously-skip-permissions'; export BRIDGE_CLAUDE_EXTRA_ARGS\n", fh.read())
+        # Kept on a re-run, and on a rewrite for a new root path.
+        rc, out = self._write()
+        self.assertIn("up to date", out)
+        # The stub launcher prints what it received in the environment.
+        path = os.path.join(self.root, "bin", "start-claude")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write('#!/bin/sh\necho "extra=$BRIDGE_CLAUDE_EXTRA_ARGS"\n')
+        run = subprocess.run([self.shim], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual(run.stdout.strip(), "extra=--dangerously-skip-permissions")
+
+    def test_explicit_extra_args_replace_and_empty_clears(self):
+        self._root()
+        self._write("--claude-extra-args", "--a  --b=1")
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertEqual(pbt._shim_value(fh.read(), "BRIDGE_CLAUDE_EXTRA_ARGS"), "--a --b=1")
+        self._write("--claude-extra-args", "")
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertNotIn("BRIDGE_CLAUDE_EXTRA_ARGS", fh.read())
+
+    def test_extra_args_that_are_not_plain_tokens_are_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._write("--claude-extra-args", "--x $(id)")
+        self.assertIn("plain tokens", str(cm.exception))
+
+    def test_carried_claude_args_reads_the_launcher_exec_shapes(self):
+        cases = {
+            'exec "$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"': (["--dangerously-skip-permissions"], []),
+            "exec ~/start-claude.sh --channel kb --model opus \"$@\"": (["--model", "opus"], []),
+            'exec claude --dangerously-load-development-channels "server:${CHANNEL}" --verbose "$@"': (["--verbose"], []),
+            'exec "$L" "$@"': ([], []),
+            'exec /x/start-channel-session.sh "$EXTRA" "$@"': ([], ["$EXTRA"]),
+        }
+        for line, want in cases.items():
+            self.assertEqual(pbt.carried_claude_args(f"#!/bin/sh\n{line}\n"), want, line)
+
+    def test_windows_shims_carry_extra_args_and_say_minus_channel(self):
+        files = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--a"))
+        self.assertIn('set "BRIDGE_CLAUDE_EXTRA_ARGS=--a"\r\n', files["start-claude.bat"])
+        self.assertIn("$env:BRIDGE_CLAUDE_EXTRA_ARGS = '--a'\r\n", files["start-claude.ps1"])
+        self.assertEqual(pbt._shim_value(files["start-claude.bat"], "BRIDGE_CLAUDE_EXTRA_ARGS"), "--a")
+        self.assertEqual(pbt._shim_value(files["start-claude.ps1"], "BRIDGE_CLAUDE_EXTRA_ARGS"), "--a")
+        self.assertIn("setlocal\r\n", files["start-claude.bat"])
+        home = os.path.join(self.tmp.name, "winhome")
+        os.makedirs(home)
+        [(_, other)] = [f for f in pbt.launcher_shims("other", "C:\\r", "nt") if f[0] == "start-claude.bat"]
+        with open(os.path.join(home, "start-claude.bat"), "w", encoding="utf-8", newline="") as fh:
+            fh.write(other)
+        with self.assertRaises(pbt.LauncherShimRefused) as cm:
+            pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertIn("-Channel chan", str(cm.exception))
+
+    def test_an_onboarding_run_never_ends_in_a_traceback_when_the_shim_cannot_be_written(self):
+        self._root()
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": self.data}), \
+             mock.patch.object(pbt, "install_launcher_shims", side_effect=PermissionError(13, "Permission denied")), \
+             contextlib.redirect_stdout(out):
+            pbt._offer_launcher_shim("chan")
+        self.assertIn("launcher shim: not written — [Errno 13] Permission denied", out.getvalue())
 
     def test_transport_flags_are_refused(self):
         with self.assertRaises(SystemExit) as cm:

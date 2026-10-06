@@ -2419,9 +2419,11 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   snapshot, points the channel at it and says the seat will not update itself.
   **`--role b --write-launcher-shim`** (card#11328, DL-463) writes the seat's launcher shim
   — `~/start-claude.sh`, or `%USERPROFILE%\start-claude.bat` + `.ps1` — and nothing else; it
-  needs `--agent --channel-name`, refuses the transport flags, and exits 1 writing nothing
-  when the channel's client root is missing or does not yet carry the launcher, or when the
-  shim path already holds another channel's shim.
+  needs `--agent --channel-name`, refuses the transport flags, and writes nothing when the
+  channel's client root does not yet carry the launcher (exit 3), when there is no client root
+  (exit 4), or when the shim path holds a directory or another channel's shim (exit 5); every
+  outcome ends with a `launcher-shim-status: <token>` line. `--claude-extra-args=<args>` sets the
+  extra `claude` arguments the shim keeps (`BRIDGE_CLAUDE_EXTRA_ARGS`).
   `--bootstrap-client`, `--certify-only` and `--self-cert` write the same shim after their
   own work when the root carries the launcher, and otherwise say why not and carry on.
   [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0947-and-later)

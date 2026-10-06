@@ -127,7 +127,7 @@ export function clientFiles(release, { clientVersion = '0.9.29', realServer = fa
       data: Buffer.from(`#!/usr/bin/env bash\necho "launcher of ${release}${launcherMarker} root=\${AWB_LAUNCHER_CLIENT_ROOT:-} channel=\${BRIDGE_CHANNEL_NAME:-} args=$*"\n`),
       mode: 0o755,
     },
-    { path: 'client/bin/start-claude.ps1', data: Buffer.from(`Write-Output "launcher of ${release}${launcherMarker}"\r\n`) },
+    { path: 'client/bin/start-claude.ps1', data: Buffer.from(`Write-Output "launcher of ${release}${launcherMarker} root=$env:AWB_LAUNCHER_CLIENT_ROOT args=$args"\r\n`) },
   ];
   return files.filter((f) => !omit.includes(f.path));
 }
