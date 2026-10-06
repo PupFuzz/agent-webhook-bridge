@@ -113,9 +113,12 @@ final class BoardCardRank
 
     /**
      * The rows in (stage rank, position, id) order. A row on a stage the board read did not carry
-     * sorts after every stage, a row with no numeric `position` after every positioned row of its
-     * stage, and a row with no numeric id after the rows that share its stage and position — none
-     * is dropped.
+     * sorts after every stage, grouped by its stage — in rank-tier order, then stage id, because the
+     * tier needs only the id and the mappings, so a degraded structure read still lists In Progress
+     * first — and a row with no numeric stage after those (card#11268: every reader of this order
+     * sees one column order, the triage cut included). A row with no numeric `position` sorts after
+     * every positioned row of its stage, and a row with no numeric id after the rows that share its
+     * stage and position — none is dropped.
      *
      * @param  list<array<string, mixed>>  $rows
      * @return list<array<string, mixed>>
@@ -124,14 +127,17 @@ final class BoardCardRank
     {
         $stageRank = array_flip($this->stageOrder());
         $after = count($stageRank);
-        $key = static function (array $row) use ($stageRank, $after): array {
+        $key = function (array $row) use ($stageRank, $after): array {
             $stage = is_numeric($row['workflow_stage_id'] ?? null) ? (int) $row['workflow_stage_id'] : null;
+            $carried = $stage !== null && isset($stageRank[$stage]);
             $position = $row['position'] ?? null;
             $positioned = is_int($position) || is_float($position);
             $id = $row['id'] ?? null;
 
             return [
-                $stage !== null && isset($stageRank[$stage]) ? $stageRank[$stage] : $after,
+                $carried ? $stageRank[$stage] : $after,
+                $carried ? 0 : ($stage === null ? PHP_INT_MAX : $this->rank($stage)),
+                $carried ? 0 : ($stage ?? PHP_INT_MAX),
                 $positioned ? 0 : 1,
                 $positioned ? (float) $position : 0.0,
                 is_numeric($id) ? 0 : 1,
@@ -139,9 +145,19 @@ final class BoardCardRank
             ];
         };
 
-        usort($rows, static fn (array $a, array $b): int => $key($a) <=> $key($b));
+        usort($rows, fn (array $a, array $b): int => $key($a) <=> $key($b));
 
         return $rows;
+    }
+
+    /**
+     * Whether `$stageId` is a finished column — the one finished predicate the order, the triage
+     * top tier and its cut all ask ({@see SeatCardTriage}). Asked of any stage id, carried by the
+     * board read or not.
+     */
+    public function isFinished(int $stageId): bool
+    {
+        return $this->rank($stageId) === self::FINISHED;
     }
 
     private function rank(int $stageId): int

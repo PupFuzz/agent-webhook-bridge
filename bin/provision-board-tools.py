@@ -1591,7 +1591,7 @@ def _launcher_shim_unavailable(channel_name: str):
         return root, "retry_after_launch", (
             f"the client installed at {root} has no launcher shim at {target} yet — its release predates the "
             f"launcher, or no updater that knows it has settled the root. It appears after the seat's next "
-            f"launch(es) once the bridge publishes client 0.9.47 or later; `--role b --bootstrap-client` for channel "
+            f"launch(es) once the bridge publishes client 0.9.48 or later; `--role b --bootstrap-client` for channel "
             f"{channel_name} settles it at once. Then re-run.")
     return root, None, None
 

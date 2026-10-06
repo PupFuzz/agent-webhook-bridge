@@ -14,7 +14,7 @@ The tools that ship today — the table is held against the bridge's own registr
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
-| `board_my_cards` | read | Return YOUR own cards — every card ASSIGNED to you in any lane or in none, plus the UNASSIGNED cards in your product swimlane (card#11267 / DL-459), grouped by stage and ordered across lanes by stage rank (In Progress, pull columns, the rest, finished), then board position, then id — and the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured. Read-proxied — the kanban token never leaves the bridge. |
+| `board_my_cards` | read | Return YOUR own cards — every card ASSIGNED to you in any lane or in none, plus the UNASSIGNED cards in your product swimlane (card#11267 / DL-459), grouped by stage and ordered across lanes by stage rank (In Progress, pull columns, the rest, finished), then board position, then id, with a `triage` block giving the ONE order to work them in (High-priority cards first; card#11268 / DL-464) — and the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured. Read-proxied — the kanban token never leaves the bridge. |
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass, and it is **assigned to you** (card#11267 / DL-459) — or left unassigned, with the response naming why. |
 | `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
 | `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. Scoped to a lane you work, or a card already assigned to you in any lane (card#11267). ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
@@ -138,7 +138,7 @@ bridge answered: [§ Did the call reach the bridge?](#did-the-call-reach-the-bri
 | --- | --- | --- |
 | `include_description` | no | Boolean (default `false`). Adds `description` + `description_truncated` to **every** projected card — your own cards, the shared lane, and the coord cards alike. A non-boolean is **refused** (422) rather than coerced. See § Reading a card's scope below. |
 | `stage` | no | Return only the cards in **one column of your product board**. The **numeric stage id** is the primary form. A **string** is a stage **NAME**, matched case-insensitively and whitespace-trimmed — `"50"` is looked up as a stage *called* `50`, never as id 50. A name that resolves to **no** stage, or to **more than one**, is **refused** (422): the bridge does not guess which column you meant. A numeric id that is not a stage on your board is refused too. ⛔ **An EMPTY value is refused, not ignored** — `""`, whitespace, an invisible character, or an explicit `null`. Omit the argument entirely to read every column; a silently-dropped filter would hand you *more* cards than you asked for, and the two doors disagreed about it. ⛔ **It does not reach the coord cards** — they are on a different board, whose stage ids are unrelated to yours. See § The default is capped below. |
-| `limit` | no | How many cards **each list** is cut to (default **52 cards per list** — see § The default is capped). A positive integer; anything else (a float, a numeric string such as `"20"`, a boolean, `0`, a negative) is **refused** (422) before any board read, never coerced. |
+| `limit` | no | How many cards **each list** is cut to (default **52 cards per list** — see § The default is capped). ⚠ Your own list keeps every High-priority card past it and gives a finished column one card — § [The triage order](#the-triage-order-and-the-cut-on-your-own-cards-triage-per_stage-card11268--dl-464). A positive integer; anything else (a float, a numeric string such as `"20"`, a boolean, `0`, a negative) is **refused** (422) before any board read, never coerced. |
 | `tag` | no | **ONE tag, matched exactly** (for example `lane:A`). Adds a `tag_cards` block: every live card on **your board** carrying it, in **any lane or in none**, each with its own `swimlane_id`. See § [Cards carrying a tag, in any lane](#cards-carrying-a-tag-in-any-lane-tag-include_terminal). Trimmed as the HTTP door trims. **Refused** (422, before any board read): a non-string, an EMPTY value (`""`, whitespace, an invisible character, an explicit `null`), a value containing `"`, `*` or `%`, a value containing a character kanban stores escaped (a control character, `/`, `\` or any non-ASCII character — no exact tag match can find it), and one longer than kanban's tag cap. ⛔ Omit it and the response is exactly the default. |
 | `include_terminal` | no | Boolean (default `false`). Keeps cards in **terminal columns** — the columns **the board itself declares terminal**, see § [Cards carrying a tag, in any lane](#cards-carrying-a-tag-in-any-lane-tag-include_terminal) for which declaration answers — in the `tag_cards` read. **Refused** without `tag` (it would change nothing), and when not a boolean, an explicit `null` included. |
 
@@ -187,8 +187,18 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
     "limit": 52,             // the cap in effect for this call
     "truncated": true,       // true ⇒ there is more behind this list
     "stage_filter": null,    // the numeric stage id this list was narrowed to, or null
-    "remedy": "…"            // ONLY when truncated is true: a sentence naming the argument
+    "remedy": "…",           // ONLY when truncated is true: a sentence naming the argument
                              // that gets the rest — see § The default is capped
+    "per_stage": [           // every column your cards sit in, in column order: how many it
+                             // holds and how many came back — § The triage order
+      { "stage_id": 51, "stage": "In Review", "total": 3, "returned": 3 },
+      { "stage_id": 50, "stage": "Backlog", "total": 340, "returned": 46 }
+    ]
+  },
+  "triage": {                // your cards in ONE order — § The triage order (card#11268)
+    "order": [7, 3, 1],      // every card in cards_by_stage, ids, in the order to work them
+    "top_tier": [7],         // the High-priority cards outside finished columns (never cut)
+    "priority_unread": 0     // of your cards (after `stage`, before the cut): rows with no integer priority
   },
   "shared_swimlane": {                                     // when configured
     "swimlane_id": 9, "cards_by_stage": { /* ... */ },
@@ -327,9 +337,12 @@ the same rule, and `board_create_card` assigns the card it creates to you.
   places a card column-wide (kanban DL-284), so the PM's reorder ranks your home-lane and assigned
   cards together — and card id breaks ties, because two cards can share a position. Source-read
   (kanban `BoardPositionService`), not measured against a live board here. A row with no `position`
-  sorts after the positioned rows of its column.
-- ⚠ **The cap still keeps the NEWEST cards** (§ The default is capped) and orders what it kept, so
-  on a truncated list the top of your rank order can be behind the cut — narrow with `stage`.
+  sorts after the positioned rows of its column. A column the board-structure read did not carry
+  (a degraded read, or a card on a stage the board no longer lists) sorts after every carried one,
+  by its rank tier and then its id — the tier needs only the stage id and the mapping, so In
+  Progress still leads — and a card with no stage at all sorts last.
+- **Your own list is cut by column, not by id, and `triage` gives its one order** — § The triage
+  order below (card#11268 / DL-464).
 - ⚠ **What moved for a lane you already read:** a card in your lane that another user holds has left
   `cards_by_stage` under `applied`. To see your whole lane, read it with
   `board_search` (`lane: "mine"`). `shared_swimlane` still selects its whole lane (only its order
@@ -341,10 +354,55 @@ the same rule, and `board_create_card` assigns the card it creates to you.
 - **The PM's routing queue — the unassigned cards in nobody's home lane — is `board_search`'s
   `lane: "unrouted"`** (rt#595 ask 4), not a list on this tool.
 
+### The triage order and the cut on your own cards (`triage`, `per_stage`, card#11268 / DL-464)
+
+**`triage.order` is the order to work your cards in, and `order[0]` is your next card**
+(rt#595, operator decisions on card#11268, 2026-10-05). It is **cards only**: a pull request shows
+up through the card it belongs to (`pr_url`), and this tool reads nothing from GitHub.
+
+- **The order:** the **top tier**, then every other card in the rank order above — In Progress,
+  the pull columns, the other columns (Backlog among them), the finished columns — and within a
+  column the board's `position`, then id. `cards_by_stage` keeps its shape: a top-tier card stays
+  in its own column there, and `triage.order` is where it leads.
+- **The top tier is a card with kanban `priority` exactly `1` (High) in a column that is not
+  finished.** kanban's field is `-1` Low, `0` Normal, `1` High, so it is compared strictly: Low is
+  never top tier. A High card already in a finished column is not live work, and is not top tier.
+  `top_tier` lists the ids of your top-tier cards — every one of them, since none is ever cut. ⚠ "Finished" is the rank's finished set, so on a board no writeback
+  mapping covers, a column the board itself does not flag terminal (an unflagged "Shipped to dev")
+  is not finished, and High cards there stay top tier and are never cut — flag that column
+  `is_terminal` on the board, or map it. `priority_unread` counts your cards (after `stage`, before
+  the cut) whose row carried no integer `priority`; they were read as not top tier, so a non-zero
+  value means "unknown", not "no High cards" — tell your operator.
+- **The cut, only when your cards number more than `limit`:**
+  1. every top-tier card is kept, and counts against `limit`;
+  2. every column holding another card gets one slot, in column order, while the rest of `limit`
+     lasts — so when High cards use most of it, only the earliest columns get one;
+  3. the rest is dealt one card at a time, in rounds, to the **unfinished** columns only — so a
+     **finished column shows at most one card**;
+  4. an unfinished column keeps its **top** cards by position (the PM's order); a finished column
+     keeps its **last** — the card most recently moved in, since kanban appends a card moved in
+     without an index. ⚠ kanban appends within a lane, so across lanes the last by position is not
+     always the card finished last.
+  A list narrowed by `stage` is one column you asked for, and gets the whole `limit` — finished or
+  not. That is how you read a finished column past its one card.
+- **What the window says.** `per_stage` lists every column your cards sit in, with `total` and
+  `returned` (top-tier cards included); its `stage` is the column's key in `cards_by_stage`, and
+  `stage_id` tells apart two columns sharing a name. `truncated` is `returned < total`. ⚠ So
+  `returned` can **exceed** `limit` — only by top-tier cards, and then `truncated` can be `false` —
+  and it can fall **below** it while cards are hidden, because budget a finished column cannot use
+  is not spent. Raising `limit` shows a finished column's other cards only once `limit` reaches
+  `total`; narrow with `stage` instead.
+- ⚠ **A card new to a column — created, or moved in — lands at the end of it**, so in a column
+  holding more than its share it is off the default read until the PM ranks it higher. `per_stage`
+  counts it; `stage` or `limit` reach it.
+- ⚠ **What moved:** this list was cut by keeping the highest card ids (DL-365 Decision 7) until
+  card#11268. Which cards a capped read of your own list returns has changed; an uncut list returns
+  the same cards. The shared lane, `tag_cards` and the coord cards keep the newest-id cut.
+
 ### The default is capped (`cards_window`, `stage`, `limit`)
 
 ⚠ **Every card list in this response is cut to a fixed number of CARDS, and the response
-says so.** Before card#8985 nothing bounded the count: the DL-245 cap bounds one
+says so** — except your own list's High-priority cards, which are never cut (§ [The triage order](#the-triage-order-and-the-cut-on-your-own-cards-triage-per_stage-card11268--dl-464)). Before card#8985 nothing bounded the count: the DL-245 cap bounds one
 *description*, and the **titles-only** response — the cheapest call this tool offers — was
 measured at **121,032 chars / 390 cards** on one seat and **81,067 chars / 292 cards** on
 another (2026-09-07). That overflows the context window of the very seat the tool exists
@@ -358,7 +416,9 @@ for, and the old response gave no hint it was oversized or partial.
   one description already does. 16,384 / 310.3 = 52.8 ⇒ **52 cards per list**.
 - **It bounds ONE list.** An install with a shared lane *and* a coord leg has three lists
   and can return three capped ones, and a call passing `tag` adds a fourth. That is a bound,
-  not a promise of the budget.
+  not a promise of the budget. ⚠ **Your own list can exceed it** (card#11268 / DL-464): its
+  High-priority cards outside finished columns are never cut, so its size is the larger of `limit`
+  and how many such cards you hold, and its size in characters can pass the budget above.
 - **`cards_window` is how a capped read says it is capped.** `total` is the population
   **before** the cut — that is what makes `truncated` worth reading. ⛔ **Never treat a
   `truncated: true` list as the whole board**, exactly as you must never treat a truncated
@@ -382,7 +442,9 @@ for, and the old response gave no hint it was oversized or partial.
   `total` then reports **that column's** size. Raising `limit` grows the response in
   proportion to the cards it lets through; it is the deliberate escape hatch for a caller
   that genuinely needs a whole lane, not the routine path.
-- **Which cards you get is deterministic: the NEWEST — the highest card ids.** They are
+- **Your own list:** which cards survive is § [The triage order](#the-triage-order-and-the-cut-on-your-own-cards-triage-per_stage-card11268--dl-464)'s
+  per-column cut since card#11268, not this bullet's. **The shared lane, `tag_cards` and the coord
+  cards: deterministic, the NEWEST — the highest card ids.** They are
   emitted in your RANK order (stage rank, then `position`, then id — § Which cards are
   yours), not in the board's answer order (card#11267). Card ids are allocated globally and
   monotonically, so the highest ids are your most recent work. ⛔ **The first cut of this kept the OLDEST
@@ -2427,7 +2489,7 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   extra `claude` arguments the shim keeps (`BRIDGE_CLAUDE_EXTRA_ARGS`).
   `--bootstrap-client`, `--certify-only` and `--self-cert` write the same shim after their
   own work when the root carries the launcher, and otherwise say why not and carry on.
-  [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0947-and-later)
+  [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0948-and-later)
   owns the paths, env, marker line and backup rule.
   For a bootstrapped seat, point `channel.server_path` at its client root (or leave it
   unset across hosts, as for any seat): `bridge:check`'s snapshot legs check the release its

@@ -68,7 +68,7 @@ nothing for a person to adjudicate there, and the packet does not ask them to.
   On a seat whose client root carries the launcher, the same run then writes the seat's
   launcher shim, `~/start-claude.sh` (`start-claude.bat` + `.ps1` on Windows), backing up a
   file of the operator's that sits there (card#11328, DL-463);
-  [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0947-and-later)
+  [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0948-and-later)
   owns that contract. If a
   session is **already running** on that seat, see
   [§ Activating on a running seat](#activating-on-a-running-seat) — it owns what activation
