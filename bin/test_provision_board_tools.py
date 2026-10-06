@@ -3651,7 +3651,7 @@ class LauncherShim(unittest.TestCase):
 
     def test_the_exit_codes_are_distinct_per_kind_of_refusal(self):
         codes = pbt.LAUNCHER_SHIM_EXIT
-        self.assertEqual(len({codes["retry_after_launch"], codes["needs_bootstrap"], codes["conflict"], 0, 1, 2}), 6)
+        self.assertEqual(len({codes["retry_after_launch"], codes["needs_bootstrap"], codes["conflict"], codes["io_error"], 0, 1, 2}), 7)
 
     @unittest.skipIf(os.name == "nt", "runs the POSIX shim")
     def test_a_hand_shim_s_extra_claude_args_are_carried_and_reach_the_launcher(self):
@@ -3682,23 +3682,83 @@ class LauncherShim(unittest.TestCase):
             self.assertEqual(pbt._shim_value(fh.read(), "BRIDGE_CLAUDE_EXTRA_ARGS"), "--a --b=1")
         self._write("--claude-extra-args", "")
         with open(self.shim, encoding="utf-8") as fh:
-            self.assertNotIn("BRIDGE_CLAUDE_EXTRA_ARGS", fh.read())
+            # Cleared explicitly, so an inherited value never reaches the launcher: the shim is the only source.
+            self.assertIn("BRIDGE_CLAUDE_EXTRA_ARGS=''; export BRIDGE_CLAUDE_EXTRA_ARGS\n", fh.read())
 
     def test_extra_args_that_are_not_plain_tokens_are_refused(self):
         with self.assertRaises(SystemExit) as cm:
             self._write("--claude-extra-args", "--x $(id)")
         self.assertIn("plain tokens", str(cm.exception))
 
-    def test_carried_claude_args_reads_the_launcher_exec_shapes(self):
+    def test_carried_claude_args_reads_the_launcher_line_shapes(self):
         cases = {
-            'exec "$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"': (["--dangerously-skip-permissions"], []),
-            "exec ~/start-claude.sh --channel kb --model opus \"$@\"": (["--model", "opus"], []),
-            'exec claude --dangerously-load-development-channels "server:${CHANNEL}" --verbose "$@"': (["--verbose"], []),
-            'exec "$L" "$@"': ([], []),
-            'exec /x/start-channel-session.sh "$EXTRA" "$@"': ([], ["$EXTRA"]),
+            'exec "$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"': (True, ["--dangerously-skip-permissions"], []),
+            "exec ~/start-claude.sh --channel kb --model opus \"$@\"": (True, ["--model", "opus"], []),
+            'exec claude --dangerously-load-development-channels "server:${CHANNEL}" --verbose "$@"': (True, ["--verbose"], []),
+            'exec "$L" "$@"': (False, [], []),
+            # Direct, non-exec invocations of a known launcher path (review r2 SF2).
+            '"$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"': (True, ["--dangerously-skip-permissions"], []),
+            'bash /x/start-claude.sh --a "$@" > /tmp/log 2>&1': (True, ["--a"], []),
+            # ANY uncarryable token carries NOTHING (review r2 SF1): the rest would change meaning.
+            'exec /x/start-channel-session.sh --append-system-prompt "$P" --d "$@"': (True, [], ["$P"]),
+            'exec /x/start-channel-session.sh --append-system-prompt "two words" "$@"': (True, [], ["two words"]),
+            # Reading stops at the first shell operator (review r2 SF1).
+            'exec ~/x/start-channel-session.sh --e; rm -rf /': (True, ["--e"], []),
+            'exec ~/x/start-channel-session.sh --e && rm -rf / "$@"': (True, ["--e"], []),
+            'exec ~/x/start-channel-session.sh --e | tee log': (True, ["--e"], []),
+            "echo start-claude.sh is here": (False, [], []),
+            "# exec ~/x/start-channel-session.sh --commented": (False, [], []),
         }
         for line, want in cases.items():
             self.assertEqual(pbt.carried_claude_args(f"#!/bin/sh\n{line}\n"), want, line)
+
+    def _replace_hand_shim(self, text):
+        self._root()
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: written"))
+        with open(self.shim, encoding="utf-8") as fh:
+            return out, pbt._shim_value(fh.read(), "BRIDGE_CLAUDE_EXTRA_ARGS")
+
+    def test_a_partly_uncarryable_hand_shim_carries_nothing_and_says_so(self):
+        out, extra = self._replace_hand_shim('#!/bin/sh\nP=x\nexec "$HOME/x/examples/start-channel-session.sh" --append-system-prompt "$P" --d "$@"\n')
+        self.assertEqual(extra, "", "never `--append-system-prompt --d`")
+        self.assertIn("cannot be carried (['$P']), so NONE were carried", out)
+        self.assertIn(".pre-shim-", out)
+
+    def test_an_operator_ends_what_is_carried(self):
+        _out, extra = self._replace_hand_shim("#!/bin/sh\nexec ~/x/start-channel-session.sh --e; rm -rf /\n")
+        self.assertEqual(extra, "--e", "never `rm -rf /`")
+
+    def test_a_non_exec_hand_shim_is_carried(self):
+        out, extra = self._replace_hand_shim('#!/bin/sh\n"$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"\n')
+        self.assertEqual(extra, "--dangerously-skip-permissions")
+        self.assertIn("carried the claude arguments", out)
+
+    def test_an_unrecognised_hand_shim_is_warned_about(self):
+        out, extra = self._replace_hand_shim('#!/bin/sh\nL="$HOME/x/run-it"\n"$L" --dangerously-skip-permissions "$@"\n')
+        self.assertEqual(extra, "")
+        self.assertIn("were NOT carried — set them with --claude-extra-args=<args>", out)
+
+    def test_channel_exports_in_the_replaced_file_are_named(self):
+        out, _extra = self._replace_hand_shim('#!/bin/sh\nexport BRIDGE_CHANNEL_NAME=chan BRIDGE_CHANNEL_TRANSPORT=http\nexport BRIDGE_CHANNEL_PORT=8790\n'
+                                              'exec ~/x/start-channel-session.sh "$@"\n')
+        self.assertIn("set BRIDGE_CHANNEL_PORT, BRIDGE_CHANNEL_TRANSPORT; the shim sets only BRIDGE_CHANNEL_NAME", out)
+
+    def test_a_file_system_fault_is_io_error_with_a_status_line_never_a_traceback(self):
+        self._root()
+        with mock.patch.object(pbt, "_write_text_atomically", side_effect=PermissionError(13, "Permission denied", self.shim)):
+            rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (6, "launcher-shim-status: io_error"))
+        self.assertIn("Permission denied", self.err)
+
+    def test_every_seat_shim_sets_or_clears_the_extra_args(self):
+        [(_, sh)] = pbt.launcher_shims("chan", "/r", "posix")
+        self.assertIn("BRIDGE_CLAUDE_EXTRA_ARGS=''; export BRIDGE_CLAUDE_EXTRA_ARGS\n", sh)
+        files = dict(pbt.launcher_shims("chan", "C:\\r", "nt"))
+        self.assertIn('set "BRIDGE_CLAUDE_EXTRA_ARGS="\r\n', files["start-claude.bat"])
+        self.assertIn("$env:BRIDGE_CLAUDE_EXTRA_ARGS = $null\r\n", files["start-claude.ps1"])
 
     def test_windows_shims_carry_extra_args_and_say_minus_channel(self):
         files = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--a"))

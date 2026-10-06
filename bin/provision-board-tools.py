@@ -1301,6 +1301,7 @@ LAUNCHER_SHIM_EXIT = {
     "retry_after_launch": 3,  # the root exists but does not carry the launcher yet
     "needs_bootstrap": 4,  # no client root: an operator runs --bootstrap-client
     "conflict": 5,  # a directory, or another channel's shim, at the shim path: an operator decides
+    "io_error": 6,  # the file system refused a read, rename or write: an operator fixes it, then re-runs
 }
 
 
@@ -1353,7 +1354,7 @@ def launcher_shims(channel_name: str, root: str, os_name=os.name, extra_args: st
             "rem Runs the channel launcher of the release this seat's client root has installed.\r\n"
             "setlocal\r\n"
             f'set "BRIDGE_CHANNEL_NAME={channel_name}"\r\n'
-            + (f'set "{EXTRA_ARGS_ENV}={extra_args}"\r\n' if extra_args else "")
+            + f'set "{EXTRA_ARGS_ENV}={extra_args}"\r\n'
             + f'if not exist "{target}" (echo {missing} 1>&2 & exit /b 2)\r\n'
             f'call "{target}" %*\r\n'
             "exit /b %ERRORLEVEL%\r\n"
@@ -1363,7 +1364,7 @@ def launcher_shims(channel_name: str, root: str, os_name=os.name, extra_args: st
             f"# {LAUNCHER_SHIM_MARKER}\r\n"
             "# Runs the channel launcher of the release this seat's client root has installed.\r\n"
             f"$env:BRIDGE_CHANNEL_NAME = '{channel_name}'\r\n"
-            + (f"$env:{EXTRA_ARGS_ENV} = '{extra_args}'\r\n" if extra_args else "")
+            + (f"$env:{EXTRA_ARGS_ENV} = '{extra_args}'\r\n" if extra_args else f"$env:{EXTRA_ARGS_ENV} = $null\r\n")
             + f"$launcher = '{quoted}'\r\n"
             f"if (-not (Test-Path -LiteralPath $launcher)) {{ [Console]::Error.WriteLine('{missing.replace(chr(39), chr(39) * 2)}'); exit 2 }}\r\n"
             "& $launcher @args\r\n"
@@ -1375,7 +1376,7 @@ def launcher_shims(channel_name: str, root: str, os_name=os.name, extra_args: st
         f"# {LAUNCHER_SHIM_MARKER}\n"
         "# Runs the channel launcher of the release this seat's client root has installed; rewritten, never edited.\n"
         f"BRIDGE_CHANNEL_NAME={_sh_quote(channel_name)}; export BRIDGE_CHANNEL_NAME\n"
-        + (f"{EXTRA_ARGS_ENV}={_sh_quote(extra_args)}; export {EXTRA_ARGS_ENV}\n" if extra_args else "")
+        + f"{EXTRA_ARGS_ENV}={_sh_quote(extra_args)}; export {EXTRA_ARGS_ENV}\n"
         + f"launcher={_sh_quote(target)}\n"
         f'[ -x "$launcher" ] || {{ echo {_sh_quote(missing)} >&2; exit 2; }}\n'
         'exec "$launcher" "$@"\n'
@@ -1417,43 +1418,65 @@ def shim_channel(text: str):
     return _shim_value(text, "BRIDGE_CHANNEL_NAME")
 
 
-def carried_claude_args(text: str):
-    """The extra `claude` arguments a hand-written POSIX launcher passes, as `(tokens, unplain)`.
+_SHELL_OPERATOR_CHARS = set("();<>|&")
 
-    Reads each `exec` line that runs a launcher (`…start-channel-session.sh` / `…start-claude…`) or
-    `claude … server:<channel>`, and returns what follows the launcher (or the `server:` argument)
-    up to `"$@"` — a leading `--channel <name>` pair excluded, since the shim sets the channel.
-    `unplain` lists tokens that are not plain (`$VAR`, quotes the shell would expand…): those are
-    not carried, and the caller says so. Pure.
+
+def carried_claude_args(text: str) -> tuple:
+    """The extra `claude` arguments a hand-written POSIX launcher passes, as `(recognised, tokens, unplain)`.
+
+    Reads the first line that runs a launcher — `…start-channel-session.sh` / `…start-claude…`, with
+    or without `exec`, directly or through `bash`/`sh` — or `claude … server:<channel>`, and takes
+    what follows the launcher (or the `server:` argument) up to the first shell operator (`|`, `;`,
+    `&&`, `>`, …), with `"$@"` and a leading `--channel <name>` pair dropped (the shim sets the
+    channel). `recognised` is False when no such line exists. `unplain` lists the tokens that are not
+    plain (`$VAR`, a quoted string with spaces, …): when it is non-empty the caller carries NOTHING,
+    because carrying the rest would change what the remaining arguments mean. Pure.
     """
     import shlex
 
     for line in text.splitlines():
         stripped = line.strip()
-        if not stripped.startswith("exec "):
+        if not stripped or stripped.startswith("#"):
             continue
         try:
-            tokens = shlex.split(stripped[len("exec "):], comments=True)
+            lexer = shlex.shlex(stripped, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            tokens = list(lexer)
         except ValueError:
             continue
+        if tokens[:1] == ["exec"]:
+            tokens = tokens[1:]
+        if tokens and os.path.basename(tokens[0]) in ("bash", "sh"):
+            tokens = tokens[1:]
+        if not tokens:
+            continue
+        head = tokens[0]
         rest = None
-        for i, tok in enumerate(tokens):
-            if "start-channel-session" in tok or os.path.basename(tok).startswith("start-claude"):
-                rest = tokens[i + 1:]
-                break
-        if rest is None and tokens and os.path.basename(tokens[0]) == "claude":
+        if "start-channel-session" in head or os.path.basename(head).startswith("start-claude"):
+            rest = tokens[1:]
+        elif os.path.basename(head) == "claude":
             for i, tok in enumerate(tokens):
                 if tok.startswith("server:"):
                     rest = tokens[i + 1:]
                     break
         if rest is None:
             continue
-        rest = [t for t in rest if t != "$@"]
+        cut = next((i for i, t in enumerate(rest) if t and set(t) <= _SHELL_OPERATOR_CHARS), len(rest))
+        rest = [t for t in rest[:cut] if t != "$@"]
         if rest[:1] == ["--channel"]:
             rest = rest[2:]
-        plain = [t for t in rest if _EXTRA_ARG_RE.fullmatch(t)]
-        return plain, [t for t in rest if not _EXTRA_ARG_RE.fullmatch(t)]
-    return [], []
+        unplain = [t for t in rest if not _EXTRA_ARG_RE.fullmatch(t)]
+        return True, ([] if unplain else rest), unplain
+    return False, [], []
+
+
+_CHANNEL_ENV_SET_RE = re.compile(r"\b(BRIDGE_CHANNEL_[A-Z_]+)\s*=")
+
+
+def channel_env_set_in(text: str) -> list:
+    """The `BRIDGE_CHANNEL_*` names a file assigns (any shell's spelling), sorted, unique. Pure."""
+    return sorted(set(_CHANNEL_ENV_SET_RE.findall(text)))
 
 
 def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.name, extra_args=None) -> tuple:
@@ -1509,18 +1532,27 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
                 backup = f"{backup}-{os.getpid()}"
             backups[name] = (backup, text)
     for name, (backup, text) in backups.items():
+        path = os.path.join(home, name)
+        others = [n for n in channel_env_set_in(text or "") if n != "BRIDGE_CHANNEL_NAME"]
+        if others:
+            report.append(f"⚠ launcher shim: {path} set {', '.join(others)}; the shim sets only BRIDGE_CHANNEL_NAME — "
+                          f"put those in the environment or settings.local.json .env (the old file is {backup}).")
+        uncarried = (f"⚠ launcher shim: {path} is being replaced; if it passed claude arguments of your own, they are "
+                     f"in {backup} and were NOT carried — set them with --claude-extra-args=<args>.")
         if os_name == "nt" or text is None:
-            report.append(f"⚠ launcher shim: {os.path.join(home, name)} is being replaced; if it passed claude arguments "
-                          f"of your own, they are in {backup} — carry them with --claude-extra-args '<args>'.")
+            report.append(uncarried)
             continue
-        plain, unplain = carried_claude_args(text)
-        if plain and not explicit and not extra_args:
+        recognised, plain, unplain = carried_claude_args(text)
+        if not recognised:
+            report.append(uncarried)
+        elif unplain:
+            report.append(f"⚠ launcher shim: {path} passes claude arguments that cannot be carried ({unplain}), so NONE "
+                          f"were carried (carrying the rest would change their meaning); they are in {backup} — set "
+                          f"them with --claude-extra-args=<args> (plain tokens only).")
+        elif plain and not explicit and not extra_args:
             extra_args = " ".join(plain)
             report.append(f"launcher shim: carried the claude arguments `{extra_args}` from the file it replaces into "
                           f"{EXTRA_ARGS_ENV}.")
-        if unplain:
-            report.append(f"⚠ launcher shim: {os.path.join(home, name)} passes claude arguments that were NOT carried "
-                          f"({unplain}); set them with --claude-extra-args '<args>' (plain tokens only).")
     status = "up_to_date"
     mode = 0o755 if os_name != "nt" else 0o644
     for name, body in launcher_shims(channel_name, root, os_name, extra_args):
@@ -1617,6 +1649,10 @@ def run_write_launcher_shim(args) -> int:
         status, lines = install_launcher_shims(args.channel_name, root, _host_b_home(), extra_args=args.claude_extra_args)
     except LauncherShimRefused as e:
         return _launcher_shim_exit(e.status, str(e))
+    except OSError as e:
+        # A file-system fault (permissions, a full disk, a read-only home) partway through: the
+        # run says what failed and where, never a traceback — what is on disk is as the error left it.
+        return _launcher_shim_exit("io_error", f"{e} — check the files named; a re-run is safe once it is fixed")
     for line in lines:
         print(line)
     return _launcher_shim_exit(status)
@@ -2777,7 +2813,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="[role b] write (or refresh) this seat's launcher shim — ~/start-claude.sh, or %%USERPROFILE%%\\start-claude.bat "
         "+ .ps1 on Windows — which runs the launcher of the release its client root installed; nothing else. A "
         "non-shim file there is backed up first. Writes nothing when the channel's client root cannot serve it "
-        "(exit 3 retry after a launch, 4 needs --bootstrap-client) or the path holds something else (5); ends with a "
+        "(exit 3 retry after a launch, 4 needs --bootstrap-client), the path holds something else (5) or the file "
+        "system refuses (6); ends with a "
         "`launcher-shim-status: <token>` line. Needs --agent --channel-name. The --bootstrap-client / --certify-only / --self-cert runs write it too",
     )
     p.add_argument(
