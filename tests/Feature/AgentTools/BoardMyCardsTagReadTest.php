@@ -577,7 +577,7 @@ class BoardMyCardsTagReadTest extends TestCase
         $default = $this->through($door)['body']['result'];
         // `selection`, `stage_rank` and the lane card's `swimlane_id` are card#11267's (a seat's cards
         // span lanes), not the tag read's: they ride every call, with or without `tag`.
-        $this->assertSame(['board_id', 'board_observed', 'configured_board_id', 'swimlane_id', 'selection', 'stage_rank', 'board_stages', 'cards_by_stage', 'cards_window'], array_keys($default));
+        $this->assertSame(['board_id', 'board_observed', 'configured_board_id', 'swimlane_id', 'selection', 'stage_rank', 'board_stages', 'cards_by_stage', 'cards_window', 'triage'], array_keys($default));
         $this->assertSame(['board_id=10 swimlane_id=4'], self::sentSearches());
         $this->assertSame(['id', 'name', 'stage', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'pr_url', 'source', 'updated_at', 'swimlane_id'], array_keys($default['cards_by_stage']['Backlog'][0]));
 
