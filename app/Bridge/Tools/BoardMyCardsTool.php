@@ -63,7 +63,8 @@ use Illuminate\Support\Facades\Log;
  * another (2026-09-07), which overflows the context window of the very seats it
  * exists for. Each of the three card populations (your cards, shared lane, coord)
  * is now cut to `BoardMyCardsTool::DEFAULT_MAX_CARDS` cards unless the caller
- * raises `limit`, and each carries its own window block — `total` / `returned` / `limit` /
+ * raises `limit` — except your own list's High-priority cards, which are never cut (the
+ * `WHICH CARDS A CUT KEEPS` paragraph below, card#11268) — and each carries its own window block — `total` / `returned` / `limit` /
  * `truncated` — so a capped read is legible AS capped and can never be mistaken
  * for "that is all there is". The cut is by CARD COUNT, never by bytes: a byte cut
  * would land in a different place on every call, and a caller cannot reason about
@@ -173,6 +174,12 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      * finished column shows at most one card until `limit` reaches `total`, so raising it below that
      * can return nothing more ({@see SeatCardTriage}).
      */
+    /**
+     * What {@see SeatCardTriage}'s cut did to the seat's own list narrowed to one column by `stage`:
+     * no top-tier or one-card rule bites there beyond `limit`, so {@see CUT_BY_COLUMN} would be false.
+     */
+    private const CUT_NARROWED_COLUMN = 'this column was cut to `limit` of its `total` cards — its top by position, or for a finished column its most recent, with its High-priority cards outside a finished column all kept';
+
     private const TRIAGE_HOW = 'narrow with `stage` (one column, up to `limit` of its cards: an id or name from `board_stages`), or raise `limit` — a finished column shows more than one card only once `limit` reaches `total`';
 
     /** The board's preload read carried no swimlane collection, so there is no lane list to count against. */
@@ -857,7 +864,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             'stage_filter' => $stageFilter,
             ...($stageFilter === null
                 ? $this->remedy($triage->truncated(), self::CUT_BY_COLUMN, self::TRIAGE_HOW, ['stage', 'limit'])
-                : $this->stageListRemedy($triage->truncated(), self::CUT_BY_COLUMN, $stageFilter)),
+                : $this->stageListRemedy($triage->truncated(), self::CUT_NARROWED_COLUMN, $stageFilter)),
             'per_stage' => array_map(
                 fn (array $column): array => ['stage_id' => $column['stage_id'], 'stage' => $this->stageLabel($column['stage_id'], $stageNames), 'total' => $column['total'], 'returned' => $column['returned']],
                 $triage->perStage,

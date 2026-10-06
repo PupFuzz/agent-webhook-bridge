@@ -367,7 +367,7 @@ up through the card it belongs to (`pr_url`), and this tool reads nothing from G
 - **The top tier is a card with kanban `priority` exactly `1` (High) in a column that is not
   finished.** kanban's field is `-1` Low, `0` Normal, `1` High, so it is compared strictly: Low is
   never top tier. A High card already in a finished column is not live work, and is not top tier.
-  `top_tier` lists them. ⚠ "Finished" is the rank's finished set, so on a board no writeback
+  `top_tier` lists the ids of your top-tier cards — every one of them, since none is ever cut. ⚠ "Finished" is the rank's finished set, so on a board no writeback
   mapping covers, a column the board itself does not flag terminal (an unflagged "Shipped to dev")
   is not finished, and High cards there stay top tier and are never cut — flag that column
   `is_terminal` on the board, or map it. `priority_unread` counts your cards (after `stage`, before
@@ -402,7 +402,7 @@ up through the card it belongs to (`pr_url`), and this tool reads nothing from G
 ### The default is capped (`cards_window`, `stage`, `limit`)
 
 ⚠ **Every card list in this response is cut to a fixed number of CARDS, and the response
-says so.** Before card#8985 nothing bounded the count: the DL-245 cap bounds one
+says so** — except your own list's High-priority cards, which are never cut (§ [The triage order](#the-triage-order-and-the-cut-on-your-own-cards-triage-per_stage-card11268--dl-464)). Before card#8985 nothing bounded the count: the DL-245 cap bounds one
 *description*, and the **titles-only** response — the cheapest call this tool offers — was
 measured at **121,032 chars / 390 cards** on one seat and **81,067 chars / 292 cards** on
 another (2026-09-07). That overflows the context window of the very seat the tool exists

@@ -69,7 +69,7 @@ not new here: the reviewed r2 design defined T1 as "the seat's **unfinished** ca
 `priority === 1`", and its Q3 — "Is 'live defect' (T1) kanban's high priority (`=== 1`)?" — is the
 question the operator's decision 3 answered. Ask 7's tier 1 is a *live* defect. Without it a High
 card in Done would be `order[0]`, and would never be cut, so the list would grow with every shipped
-High card. DL-464 records this basis, and the PR names it for the operator to confirm.
+High card. DL-464 records this basis. The dispatching seat confirmed it on #872 r1 against Q3's own framing; the operator did not rule on it separately.
 
 **The read is strict `=== 1`.** kanban's field is `-1 / 0 / 1` (migration comment
 `-1 = low, 0 = normal, 1 = high`; writes validated `in:-1,0,1`). Its search serializer sends

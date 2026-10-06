@@ -43,7 +43,7 @@ class ClientUpdateClauseTest extends TestCase
     /** The own list's cut clause is card#11268 / DL-464's per-column share, not the newest-id cut the other lists keep. */
     private const TODAY_LANE_REMEDY = 'this list was cut by column: High-priority cards outside finished columns are all kept, each finished column shows at most its most recent card, and the other columns share the rest of `limit` from the top of each — `per_stage` says what each column holds; to see more, narrow with `stage` (one column, up to `limit` of its cards: an id or name from `board_stages`), or raise `limit` — a finished column shows more than one card only once `limit` reaches `total`';
 
-    private const TODAY_NARROWED_REMEDY = 'this list was cut by column: High-priority cards outside finished columns are all kept, each finished column shows at most its most recent card, and the other columns share the rest of `limit` from the top of each — `per_stage` says what each column holds; to see more, raise `limit` (the response grows in proportion) — this list is already narrowed to one column by `stage`';
+    private const TODAY_NARROWED_REMEDY = 'this column was cut to `limit` of its `total` cards — its top by position, or for a finished column its most recent, with its High-priority cards outside a finished column all kept; to see more, raise `limit` (the response grows in proportion) — this list is already narrowed to one column by `stage`';
 
     private const TODAY_COORD_REMEDY = 'this list was cut to the newest `limit` of `total` cards; to see more, raise `limit` (the response grows in proportion). `stage` does not narrow this list: these cards are on the coordination board, whose columns are not yours';
 
