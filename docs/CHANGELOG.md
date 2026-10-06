@@ -8,6 +8,16 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#11268 / DL-464** — **`board_my_cards` becomes a seat's triage view: a new `triage` block gives the ONE order to work its cards in, High-priority cards first, and the seat's own list is cut BY COLUMN instead of keeping the newest ids** (rt#595 ask 7; asks 5 and 6 deferred by the operator, 2026-10-05). Cards only: a pull request shows up through its card's `pr_url`, and nothing reads GitHub. [`docs/board-tools.md`](board-tools.md) § *The triage order and the cut on your own cards* owns the rule.
+  - **`triage`** (new, additive): `order` (the returned card ids, top tier first, then In Progress, the pull columns, the rest, the finished columns; `position` then id within a column), `top_tier` (kanban `priority === 1` — High — in a column that is not finished; Low `-1` never) and `priority_unread` (cards whose row carried no integer `priority`, read as not top tier).
+  - ⚠ **WHICH CARDS A CAPPED OWN-LIST READ RETURNS CHANGES** (supersedes DL-365 Decision 7 for that list; resolves DL-459 Decision 4). When the seat's cards number more than `limit`: every top-tier card is kept; each column holding another card gets one slot, in column order; the rest is dealt to the unfinished columns only, one at a time in rounds; an unfinished column keeps its top cards by `position`, and a finished column at most ONE card, its last by `position` (the most recently moved in). A list narrowed by `stage` gets the whole `limit`, finished or not. An uncut list returns the same cards as before. The shared lane, `tag_cards` and the coord cards keep the newest-id cut.
+  - ⚠ **`cards_window` on the own list:** gains `per_stage` (`stage_id`, `stage`, `total`, `returned` per column); `truncated` now means `returned < total`. So `returned` can EXCEED `limit` — by top-tier cards only, which are never cut — and can fall below it while cards are hidden. Its `remedy` wording changes; branch on `truncated`, never on the wording.
+  - ⚠ A list grouped by stage now places a card on a stage the board read did not carry by its rank tier (In Progress first) and then its stage id, instead of by position among all such cards.
+  - Reads a new kanban search-row field, `priority` (declared in [`docs/kanban-integration-contract.md`](kanban-integration-contract.md)); no new request. No migration, config key, route or token scope.
+  - **Reference channel-server snapshot 0.9.46 → 0.9.47**: `board_my_cards`' description and its `limit` description.
+
 ### Fixed
 
 - **DL-465** — **The docs and `bridge:check`'s `no_block` NEXT STEPS line no longer say an impl seat "uses kbcard for its board work"** (DL-460 / DL-461 wording). An impl seat needs no kanban token: every card write through the bridge is made with the bridge's writeback token, and a seat's roster `kanban_user_id` is an identity, not a credential. Both a scope-less (CI tools only) and a scoped `board_tools` block are valid for an impl seat. ⚠ **`bridge:check` text output:** the `no_block` sentence's impl-seat clause is reworded; `state`, `command`, the `--format=json` shape and exit codes are unchanged, and `schema` stays **1**.
