@@ -1,0 +1,16 @@
+{
+  "ghsa_id": "GHSA-rm8p-cx58-hcvx",
+  "type": "reviewed",
+  "withdrawn_at": "2025-07-24T13:35:30Z",
+  "html_url": "https://github.com/advisories/GHSA-rm8p-cx58-hcvx",
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "axios"
+      },
+      "vulnerable_version_range": "= 1.10.0",
+      "first_patched_version": "1.11.0"
+    }
+  ]
+}

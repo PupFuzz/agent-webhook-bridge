@@ -1,0 +1,290 @@
+[
+  {
+    "ghsa_id": "GHSA-8rr7-cvq3-gmfh",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-8rr7-cvq3-gmfh",
+    "summary": "Denial of service via distinctly-named attributes in the Attributes extension",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 1.5.0, < 2.10.0",
+        "patched_versions": "2.10.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-jjv6-8j6v-6j52",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-jjv6-8j6v-6j52",
+    "summary": "Denial of service in the SmartPunct and Attributes extensions",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 1.5.0, < 2.9.1",
+        "patched_versions": "2.9.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-j8pm-gj4c-rq4x",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-j8pm-gj4c-rq4x",
+    "summary": "Denial of service via crafted code fences, reference links, and emphasis delimiters",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 0.6.0, < 2.9.1",
+        "patched_versions": "2.9.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-f8fg-pg57-v4j8",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-f8fg-pg57-v4j8",
+    "summary": "XSS: `on*` event-handler filter in `AttributesExtension` bypassed with a U+000C form feed",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 2.7.0, < 2.9.1",
+        "patched_versions": "2.9.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-29pj-957v-52mc",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-29pj-957v-52mc",
+    "summary": "AttributesExtension href/src unsafe-link filter bypass via embedded control bytes",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 1.5.0, <= 2.8.3",
+        "patched_versions": "2.9.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-mj63-m3rc-8ppr",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-mj63-m3rc-8ppr",
+    "summary": "Denial of service via deeply nested XML output",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 2.0.0, < 2.8.4",
+        "patched_versions": "2.9.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-g2gp-3wwq-f4ph",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-g2gp-3wwq-f4ph",
+    "summary": "Denial of service via adjacent inline attribute blocks",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 1.5.0, < 2.8.4",
+        "patched_versions": "2.9.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-mh25-x5hq-wrqp",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-mh25-x5hq-wrqp",
+    "summary": "Denial of service via colliding heading slugs",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 2.0.0, < 2.8.4",
+        "patched_versions": "2.9.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-jfm3-95jq-q3rf",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-jfm3-95jq-q3rf",
+    "summary": " Denial of service via duplicate footnote definitions",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 1.5.0, < 2.8.4",
+        "patched_versions": "2.9.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-2q4p-g7hv-5rgv",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-2q4p-g7hv-5rgv",
+    "summary": "Quadratic-time denial of service when parsing crafted Markdown",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": ">= 0.6.0, < 2.8.4",
+        "patched_versions": "2.9.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-hh8v-hgvp-g3f5",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-hh8v-hgvp-g3f5",
+    "summary": "Embed extension allowed_domains bypass",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": "2.3.0 - 2.8.1",
+        "patched_versions": "2.8.2"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-4v6x-c7xx-hw9f",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-4v6x-c7xx-hw9f",
+    "summary": "DisallowedRawHtml extension bypass via whitespace in HTML tag names",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": "2.0.0 - 2.8.0",
+        "patched_versions": "2.8.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-3527-qv2q-pfvx",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-3527-qv2q-pfvx",
+    "summary": "XSS vulnerability in Attributes extension",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": "1.5.0 - 2.6.2",
+        "patched_versions": "2.7.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-c2pc-g5qf-rfrf",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-c2pc-g5qf-rfrf",
+    "summary": "Quadratic complexity bugs may lead to a denial of service",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": "< 2.6.0",
+        "patched_versions": "2.6.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-3v43-877x-qgmq",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-3v43-877x-qgmq",
+    "summary": "CVE-2019-10010",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": "<= 0.18.2",
+        "patched_versions": "0.18.3"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-rfj4-8hcc-qvwm",
+    "severity": "low",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/thephpleague/commonmark/security/advisories/GHSA-rfj4-8hcc-qvwm",
+    "summary": "CVE-2018-20583",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "league/commonmark"
+        },
+        "vulnerable_version_range": "0.15.6 through 0.18.0",
+        "patched_versions": "0.18.1"
+      }
+    ]
+  }
+]

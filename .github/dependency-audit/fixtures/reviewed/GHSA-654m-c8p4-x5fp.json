@@ -1,0 +1,16 @@
+{
+  "ghsa_id": "GHSA-654m-c8p4-x5fp",
+  "type": "reviewed",
+  "withdrawn_at": null,
+  "html_url": "https://github.com/advisories/GHSA-654m-c8p4-x5fp",
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "axios"
+      },
+      "vulnerable_version_range": "= 1.15.2",
+      "first_patched_version": "1.16.0"
+    }
+  ]
+}

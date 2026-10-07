@@ -1,0 +1,188 @@
+[
+  {
+    "ghsa_id": "GHSA-jh5r-qr3c-85q8",
+    "severity": "low",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/laravel/framework/security/advisories/GHSA-jh5r-qr3c-85q8",
+    "summary": "XSS in Debug Page Information",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework"
+        },
+        "vulnerable_version_range": "<v12.69.0",
+        "patched_versions": ">=v12.69.0"
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework"
+        },
+        "vulnerable_version_range": "<v13.30.0",
+        "patched_versions": ">=v13.30.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-crmm-hgp2-wgrp",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/laravel/framework/security/advisories/GHSA-crmm-hgp2-wgrp",
+    "summary": "Temporary Signed URL Path Confusion",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework"
+        },
+        "vulnerable_version_range": "<13.12.0",
+        "patched_versions": ">=13.12.0"
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework"
+        },
+        "vulnerable_version_range": "<12.61.1",
+        "patched_versions": ">=12.61.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-5vg9-5847-vvmq",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/laravel/framework/security/advisories/GHSA-5vg9-5847-vvmq",
+    "summary": "CRLF injection in default email rule ",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework"
+        },
+        "vulnerable_version_range": "<= 13.9.0",
+        "patched_versions": ">= 13.10.0"
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework"
+        },
+        "vulnerable_version_range": "< 12.60.0",
+        "patched_versions": ">= 12.60.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-78fx-h6xr-vch4",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/laravel/framework/security/advisories/GHSA-78fx-h6xr-vch4",
+    "summary": "File Validation Bypass",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework"
+        },
+        "vulnerable_version_range": "<11.44.1,>=12,<12.1.1",
+        "patched_versions": "12.1.1,11.44.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-gv7v-rgg6-548h",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/laravel/framework/security/advisories/GHSA-gv7v-rgg6-548h",
+    "summary": "Environment manipulation via query string",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework"
+        },
+        "vulnerable_version_range": "<6.20.45,>=7,<7.30.7,>=8,<8.83.28,>=9,<9.52.17,>=10,<10.48.23,>=11,<11.31.0",
+        "patched_versions": "6.20.45,7.30.7,8.83.28,9.52.17,10.48.23,11.31.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-66hf-2p6w-jqfw",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/laravel/framework/security/advisories/GHSA-66hf-2p6w-jqfw",
+    "summary": "Blade `@parent` Exploitation Leading To Possible XSS",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework"
+        },
+        "vulnerable_version_range": ">=8.0.0, <8.75.0, >=7.0.0, <7.30.6, <6.20.42",
+        "patched_versions": "6.20.42, 7.30.6, 8.75.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-4mg9-vhxq-vm7j",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/laravel/framework/security/advisories/GHSA-4mg9-vhxq-vm7j",
+    "summary": "SQL Server LIMIT / OFFSET SQL Injection",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework, illuminate/database"
+        },
+        "vulnerable_version_range": ">=8.0.0, <8.40.0, >=7.0.0, <7.30.5, <6.20.26",
+        "patched_versions": "6.20.26, 7.30.5, 8.40.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-x7p5-p2c9-phvg",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/laravel/framework/security/advisories/GHSA-x7p5-p2c9-phvg",
+    "summary": "Unexpected database bindings via requests (follow-up)",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework, illuminate/database"
+        },
+        "vulnerable_version_range": ">=8.0.0, <8.24.0, >=7.0.0, <7.30.4, <6.20.14",
+        "patched_versions": "6.20.14, 7.30.4, 8.24.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-3p32-j457-pg5x",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/laravel/framework/security/advisories/GHSA-3p32-j457-pg5x",
+    "summary": "Query Binding Exploitation",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "laravel/framework, illuminate/database"
+        },
+        "vulnerable_version_range": ">=8.0.0, <8.22.1, >=7.0.0, <7.30.3, <6.20.12",
+        "patched_versions": ""
+      }
+    ]
+  }
+]

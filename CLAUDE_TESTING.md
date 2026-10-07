@@ -449,6 +449,10 @@ read first, means a value edited on the `<env>` line alone would be silently ign
 - Overrides `phpunit.xml`'s SQLite defaults via real environment variables (`DB_CONNECTION=mysql`, `DB_HOST`, etc.)
 - Runs the full PHPUnit suite against the live MariaDB — no subset, the same suite
 
+`.github/workflows/dependency-audit-selftest.yml` — the `Dependency-audit selftest` workflow, on the same push / pull-request triggers:
+- Runs `.github/dependency-audit/dependency-audit.selftest.sh`, which extracts the shell of the scheduled dependency audit (`dependency-audit.yml`, called by `dependency-ref-matrix.yml`) verbatim and runs it against the vendored fixtures beside it, with no network. It is **not a required status check** on `dev` or `main`, so a red run here does not block a merge on its own. It is a workflow of its own, not a job in `laravel-tests.yml`, because `GenClientCapabilitiesTest` holds every job in that file to being a PHPUnit job.
+- The two audit workflows, the selftest and its fixtures were adopted from the coord plugin's v0.63.0 `templates/security/`. The selftest differs from that copy only in its two workflow paths (`CALLEE` / `CALLER`, rewritten to `$HERE/../workflows/...`), so a refresh diffs against that template version.
+
 The wait-for-CI discipline before self-merge is owned by [`CLAUDE.md`](CLAUDE.md) standing rule 5 (card#5575; deliberately not restated here). What this section owns is the driver lesson from the Python-era `test_db_mariadb.py` incident: a local SQLite-only `vendor/bin/phpunit` run passing does not guarantee CI green when a MariaDB job exists. Driver-specific behavior (transaction semantics, `UNIQUE` constraint timing, `JSON_VALID` enforcement, timestamp precision) only surfaces under the real engine.
 
 ### Running MariaDB tests locally

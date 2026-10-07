@@ -1,0 +1,34 @@
+name: Dependency-audit selftest
+
+# The scheduled dependency audit (dependency-ref-matrix.yml -> dependency-audit.yml) runs only on
+# a clock, so nothing on a PR would otherwise execute its shell. This selftest extracts the
+# callee's and the caller's marked blocks verbatim and runs them against the vendored fixtures in
+# .github/dependency-audit/, with no network.
+#
+# Its own workflow rather than a job in laravel-tests.yml: every job there is a PHPUnit job, and
+# GenClientCapabilitiesTest holds that file to it. Not a required status check.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+concurrency:
+  group: dependency-audit-selftest-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit-selftest:
+    name: Dependency-audit selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dependency-audit selftest (no network)
+        run: bash .github/dependency-audit/dependency-audit.selftest.sh

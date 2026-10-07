@@ -1,0 +1,32 @@
+{
+  "ghsa_id": "GHSA-78fx-h6xr-vch4",
+  "type": "reviewed",
+  "withdrawn_at": null,
+  "html_url": "https://github.com/advisories/GHSA-78fx-h6xr-vch4",
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "composer",
+        "name": "laravel/framework"
+      },
+      "vulnerable_version_range": ">= 12.0.0, < 12.1.1",
+      "first_patched_version": "12.1.1"
+    },
+    {
+      "package": {
+        "ecosystem": "composer",
+        "name": "laravel/framework"
+      },
+      "vulnerable_version_range": ">= 11.0.0, < 11.44.1",
+      "first_patched_version": "11.44.1"
+    },
+    {
+      "package": {
+        "ecosystem": "composer",
+        "name": "laravel/framework"
+      },
+      "vulnerable_version_range": "< 10.48.29",
+      "first_patched_version": "10.48.29"
+    }
+  ]
+}

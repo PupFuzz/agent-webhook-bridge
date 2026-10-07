@@ -1,0 +1,24 @@
+{
+  "ghsa_id": "GHSA-g9mf-h72j-4rw9",
+  "type": "reviewed",
+  "withdrawn_at": null,
+  "html_url": "https://github.com/advisories/GHSA-g9mf-h72j-4rw9",
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "undici"
+      },
+      "vulnerable_version_range": ">= 7.0.0, < 7.18.2",
+      "first_patched_version": "7.18.2"
+    },
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "undici"
+      },
+      "vulnerable_version_range": "< 6.23.0",
+      "first_patched_version": "6.23.0"
+    }
+  ]
+}

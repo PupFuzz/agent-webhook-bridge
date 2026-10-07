@@ -1,0 +1,16 @@
+{
+  "ghsa_id": "GHSA-r4gj-5m52-g5wh",
+  "type": "reviewed",
+  "withdrawn_at": null,
+  "html_url": "https://github.com/advisories/GHSA-r4gj-5m52-g5wh",
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "axios"
+      },
+      "vulnerable_version_range": ">= 1.17.0, < 1.20.0",
+      "first_patched_version": "1.20.0"
+    }
+  ]
+}

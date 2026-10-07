@@ -1,0 +1,923 @@
+# dependency-audit.yml — the CALLEE: one dependency-advisory audit of ONE ref, exposed as
+# a `workflow_call` so a single implementation serves every ref its caller matrixes over.
+#
+# ADOPT (per repo): copy to `.github/workflows/` on the INTEGRATION branch and set the
+# CUSTOMIZE zone (lockfile names, excluded directories, the pinned scanner install + its
+# invocation, the two fetchers, the source-2 control repo). Its caller is
+# `dependency-ref-matrix.yml`, which must live on the DEFAULT branch — see that file.
+# The pair is documented in the coord plugin's `docs/DEPENDENCY-AUDIT.md`.
+#
+# WHY THE CALLEE LIVES ON THE INTEGRATION BRANCH. The caller couples to it with
+# `uses: …@<integration>` rather than a SHA pin, so this implementation can be iterated
+# without a release. That coupling is deliberate and is argued in the caller.
+#
+# TWO SOURCES, AND NEITHER IS THE OTHER'S BACKUP:
+#   SOURCE 1  a lockfile scanner over the GLOBAL advisory feed (OSV/GHSA-derived).
+#   SOURCE 2  the `/repos/<dep-org>/<dep-repo>/security-advisories` endpoint, per production
+#             dependency, over the FULL production population resolved from the lockfiles at
+#             run time.
+# Source 2 exists because source 1 has a measured blind spot: on 2026-08-20 two repos
+# carried `league/commonmark 2.9.0`/`2.9.1`, four HIGH advisories (one XSS) applied, and the
+# global feed returned ZERO — the advisories were published only on the dependency's own
+# repository and never syndicated. `composer audit`, OSV dependency-review and Dependabot
+# alerts all read that one feed, so they are one source wearing three badges. A gate built on
+# source 1 alone would report clean over exactly the class it was installed to catch.
+#
+# EVERY FAILURE IS RED, WITH A NAMED REASON RECORDED — not merely printed. An unreadable source
+# is never a pass: "we saw nothing" and "there is nothing" are the two states this whole gate
+# exists to keep apart. ⛔ THE LIST OF REASONS IS NOT REPEATED HERE. The coord plugin's
+# `docs/DEPENDENCY-AUDIT.md` § "Failure semantics" owns it, per code; a copy in this header
+# would be one more thing to keep in step with the `err`/`fatal` calls below, and the copies
+# are what went false the last time this guarantee stopped being true.
+#
+# THE POPULATION STATEMENT IS EMITTED BEFORE ANY VERDICT and is exported as an OUTPUT, not
+# only logged. A caller's reporting job asserts on it, so a green over an empty population is
+# impossible to confuse with a green over audited lockfiles. (Anchor: a release's committed
+# `.vulns.json` read `0` and was taken as a statement about the shipped bundle; it was a
+# statement about the lockfile graph. An artifact that does not name its population lets the
+# reader supply one from expectation.)
+#
+# ⚠ RUNNER PREREQUISITE, AND IT CHANGED WITH THE PINS. This workflow requires an Actions runner
+#   that supports node24. Its action references are SHA pins taken at majors that declare
+#   `runs.using: node24`, where the v4/v5 majors this template shipped before declared node20 —
+#   so the pin that made these references immutable also moved the action runtime. Do NOT unpin
+#   to get node20 back: a tag can be repointed at any commit by whoever owns it and a SHA
+#   cannot, which is the whole reason for the pin. If your runner is too old for node24, pin
+#   instead to a SHA you have READ as node20 — read the object id itself, never infer the
+#   runtime from the major:
+#       curl -sS https://raw.githubusercontent.com/<owner>/<action>/<sha>/action.yml | grep using
+#   "the newest v4/v5 major" is NOT a rule, and this line said it was until it was measured:
+#   on 2026-09-21 `actions/checkout`'s newest v4 declares node20 but its newest v5 ALREADY
+#   declares node24, while `actions/setup-python`'s newest v5 still declares node20. The
+#   major does not answer the question; the object id does.
+name: Dependency advisory audit (callable)
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The git ref to audit (the caller passes one matrix leg per audited branch).
+        required: true
+        type: string
+    outputs:
+      population:
+        description: >-
+          One-line JSON naming what was actually read: manifest count, production package
+          count, resolved/unresolved counts, source-2 repo count. EMPTY or absent means the
+          audit did not reach its verdict — the caller's reporting job treats that as RED.
+        value: ${{ jobs.audit.outputs.population }}
+      findings:
+        description: Number of advisory findings across both sources (integer, as a string).
+        value: ${{ jobs.audit.outputs.findings }}
+      status:
+        description: '`audited` only when both sources completed; `error` otherwise.'
+        value: ${{ jobs.audit.outputs.status }}
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    # Bounds a hung network seam (scanner, registry, advisory reads) well short of the
+    # 6-hour default.
+    timeout-minutes: 30
+    outputs:
+      population: ${{ steps.audit.outputs.population }}
+      findings: ${{ steps.audit.outputs.findings }}
+      status: ${{ steps.audit.outputs.status }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false   # nothing here pushes; the audit reads other orgs' advisories with its own token
+      # CUSTOMIZE — install the lockfile scanner by a PINNED mechanism (a checksum-verified
+      # download, or your repo's existing install-pinned-binary composite). Never `latest`:
+      # a floating scanner changes this gate's verdict without its subject changing, which is
+      # the definition of a check that is not a check.
+      #
+      # This repo: the osv-scanner release binary, verified against a SHA-256 read from the
+      # release's own osv-scanner_SHA256SUMS and from the GitHub release asset digest (both
+      # agreed). Dependabot does not bump this pin; a new scanner version is a deliberate edit
+      # of BOTH values below.
+      - name: Install the lockfile scanner (pinned)
+        env:
+          OSV_SCANNER_VERSION: v2.6.0
+          OSV_SCANNER_SHA256: ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/osv-scanner"
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 --max-time 120 -o "$dir/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          printf '%s  %s\n' "$OSV_SCANNER_SHA256" "$dir/osv-scanner" | sha256sum --strict --check -
+          chmod +x "$dir/osv-scanner"
+          "$dir/osv-scanner" --version
+          echo "OSV_SCANNER_BIN=$dir/osv-scanner" >> "$GITHUB_ENV"
+      - name: Audit
+        id: audit
+        env:
+          AUDIT_REF: ${{ inputs.ref }}
+          # CUSTOMIZE if any production dependency lives in a PRIVATE repo: the default
+          # GITHUB_TOKEN reads public repository advisories, and returns 404 for a private one
+          # it has no access to — SOURCE2-FETCH-FAILED, not "clean". Swap in a PAT with read
+          # access to those repos if that applies.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # ============================ CUSTOMIZE ZONE ============================
+          # Everything in this zone is per-adopter. Everything BELOW the first `# ---`
+          # marker is the shared, parameter-free implementation the selftest extracts and
+          # runs verbatim (.github/dependency-audit/dependency-audit.selftest.sh in this repo).
+          #
+          # LOCKFILE_NAMES — the lockfile BASENAMES this repo's ecosystems use. Discovery is
+          # by name over the checked-out tree at RUN TIME; there is deliberately no configured
+          # list of PATHS, so a lockfile added in a new directory is audited the day it lands.
+          LOCKFILE_NAMES="composer.lock package-lock.json"
+          # EXCLUDE_DIRS — path fragments pruned from discovery. `sboms` is not optional
+          # housekeeping: committed CycloneDX files ARE lockfile-shaped, the scanner reads them,
+          # and they describe historical releases that were characterised at the time. Measured
+          # on an adopting repo: scanning from the root produced 18 findings, ALL of them from
+          # committed SBOMs — a permanently red gate, which gets muted within a week. `vendor`
+          # and `node_modules` are installed trees, not this repo's declared dependencies.
+          EXCLUDE_DIRS="sboms vendor node_modules .git"
+          # ADVISORY_CONTROL_REPO — a PUBLIC repo, in an org that is not yours, KNOWN to carry
+          # at least one repository-level advisory. Source 2 probes it on every run: if the
+          # probe comes back empty, the token cannot read another org's advisories and every
+          # per-dependency query would return a silent, information-free empty. Fail there, not
+          # at the verdict. (Default: the package whose repo-level advisories motivated this
+          # gate; replace it if it ever stops carrying any.)
+          ADVISORY_CONTROL_REPO="thephpleague/commonmark"
+          OSV_SCANNER_BIN="${OSV_SCANNER_BIN:?pinned install step did not export OSV_SCANNER_BIN}"
+          # CUSTOMIZE-BEGIN audit-seams
+          # The network seams, each a function defined in this block, isolated here so the
+          # implementation below is exercisable with zero network in the selftest. Contract for
+          # each: print the payload on stdout and exit 0, or exit non-zero. A non-zero exit is
+          # RED with a named reason, never an empty result. Adapt the flags to YOUR scanner
+          # version; the block below only reads the JSON, so a flag rename cannot silently
+          # change the verdict.
+          osv_scan() {            # "$@" = discovered lockfile paths -> scanner JSON on stdout
+            local args=() f
+            for f in "$@"; do args+=(--lockfile "$f"); done
+            "$OSV_SCANNER_BIN" --format json "${args[@]}"
+          }
+          advisory_fetch() {      # $1 = <owner>/<repo> -> JSON ARRAY of repository advisories
+            gh api "repos/$1/security-advisories" --paginate
+          }
+          registry_repo_lookup() {  # $1 = npm package name -> "<owner>/<repo>" or nothing
+            # npm lockfiles resolve to the REGISTRY, not to a source repo, so source 2 needs
+            # this hop. Packages whose metadata carries no usable GitHub repository field are
+            # COUNTED and REPORTED as unresolved in the population statement — never dropped.
+            curl -fsS --max-time 20 "https://registry.npmjs.org/${1//\//%2f}" \
+              | jq -r '(.repository.url // .repository // "")
+                       | tostring
+                       | capture("github\\.com[:/](?<o>[^/]+)/(?<r>[^/#?]+?)(\\.git)?$")
+                       | "\(.o)/\(.r)"' 2>/dev/null
+          }
+          reviewed_advisory_fetch() {  # $1 = GHSA ID -> that advisory's GLOBAL record (a JSON object)
+            # Called only for a source-2 entry whose range this audit does not read: GitHub's
+            # reviewed record of the same advisory splits the maintainer's free text into one
+            # range per entry. A 404 (no global record) exits non-zero, and that entry stays RED.
+            gh api "advisories/$1"
+          }
+          # CUSTOMIZE-END audit-seams
+          # ========================== END CUSTOMIZE ZONE ==========================
+          # --- dep-audit-lib
+          WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+          mkdir -p "$WORK/adv" "$WORK/rev"
+          AUDIT_ERRORS=0; FINDINGS=0; FATAL=0
+          ERROR_LINES=""; FINDING_LINES=""; ERROR_CODES=""
+          N_MANIFESTS=0; N_PACKAGES=0; N_RESOLVED=0; N_UNRESOLVED=0; N_REPOS=0; N_SUPPORTED=0
+          # ONE representation of each manifest list — newline-separated, the machine form.
+          # Every display and every JSON rendering is DERIVED from it below, so the statement
+          # and the exported output cannot disagree about what source 2 could read.
+          SUPPORTED_MANIFESTS=""; UNSUPPORTED_MANIFESTS=""
+          list_json() { printf '%s' "$1" | jq -Rsc 'split("\n") | map(select(length > 0))'; }
+          list_text() { printf '%s' "$1" | jq -Rsr 'split("\n") | map(select(length > 0)) | join(", ")'; }
+          MANIFESTS=(); PKG_TSV="$WORK/packages.tsv"; : > "$PKG_TSV"
+          err() {   # $1=code $2=detail. Recorded, printed, and RED at the verdict.
+            AUDIT_ERRORS=$((AUDIT_ERRORS + 1))
+            ERROR_LINES="${ERROR_LINES}  AUDIT-ERROR[$1] $2"$'\n'
+            ERROR_CODES="${ERROR_CODES}$1"$'\n'
+            printf 'AUDIT-ERROR[%s] %s\n' "$1" "$2" >&2
+          }
+          fatal() { err "$1" "$2"; FATAL=1; }   # cannot continue; the statement is still emitted
+          # Version comparison and range matching, as one jq program reused by every leg.
+          # A version it cannot parse, a range form it does not recognise, and a comparison it
+          # cannot decide each come back as an explicit marker the caller turns into a RED.
+          #   THE RANGE GRAMMAR. A repository advisory's `vulnerable_version_range` is FREE TEXT
+          #   typed by the maintainer. GitHub documents one shape ("Best practices for writing
+          #   repository security advisories", github/docs content/code-security/tutorials/
+          #   fix-reported-vulnerabilities/write-security-advisories.md): one bound, `= v`, or
+          #   `<lower>, <upper>`. It says that several ranges may NOT share one field. Live
+          #   advisories break that rule and use their own ecosystem's syntax instead. The
+          #   CONNECTIVES below are taken from npm node-semver (README "Ranges": space = AND,
+          #   `||` = OR, `a - b` inclusive) and Composer (doc/articles/versions.md "Version
+          #   Range": space or comma = AND, `||` = OR, AND binds tighter). So the grammar read
+          #   here is:
+          #     range       := alternative ( "||" alternative )*          any alternative holds
+          #     alternative := V ("-" | "through") V                      inclusive span
+          #                  | piece ( "," piece )*
+          #     piece       := term ( ( ws | ";" | "&&" ) term )*         AND
+          #     term        := ( ">=" | ">" | "<=" | "<" | "=" ) ws? V     ("=>" is read as ">=")
+          #   The COMMA IS AMBIGUOUS across publishers, and a wrong guess FAILS OPEN. So:
+          #     every piece is a single term     -> comma = AND  (GitHub, Composer, PEP 440)
+          #     every piece is a bounded interval -> comma = OR  (websockets/ws GHSA-96hv-2xvq-fx4p:
+          #                                         ">= 1.1.0 < 5.2.5, >= 6.0.0 < 6.2.4, ...", where
+          #                                         the reviewed global advisory lists each piece as
+          #                                         its own range)
+          #     any other mix                    -> RANGE-UNPARSEABLE
+          #   A conjunction must describe ONE non-empty interval: at most one lower and one upper
+          #   bound, and `=` only alone. ANDing GitHub's own invalid example "> 2.0, < 2.3, > 3.0,
+          #   < 3.2" gives an empty set, which would read 2.1 as clean; this block refuses it
+          #   instead. `^`, `~`, `*`, `x`, `!=`, `~=`, `==` and a single `|` are NOT read. They
+          #   stay RANGE-UNPARSEABLE until a measured advisory needs one.
+          #   THE VERSION V is NOT read with npm's or Composer's version semantics, which differ
+          #   from each other. It is a list of numbers compared zero-padded ("2.3" = "2.3.0"),
+          #   plus an optional pre-release tag. Where the two ecosystems read a bound differently,
+          #   the wider reading is taken, or the comparison is refused:
+          #     a partial bound under `<=`, `=` or a hyphen's upper end is read as npm reads it:
+          #       up to the next minor or major, exclusive (`<= 2.3` is `< 2.4`, `= 1.2` is
+          #       `>= 1.2 < 1.3`). Composer reads it as the one version 2.3.0.
+          #     `>= X`, X untagged, admits the pre-releases of X, as Composer reads it (`>= X-dev`).
+          #     two DIFFERENT pre-release tags on one core are not ordered (npm and Composer order
+          #       tags differently). Against its own core untagged, a tag is ordered BELOW that core
+          #       only if it is on the list both ecosystems put there: `alpha`/`a`, `beta`/`b` or
+          #       `rc`, each with optional numbers and an optional trailing `dev`, or a bare `dev`
+          #       (any case; `belowtag`, checked against npm semver 7.6.2 `compare` and
+          #       composer/semver 3.4.4 `VersionParser::normalize` + `Comparator`). Every other tag
+          #       is not ordered against its core: Composer reads `-stable` as EQUAL to it, and its
+          #       patch tags (`-p1`, `-pl1`, `-patch1`, also with `-dev`) as ABOVE it, where npm
+          #       reads all of them below. So an unknown tag fails closed, never open.
+          #       Such a comparison is UNDECIDABLE. It reads RANGE-UNPARSEABLE unless the answer
+          #       does not depend on it (another bound of its interval is false, or another
+          #       alternative holds). A lower/upper pair whose order is undecidable is refused
+          #       outright, because the empty-interval rule cannot be applied to it.
+          #   Each connective and each reading of V stated above has a row in the §V range table
+          #   of dependency-audit.selftest.sh, and each guard behind a reading of V has a mutant
+          #   there that removes it. Of the forms NOT read, `^`, `x` and a single `|` have rows.
+          #   That is the extent of what is checked.
+          #   KNOWN LIMITS, each one over-flags or refuses. Two different tags on one core always
+          #   red, even where both ecosystems agree (`-p1` < `-p2`). A tag off the `belowtag`
+          #   list refuses against its own core even where only npm can read it (`< 1.2.3` at
+          #   `1.2.3-next.0`; Composer rejects that version). A partial `<=`/`=` bound
+          #   flags more than Composer does (`<= 2.3` flags 2.3.5). `< X` admits the pre-releases
+          #   of X, and `> 1.2` admits 1.2.x (npm reads it as `>= 1.3.0`). npm excludes a
+          #   pre-release from a range that names no pre-release on its core; that rule is not
+          #   applied.
+          #   A BARE version ("1.17.0") is NOT read (pm ruling on card#11106, comment 10035): the
+          #   same text means one version in axios GHSA-654m-c8p4-x5fp (reviewed record "= 1.15.2")
+          #   and a lower bound in axios GHSA-r4gj-5m52-g5wh (reviewed record ">= 1.17.0, < 1.20.0").
+          #   Like any unread range, the reviewed global record decides it (reviewed_hit, below).
+          VMATCH_JQ='
+            def vparse:
+              . as $v
+              | ($v | sub("^[vV]"; "") | split("+")[0]) as $s
+              | ($s | split("-")) as $p
+              | ($p[0] | split(".")) as $core
+              | if ($core | length) == 0 or ($core | any(test("^[0-9]+$") | not))
+                then null
+                else {c: ($core | map(tonumber)), pre: (($p | length) > 1), tag: ($p[1:] | join("-"))}
+                end;
+            def pad($n): . + [range(0; $n - length) | 0];
+            def belowtag: .tag | test("^(?:(?:alpha|a|beta|b|rc)(?:[.-]?[0-9]+)*(?:[.-]?dev)?|dev)$"; "i");
+            def vcmp($a; $b):   # -1, 0 or 1; null = UNDECIDABLE
+              ([($a.c | length), ($b.c | length)] | max) as $n
+              | ($a.c | pad($n)) as $x | ($b.c | pad($n)) as $y
+              | first(range(0; $n) | select($x[.] != $y[.]) | (if $x[.] < $y[.] then -1 else 1 end))
+                // (if $a.pre and $b.pre then (if $a.tag == $b.tag then 0 else null end)
+                    elif $a.pre == $b.pre then 0
+                    elif (if $a.pre then $a else $b end | belowtag | not) then null
+                    elif $a.pre then -1 else 1 end);
+            def satisfies($ver; $op; $bound):   # true or false; null = UNDECIDABLE
+              vcmp($ver; $bound) as $c
+              | if $c == null then null
+                elif $op == ">="  then $c >= 0
+                     or ($ver.pre and ($bound.pre | not) and vcmp($ver | .pre = false; $bound) == 0)
+                elif $op == ">"   then $c >  0
+                elif $op == "<="  then $c <= 0
+                elif $op == "<"   then $c <  0
+                elif $op == "="   then $c == 0
+                else null end;
+            def all3: if any(. == false) then false elif all(. == true) then true else null end;
+            def any3: if any(. == true) then true elif any(. == null) then null else false end;
+            def upto: {c: (.c[:-1] + [.c[-1] + 1]), pre: false, tag: ""};
+            # Every helper below returns null for "not recognised", and in_range turns ANY null
+            # into RANGE-UNPARSEABLE.
+            def terms:        # one piece -> [{op, b}] ANDed, or null
+              gsub("^\\s+|\\s+$"; "") as $s
+              | [ $s | splits("\\s*(?:&&|;)\\s*") ] as $chunks
+              | if ($chunks | all(test("^(?:>=|<=|>|<|=)\\s*[^\\s<>=,;&|]+(?:\\s+(?:>=|<=|>|<|=)\\s*[^\\s<>=,;&|]+)*$")) | not) then null
+                else [ $chunks[] | scan("(>=|<=|>|<|=)\\s*([^\\s<>=,;&|]+)") | {op: .[0], b: (.[1] | vparse)} ]
+                     | if any(.b == null) then null else . end
+                end;
+            def interval:     # [{op, b}] ANDed -> ONE non-empty {lo, hi, eq}, or null
+              if . == null then null
+              elif (map(select(.op == "=")) | length) > 0 and length > 1 then null
+              else
+                [ .[] | if (.b.c | length) < 3 and .op == "<=" then {op: "<", b: (.b | upto)}
+                        elif (.b.c | length) < 3 and .op == "=" then {op: ">=", b: .b}, {op: "<", b: (.b | upto)}
+                        else . end ]
+                | map(select(.op == ">=" or .op == ">")) as $l
+                | map(select(.op == "<=" or .op == "<")) as $u
+                | map(select(.op == "=")) as $e
+                | if ($l | length) > 1 or ($u | length) > 1 then null
+                  elif ($l | length) == 1 and ($u | length) == 1 and vcmp($l[0].b; $u[0].b) == null
+                  then null   # UNDECIDABLE: bounds that cannot be ordered cannot be shown non-empty
+                  elif ($l | length) == 1 and ($u | length) == 1
+                       and (vcmp($l[0].b; $u[0].b) as $c
+                            | $c > 0 or ($c == 0 and ($l[0].op == ">" or $u[0].op == "<")))
+                  then null   # EMPTY: an advisory never means "no version" — this is a misread
+                  else {lo: $l[0], hi: $u[0], eq: $e[0]} end
+              end;
+            def bounded: . != null and .lo != null and .hi != null;
+            def alternative:  # one ||-alternative -> [interval] ORed, or null
+              gsub("^\\s+|\\s+$"; "") as $a
+              | (($a | capture("^(?<a>[^\\s,]+)\\s+(?:-|through)\\s+(?<b>[^\\s,]+)$")) // null) as $hy
+              | if $hy != null then
+                  [ [ {op: ">=", b: ($hy.a | vparse)}, {op: "<=", b: ($hy.b | vparse)} ]
+                    | if any(.b == null) then null else . end | interval ]
+                else
+                  [ $a | splits("\\s*,\\s*") | terms ] as $pieces
+                  | if ($pieces | any(. == null)) then null
+                    elif ($pieces | length) == 1 then [ $pieces[0] | interval ]
+                    elif ($pieces | all(length == 1)) then [ $pieces | add | interval ]   # comma = AND
+                    elif ($pieces | all(interval | bounded)) then [ $pieces[] | interval ] # comma = OR
+                    else null end
+                end
+              | if . == null or any(. == null) then null else . end;
+            def holds($ver):  # true or false; null = UNDECIDABLE
+              if .eq != null then satisfies($ver; "="; .eq.b)
+              else [ (.lo, .hi) | select(. != null) | satisfies($ver; .op; .b) ] | all3 end;
+            def ranges($range):  # range text -> [interval] ORed, or null when it is not read
+              [ $range | gsub("^\\s+|\\s+$"; "") | gsub("=>"; ">=")
+                | splits("\\s*\\|\\|\\s*") | alternative ]
+              | if any(. == null) then null else add end;
+            def in_range($ver; $range):
+              ranges($range) as $iv
+              | if $iv == null then "RANGE-UNPARSEABLE"
+                else ($iv | map(holds($ver)) | any3)
+                     | if . == null then "RANGE-UNPARSEABLE" else . end end;
+            def may_hold($ver; $range):  # the intervals of a READ range that may hold $ver
+              ranges($range) | map(select(holds($ver) != false));
+            def open_hit($ver; $range):  # true when no interval that may hold $ver has an upper bound
+              may_hold($ver; $range) | all(.hi == null and .eq == null);
+            def named($range):  # every version the text of a READ range names (each one parses, as the range was read)
+              [ $range | scan("[vV]?[0-9][^\\s<>=,;|&]*") | vparse ];
+            def room_below($ver; $fix):  # the lower bound of one interval holding $ver -> true when that interval begins below $fix
+              vcmp(.; $fix) as $f | vcmp(.; $ver) as $v
+              | $f != null and $v != null and ($f < 0 or $v > 0);
+            # starts_below takes the lower bound of each interval of the READ range that may hold
+            # $ver (open_hit runs first, and an interval with no upper bound has a lower one), and
+            # room_below tests each: a bound EQUAL to the fix begins an interval at it, and a bound
+            # that cannot be compared refuses. A bound above the version (`>= X` admitting a
+            # pre-release of X) begins no interval holding it below X, so it does not refuse.
+            def starts_below($ver; $range; $fix):  # THE INVARIANT: true when no interval that may hold $ver can begin at or above $fix
+              [ may_hold($ver; $range)[] | .lo.b ] | all(room_below($ver; $fix));
+            # THE PATCHED VERSIONS (card#11106). Each `vulnerabilities[]` entry pairs a range with
+            # its own `patched_versions`, also free text. Maintainers often write an OPEN range
+            # (axios ">=1.13.0") and put the fix only there (">=1.20.0"), so a version at or above
+            # the fix is NOT affected, whatever the open range says.
+            #   WHEN IT IS CONSULTED. A readable range is the specific evidence and the patched
+            #     text is the guess, so the patched text may clear a version only INSIDE A READ
+            #     RANGE, and only where that range leaves room for the fix patched_state chose:
+            #     the range holds the version (in_range is true), every interval that may hold it
+            #     has NO upper bound (open_hit), and the fix is strictly above the lower bound of
+            #     each of those intervals, each comparable with the fix and the version
+            #     (starts_below). An upper bound overrules the patched text (">=1.0.0 <1.2.3 ||
+            #     >=2.0.0 <2.0.5", patched "1.2.3", at 2.0.1 stays AFFECTED), and so does an
+            #     interval that begins at or above the fix ("<1.5.3 || >=2.0.0", patched "1.5.3",
+            #     at 2.0.1 stays AFFECTED).
+            #     A range that is read but cannot be compared at this version (a pre-release such
+            #     as 1.5.0-p1 against ">=1.0.0 <1.5.0") stays RANGE-UNPARSEABLE, never cleared
+            #     ("undecided"). A range that is NOT READ is never cleared by its patched text
+            #     either (pm ruling on card#11106, 2026-10-06): an unread range cannot tell a lower
+            #     bound from an upper one, so no reading of it can show the fix is the fix of that line.
+            #     The reviewed global record decides it instead (THE REVIEWED GLOBAL RECORD,
+            #     below). An entry with no patched value, or one not read, is decided by its range
+            #     alone.
+            #   READ: one or more versions, each optionally prefixed `>=` or `=>`, separated by `,`,
+            #     `;` or `||` ("1.20.0", ">= v5.8.0", "6.20.45,7.30.7,8.83.28", "7.18.2; 6.23.0").
+            #     Anything else (a patched RANGE such as ">=5.4.19, <6.0.0", prose, a `:` typo) is
+            #     NOT read, so it never clears ("vite GHSA-859w-5945-r5v3" row in §P).
+            #   The comparison is vcmp, strict: a pre-release of a fix is BELOW it (no Composer
+            #     `>= X-dev` widening here, which would fail open), and an undecidable comparison
+            #     does not clear.
+            #   Several patched versions are fixes on different release lines, and the field does
+            #   not say which line a version is on. THESE ARE THE READINGS THAT CHOOSE A CLEARING
+            #   FIX, and each can fail open; no other branch of patched_state returns "clean", and
+            #   each clear then passes the read-range test above:
+            #   (1) OWN LINE. The version shares at least one leading number with a listed fix. Its
+            #     own line is the listed fix sharing the longest run of leading numbers with it (the
+            #     highest of them on a tie, so a tie fails closed), and it clears at or above that
+            #     fix. A list of one fix per major, "1.5.3, 2.1.0", reads the line of 1.6.0 as 1.5.3
+            #     and clears it, and reads the line of 2.0.5 as 2.1.0 and does not.
+            #     FAILS OPEN on a minor line with no listed fix, above a fix on an earlier minor of
+            #     the same major (2.4.0 against "2.3.5, 3.0.4" under ">= 1.0.0" reads as patched):
+            #     neither the field nor that range shows whether 2.4.0 shipped before the fix, since
+            #     the interval holding 2.4.0 begins below it. Where the range does show it (it names
+            #     the start of the 2.4 line, "<2.3.5 || >=2.4.0"), starts_below refuses.
+            #     §P rows: "a later minor of a line whose fix shipped"; "KNOWN LIMIT (1)".
+            #   (2) ABOVE EVERY LINE. The version shares no leading number with any listed fix. It
+            #     clears only when it is at or above the HIGHEST fix AND strictly above every version
+            #     the range names (named_above; a name it cannot compare refuses). That keeps
+            #     a later major such as 3.0.0 against "1.5.3, 2.1.0" under ">= 1.0.0" clean, and
+            #     refuses that 3.0.0 under ">=1.0.0 || >=4.0.0 <4.2.0" (the range names 4.0.0),
+            #     where it stays AFFECTED.
+            #     FAILS OPEN on a later major the advisory did not list (that same 3.0.0 row):
+            #     neither the field nor that range shows whether 3.0.0 carries the fix. Where the
+            #     range does show it (it names the start of a line above the highest fix,
+            #     ">=1.0.0 <1.5.3 || >=2.0.0"), starts_below refuses. Without the reading every
+            #     advisory reds once a package ships a major above all of its fixes.
+            #     §P rows: "KNOWN LIMIT (2)" (cleared); "no shared leading number, and the read
+            #     range names versions above it" (refused).
+            #   Each reading and each refusal stated here has a row in the §P table of
+            #   dependency-audit.selftest.sh. The guards with a mutant are the ones the §M
+            #   patched-version mutants name; that list is the extent of what is controlled.
+            def plist:        # patched_versions text -> [version], or null when not read
+              [ splits("\\s*(?:,|;|\\|\\|)\\s*")
+                | (capture("^(?:>=|=>)?\\s*(?<v>[^\\s<>=,;|&]+)$") // null)
+                | if . == null then null else (.v | vparse) end ]
+              | if length == 0 or any(. == null) then null else . end;
+            def lead($a; $b):  # how many leading numbers $a and $b share
+              ([($a.c | length), ($b.c | length)] | max) as $n
+              | ($a.c | pad($n)) as $x | ($b.c | pad($n)) as $y
+              | first(range(0; $n) | select($x[.] != $y[.])) // $n;
+            def ownline($ver):  # [version] -> the fix on the own line of $ver, or null = UNDECIDABLE
+              (map(lead($ver; .)) | max) as $m
+              | [ .[] | select(lead($ver; .) == $m) ] as $c
+              | reduce $c[1:][] as $p ($c[0];
+                  if . == null then null
+                  else vcmp(.; $p) as $k | if $k == null then null elif $k < 0 then $p else . end end);
+            def named_above($ver; $range):  # true when $ver is above every version the READ range names
+              named($range) | all(vcmp($ver; .) == 1);
+            def patched_state($ver; $text; $range):  # {state, fix}: the ONE place a fix is chosen
+              # state: "clean" | "below" | "noline" | "none" | "unread" | "undecidable"; fix: the
+              # chosen fix where one was chosen, which the caller hands to starts_below.
+              ($text // "" | gsub("^\\s+|\\s+$"; "")) as $t
+              | if $t == "" then {state: "none"}
+                else ($t | plist) as $ps
+                  | if $ps == null then {state: "unread"}
+                    elif ($ps | map(lead($ver; .)) | max) == 0 and (named_above($ver; $range) | not)
+                    then {state: "noline"}
+                    else ($ps | ownline($ver)) as $own
+                      | if $own == null then {state: "undecidable"}
+                        else vcmp($ver; $own) as $k
+                          | {fix: $own, state: (if $k == null then "undecidable" elif $k >= 0 then "clean" else "below" end)}
+                      end
+                  end
+                end;
+            def is_pkg:  # one vulnerabilities[] entry -> itself when it names the audited package, else nothing
+              select((.package.ecosystem // "" | ascii_downcase) == ($ecosystem | ascii_downcase))
+              | select((.package.name // "" | ascii_downcase) == ($package | ascii_downcase));
+            # THE REVIEWED GLOBAL RECORD (card#11106, pm ruling 2026-10-06). A range of a repository
+            # advisory that this grammar does not read is not guessed at: the REVIEWED global record
+            # GitHub keeps of the same advisory (`/advisories/<GHSA>`, type "reviewed") lists the
+            # ranges of the package one per `vulnerabilities[]` entry, and each entry goes through
+            # in_range on its own. No other grammar is read. The caller looks the record up (the
+            # `reviewed_advisory_fetch` seam) and hands it in as $reviewed, a map from GHSA ID to the
+            # record, or to {lookup_failed: why}.
+            #   AFFECTED when any entry holds the version. CLEAN only when every entry is read and
+            #   none holds it. RANGE-UNPARSEABLE (fail closed, as for any unread range) when an entry
+            #   is not read or cannot be compared and none holds, when the lookup was not made or
+            #   failed, when the record is not reviewed, is withdrawn or names another advisory, and
+            #   when it lists no entry for this package. The patched text is not read on this path.
+            #   Each case has a §G row in dependency-audit.selftest.sh, and each guard that decides a
+            #   verdict has a §M mutant. The not-looked-up and lookup-failed branches only name their
+            #   reason (the identity guard refuses those entries too), so their reasons are asserted.
+            def reviewed_hit($ver; $id; $rec):  # {hit: true | false | null, why}; null = RANGE-UNPARSEABLE
+              if $rec == null then {hit: null, why: "its global record was not looked up"}
+              elif $rec.lookup_failed != null then {hit: null, why: "the lookup of its global record failed: \($rec.lookup_failed)"}
+              elif $rec.ghsa_id != $id then {hit: null, why: "the global record returned is \($rec.ghsa_id // "unnamed"), not \($id)"}
+              elif $rec.type != "reviewed" then {hit: null, why: "its global record is not reviewed (type \($rec.type // "none"))"}
+              elif $rec.withdrawn_at != null then {hit: null, why: "its reviewed global record is withdrawn"}
+              else [ ($rec.vulnerabilities // [])[] | is_pkg | in_range($ver; .vulnerable_version_range // "") ] as $h
+                | if ($h | length) == 0 then {hit: null, why: "its reviewed global record lists no range for this package"}
+                  else ($h | map(if . == "RANGE-UNPARSEABLE" then null else . end) | any3) as $x
+                    | {hit: $x, why: (if $x == null then "a range of its reviewed global record is not read either"
+                                      else "its reviewed global record decides" end)}
+                  end
+              end;
+            (($ARGS.named.reviewed // [])[0] // {}) as $reviewed
+            | ($version | vparse) as $ver
+            | if $ver == null then [{verdict: "VERSION-UNPARSEABLE", ghsa: "", range: ""}]
+              else
+                [ .[]
+                  | select(.withdrawn_at == null)
+                  | . as $adv
+                  | (.vulnerabilities // [])[]
+                  | is_pkg
+                  | {r: (.vulnerable_version_range // ""), p: (.patched_versions // "")} as $vr
+                  | if ranges($vr.r) == null then
+                      # THE RANGE IS NOT READ: its patched text never clears it, and the reviewed
+                      # global record decides, or it fails closed.
+                      ($adv.ghsa_id // "") as $id
+                      | reviewed_hit($ver; $id; $reviewed[$id]) as $rv
+                      | select($rv.hit != false)
+                      | {verdict: (if $rv.hit == true then "AFFECTED" else "RANGE-UNPARSEABLE" end),
+                         ghsa: $id, severity: ($adv.severity // ""), range: $vr.r,
+                         patched: "range not read, so its patched text is not read either; \($rv.why)",
+                         reviewed: $rv.why,
+                         lookup: ($id != "" and ($reviewed | has($id) | not))}
+                    else
+                      in_range($ver; $vr.r) as $hit
+                      | select($hit == true or $hit == "RANGE-UNPARSEABLE")
+                      | patched_state($ver; $vr.p; $vr.r) as $p0
+                      | (if $p0.state != "clean" then $p0.state
+                         elif $hit != true then "undecided"
+                         elif (open_hit($ver; $vr.r) | not) then "bounded"
+                         elif (starts_below($ver; $vr.r; $p0.fix) | not) then "startsabove"
+                         else "clean" end) as $ps
+                      | select($ps != "clean")
+                      | {verdict: (if $hit == true then "AFFECTED" else "RANGE-UNPARSEABLE" end),
+                         ghsa: ($adv.ghsa_id // ""), severity: ($adv.severity // ""), range: $vr.r,
+                         patched: (if $ps == "none" then "no patched version"
+                                   elif $ps == "below" then "patched in \"\($vr.p)\""
+                                   elif $ps == "bounded" then "patched \"\($vr.p)\" overruled by an upper bound of the range, so not cleared"
+                                   elif $ps == "startsabove" then "patched \"\($vr.p)\" overruled: an interval of the range holding the version begins at or above the fix, or cannot be compared, so not cleared"
+                                   elif $ps == "undecided" then "patched \"\($vr.p)\" not read, because the range is read and cannot be compared at this version, so not cleared"
+                                   elif $ps == "noline" then "patched \"\($vr.p)\" lists no fix on this line, and the range does not place the version above every version it names, so not cleared"
+                                   else "patched \"\($vr.p)\" not \(if $ps == "unread" then "read" else "comparable" end), so not cleared" end)}
+                    end
+                ]
+              end'
+          # --- end dep-audit-lib
+          # --- dep-audit-discovery
+          # Discovery is by lockfile NAME over the tree that is actually checked out, so the
+          # audited set is a property of the ref, not of a config file someone forgot to update.
+          discover_manifests() {
+            local name path skip frag
+            while IFS= read -r path; do
+              skip=0
+              for frag in $EXCLUDE_DIRS; do
+                case "/$path" in */"$frag"/*) skip=1; break;; esac
+              done
+              [ "$skip" = 1 ] || MANIFESTS+=("${path#./}")
+            done < <(
+              for name in $LOCKFILE_NAMES; do find . -type f -name "$name" -print; done | sort
+            )
+            N_MANIFESTS=${#MANIFESTS[@]}
+            if [ "$N_MANIFESTS" -eq 0 ]; then
+              # NOT a quiet green. A ref with no lockfiles is a ref this gate cannot say
+              # anything about, and "nothing to audit" is exactly what a green over nothing
+              # looks like from the runs list.
+              fatal NO-MANIFESTS "no lockfile named in LOCKFILE_NAMES ($LOCKFILE_NAMES) exists on ref '${AUDIT_REF:-?}' — this run audited NOTHING"
+            fi
+          }
+          # --- end dep-audit-discovery
+          # --- dep-audit-source1
+          # Source 1 is handed the DISCOVERED lockfiles explicitly; it is never pointed at the
+          # repo root. That is what keeps committed SBOM directories out of it, independently of
+          # whichever exclusion flag the current scanner version spells.
+          run_source1() {
+            local rc=0
+            osv_scan "${MANIFESTS[@]}" > "$WORK/osv.json" 2> "$WORK/osv.err" || rc=$?
+            if ! jq -e 'has("results")' "$WORK/osv.json" >/dev/null 2>&1; then
+              # A scanner that errored and a scanner that found nothing are different states,
+              # and only one of them is evidence. No parseable results object ⇒ RED.
+              fatal SOURCE1-UNPARSEABLE "scanner exited $rc with no parseable results object; stderr: $(tr '\n' ' ' < "$WORK/osv.err" | cut -c1-300)"
+              return 0
+            fi
+            local n
+            n=$(jq '[.results[]?.packages[]?.vulnerabilities[]?] | length' "$WORK/osv.json") \
+              || { fatal SOURCE1-UNPARSEABLE "results object present but not countable"; return 0; }
+            # A count that is not a NUMBER is not a zero. Unguarded, `$((FINDINGS + ))` and
+            # `[ "" -gt 0 ]` are shell ERRORS — and `set -e` is exempt inside `if`, so the
+            # findings would be dropped on the quiet.
+            if ! [[ $n =~ ^[0-9]+$ ]]; then
+              fatal SOURCE1-UNPARSEABLE "the results object is present but its vulnerability count came back as '$n', not a number"
+              return 0
+            fi
+            FINDINGS=$((FINDINGS + n))
+            if [ "$n" -gt 0 ]; then
+              FINDING_LINES="${FINDING_LINES}$(jq -r '.results[]?.packages[]? as $p | $p.vulnerabilities[]? | "  SOURCE1 \($p.package.ecosystem):\($p.package.name)@\($p.package.version) \(.id)"' "$WORK/osv.json")"$'\n'
+            fi
+          }
+          # --- end dep-audit-source1
+          # --- dep-audit-source2
+          # The population is the FULL production dependency set, transitive included, re-derived
+          # from the lockfiles every run. It is deliberately NOT scoped to direct dependencies:
+          # measured on two repos, the package carrying the four HIGH repo-level advisories was
+          # TRANSITIVE in both, so a direct-only scope would have excluded this gate's own
+          # known-positive control. Cost was measured before the scope was dropped, not assumed.
+          read_rows() {   # $1=manifest $2=jq program -> appends TSV rows; 1 = fatal, already recorded
+            local rc=0
+            jq -er "$2" "$1" >> "$PKG_TSV" || rc=$?
+            case "$rc" in
+              0) return 0 ;;
+              4) return 0 ;;   # jq -e: NO output. The lockfile PARSED and declares no production
+                               # packages — a different state from "could not be read", and the
+                               # zero-package check below is what names it.
+              *) fatal SOURCE2-LOCKFILE-UNPARSEABLE "$1 could not be read as a lockfile (reader exit $rc)"; return 1 ;;
+            esac
+          }
+          resolve_population() {
+            local m base
+            for m in "${MANIFESTS[@]}"; do
+              base="$(basename "$m")"
+              case "$base" in
+                composer.lock)
+                  read_rows "$m" '.packages
+                          | .[]
+                          | [ "composer", .name, .version,
+                              ((.source.url // "")
+                               | capture("github\\.com[:/](?<o>[^/]+)/(?<r>[^/#?]+?)(\\.git)?$")
+                               | "\(.o)/\(.r)") // "" ]
+                          | @tsv' || return 0
+                  ;;
+                package-lock.json)
+                  read_rows "$m" 'if has("packages") then
+                            .packages | to_entries[]
+                            | select(.key != "") | select(.value.dev != true)
+                            | select(.value.link != true)
+                            | [ "npm",
+                                (.value.name // (.key | sub("^.*node_modules/"; ""))),
+                                (.value.version // ""), "" ]
+                          elif has("dependencies") then
+                            .dependencies | to_entries[]
+                            | select(.value.dev != true)
+                            | [ "npm", .key, (.value.version // ""), "" ]
+                          else error("neither .packages nor .dependencies") end
+                          | @tsv' || return 0
+                  ;;
+                *)
+                  # Named, not dropped: source 2 has no resolver for this ecosystem, so its
+                  # packages are covered by source 1 only — which the statement must say.
+                  UNSUPPORTED_MANIFESTS="${UNSUPPORTED_MANIFESTS}$m"$'\n'
+                  continue
+                  ;;
+              esac
+              SUPPORTED_MANIFESTS="${SUPPORTED_MANIFESTS}$m"$'\n'
+            done
+            N_SUPPORTED="$(printf '%s' "$SUPPORTED_MANIFESTS" | grep -c . || true)"
+            N_PACKAGES=$(wc -l < "$PKG_TSV" | tr -d ' ')
+            if [ "$N_SUPPORTED" -gt 0 ] && [ "$N_PACKAGES" -eq 0 ]; then
+              # A lockfile source 2 CAN read, that yields no production packages, is a lockfile
+              # this audit did not actually read — not a dependency-free repo. Scoped to SUPPORTED
+              # manifests on purpose: a repo whose only lockfiles belong to an ecosystem source 2
+              # has no resolver for is covered by source 1, and a permanent red there would be a
+              # decoration in the same way a never-failing gate is.
+              fatal NO-PACKAGES "$N_SUPPORTED lockfile(s) source 2 can read produced ZERO production packages — the lockfile was not read, it is not a repo without dependencies"
+              return 0
+            fi
+            local eco name version repo npm_total=0 npm_ok=0
+            : > "$WORK/resolved.tsv"
+            while IFS=$'\t' read -r eco name version repo; do
+              [ -n "$name" ] || continue
+              if [ "$eco" = npm ]; then
+                npm_total=$((npm_total + 1))
+                repo="$(registry_repo_lookup "$name" < /dev/null || true)"
+                repo="$(printf '%s' "$repo" | head -n 1 | tr -d '[:space:]')"
+                [ -n "$repo" ] && npm_ok=$((npm_ok + 1))
+              fi
+              # ONE validation point for every candidate repo token, whichever source produced
+              # it — a lockfile field, or an adopter-replaced registry seam. It is deliberately
+              # NOT done by tightening the extracting regexes: a stricter capture makes a
+              # crafted token simply fail to match, and the package then joins the UNRESOLVED
+              # pile indistinguishably from one that never declared a repository — silently
+              # shrinking source 2's population, which is the exact class this gate exists to
+              # prevent. A token that does not conform is NAMED and RED here, and only then
+              # dropped from the resolved set. (Nothing eval's this string — checked — so this
+              # is a population-integrity check, not an injection fix.)
+              if [ -n "$repo" ] && ! [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+                err SOURCE2-REPO-TOKEN-INVALID "$eco:$name@$version resolved to '$repo', which is not a <owner>/<repo> of [A-Za-z0-9._-]+ — refusing to build an advisory API path from it"
+                repo=""
+              fi
+              if [ -n "$repo" ]; then
+                N_RESOLVED=$((N_RESOLVED + 1))
+                printf '%s\t%s\t%s\t%s\n' "$eco" "$name" "$version" "$repo" >> "$WORK/resolved.tsv"
+              else
+                N_UNRESOLVED=$((N_UNRESOLVED + 1))
+                printf '%s\t%s\t%s\n' "$eco" "$name" "$version" >> "$WORK/unresolved.tsv"
+              fi
+            done < "$PKG_TSV"
+            if [ "$npm_total" -gt 0 ] && [ "$npm_ok" -eq 0 ]; then
+              # Some npm packages legitimately carry no repository field; ALL of them failing is
+              # the registry hop being broken, which would shrink source 2's population silently.
+              fatal SOURCE2-NPM-RESOLUTION-EMPTY "$npm_total npm package(s) and NOT ONE resolved to a repository — the registry hop is failing, not the packages"
+            fi
+            N_REPOS=$(cut -f4 "$WORK/resolved.tsv" 2>/dev/null | sort -u | grep -c . || true)
+          }
+          # ⛔ FETCHES, RECORDS NOTHING, AND IS NEVER COMMAND-SUBSTITUTED. It reports its outcome
+          # through ADV_CACHE / ADV_FAIL_CODE / ADV_FAIL_DETAIL and its exit status; the CALLER
+          # raises the error, in the parent shell. The previous shape returned the payload on
+          # STDOUT and called `err` itself, which forced every call site into `$(...)` — so the
+          # AUDIT_ERRORS increment happened in a SUBSHELL and died with it, while the printf
+          # still reached the log. One call site was covered by a parent-side `fatal`; the other
+          # was not, and a failed per-dependency advisory read exported `"errors":0` and exited
+          # 0 with VERDICT: GREEN. Keeping the payload in a FILE is what removes the reason to
+          # command-substitute this at all: there is no output to capture.
+          ADV_CACHE=""; ADV_FAIL_CODE=""; ADV_FAIL_DETAIL=""
+          fetch_advisories() {   # $1=<owner>/<repo>; caches per run. 0 => ADV_CACHE is the payload.
+            local repo="$1" cache="$WORK/adv/$(printf '%s' "$1" | tr '/' '@').json"
+            ADV_CACHE=""; ADV_FAIL_CODE=""; ADV_FAIL_DETAIL=""
+            if [ ! -f "$cache" ]; then
+              if ! advisory_fetch "$repo" > "$cache" 2>"$WORK/adv.err" < /dev/null; then
+                ADV_FAIL_CODE=SOURCE2-FETCH-FAILED
+                ADV_FAIL_DETAIL="advisory read for '$repo' exited non-zero: $(tr '\n' ' ' < "$WORK/adv.err" | cut -c1-200)"
+                rm -f "$cache"; return 1
+              fi
+              # A response that is not a JSON ARRAY is an error payload (rate limit, 403, an API
+              # change), and jq would happily read it as "no advisories".
+              if ! jq -e 'type == "array"' "$cache" >/dev/null 2>&1; then
+                ADV_FAIL_CODE=SOURCE2-UNPARSEABLE
+                ADV_FAIL_DETAIL="advisory read for '$repo' returned a non-array payload: $(head -c 200 "$cache" | tr '\n' ' ')"
+                rm -f "$cache"; return 1
+              fi
+            fi
+            ADV_CACHE="$cache"
+          }
+          # THE REVIEWED GLOBAL RECORDS a match asked for (`lookup` on an entry whose range is not
+          # read; VMATCH_JQ says what it does with them). Like fetch_advisories it records nothing:
+          # a lookup that fails is written into the map as {lookup_failed: why}, and the matcher
+          # turns that entry into RANGE-UNPARSEABLE, so no failure here can read as clean.
+          reviewed_records() {   # stdin: GHSA IDs, one per line -> $WORK/reviewed.json, {<id>: record}
+            local id rec
+            while IFS= read -r id; do
+              # The ID comes from a payload and is built into an API path, so it is checked first.
+              if ! [[ $id =~ ^GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$ ]]; then
+                jq -nc --arg id "$id" '{($id): {lookup_failed: "\"\($id)\" is not a GHSA ID, so no API path is built from it"}}'
+                continue
+              fi
+              rec="$WORK/rev/$id.json"   # cached per run
+              if [ ! -f "$rec" ]; then
+                if ! reviewed_advisory_fetch "$id" > "$rec.part" 2> "$WORK/rev.err" < /dev/null; then
+                  jq -nc --arg w "the lookup exited non-zero: $(tr '\n' ' ' < "$WORK/rev.err" | cut -c1-200)" '{lookup_failed: $w}' > "$rec"
+                elif ! jq -e 'type == "object"' "$rec.part" >/dev/null 2>&1; then
+                  jq -nc --arg w "the lookup returned a payload that is not a JSON object: $(head -c 200 "$rec.part" | tr '\n' ' ')" '{lookup_failed: $w}' > "$rec"
+                else
+                  mv "$rec.part" "$rec"
+                fi
+                rm -f "$rec.part"
+              fi
+              jq -c --arg id "$id" '{($id): .}' "$rec"
+            done > "$WORK/reviewed.ndjson"
+            jq -s 'add // {}' "$WORK/reviewed.ndjson" > "$WORK/reviewed.json"
+          }
+          run_source2() {
+            local control_n ids
+            # Called bare, in the PARENT shell — never inside `$(...)`, so the err() below is the
+            # one that counts, in both senses.
+            if ! fetch_advisories "$ADVISORY_CONTROL_REPO"; then
+              fatal SOURCE2-CONTROL-FAILED "the control read of '$ADVISORY_CONTROL_REPO' failed [$ADV_FAIL_CODE]: $ADV_FAIL_DETAIL — source 2 cannot be trusted this run"
+              return 0
+            fi
+            control_n="$(jq 'length' "$ADV_CACHE" 2>/dev/null || true)"
+            if ! [[ $control_n =~ ^[0-9]+$ ]]; then
+              # Not padding: an uncountable control is an UNKNOWN, and the test below would read
+              # `[ "" -lt 1 ]` as a shell ERROR that `if` swallows — a green on a source nobody
+              # could count.
+              fatal SOURCE2-CONTROL-UNCOUNTABLE "the control read of '$ADVISORY_CONTROL_REPO' could not be counted (got '$control_n') — source 2 cannot be trusted this run"
+              return 0
+            fi
+            if [ "$control_n" -lt 1 ]; then
+              # Empty-where-non-empty-expected. Without this probe, a token that cannot read
+              # another org's advisories produces a clean, empty, entirely information-free run.
+              fatal SOURCE2-CONTROL-EMPTY "the control repo '$ADVISORY_CONTROL_REPO' returned ZERO advisories — either this token cannot read another org's repository advisories, or the control repo no longer carries any. Source 2 is blind either way."
+              return 0
+            fi
+            [ -s "$WORK/resolved.tsv" ] || return 0
+            local eco name version repo adv hits verdicts n_adv
+            # `< "$WORK/resolved.tsv"` and NOT a pipe: a piped `while` body runs in a subshell,
+            # where every err() below would increment a counter that dies at the `done`.
+            while IFS=$'\t' read -r eco name version repo; do
+              if ! fetch_advisories "$repo"; then
+                err "$ADV_FAIL_CODE" "$ADV_FAIL_DETAIL"
+                continue
+              fi
+              adv="$ADV_CACHE"
+              hits="$(jq -c --arg package "$name" --arg version "$version" \
+                        --arg ecosystem "$eco" "$VMATCH_JQ" "$adv")" \
+                || { err SOURCE2-MATCH-FAILED "range matching failed for $name@$version ($repo)"; continue; }
+              # A range the grammar does not read comes back flagged `lookup`: look each such
+              # advisory up in the reviewed global records, then match again with them in hand.
+              ids="$(printf '%s' "$hits" | jq -r '[.[] | select(.lookup == true) | .ghsa] | unique | .[]')" \
+                || { err SOURCE2-MATCH-FAILED "could not read the reviewed-record lookups $name@$version ($repo) asked for"; continue; }
+              if [ -n "$ids" ]; then
+                reviewed_records <<< "$ids" \
+                  || { err SOURCE2-MATCH-FAILED "could not assemble the reviewed global records for $name@$version ($repo)"; continue; }
+                hits="$(jq -c --arg package "$name" --arg version "$version" --arg ecosystem "$eco" \
+                          --slurpfile reviewed "$WORK/reviewed.json" "$VMATCH_JQ" "$adv")" \
+                  || { err SOURCE2-MATCH-FAILED "range matching against the reviewed global records failed for $name@$version ($repo)"; continue; }
+              fi
+              verdicts="$(printf '%s' "$hits" | jq -r '.[].verdict' | sort -u)"
+              case "$verdicts" in
+                *VERSION-UNPARSEABLE*)
+                  # Only RED where it matters: the package HAS advisories and we cannot say
+                  # whether this version is inside them. Silence here would be a guess.
+                  n_adv="$(jq --arg p "$name" --arg e "$eco" '[.[] | (.vulnerabilities // [])[] | select((.package.name // "" | ascii_downcase) == ($p | ascii_downcase)) | select((.package.ecosystem // "" | ascii_downcase) == ($e | ascii_downcase))] | length' "$adv" 2>/dev/null || true)"
+                  if ! [[ $n_adv =~ ^[0-9]+$ ]]; then
+                    # `[ "" -gt 0 ]` exits 2, and `set -e` is exempt inside `if` — so an
+                    # uncountable payload here would silently take the "not affected" path on a
+                    # version this audit has already said it cannot compare.
+                    err SOURCE2-UNCOUNTABLE "could not count $name@$version ($repo)'s advisories to decide whether an uncomparable version matters (got '$n_adv')"
+                  elif [ "$n_adv" -gt 0 ]; then
+                    err SOURCE2-VERSION-UNCOMPARABLE "$name@$version ($repo) has advisories, and '$version' cannot be compared against their ranges"
+                  fi
+                  ;;
+              esac
+              case "$verdicts" in
+                *RANGE-UNPARSEABLE*)
+                  err SOURCE2-RANGE-UNPARSEABLE "$name@$version ($repo): an advisory range this audit does not recognise, or cannot read without guessing (an ambiguous comma, bounds that describe no version, or versions it cannot order), and that no reviewed global record of the advisory decides — $(printf '%s' "$hits" | jq -r '[.[] | select(.verdict == "RANGE-UNPARSEABLE") | "\(.ghsa) \"\(.range)\"\(if .reviewed then " (\(.reviewed))" else "" end)"] | join("; ")')"
+                  ;;
+              esac
+              local n
+              n="$(printf '%s' "$hits" | jq '[.[] | select(.verdict == "AFFECTED")] | length' 2>/dev/null || true)"
+              if ! [[ $n =~ ^[0-9]+$ ]]; then
+                # Same swallow class: a non-number here would drop REAL findings, because
+                # `[ "" -gt 0 ]` exits 2 and `if` is exempt from `set -e`.
+                err SOURCE2-UNCOUNTABLE "could not count the AFFECTED verdicts for $name@$version ($repo) (got '$n')"
+              elif [ "$n" -gt 0 ]; then
+                FINDINGS=$((FINDINGS + n))
+                FINDING_LINES="${FINDING_LINES}$(printf '%s' "$hits" | jq -r --arg p "$name" --arg v "$version" --arg r "$repo" '.[] | select(.verdict == "AFFECTED") | "  SOURCE2 \($p)@\($v) \(.ghsa) \(.severity) [\(.range)] \(.patched) (repo-level on \($r))"')"$'\n'
+              fi
+            done < "$WORK/resolved.tsv"
+          }
+          # --- end dep-audit-source2
+          # --- dep-audit-report
+          # The statement is printed BEFORE the verdict and exported as an output, so a reader
+          # of the run — and the caller's reporting job — sees WHAT WAS LOOKED AT rather than
+          # inferring a scope from a green tick. It names both sources' blind spots explicitly.
+          population_statement() {
+            local unresolved_note="none"
+            [ "$N_UNRESOLVED" -gt 0 ] && unresolved_note="$N_UNRESOLVED package(s) — listed below, covered by source 1 ONLY"
+            printf 'POPULATION STATEMENT — ref %s\n' "'${AUDIT_REF:-?}'"
+            printf '  READ: %s lockfile(s) discovered by name at run time:\n' "$N_MANIFESTS"
+            if [ "$N_MANIFESTS" -gt 0 ]; then printf '    %s\n' "${MANIFESTS[@]}"; else printf '    (none)\n'; fi
+            printf '  PRODUCTION PACKAGES RESOLVED FROM THOSE LOCKFILES: %s (transitive included)\n' "$N_PACKAGES"
+            printf '    with an upstream repository: %s, across %s distinct repositories\n' "$N_RESOLVED" "$N_REPOS"
+            printf '    without one: %s\n' "$unresolved_note"
+            printf '  NOT READ: anything not derived from these lockfiles at scan time — in particular a\n'
+            printf '    COMMITTED BUILD ARTIFACT is not covered by this gate; the lockfile graph is a valid\n'
+            printf '    proxy for the shipped bundle only while a separate control keeps the two in step.\n'
+            printf '  SOURCES, AND WHAT EACH IS BLIND TO:\n'
+            printf '    (1) lockfile scanner over the GLOBAL advisory feed\n'
+            printf '        BLIND TO: advisories published only on the upstream repository of a dependency.\n'
+            printf '        2026-08-20: four HIGH advisories on league/commonmark 2.9.0 returned ZERO here.\n'
+            printf '    (2) per-dependency repository advisories, over the full production population\n'
+            printf '        BLIND TO: the %s package(s) with no resolvable upstream repository\n' "$N_UNRESOLVED"
+            [ -n "$UNSUPPORTED_MANIFESTS" ] && printf '        BLIND TO: every package in the manifest(s) source 2 has no resolver for: %s\n' "$(list_text "$UNSUPPORTED_MANIFESTS")"
+            if [ "$N_UNRESOLVED" -gt 0 ] && [ -s "$WORK/unresolved.tsv" ]; then
+              printf '  UNRESOLVED PACKAGES (named, never dropped):\n'
+              sed 's/^/    /' "$WORK/unresolved.tsv"
+            fi
+            return 0
+          }
+          emit_outputs() {
+            if [ -z "${GITHUB_OUTPUT:-}" ]; then
+              # Boundary check, not defensive padding: without this file the audit cannot EXPORT
+              # its population, and a caller reporting job would read a withheld one.
+              echo "AUDIT-ERROR[NO-GITHUB-OUTPUT] GITHUB_OUTPUT is unset; the population cannot be exported" >&2
+              exit 1
+            fi
+            local status=audited
+            [ "$AUDIT_ERRORS" -eq 0 ] || status=error
+            # `error_codes` carries the NAMED reasons alongside the count, so a consumer can
+            # assert on the exported population rather than on log text — a log line is
+            # written by a printf that no counter has to agree with, which is exactly how a
+            # swallowed error once read as a clean run.
+            # `supported_manifests`/`unsupported_manifests` are exported rather than only
+            # printed: an ecosystem source 2 has no resolver for is a real coverage gap, and
+            # whether it is RED or merely logged is the ADOPTER's policy to set from the
+            # reporting job — not this template's to decide for them.
+            POPULATION_JSON="$(jq -cn --arg ref "${AUDIT_REF:-}" --arg status "$status" \
+              --argjson manifests "$N_MANIFESTS" --argjson packages "$N_PACKAGES" \
+              --argjson resolved "$N_RESOLVED" --argjson unresolved "$N_UNRESOLVED" \
+              --argjson repos "$N_REPOS" --argjson findings "$FINDINGS" \
+              --argjson errors "$AUDIT_ERRORS" \
+              --argjson codes "$(list_json "$ERROR_CODES")" \
+              --argjson supported "$(list_json "$SUPPORTED_MANIFESTS")" \
+              --argjson unsupported "$(list_json "$UNSUPPORTED_MANIFESTS")" \
+              '{ref: $ref, status: $status, manifests: $manifests, packages: $packages,
+                resolved: $resolved, unresolved: $unresolved, advisory_repos: $repos,
+                findings: $findings, errors: $errors, error_codes: $codes,
+                supported_manifests: $supported, unsupported_manifests: $unsupported}')"
+            {
+              printf 'population=%s\n' "$POPULATION_JSON"
+              printf 'findings=%s\n' "$FINDINGS"
+              printf 'status=%s\n' "$status"
+            } >> "$GITHUB_OUTPUT"
+          }
+          verdict() {
+            [ -z "$FINDING_LINES" ] || printf 'FINDINGS:\n%s' "$FINDING_LINES"
+            [ -z "$ERROR_LINES" ]   || printf 'ERRORS:\n%s' "$ERROR_LINES"
+            if [ "$AUDIT_ERRORS" -gt 0 ]; then
+              echo "VERDICT: RED — $AUDIT_ERRORS source error(s). An unreadable source is not a clean one." >&2
+              exit 1
+            fi
+            if [ "$FINDINGS" -gt 0 ]; then
+              echo "VERDICT: RED — $FINDINGS advisory finding(s) on ref '${AUDIT_REF:-?}'." >&2
+              exit 1
+            fi
+            echo "VERDICT: GREEN — $N_PACKAGES production package(s) from $N_MANIFESTS lockfile(s), both sources completed."
+          }
+          # --- end dep-audit-report
+          # --- dep-audit-main
+          discover_manifests
+          if [ "$FATAL" -eq 0 ]; then run_source1; fi
+          if [ "$FATAL" -eq 0 ]; then resolve_population; fi
+          if [ "$FATAL" -eq 0 ]; then run_source2; fi
+          population_statement | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          emit_outputs
+          verdict
+          # --- end dep-audit-main
