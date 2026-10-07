@@ -1,0 +1,32 @@
+{
+  "ghsa_id": "GHSA-fjxv-7rqg-78g4",
+  "type": "reviewed",
+  "withdrawn_at": null,
+  "html_url": "https://github.com/advisories/GHSA-fjxv-7rqg-78g4",
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "form-data"
+      },
+      "vulnerable_version_range": "< 2.5.4",
+      "first_patched_version": "2.5.4"
+    },
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "form-data"
+      },
+      "vulnerable_version_range": ">= 3.0.0, < 3.0.4",
+      "first_patched_version": "3.0.4"
+    },
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "form-data"
+      },
+      "vulnerable_version_range": ">= 4.0.0, < 4.0.4",
+      "first_patched_version": "4.0.4"
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+# dependency-ref-matrix.yml — the CALLER: audits the RELEASE ref and the INTEGRATION ref on a
+# clock, through one shared implementation (`dependency-audit.yml`, the callee).
+#
+# ADOPT (per repo): copy to `.github/workflows/` and set the three CUSTOMIZE values — the two
+# branch names in the matrix, the `uses:` slug, and the cron. Documented in the coord plugin's
+# `docs/DEPENDENCY-AUDIT.md`.
+#
+# WHY TWO REFS. A lockfile advisory is a property of TIME, not of a diff: a tree nobody pushes
+# to goes from clean to vulnerable with no event to notice it. And the two refs genuinely
+# differ — measured on an adopting repo, the integration branch carried a patched version while
+# the release branch carried the vulnerable one, so a gate that audited only the default branch
+# would have reported the fleet green while production ran the affected version.
+#
+# WHY THIS FILE MUST LIVE ON THE DEFAULT BRANCH. `schedule:` resolves ONLY from the default
+# branch. A copy on the integration branch never fires — not "fires late", never. So this file
+# reaches the default branch through the repo's normal release path, and the callee it calls
+# does not: the callee lives on the integration branch, where it can be iterated without a
+# release.
+#
+# ⛔ THIS CALLER IS UNEXERCISABLE UNTIL IT REACHES THE DEFAULT BRANCH — DO NOT DEBUG THE 404.
+# `workflow_dispatch` registration is created by a RUN, and a workflow that has never run is
+# not registered, so `gh workflow run` on a brand-new caller sitting on a non-default branch
+# returns HTTP 404 naming the default branch. (Measured both directions on two installs: an
+# ALREADY-registered workflow stays dispatchable even after its file leaves the default branch;
+# a never-registered one cannot be dispatched at all. The asymmetry is "has it ever run", not
+# "is the file present".) Consequence, stated so nobody spends a cycle on it: the CALLEE is
+# what the selftest proves, and this caller's FIRST LIVE RUN is its own verification — watch
+# that run, per trigger, rather than assuming the wiring.
+name: Dependency advisory ref matrix
+
+on:
+  schedule:
+    # CUSTOMIZE. Deliberately OFF the hour: top-of-hour is the busiest scheduling slot on
+    # shared runners, and a queued scheduled run can be dropped rather than delayed.
+    # This repo: 06:41 UTC daily, a minute no other scheduled workflow here uses.
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    strategy:
+      # ⛔ LOAD-BEARING, NOT STYLE. With the default (fail-fast: true) a real advisory on one
+      # ref CANCELS the other leg, so the ref that matters most can go unmeasured — and a gate
+      # that stops measuring when it finds something is worse than one that never ran, because
+      # it looks complete. Both legs must always report.
+      fail-fast: false
+      matrix:
+        # CUSTOMIZE: the release ref first, then the integration ref.
+        ref: [main, dev]
+    # CUSTOMIZE the slug. The `@<integration-branch>` coupling is deliberately NOT a SHA pin:
+    # a pin nobody bumps audits with STALE LOGIC wearing a version number — which is the exact
+    # failure class this audit exists to catch. The coupling fails LOUD rather than silent: if
+    # the callee is renamed or removed, `uses:` cannot resolve and the run errors.
+    uses: PupFuzz/agent-webhook-bridge/.github/workflows/dependency-audit.yml@dev
+    with:
+      ref: ${{ matrix.ref }}
+
+  report:
+    # `needs:` + `if: always()` — the reporting job must run when a leg FAILED, since a failed
+    # or cancelled leg is precisely the state whose population would otherwise go unexamined.
+    needs: audit
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: A green must be a green over an AUDITED population
+        env:
+          # ⚠ GitHub does NOT merge matrix legs' outputs: all legs write the same outputs map,
+          # so `needs.audit.outputs.population` carries ONE leg's value (last writer wins) and
+          # there is no per-leg key to read. That is why this job asserts BOTH halves and the
+          # callee carries its own emptiness check: `result` covers EVERY leg (it is `success`
+          # only if all of them succeeded, and a callee that audited nothing REDS inside its own
+          # run), while the population assertion below proves the surviving leg reported a real
+          # population rather than a withheld one. Neither half alone closes the gap.
+          AUDIT_RESULT: ${{ needs.audit.result }}
+          AUDIT_POPULATION: ${{ needs.audit.outputs.population }}
+        run: |
+          set -euo pipefail
+          # --- dep-matrix-report-assert
+          # The defect this exists to prevent: a green over NOTHING and a green over two
+          # audited lockfiles are indistinguishable from the runs list, from the conclusion,
+          # and from the Summary page. This job makes them distinguishable by refusing to
+          # accept a run that cannot say what it read.
+          fail() { printf 'REPORT: RED — %s\n' "$1" >&2; exit 1; }
+          [ "${AUDIT_RESULT:-}" = "success" ] \
+            || fail "the audit matrix concluded '${AUDIT_RESULT:-<absent>}', not success — at least one audited ref did not complete. A leg that did not finish measured nothing."
+          [ -n "${AUDIT_POPULATION:-}" ] \
+            || fail "the audit reported NO population output. A run that cannot say what it read is not evidence that anything was read."
+          printf '%s' "$AUDIT_POPULATION" | jq -e 'type == "object"' >/dev/null 2>&1 \
+            || fail "the population output is not a JSON object: $(printf '%s' "$AUDIT_POPULATION" | head -c 200)"
+          pop_int() { printf '%s' "$AUDIT_POPULATION" | jq -r --arg k "$1" '(.[$k] // -1) | tostring'; }
+          pop_str() { printf '%s' "$AUDIT_POPULATION" | jq -r --arg k "$1" '(.[$k] // "") | tostring'; }
+          [ "$(pop_str status)" = "audited" ] \
+            || fail "population status is '$(pop_str status)', not 'audited' — a source did not complete."
+          [ "$(pop_int manifests)" -ge 1 ] \
+            || fail "population reports $(pop_int manifests) lockfile(s) — this run audited NOTHING and must not read as clean."
+          [ "$(pop_int packages)" -ge 1 ] \
+            || fail "population reports $(pop_int packages) package(s) — the lockfiles were found but nothing was resolved from them."
+          [ "$(pop_int errors)" -eq 0 ] \
+            || fail "population reports $(pop_int errors) source error(s) — an unreadable source is not a clean one."
+          printf 'REPORT: population asserted — %s\n' "$AUDIT_POPULATION"
+          # --- end dep-matrix-report-assert

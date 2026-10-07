@@ -436,7 +436,7 @@ read first, means a value edited on the `<env>` line alone would be silently ign
 
 ## CI
 
-`.github/workflows/laravel-tests.yml` — the `Laravel Tests` workflow — runs these checks in two jobs:
+`.github/workflows/laravel-tests.yml` — the `Laravel Tests` workflow — runs these checks in the jobs below:
 
 **Job 1 — `PHPUnit + Pint + PHPStan (SQLite)`:**
 - Push to `main`/`dev`; pull requests to `main`/`dev`
@@ -448,6 +448,9 @@ read first, means a value edited on the `<env>` line alone would be silently ign
 - Spins up a `mariadb:<version>` service container matching the production driver versions
 - Overrides `phpunit.xml`'s SQLite defaults via real environment variables (`DB_CONNECTION=mysql`, `DB_HOST`, etc.)
 - Runs the full PHPUnit suite against the live MariaDB — no subset, the same suite
+
+**Job 3 — `Dependency-audit selftest`:**
+- Runs `.github/dependency-audit/dependency-audit.selftest.sh`, which extracts the shell of the scheduled dependency audit (`dependency-audit.yml`, called by `dependency-ref-matrix.yml`) verbatim and runs it against the vendored fixtures beside it, with no network. The scheduled audit itself never runs on a PR, so this job is what a PR touching either workflow is checked by. It is its own job so its run time does not add to the PHPUnit jobs'.
 
 The wait-for-CI discipline before self-merge is owned by [`CLAUDE.md`](CLAUDE.md) standing rule 5 (card#5575; deliberately not restated here). What this section owns is the driver lesson from the Python-era `test_db_mariadb.py` incident: a local SQLite-only `vendor/bin/phpunit` run passing does not guarantee CI green when a MariaDB job exists. Driver-specific behavior (transaction semantics, `UNIQUE` constraint timing, `JSON_VALID` enforcement, timestamp precision) only surfaces under the real engine.
 

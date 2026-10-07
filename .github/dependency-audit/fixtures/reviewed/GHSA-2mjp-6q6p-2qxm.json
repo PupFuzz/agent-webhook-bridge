@@ -1,0 +1,24 @@
+{
+  "ghsa_id": "GHSA-2mjp-6q6p-2qxm",
+  "type": "reviewed",
+  "withdrawn_at": null,
+  "html_url": "https://github.com/advisories/GHSA-2mjp-6q6p-2qxm",
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "undici"
+      },
+      "vulnerable_version_range": "< 6.24.0",
+      "first_patched_version": "6.24.0"
+    },
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "undici"
+      },
+      "vulnerable_version_range": ">= 7.0.0, < 7.24.0",
+      "first_patched_version": "7.24.0"
+    }
+  ]
+}
