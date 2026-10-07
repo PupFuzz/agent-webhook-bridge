@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.98.1] - 2026-10-07
+
 ### Added
 
 - **CI only — a daily dependency-vulnerability audit of `main` and `dev`.** New `.github/workflows/dependency-ref-matrix.yml` runs at 06:41 UTC (and on `workflow_dispatch`) and calls the new `.github/workflows/dependency-audit.yml` once per branch. Each run reads the lockfiles it finds by name (`composer.lock`, `package-lock.json`) against two sources: osv-scanner v2.6.0 (checksum-pinned) over the global advisory feed, and each production dependency's own repository advisories on GitHub, which `composer audit` and Dependabot do not read. The run fails on a finding and on any source it could not read. Adopted from the coord framework's template; its `docs/DEPENDENCY-AUDIT.md` owns the failure codes. The schedule fires only from `main`, so nothing runs until this reaches a release. New workflow `.github/workflows/dependency-audit-selftest.yml` (not a required check) runs `.github/dependency-audit/dependency-audit.selftest.sh` on every PR, with no network. No runtime, config or install change.
