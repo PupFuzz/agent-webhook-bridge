@@ -79,6 +79,9 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    # Bounds a hung network seam (scanner, registry, advisory reads) well short of the
+    # 6-hour default.
+    timeout-minutes: 30
     outputs:
       population: ${{ steps.audit.outputs.population }}
       findings: ${{ steps.audit.outputs.findings }}
@@ -145,7 +148,7 @@ jobs:
           # at the verdict. (Default: the package whose repo-level advisories motivated this
           # gate; replace it if it ever stops carrying any.)
           ADVISORY_CONTROL_REPO="thephpleague/commonmark"
-          OSV_SCANNER_BIN="${OSV_SCANNER_BIN:-osv-scanner}"
+          OSV_SCANNER_BIN="${OSV_SCANNER_BIN:?pinned install step did not export OSV_SCANNER_BIN}"
           # CUSTOMIZE-BEGIN audit-seams
           # The network seams, each a function defined in this block, isolated here so the
           # implementation below is exercisable with zero network in the selftest. Contract for

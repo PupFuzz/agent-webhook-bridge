@@ -64,6 +64,7 @@ jobs:
     needs: audit
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: A green must be a green over an AUDITED population
         env:

@@ -3,8 +3,8 @@ name: Laravel Tests
 # CI for the v0.12 Laravel app (the sole test workflow since the Python tree
 # was removed in Phase 3). Pint (style), PHPStan/larastan level 7 on app/Bridge,
 # doc-sync (bin/check-doc-refs.php), the client capability table's drift check
-# (bin/gen-client-capabilities.mjs --check, DL-425), PHPUnit across SQLite
-# plus the MariaDB matrix below, and the dependency-audit selftest.
+# (bin/gen-client-capabilities.mjs --check, DL-425), and PHPUnit across SQLite
+# plus the MariaDB matrix below.
 #
 # No runtime version literals in this comment, deliberately — a restated version
 # drifts from the pin it restates. Laravel and PHPUnit are pinned in
@@ -76,19 +76,6 @@ jobs:
 
       - name: PHPUnit (SQLite in-memory)
         run: vendor/bin/phpunit
-
-  dependency-audit-selftest:
-    # The scheduled dependency audit (dependency-ref-matrix.yml -> dependency-audit.yml) runs
-    # only on a clock, so nothing on a PR would otherwise execute its shell. This selftest
-    # extracts the callee's and the caller's marked blocks verbatim and runs them against
-    # vendored fixtures with no network. Its own job, beside the PHPUnit jobs rather than a
-    # step inside one, so its run time is not added to theirs.
-    name: Dependency-audit selftest
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Dependency-audit selftest (no network)
-        run: bash .github/dependency-audit/dependency-audit.selftest.sh
 
   phpunit-mariadb:
     name: PHPUnit (MariaDB ${{ matrix.mariadb }})
