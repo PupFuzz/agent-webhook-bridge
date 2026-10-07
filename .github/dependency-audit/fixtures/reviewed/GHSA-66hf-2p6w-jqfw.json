@@ -1,0 +1,56 @@
+{
+  "ghsa_id": "GHSA-66hf-2p6w-jqfw",
+  "type": "reviewed",
+  "withdrawn_at": null,
+  "html_url": "https://github.com/advisories/GHSA-66hf-2p6w-jqfw",
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "composer",
+        "name": "laravel/framework"
+      },
+      "vulnerable_version_range": "< 6.20.42",
+      "first_patched_version": "6.20.42"
+    },
+    {
+      "package": {
+        "ecosystem": "composer",
+        "name": "laravel/framework"
+      },
+      "vulnerable_version_range": ">= 7.0.0, < 7.30.6",
+      "first_patched_version": "7.30.6"
+    },
+    {
+      "package": {
+        "ecosystem": "composer",
+        "name": "laravel/framework"
+      },
+      "vulnerable_version_range": ">= 8.0.0, < 8.75.0",
+      "first_patched_version": "8.75.0"
+    },
+    {
+      "package": {
+        "ecosystem": "composer",
+        "name": "illuminate/view"
+      },
+      "vulnerable_version_range": "< 6.20.42",
+      "first_patched_version": "6.20.42"
+    },
+    {
+      "package": {
+        "ecosystem": "composer",
+        "name": "illuminate/view"
+      },
+      "vulnerable_version_range": ">= 7.0.0, < 7.30.6",
+      "first_patched_version": "7.30.6"
+    },
+    {
+      "package": {
+        "ecosystem": "composer",
+        "name": "illuminate/view"
+      },
+      "vulnerable_version_range": ">= 8.0.0, < 8.75.0",
+      "first_patched_version": "8.75.0"
+    }
+  ]
+}

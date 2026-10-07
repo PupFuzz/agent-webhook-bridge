@@ -1,0 +1,9 @@
+{
+    "_readme": ["FIXTURE: a composer lockfile source 2 can read that declares no production packages."],
+    "content-hash": "0000000000000000000000000000000000000000",
+    "packages": [],
+    "packages-dev": [
+        {"name": "league/commonmark-devonly", "version": "0.1.0",
+         "source": {"type": "git", "url": "https://github.com/thephpleague/commonmark.git"}}
+    ]
+}

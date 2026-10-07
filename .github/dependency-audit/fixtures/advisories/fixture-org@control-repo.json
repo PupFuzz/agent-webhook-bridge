@@ -1,0 +1,17 @@
+[
+  {
+    "ghsa_id": "GHSA-fixt-ctrl-0001",
+    "severity": "low",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://example.invalid/advisories/GHSA-fixt-ctrl-0001",
+    "summary": "SYNTHETIC fixture advisory — stands in for the source-2 CONTROL repo, which must come back non-empty on every run.",
+    "vulnerabilities": [
+      {
+        "package": {"ecosystem": "composer", "name": "fixture-org/not-a-real-package"},
+        "vulnerable_version_range": "< 1.0.0",
+        "patched_versions": "1.0.0"
+      }
+    ]
+  }
+]

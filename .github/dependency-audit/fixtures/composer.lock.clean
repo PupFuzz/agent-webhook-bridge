@@ -1,0 +1,37 @@
+{
+    "_readme": [
+        "This is a FIXTURE, not a real lockfile. See fixtures/README.md."
+    ],
+    "content-hash": "0000000000000000000000000000000000000000",
+    "packages": [
+        {
+            "name": "league/commonmark",
+            "version": "2.10.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/thephpleague/commonmark.git",
+                "reference": "0000000000000000000000000000000000000000"
+            }
+        },
+        {
+            "name": "vendor/no-source-url",
+            "version": "1.0.0",
+            "dist": {
+                "type": "zip",
+                "url": "https://example.invalid/no-source.zip"
+            }
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "league/commonmark-devonly",
+            "version": "0.1.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/thephpleague/commonmark.git"
+            }
+        }
+    ],
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
