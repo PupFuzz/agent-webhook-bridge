@@ -298,6 +298,18 @@ class GitHubTokenResolverTest extends TestCase
         $this->assertStringStartsWith("{$home}/.bridge-test-no-such-token-", (string) $r->path);
     }
 
+    public function test_a_tilde_pointer_whose_owner_home_cannot_be_read_is_undetermined_not_misconfigured(): void
+    {
+        $this->store->write(['github.com/o' => 'k'], ['k_file' => '~/token']);
+        $this->ownersAre([$this->store->path() => null]);
+
+        $r = $this->resolver()->resolveFor('o/r');
+
+        $this->assertFalse($r->ok());
+        $this->assertSame(TokenFileFault::Undetermined, $r->fileFault);
+        $this->assertSame(TokenSource::Store, $r->sourceKind);
+    }
+
     /**
      * ⛔ FAIL LOUD: a mapped key that cannot give its repo a token is that repo's fault, never a
      * fall-through to the single file — which, here, is present and would resolve (the control).

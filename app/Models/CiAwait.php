@@ -24,6 +24,7 @@ use Illuminate\Support\Str;
  * @property Carbon|null $last_read_at
  * @property string|null $last_error
  * @property Carbon|null $retry_not_before
+ * @property int|null $unconfirmed_status
  * @property Carbon|null $emit_failed_at
  */
 class CiAwait extends Model
@@ -40,6 +41,7 @@ class CiAwait extends Model
         'last_read_at',
         'last_error',
         'retry_not_before',
+        'unconfirmed_status',
         'emit_failed_at',
     ];
 
@@ -48,6 +50,7 @@ class CiAwait extends Model
         'expires_at' => 'datetime',
         'last_read_at' => 'datetime',
         'retry_not_before' => 'datetime',
+        'unconfirmed_status' => 'integer',
         'emit_failed_at' => 'datetime',
     ];
 

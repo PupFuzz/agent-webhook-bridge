@@ -32,7 +32,8 @@ enum TokenFileFault
     /**
      * What NAMES the file is wrong for every reader, so there is no file to read: the coord
      * credential store is unparseable or outside the shape the bridge reads, its setting is unset or
-     * relative, or the store maps the repo to a key with no usable `<key>_file` pointer (DL-456).
+     * relative, or the store maps the repo to a key with no usable `<key>_file` pointer (DL-456). A
+     * `~` pointer this process could not expand is {@see self::Undetermined}, not this.
      */
     case Misconfigured;
 

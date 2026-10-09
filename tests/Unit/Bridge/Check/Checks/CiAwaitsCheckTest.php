@@ -9,6 +9,10 @@ use App\Bridge\Support\Severity;
 use App\Models\CiAwait;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -138,6 +142,132 @@ class CiAwaitsCheckTest extends TestCase
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Warn, $findings[0]->severity);
         $this->assertStringContainsString('php artisan migrate', $findings[0]->message);
+    }
+
+    // ---- can each received repo be read (card#11600) --------------------------------------
+
+    public function test_a_received_repo_github_answers_is_ok(): void
+    {
+        $this->installServingCiTools();
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['total_count' => 0, 'workflow_runs' => []])]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString(self::REPO, $findings[0]->message);
+        Http::assertSent(fn (Request $r): bool => str_contains($r->url(), 'per_page=1'));
+    }
+
+    public function test_a_received_repo_the_token_cannot_see_fails_naming_the_source_file_and_remedy(): void
+    {
+        $dir = $this->installServingCiTools();
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['message' => 'Not Found'], 404)]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('HTTP 404', $findings[0]->message);
+        $this->assertStringContainsString(self::REPO, $findings[0]->message);
+        $this->assertStringContainsString('token source: the single GitHub token file, file '.$dir.'/github/token', $findings[0]->message);
+        $this->assertStringContainsString('[git-credential-map]', $findings[0]->message);
+        $this->assertStringNotContainsString('gh-check-token', $findings[0]->message);
+    }
+
+    /** @return array<string, array{0: int, 1: string}> */
+    public static function unconfirmedStatuses(): array
+    {
+        return [
+            'a header-less 403' => [403, 'Resource not accessible by integration'],
+            'a header-less secondary-limit 403' => [403, 'You have exceeded a secondary rate limit.'],
+            'a 401' => [401, 'Bad credentials'],
+        ];
+    }
+
+    #[DataProvider('unconfirmedStatuses')]
+    public function test_a_single_401_or_header_less_403_is_unvalidated_not_a_fail(int $status, string $message): void
+    {
+        $this->installServingCiTools();
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['message' => $message], $status)]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString("HTTP {$status}", $findings[0]->message);
+        $this->assertStringNotContainsString($message, $findings[0]->message);
+    }
+
+    public function test_a_single_401_or_403_says_a_confirming_read_is_needed(): void
+    {
+        $this->installServingCiTools();
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['message' => 'Forbidden'], 403)]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertStringContainsString('confirming read', $findings[0]->message);
+    }
+
+    public function test_a_received_repo_with_no_read_token_fails(): void
+    {
+        $dir = $this->installServingCiTools();
+        unlink($dir.'/github/token');
+        Http::fake();
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('no GitHub read token', $findings[0]->message);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_received_repo_whose_read_answered_5xx_is_unvalidated_not_a_pass(): void
+    {
+        $this->installServingCiTools();
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['message' => 'boom'], 502)]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('NOT measured', $findings[0]->message);
+    }
+
+    public function test_no_agent_served_the_ci_tools_asks_github_nothing(): void
+    {
+        $this->installServingCiTools(served: false);
+        Http::fake();
+
+        $this->assertSame([], $this->findingsOf(new CiAwaitsCheck));
+        Http::assertNothingSent();
+    }
+
+    /** One agent subscribed to REPO, with a placed single token file; returns the install dir. */
+    private function installServingCiTools(bool $served = true): string
+    {
+        $dir = sys_get_temp_dir().'/ci-await-check-'.uniqid();
+        $this->dirs[] = $dir;
+        File::ensureDirectoryExists($dir.'/github');
+        File::put($dir.'/github/token', 'gh-check-token'); // gitleaks:allow — test fixture
+        chmod($dir.'/github/token', 0o600);
+        File::put($dir.'/seat-a.yml', "subscriptions:\n  - provider: github\n    scopes: [".self::REPO."]\n"
+            .($served ? "board_tools:\n  enabled: true\n  transport: ssh\n" : ''));
+        config(['bridge.config_dir' => $dir, 'bridge.secret_dir' => $dir]);
+
+        return $dir;
+    }
+
+    /** @var list<string> */
+    private array $dirs = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->dirs as $dir) {
+            File::deleteDirectory($dir);
+        }
+        parent::tearDown();
     }
 
     /** @param  array<string, mixed>  $extra */

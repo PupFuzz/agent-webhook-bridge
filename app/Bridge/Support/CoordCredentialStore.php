@@ -228,7 +228,11 @@ final class CoordCredentialStore
      * The absolute token-file path `[github] <key>_file` names, or why there is none. The clause
      * never renders the pointer's text: a token pasted into a `_file` slot would be printed with it.
      *
-     * @return array{0: ?string, 1: ?string} [path, null] or [null, why]
+     * The flag is true only where the pointer may well be right and THIS process could not expand
+     * it — a `~` pointer whose owner's home could not be read (card#11600): that is undetermined,
+     * not a store every reader would refuse.
+     *
+     * @return array{0: ?string, 1: bool, 2: ?string} [path, false, null] or [null, undetermined, why]
      */
     public function tokenFileFor(string $key): array
     {
@@ -238,31 +242,31 @@ final class CoordCredentialStore
         $file = PastedSecretShape::displayName($key.'_file');
         $inline = self::lookup($github, $key);
         if ($inline !== null && $inline !== '') {
-            return [null, "[github] {$name} holds an INLINE value, and the bridge reads only a `{$file}` pointer — move the token into a file (chmod 600) and point `{$file}` at it (the framework's `/coord:update --area credential-indirection` does this); the value is not shown"];
+            return [null, false, "[github] {$name} holds an INLINE value, and the bridge reads only a `{$file}` pointer — move the token into a file (chmod 600) and point `{$file}` at it (the framework's `/coord:update --area credential-indirection` does this); the value is not shown"];
         }
         $pointer = self::lookup($github, $key.'_file');
         if (($pointer === null || $pointer === '') && PastedSecretShape::looksLikePastedSecret($key)) {
-            return [null, "[git-credential-map] maps this repo to {$name}, which has the shape of a CREDENTIAL rather than a key name, and [github] has no pointer for it — a map value names a [github] key whose `<key>_file` holds the token's path, never the token; its text is not shown"];
+            return [null, false, "[git-credential-map] maps this repo to {$name}, which has the shape of a CREDENTIAL rather than a key name, and [github] has no pointer for it — a map value names a [github] key whose `<key>_file` holds the token's path, never the token; its text is not shown"];
         }
         if ($pointer === null || $pointer === '') {
-            return [null, "[github] has no `{$file}` pointer, so the key [git-credential-map] names has no token file"];
+            return [null, false, "[github] has no `{$file}` pointer, so the key [git-credential-map] names has no token file"];
         }
         if (str_contains($pointer, '%%') || str_contains($pointer, '%(')) {
-            return [null, "[github] {$file} holds `%%` or `%(`, which the store's own reader refuses"];
+            return [null, false, "[github] {$file} holds `%%` or `%(`, which the store's own reader refuses"];
         }
         if ($pointer === '~' || str_starts_with($pointer, '~/')) {
             $home = $this->ownerHome();
             if ($home === null) {
-                return [null, "[github] {$file} starts with `~`, and the home directory of the store's owner could not be read (no posix extension, or an owner this process could not identify)"];
+                return [null, true, "[github] {$file} starts with `~`, and the home directory of the store's owner could not be read (no posix extension, or an owner this process could not identify)"];
             }
 
-            return [rtrim($home, '/').substr($pointer, 1), null];
+            return [rtrim($home, '/').substr($pointer, 1), false, null];
         }
         if (! str_starts_with($pointer, '/')) {
-            return [null, "[github] {$file} is not an absolute path (nor `~/…`): a relative path resolves against whatever directory the reader runs in"];
+            return [null, false, "[github] {$file} is not an absolute path (nor `~/…`): a relative path resolves against whatever directory the reader runs in"];
         }
 
-        return [$pointer, null];
+        return [$pointer, false, null];
     }
 
     /** The store file's owner, or null when it could not be read. Only a readable store may be asked. */

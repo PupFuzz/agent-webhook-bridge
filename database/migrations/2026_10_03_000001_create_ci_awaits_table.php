@@ -9,7 +9,7 @@ return new class extends Migration
     public function up(): void
     {
         // card#11200 / DL-452: a seat's declared wait for CI on one head SHA (`ci_await`). A row
-        // lives from registration until the bridge emits `ci_settled` or `ci_await_expired` for
+        // lives from registration until the bridge emits `ci_settled`, `ci_await_unreadable` (card#11600) or `ci_await_expired` for
         // it, or the seat cancels it. The emit CLAIMS the row by deleting it, and only the
         // request whose delete removed the row emits (App\Bridge\CiAwait\CiAwaitService) — so
         // the row's existence is the whole once-only guarantee, and nothing else stores state.

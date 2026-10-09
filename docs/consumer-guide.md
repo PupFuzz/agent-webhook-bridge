@@ -92,7 +92,7 @@ A comment posted on a kanban card reaches **the seat the card is assigned to**, 
 
 Some intents are composed by the bridge itself rather than by a classifier from a webhook. They
 carry `provider: "bridge"` and a null actor. `seat_idle_nudge` and `pm_standup` reach the seat over
-`channel_push` **only** and are never staged to the inbox; `ci_settled` and `ci_await_expired` are
+`channel_push` **only** and are never staged to the inbox; `ci_settled`, `ci_await_unreadable` and `ci_await_expired` are
 **staged to the inbox first and then pushed**, because the await they answer is deleted when they
 are sent and nothing else would carry them to a seat whose channel was down (their line `id` is
 defined in [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`*).
@@ -114,7 +114,7 @@ seat reading both its channel and `bridge:inbox` sees it on each. ⛔ **It is no
 There is no `late_runs_possible` key; board-tools.md § *Limits* says why.
 
 **`ci_await_expired`** (card#11200 / DL-452) — the await reached its expiry before every run was seen
-terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` for the same await. `subject_id` as above.
+terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` or `ci_await_unreadable` for the same await. `subject_id` as above.
 `payload`:
 
 | key | meaning |
@@ -123,6 +123,22 @@ terminal. One per await (inbox at least once, by line `id`, as above), never aft
 | `registered_at`, `expires_at` | when the await was first stored, and when it expired (UTC, milliseconds) |
 | `last_read_at` | when the bridge last read the run list for it, or null if it never did |
 | `last_error` | why that last read failed, or null when it answered — a null here with a non-null `last_read_at` means CI was still running at that read |
+
+**`ci_await_unreadable`** (card#11600) — a read of the head's runs said this bridge cannot read the
+repo's workflow runs on GitHub: GitHub answered `404` or no read token resolves for it, or GitHub
+answered `401` or a non-rate-limited `403` twice, at least a minute apart. Reading again would answer
+the same, so the await is ended rather than left to expire. One per await (inbox at least once, by line `id`, as above), and the
+await gets no other terminal event. Poll with `ci-read` there, and pass `remedy` to your operator. A
+registration whose own read finds this is refused as `repo_unreadable` instead, with no event.
+`subject_id` as above. `payload`:
+
+| key | meaning |
+|---|---|
+| `repo`, `head_sha`, `pr` | the awaited head |
+| `registered_at` | when the await was first stored (UTC, milliseconds) |
+| `status` | GitHub's HTTP status (`404`, or a confirmed `401` / `403`), or null when no read token resolved and no request was made |
+| `error` | what the read answered, naming the token's source and file (never the token) |
+| `remedy` | what the operator does: map the repo in the coord credential store's `[git-credential-map]` to a key whose token can read it, or set the repo's `write_token_path` in `writeback.json` |
 
 **`seat_idle_nudge`** (DL-380, DL-424) — this seat has sat idle past its horizon with work waiting.
 **Branch on `payload.source`**: the two sources send different evidence under the same kind.

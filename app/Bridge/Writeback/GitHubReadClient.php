@@ -612,6 +612,16 @@ final class GitHubReadClient
     }
 
     /**
+     * One request for one workflow run of any head (`GET /repos/{repo}/actions/runs?per_page=1`):
+     * can this token read the repo's workflow runs at all? Throws RequestException on any non-2xx,
+     * like every read here; a 2xx answers yes and its body is not read (card#11600).
+     */
+    public function probeWorkflowRuns(string $repo): void
+    {
+        $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs", ['per_page' => 1, 'exclude_pull_requests' => 'true'])->throw();
+    }
+
+    /**
      * One page of {@see self::workflowRunsForHead()}'s walk: its `total_count` and its runs.
      *
      * @return array{0: int, 1: list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>}
