@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Security
+
+- **card#11578** — **GHSA-rmxm-3fg6-px4f: `@hono/node-server` 2.1.0 → 2.1.3 in `examples/channel-servers/`** (transitive, via `@modelcontextprotocol/sdk` 1.32.1); channel-server snapshot `0.9.48` → `0.9.49`. Fixes `serveStatic` decoding the request path twice, which let a request bypass path-based middleware (affected >= 1.19.10, < 2.1.3). Only the lockfile entry moves. **It does not reach the channel server**: it imports only the SDK's `server/index.js`, `server/stdio.js` and `types.js`, which resolve no `@hono/node-server` module (measured with a resolve hook: zero, against two when the package is imported directly as a control).
+
 ## [0.98.1] - 2026-10-07
 
 ### Added
