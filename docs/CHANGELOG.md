@@ -8,6 +8,20 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#11579 / DL-466** — **`bridge:check` now says when a seat cannot have `ci_await` (rt#607).** A seat installed or updated by the documented path could end up without the tool, with nothing saying so.
+  - `board_tools.client_pack_source` **FAILS** when the published client pack is an older release's AND its client is older than this checkout's own client (`resources/client-capabilities.json`). The line names the tools the published client lacks and `php artisan bridge:client-pack:install` as the fix. An older release's pack with the same client stays a `warn`, and so does every other arm.
+  - `github.webhook_subscription` reads two more settings off the hook list it already walks, each a `warn`: the hook delivering here sends a form-encoded body, which the receiver refuses as `invalid_envelope`; or its most recent delivery was not a 2xx, or it has never delivered (GitHub's `last_response`). The inactive and missing-Workflow-runs warns (card#11283) are unchanged. No new leg.
+  - `github.delivery_history` warns on a github repo this install has recorded deliveries for that no agent subscribes to. Those deliveries wake nobody, and `ci_await` refuses the repo as `repo_not_received`. With no github subscription at all, the leg now reports this instead of staying silent.
+  - `bridge:client-fleet`, its `--json` document and the `client_fleet` op measure each seat's capability gap against this checkout's own client, not the published pack's. A seat on a stale pack used to read `capability gap: none`. Each seat gains `capability_gap_against`, and the text reads `capability gap vs this bridge's client <version>`.
+  - A seat that is `off_update_path` or `needs_bootstrap` is printed with the exact command: `python3 bin/provision-board-tools.py --role b --bootstrap-client --agent <agent> --project-dir <its-claude-project-dir> --channel-name <its-mcp-servers-key>`. The client-half leg's bootstrap remedy now spells it with `python3 bin/` too.
+  - `CLAUDE_DEPLOYMENT.md` § Fresh install and § Update, `docs/writeback.md` § 4 and `docs/board-tools-enablement.md` now make a clean `github.webhook_subscription` line for every received repo a required step. An `unvalidated` line there is not a pass: the token needs `admin:repo_hook` on that repo.
+
+### Upgrade warnings
+
+- ⚠ **`bridge:check` can now exit non-zero where it exited 0 (card#11579).** On an install whose published client pack is an older release's with an older client — for example one that did not run `php artisan bridge:client-pack:install` after a release that changed the client — `board_tools.client_pack_source` now FAILS. A deploy script that gates on `bridge:check` stops there until you run `php artisan bridge:client-pack:install`.
+
 ## [0.98.1] - 2026-10-07
 
 ### Added

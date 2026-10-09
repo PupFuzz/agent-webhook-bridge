@@ -242,6 +242,93 @@ class GitHubDeliveryHistoryCheckTest extends TestCase
         $this->assertForeignValueEscapedInto($sentence, $hostile, 'next step');
     }
 
+    // ---- card#11579: a repo that delivers here and that no agent subscribes to ----
+
+    /**
+     * A recorded delivery passed the receiver's HMAC gate, so a webhook for that repo works — but the
+     * event is recorded BEFORE the subscription match, so with no agent subscribed it wakes nobody,
+     * and `ci_await` on that repo is refused as `repo_not_received`. Warn, naming the repo.
+     */
+    public function test_a_repo_delivering_here_that_no_agent_subscribes_to_warns(): void
+    {
+        $this->bootInstall();
+        $this->recordDeliveries(self::SCOPE, $this->every(6 * self::HOUR, 20 * self::DAY, endingAgo: self::HOUR));
+        $this->recordDeliveries('other/framework', [3 * self::DAY, 2 * self::DAY]);
+
+        [$exit, $doc] = $this->runJson();
+
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('other/framework', $findings[1]['message']);
+        $this->assertStringContainsString('2 delivery(ies)', $findings[1]['message']);
+        $this->assertStringContainsString('no agent', $findings[1]['message']);
+        $this->assertStringContainsString('repo_not_received', $findings[1]['message']);
+        $this->assertSame(0, $exit, 'a warn must not move the exit code');
+    }
+
+    /** The population is every recorded github scope, so it is measured even where no agent declares one. */
+    public function test_the_unsubscribed_repo_warning_needs_no_github_subscription_at_all(): void
+    {
+        $this->bootGoldenInstall('github-delivery-history', function (GoldenInstall $i) {
+            $i->boot()->agent('kb-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        });
+        $this->recordDeliveries('other/framework', [self::DAY]);
+
+        [, $doc] = $this->runJson();
+
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['warn'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('other/framework', $findings[0]['message']);
+    }
+
+    /** The other direction's read failing is unvalidated too — never a silence read as "nothing unsubscribed". */
+    public function test_an_unreadable_record_leaves_the_unsubscribed_question_unvalidated(): void
+    {
+        $this->bootGoldenInstall('github-delivery-history', function (GoldenInstall $i) {
+            $i->boot()->agent('kb-agent', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        });
+        DB::connection()->beforeExecuting(function (string $query): void {
+            if (str_contains($query, 'webhook_events')) {
+                throw new RuntimeException('webhook_events is unreadable (test fault)');
+            }
+        });
+
+        [, $doc] = $this->runJson();
+
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['unvalidated'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('no agent subscribes to was NOT checked', $findings[0]['message']);
+    }
+
+    /**
+     * Control: a repo subscribed in another letter case is NOT unsubscribed — `ci_await` compares
+     * ignoring case (`CiAwaitService::key`), and the declared spelling's own silence is the
+     * per-scope verdict's to report.
+     */
+    public function test_a_repo_subscribed_in_another_letter_case_is_not_reported_unsubscribed(): void
+    {
+        $this->bootInstall();
+        $this->recordDeliveries('Owner/Repo', [self::DAY]);
+
+        [, $doc] = $this->runJson();
+
+        $this->assertCount(1, $this->legFindings($doc));
+    }
+
+    /**
+     * @param  array<string, mixed>  $doc
+     * @return list<array<string, mixed>>
+     */
+    private function legFindings(array $doc): array
+    {
+        foreach ($doc['checks'] as $check) {
+            if ($check['id'] === GitHubDeliveryHistoryCheck::ID) {
+                return $check['findings'];
+            }
+        }
+        $this->fail('the delivery-history leg is not in the check inventory at all');
+    }
+
     public function test_the_delivery_doc_pointer_names_a_real_heading(): void
     {
         $this->assertDocPointerNamesARealHeading(NextSteps::DELIVERY_DOC);

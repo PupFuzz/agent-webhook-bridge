@@ -237,16 +237,21 @@ final class GitHubWebhookSubscriptionCheck implements Check
     }
 
     /**
-     * card#11283: what the hooks that DO deliver here say about two delivery settings, read off
-     * the same walk (no further GitHub call). Both arms are `warn` and neither moves the exit
-     * code: the `ok` line above stays true — a hook delivers here — and these say what it
-     * carries. An unknown (null) prints nothing; the walk could not read it, and a missing
-     * field on GitHub's side is not evidence of a wrong setting.
+     * card#11283 / card#11579: what the hooks that DO deliver here say about their delivery
+     * settings, read off the same walk (no further GitHub call). Every arm is `warn` and none moves
+     * the exit code: the `ok` line above stays true — a hook delivers here — and these say what it
+     * carries. An unknown (null) prints nothing; the walk could not read it, and a missing field on
+     * GitHub's side is not evidence of a wrong setting.
      *
-     *  - every matching hook INACTIVE ⇒ GitHub delivers nothing on it, for any event;
+     *  - every matching hook INACTIVE ⇒ GitHub delivers nothing on it, for any event (and the
+     *    other settings are moot, so nothing else is said);
+     *  - no ACTIVE matching hook sends `content_type` json ⇒ the receiver parses the body as JSON,
+     *    so every delivery is refused (`invalid_envelope`);
      *  - no ACTIVE matching hook sends `workflow_run` while some agent here is served the CI
      *    tools ⇒ a seat's `ci_await` settles only through the ci-await-sweep's own reads, at
-     *    least one sweep interval late — the polling the tool exists to remove.
+     *    least one sweep interval late — the polling the tool exists to remove;
+     *  - no ACTIVE matching hook's most recent delivery got a 2xx ⇒ GitHub's own record says this
+     *    receiver refused or failed it, or the hook has never delivered.
      *
      * @return iterable<Finding>
      */
@@ -257,9 +262,22 @@ final class GitHubWebhookSubscriptionCheck implements Check
 
             return;
         }
-        if ($result->workflowRun !== false) {
-            return;
+        if ($result->json === false) {
+            yield Finding::warn("github webhook: {$scope} — the repo webhook delivering here sends its payload form-encoded, not as JSON: this receiver parses every delivery as JSON and refuses it (invalid_envelope), so no event on {$scope} reaches any agent. Set its content type to application/json in the repo's webhook settings (someone with admin:repo_hook on {$scope}).");
         }
+        if ($result->workflowRun === false) {
+            yield from $this->workflowRunWarning($ctx, $scope);
+        }
+        if ($result->lastDelivery2xx === false) {
+            yield Finding::warn("github webhook: {$scope} — the most recent delivery GitHub records on the repo webhook delivering here did not get a 2xx from this install, or the hook has never delivered. Open the hook's Recent Deliveries in the repo's webhook settings (someone with admin:repo_hook on {$scope}): a 4xx response body there is this receiver's refusal reason (sig_mismatch, unknown_scope, scope_mismatch, invalid_envelope, …), a 5xx a failure this install's log names. Fix the cause, redeliver, and re-run bridge:check.");
+        }
+    }
+
+    /**
+     * @return iterable<Finding>
+     */
+    private function workflowRunWarning(CheckContext $ctx, string $scope): iterable
+    {
         $served = ServedTools::make();
         foreach ($ctx->configs as $config) {
             if (in_array('ci_await', $served->namesFor($config->boardTools), true)) {

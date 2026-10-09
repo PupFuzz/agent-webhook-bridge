@@ -8,6 +8,7 @@ use App\Bridge\Check\DeliveryHistory\DeliveryHistoryState;
 use App\Bridge\Check\DeliveryHistory\ScopeDeliveryHistory;
 use App\Bridge\Check\NextSteps;
 use App\Bridge\Check\Silence;
+use App\Bridge\CiAwait\CiAwaitService;
 use App\Bridge\Retention\RetentionConfig;
 use App\Bridge\Support\DbClock;
 use App\Bridge\Support\Finding;
@@ -30,7 +31,14 @@ use UnexpectedValueException;
  * more than one seat for weeks — gets `COULD NOT LOOK` from that leg on every run. This leg needs no token, no repo
  * admin and no network: the bridge already knows what it declared and what its receiver recorded.
  *
- * ⛔ IT WITNESSES THE DELIVERY SIDE ONLY, AND EVERY VERDICT SAYS SO ({@see self::DELIVERY_SIDE_ONLY}). It reads what the
+ * ⚑ IT ALSO READS THE RECORD THE OTHER WAY (card#11579): a github scope this install has recorded deliveries for
+ * and that no agent subscribes to. The receiver records an event BEFORE it matches subscriptions, so such a delivery
+ * passed the HMAC gate — the repo's webhook works — and wakes nobody, and `ci_await` refuses that repo as
+ * `repo_not_received` ({@see CiAwaitService::receivedRepo()}). It is a `warn` naming the repo, judged with ci_await's own
+ * case-insensitive key so the line agrees with the refusal it predicts. A repo whose deliveries were all refused at
+ * the receiver is not recorded and so is not seen here.
+ *
+ * ⛔ IT WITNESSES THE DELIVERY SIDE ONLY, AND EVERY PER-SCOPE VERDICT SAYS SO ({@see self::DELIVERY_SIDE_ONLY}). It reads what the
  * receiver RECORDED. A delivery that is recorded and then dropped before any agent wakes — the pre-classify echo drop
  * an inline shared-account `identity.github_user_id` causes is the measured case — is a perfectly healthy delivery to
  * this leg, so an agent deaf for that reason reads healthy here. That is a bound on the instrument, not a gap to close
@@ -80,13 +88,20 @@ final class GitHubDeliveryHistoryCheck implements Check
     public function run(CheckContext $ctx): iterable
     {
         $scopes = $ctx->githubSubscriptionsByScope();
+        $record = $this->recordClause();
         if ($scopes === []) {
-            yield Silence::because('no agent this run could read declares a github subscription, so there is no delivery record to judge');
+            $said = false;
+            foreach ($this->unsubscribed($scopes, $record) as $finding) {
+                $said = true;
+                yield $finding;
+            }
+            if (! $said) {
+                yield Silence::because('no agent this run could read declares a github subscription, and this install has recorded no github delivery, so there is no delivery record to judge');
+            }
 
             return;
         }
 
-        $record = $this->recordClause();
         $unread = array_map(static fn (int|string $scope): string => (string) $scope, array_keys($scopes));
 
         // FAIL-SOFT OVER THE WHOLE WALK, with the scopes already judged kept: a read that throws for one scope is a
@@ -105,6 +120,50 @@ final class GitHubDeliveryHistoryCheck implements Check
             $names = implode(', ', array_map(UntrustedText::forOperator(...), $unread));
 
             yield Finding::unvalidated('github delivery history: COULD NOT READ this install\'s delivery record ('.UntrustedText::forOperator(RedactedErrorText::of($e)).'), so the delivery history of '.count($unread)." declared github scope(s) was NOT checked ({$names}). This run says nothing about whether they are delivering.");
+
+            return;
+        }
+
+        yield from $this->unsubscribed($scopes, $record);
+    }
+
+    /**
+     * One `warn` per github scope this install has recorded deliveries for that no agent subscribes to (card#11579).
+     *
+     * @param  array<array-key, list<string>>  $scopes
+     * @return iterable<Finding>
+     */
+    private function unsubscribed(array $scopes, string $record): iterable
+    {
+        $subscribed = [];
+        foreach (array_keys($scopes) as $scope) {
+            $subscribed[CiAwaitService::key((string) $scope)] = true;
+        }
+
+        try {
+            $rows = WebhookEvent::query()
+                ->where('provider', 'github')
+                ->groupBy('scope_id')
+                ->orderBy('scope_id')
+                ->selectRaw('scope_id, count(*) as deliveries, max(received_at) as last_at')
+                ->toBase()
+                ->get();
+        } catch (Throwable $e) {
+            yield Finding::unvalidated('github delivery history: COULD NOT READ this install\'s delivery record ('.UntrustedText::forOperator(RedactedErrorText::of($e)).'), so whether a repo delivers here that no agent subscribes to was NOT checked.');
+
+            return;
+        }
+
+        $utc = new DateTimeZone('UTC');
+        foreach ($rows as $row) {
+            $scope = (string) $row->scope_id;
+            if (isset($subscribed[CiAwaitService::key($scope)])) {
+                continue;
+            }
+            $shown = UntrustedText::forOperator($scope);
+            $last = gmdate('Y-m-d H:i:s', (new DateTimeImmutable((string) $row->last_at, $utc))->getTimestamp()).' UTC';
+
+            yield Finding::warn("github delivery history: {$shown} — this install has recorded {$row->deliveries} delivery(ies) for it, the latest at {$last}, so a repo webhook has delivered to this receiver for {$shown}, but no agent this run could read subscribes to it: those deliveries wake no agent, and a seat's ci_await on {$shown} is refused as repo_not_received. If an agent here should follow {$shown}, add a github subscription for it to that agent's YAML, then re-run bridge:check; if none should, remove the repo's webhook to this install (someone with admin:repo_hook on {$shown}). {$record}");
         }
     }
 

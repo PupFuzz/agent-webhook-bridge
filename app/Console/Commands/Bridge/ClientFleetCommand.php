@@ -81,7 +81,7 @@ class ClientFleetCommand extends BridgeCommand
                 'installed: '.self::release($seat['installed']),
                 'last seen: '.($seat['last_seen'] === null ? 'not since this bridge started its fleet ledger' : HumanAge::floored((int) Carbon::parse($seat['last_seen'])->diffInSeconds($now, true)).' ago'),
                 'approval: '.($seat['approval_required'] ? 'required' : 'not required'),
-                'capability gap: '.self::gap($seat['capability_gap']),
+                'capability gap'.($seat['capability_gap_against'] !== null ? " vs this bridge's client {$seat['capability_gap_against']}" : '').': '.self::gap($seat['capability_gap']),
             ]));
         }
         $spread = [];

@@ -133,6 +133,18 @@ php artisan bridge:provision-tools --agent=<name>  # BOARD TOOLS ARE THE DEFAULT
                                                   # HTTP-door runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
 php artisan bridge:client-pack:install            # publish this release's channel-server client pack, which board-tools
                                                   # seats install and update from (DL-430 / DL-442) — as in § Update
+# Add each repo's webhook by hand (docs/writeback.md § 4. The repo webhook) — bridge:provision cannot.
+php artisan bridge:check                          # REQUIRED STEP, after the pack is published and every repo webhook
+                                                  # exists: STOP until it exits 0 AND every github repo this install
+                                                  # receives has a github.webhook_subscription OK line with no warn
+                                                  # beside it. ⛔ UNVALIDATED there is NOT a pass: the token cannot list
+                                                  # that repo's hooks, and needs a credential with admin:repo_hook.
+                                                  # What that leg checks, and the github.delivery_history warn for a
+                                                  # repo that delivers here with no agent subscribed (ci_await refuses
+                                                  # it as repo_not_received): docs/writeback.md § 4. client_pack_source
+                                                  # FAILS while the published pack's client is older than this
+                                                  # checkout's; client_fleet names every seat still to bootstrap, with
+                                                  # its command (card#11579 / DL-466)
 sudo systemctl reload apache2 php8.5-fpm
 # NOT DONE YET: configure AND verify the live-event path — § "Live-event path" right below.
 # GitHub answering 200 is not evidence that any agent will ever be woken.
@@ -247,7 +259,11 @@ php artisan bridge:client-pack:install             # publish THIS release's chan
                                                   # re-run attaches a pack to it) or its release-time build failed;
                                                   # bridge:check's client_pack_source leg names which and, on the
                                                   # second, the re-run that attaches it (DL-442)
-php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero
+php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero.
+                                                  # REQUIRED as in § Fresh install: client_pack_source FAILS until the
+                                                  # pack above is published, and every received repo's
+                                                  # github.webhook_subscription line must be OK with no warn beside it
+                                                  # (UNVALIDATED is not a pass — needs admin:repo_hook; card#11579)
 sudo systemctl reload php8.5-fpm                  # recycle workers so they re-read config + agent YAMLs
 ```
 
@@ -314,7 +330,7 @@ A seat gets its channel server from **its own bridge**. A seat bootstrapped onto
 1. **Publish** the release's pack: `php artisan bridge:client-pack:install`, in the update block above (DL-430). Until a pack is published no seat updates, and `bridge:check`'s `board_tools.client_pack_source` leg says why.
 2. **Approve** it, only for an agent whose YAML sets `board_tools.client_update.approval_required: true`: `php artisan bridge:client-approve <agent> <release> --reason=…` (DL-433). The bridge offers that seat nothing until then.
 3. **Restart each seat's session**, at a session boundary and with the agent's agreement — the ⛔ callout under *Update an existing install* says why that is an ask. The update runs at launch and never inside a running session.
-4. **Read the fleet**: `php artisan bridge:client-fleet` prints the release each seat reports running and installed, and one state per seat (DL-432).
+4. **Read the fleet**: `php artisan bridge:client-fleet` prints the release each seat reports running and installed, one state per seat (DL-432), and each seat's capability gap against this checkout's own client (DL-466). A seat it lists as `needs_bootstrap` or `off_update_path` is printed with the exact bootstrap command below.
 
 **A seat still running a copied snapshot moves onto the update path once.** On that seat, as its own OS user, from a bridge checkout at your bridge's release tag, run `python3 bin/provision-board-tools.py --role b --bootstrap-client --agent <agent> --project-dir <dir> --channel-name <channel>`, then restart its session. The bootstrap uses that checkout's own updater (DL-444); after it the seat takes every update from its bridge and never reads the checkout again. [`docs/board-tools.md`](docs/board-tools.md) owns the flags and refusals, and every onboarding entry point runs the same bootstrap after a successful round-trip (DL-445). The fleet lists a seat not yet moved as `needs_bootstrap` or `off_update_path`. Copying a snapshot over a seat, or staging one in a coordination repo for seats to pick up, is retired; clearing what the old staging left in a coordination repo is the coord framework's upgrade (`coord:update`), not this repo's.
 
@@ -531,9 +547,12 @@ php artisan bridge:client-pack:install                # publish THIS release's c
                                                       #   A release carries its pack from the first release built with DL-442;
                                                       #   an earlier release, or one whose release-time build failed, answers 1
                                                       #   "carries no client pack". bridge:check's client_pack_source leg warns
-                                                      #   until this checkout's release is the published one, and names the
-                                                      #   workflow re-run that attaches a missing pack.
-php artisan bridge:client-fleet [--json]              # each board-tools seat's REPORTED client, update state and capability gap (DL-432)
+                                                      #   until this checkout's release is the published one — and FAILS
+                                                      #   (non-zero exit) where the published pack's client is also older than
+                                                      #   this checkout's (card#11579 / DL-466) — and names the workflow
+                                                      #   re-run that attaches a missing pack.
+php artisan bridge:client-fleet [--json]              # each board-tools seat's REPORTED client, update state and capability gap (DL-432) —
+                                                      #   the gap against THIS checkout's client, not the published pack's (DL-466)
                                                       #   0 read · 1 the fleet ledger could not be read · 2 agent YAMLs did not load
 php artisan bridge:client-approve <agent> <release> --reason=…   # approve the published pack's CONTENT for one agent (DL-433);
                                                       #   logged; 0 approved or already approved · 1 refused · 2 could not read

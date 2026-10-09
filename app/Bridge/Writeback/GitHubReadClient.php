@@ -180,14 +180,14 @@ final class GitHubReadClient
                 ])->throw()->json();
             } catch (Throwable $e) {
                 if ($match !== null) {
-                    return GitHubHookListAnswer::found(null, null);
+                    return GitHubHookListAnswer::found();
                 }
 
                 throw $e;
             }
 
             if ($match !== null && (! is_array($body) || ! array_is_list($body))) {
-                return GitHubHookListAnswer::found(null, null);
+                return GitHubHookListAnswer::found();
             }
             if (! is_array($body) || ! array_is_list($body)) {
                 self::warnUnreadableBody(
@@ -236,7 +236,7 @@ final class GitHubReadClient
             // the walk unmakes that absence while never pre-empting a later page's match.
             if (count($body) < self::HOOK_PAGE_SIZE) {
                 if ($match !== null) {
-                    return GitHubHookListAnswer::found($match->active, $match->workflowRun);
+                    return GitHubHookListAnswer::found($match);
                 }
                 if ($unreadableElement) {
                     self::warnUnreadableBody(
@@ -251,7 +251,7 @@ final class GitHubReadClient
             }
         }
 
-        return $match !== null ? GitHubHookListAnswer::found(null, null) : GitHubHookListAnswer::undetermined();
+        return $match !== null ? GitHubHookListAnswer::found() : GitHubHookListAnswer::undetermined();
     }
 
     /**

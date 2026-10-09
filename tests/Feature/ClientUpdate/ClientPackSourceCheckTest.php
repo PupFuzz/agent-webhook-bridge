@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\ClientPackSourceCheck;
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackStore;
 use App\Bridge\Support\Severity;
+use App\Bridge\Tools\ClientCapabilities;
 use Illuminate\Support\Facades\File;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\ClientPackFixture;
@@ -16,8 +17,8 @@ use Tests\TestCase;
 /**
  * `board_tools.client_pack_source` (card#10567 B2, design review r3-M7): does this bridge publish
  * the client pack of the release its checkout IS? Keyed on `bridge_release` against `VERSION`,
- * never on the client version, so a release whose pack was never published warns even when its
- * client did not change.
+ * never on the client version alone, so a release whose pack was never published warns even when
+ * its client did not change — and fails when its client did (card#11579).
  */
 class ClientPackSourceCheckTest extends TestCase
 {
@@ -39,16 +40,16 @@ class ClientPackSourceCheckTest extends TestCase
         parent::tearDown();
     }
 
-    private function publish(string $release): void
+    private function publish(string $release, string $clientVersion = '0.9.28'): void
     {
-        $f = new ClientPackFixture($release, packBytes: "pack of {$release}");
+        $f = new ClientPackFixture($release, $clientVersion, packBytes: "pack of {$release}");
         (new ClientPackStore)->publish(ClientPackManifest::parse($f->manifest), $f->manifest, $f->pack, '2026-09-29T00:00:00Z');
     }
 
     /**
      * @return list<array{0: string, 1: string}>
      */
-    private function check(?string $version): array
+    private function check(?string $version, ?ClientCapabilities $capabilities = null): array
     {
         $file = $this->dir.'/VERSION';
         if ($version !== null) {
@@ -57,7 +58,9 @@ class ClientPackSourceCheckTest extends TestCase
 
         return array_map(
             static fn ($f): array => [$f->severity->value, $f->message],
-            $this->findingsOf(new ClientPackSourceCheck($file), new CheckContext),
+            // ⚑ THE CHECKOUT'S OWN CLIENT DEFAULTS TO THE PUBLISHED ONE (0.9.28) so the release-lag
+            // cases below measure the release axis alone; the client-lag cases pass their own.
+            $this->findingsOf(new ClientPackSourceCheck($file, $capabilities ?? self::ownClient('0.9.28')), new CheckContext),
         );
     }
 
@@ -99,6 +102,12 @@ class ClientPackSourceCheckTest extends TestCase
             'across a major bump' => ['0.99.0', '1.0.0'],
             'a minor past 9, which a string compare would order the other way' => ['0.9.0', '0.10.0'],
         ];
+    }
+
+    /** A capability table whose newest client is `$version` — this checkout's own client, for the check. */
+    private static function ownClient(string $version): ClientCapabilities
+    {
+        return new ClientCapabilities($version, [], []);
     }
 
     #[DataProvider('olderPublications')]
@@ -143,6 +152,52 @@ class ClientPackSourceCheckTest extends TestCase
         $this->assertStringContainsString('the published client pack record cannot be read', $message);
         $this->assertStringContainsString('answers every seat 503', $message);
         $this->assertStringContainsString((new ClientPackStore)->recordRecovery(), $message);
+    }
+
+    /**
+     * card#11579 ask 1: an older release's pack whose CLIENT is also older than this checkout's is a
+     * `fail` — every seat installing or updating from this bridge gets a client missing what this
+     * checkout's client declares (on the measured install: no `ci_await`), so `bridge:check` exits
+     * non-zero. Measured against the checkout's REAL capability table, so the named gap is the one
+     * a seat would actually have.
+     */
+    public function test_it_fails_when_the_published_client_lags_this_checkout_s_client_and_names_the_gap(): void
+    {
+        $own = ClientCapabilities::bundled();
+        $this->publish('0.95.0', '0.9.39');
+
+        $findings = $this->check('0.98.1', $own);
+
+        $this->assertCount(1, $findings);
+        [$severity, $message] = $findings[0];
+        $this->assertSame(Severity::Fail->value, $severity);
+        $this->assertStringContainsString("publishes release 0.95.0's client pack (client 0.9.39), but this checkout is release 0.98.1 with client {$own->currentClientVersion}", $message);
+        $this->assertStringContainsString('ci_await', $message, 'the 0.9.39 client lacks ci_await, which this checkout\'s client declares');
+        $this->assertStringContainsString('`php artisan bridge:client-pack:install`', $message);
+    }
+
+    /** Control for the fail above: the same release lag with an UNCHANGED client stays a warn. */
+    public function test_a_release_lag_with_the_same_client_stays_a_warn(): void
+    {
+        $this->publish('0.97.0', '0.9.48');
+
+        $findings = $this->check('0.98.1', self::ownClient('0.9.48'));
+
+        $this->assertSame(Severity::Warn->value, $findings[0][0]);
+    }
+
+    /**
+     * A dev checkout AHEAD of its last release whose client moved has no pack to publish yet: the
+     * published pack IS this release's, so this is the `ok` line and never the `fail` — the remedy
+     * the fail names could not clear it.
+     */
+    public function test_a_client_ahead_of_this_release_s_own_pack_is_not_a_fail(): void
+    {
+        $this->publish('0.98.1', '0.9.48');
+
+        $findings = $this->check('0.98.1', self::ownClient('0.9.49'));
+
+        $this->assertSame(Severity::Ok->value, $findings[0][0]);
     }
 
     /**
