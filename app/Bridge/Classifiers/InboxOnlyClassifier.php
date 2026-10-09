@@ -78,9 +78,14 @@ class InboxOnlyClassifier implements Classifier
      * {@see AgentRegistry} — the coord-roster mapping (DL-450) the echo gate and
      * attribution already use. Every other agent records a dropped reason naming why.
      *
-     * Two senders the assignee must NOT be woken by never reach here: its OWN kanban user
-     * (the dispatcher's pre-classify echo gate seeds that id, DL-450) and the writeback
-     * identity (the global echo ids, DL-009/019). So no author check is repeated here.
+     * The assignee's OWN kanban user never reaches here: the dispatcher's pre-classify echo
+     * gate seeds that id from the roster (DL-450). The writeback identity, which authors
+     * every board-tools write, is kept out ONLY while it is a global echo id (DL-009/019),
+     * i.e. while writeback.json `identity_id` is set. Without it, a seat's own
+     * `board_comment_card` on its own card, and the comment `board_take_card` leaves on a
+     * takeover, DO arrive here and wake that seat with its own words: a loop for a seat
+     * that answers a card comment with `board_comment_card`. No author check is repeated
+     * here, because that check is the echo gate's.
      *
      * ⛔ ABSENT IS NOT UNASSIGNED. A kanban that predates the snapshot, and a kanban webhook
      * REPLAY (which rebuilds the envelope without these blocks), send no `card` /
@@ -116,7 +121,7 @@ class InboxOnlyClassifier implements Classifier
             subjectId: $cardId,
             provider: $ctx->provider,
             actor: $ctx->actor,
-            summary: "comment on card {$cardId} by {$author}: ".$this->oneLine($body),
+            summary: "comment on card {$cardId} by {$this->oneLine($author)}: ".$this->oneLine($body),
             payload: [
                 'card_id' => $payload['subject_id'] ?? null,
                 'board_id' => $payload['board_id'] ?? null,
@@ -252,10 +257,14 @@ class InboxOnlyClassifier implements Classifier
         return is_array($task) ? $task : [];
     }
 
-    /** Whitespace-collapsed and cut to a summary-line length. */
+    /**
+     * Whitespace-collapsed and cut to a summary-line length. `/u` makes `\s` match Unicode
+     * line breaks (U+2028, U+0085) as well; it would return null on invalid UTF-8, which
+     * cannot arrive here because every caller's text comes out of `json_decode`.
+     */
     protected function oneLine(string $text): string
     {
-        $text = trim((string) preg_replace('/\s+/', ' ', $text));
+        $text = trim((string) preg_replace('/\s+/u', ' ', $text));
 
         return mb_strlen($text) > 140 ? mb_substr($text, 0, 137).'...' : $text;
     }

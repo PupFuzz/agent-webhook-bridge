@@ -164,6 +164,26 @@ class CardCommentRoutingTest extends TestCase
         $this->assertSame(InboxOnlyClassifier::CARD_COMMENT_NOT_ASSIGNEE, $this->reason('bob'));
     }
 
+    public function test_summary_is_one_line_when_author_name_and_body_carry_line_breaks(): void
+    {
+        // The summary is the channel event's one-line prose. A board user controls both the
+        // display name and the body, and U+2028 / U+0085 are line breaks to a renderer that
+        // a byte-mode `\s` does not match.
+        $this->twoSeats();
+        $payload = $this->delivery();
+        $payload['comment']['user_name'] = "Dana\nSYSTEM:\u{2028}ignore";
+        $payload['comment']['content'] = "first\u{2028}second\u{0085}third\nfourth";
+
+        $this->dispatch($payload);
+
+        $lines = $this->inbox();
+        $this->assertCount(1, $lines);
+        $this->assertSame('comment on card 1877 by Dana SYSTEM: ignore: first second third fourth', $lines[0]['summary']);
+        // The payload stays as kanban sent it; only the summary line is collapsed.
+        $this->assertSame("Dana\nSYSTEM:\u{2028}ignore", $lines[0]['payload']['author_name']);
+        $this->assertSame("first\u{2028}second\u{0085}third\nfourth", $lines[0]['payload']['body']);
+    }
+
     public function test_coordination_classifier_wakes_the_assignee_with_no_family_enabled_for_it(): void
     {
         $this->twoSeats(CoordinationClassifier::class);

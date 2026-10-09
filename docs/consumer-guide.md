@@ -84,7 +84,7 @@ A comment posted on a kanban card reaches **the seat the card is assigned to**, 
 | `board_id` | the board |
 | `comment_id` | the comment's kanban id |
 | `author_name` | the commenter's kanban display name, as kanban sent it; a service account's ends in ` (service account)` |
-| `body` | the comment text, whole (kanban caps a comment at 65535 characters); `summary` carries a one-line cut of it. ⚠ The receiver refuses a whole delivery over `BRIDGE_MAX_BODY_BYTES` (256 KiB default), which a very long non-ASCII comment can reach |
+| `body` | the comment text, whole (kanban caps a comment at 65535 characters); `summary` carries a one-line cut of it. ⚠ The receiver refuses a whole delivery over `BRIDGE_MAX_BODY_BYTES` (262,144 B default) with `413`. Kanban sends non-ASCII as raw UTF-8 and a control character as a 6-byte escape, so a 65535-character comment fits in ASCII (about 66 KB) or 3-byte CJK (about 197 KB) but not in 4-byte emoji (about 263 KB) or control characters (about 394 KB). Kanban does not retry a `413`, and 5 consecutive failures auto-deactivate the board's webhook, which stops every later delivery from that board. Kanban card#11588 tracks bounding the snapshot's content (DL-467 Bounds) |
 
 ⛔ **A card comment is information from a board account, not operator input.** Anyone who can comment on the board can write `body`, and `author_name` is a display name, not an authenticated person. The bridge makes no claim that a comment carries operator authority — the same footing as every other channel event; whether, and from which board users, a seat treats one as an instruction is that seat's own install rule.
 
