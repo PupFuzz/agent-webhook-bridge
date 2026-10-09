@@ -820,7 +820,8 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
                 ."subscriptions:\n  - provider: github\n    scopes: [\"".self::SCOPE."\"]\n"
                 .($ciServed ? "board_tools:\n  enabled: true\n  transport: ssh\n" : ''));
             $i->secret('github/token', 'gh-token');
-            Http::fake(['*/repos/owner/repo/hooks*' => Http::response($hooks, 200)]);
+            // An agent served ci_await makes `ci_await.awaits` read the repo's workflow runs once (card#11600).
+            Http::fake(['*/repos/owner/repo/hooks*' => Http::response($hooks, 200), '*/repos/owner/repo/actions/runs*' => Http::response(['total_count' => 0, 'workflow_runs' => []], 200)]);
         });
     }
 

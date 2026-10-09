@@ -6,18 +6,26 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\IntentLog;
 use App\Bridge\Exceptions\CiRunsReadException;
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Scheduling\Handlers\CiAwaitSweepJob;
 use App\Bridge\Scheduling\JobRegistry;
+use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AuthoredIntentPush;
 use App\Bridge\Support\HandlerRegistry;
+use App\Bridge\Support\PastedSecretShape;
+use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
+use App\Bridge\Writeback\TokenFileFault;
+use App\Bridge\Writeback\TokenResolution;
+use App\Bridge\Writeback\TokenSource;
 use App\Models\CiAwait;
 use App\Models\WebhookEvent;
 use DateTimeInterface;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -33,7 +41,8 @@ use UnexpectedValueException;
  * head SHA, and the bridge tells it when every workflow run GitHub lists for that head is terminal —
  * so the seat stops polling GitHub for it.
  *
- * ⭐ THE GUARANTEE. One terminal event per await (`ci_settled` or `ci_await_expired`), written to the
+ * ⭐ THE GUARANTEE. One terminal event per await (`ci_settled`, `ci_await_unreadable` or
+ * `ci_await_expired`), written to the
  * seat's inbox at least once and idempotent by its line id, then pushed live once — the push carries no
  * line id and is unconfirmed (DL-370). The id's form and why are defined once, in `docs/board-tools.md`
  * § `ci_await` and `ci_await_cancel`.
@@ -61,13 +70,17 @@ use UnexpectedValueException;
  * ⭐ ONE EVENT PER AWAIT, BY CLAIM. Two `workflow_run.completed` deliveries for the last two runs of
  * one head can both read "all terminal". Each emit first DELETES its await row inside a transaction
  * and emits only when that delete removed it, so exactly one of them emits ({@see claimAndEmit()}).
- * The same claim serves the registration-time read and the sweep, so an await is settled or
- * expired, never both. An inbox line that cannot be written rolls the claim back and marks THAT row
+ * The same claim serves the registration-time read and the sweep, so an await is settled, ended as
+ * unreadable, or expired — exactly one. An inbox line that cannot be written rolls the claim back and marks THAT row
  * only; the other awaits on the head are still claimed, and the failed one is emitted on a later pass.
  *
- * ⚠ A READ THAT FAILS EMITS NOTHING. The await is kept with the error recorded and logged by name;
- * the sweep reads the head again like any other stale head, and if no read ever answers the seat
- * gets `ci_await_expired` carrying the last error at expiry.
+ * ⚠ A READ THAT FAILS EMITS NOTHING — unless it says the repo cannot be read. The await is kept
+ * with the error recorded and logged by name; the sweep reads the head again like any other stale
+ * head, and if no read ever answers the seat gets `ci_await_expired` carrying the last error at
+ * expiry. ⛔ A failure that reading again cannot get past (card#11600: no read token for any reader, or
+ * GitHub answered 401, 404, or a 403 that is not a rate limit — {@see githubRead()}) ends every
+ * await on the head at once with `ci_await_unreadable`, and refuses a registration that read it as
+ * `repo_unreadable`: a seat must not wait six hours on a repo this install's token cannot see.
  *
  * ⭐ THE DELIVERED RUN IS OVERLAID. The list API can lag the webhook: the run whose completion was
  * just delivered may still read `in_progress` (or be absent) in the list read for that delivery. A
@@ -92,6 +105,9 @@ final class CiAwaitService
     public const SETTLED = 'ci_settled';
 
     public const EXPIRED = 'ci_await_expired';
+
+    /** Sent instead of waiting out the expiry when GitHub will not let this install read the repo (card#11600). */
+    public const UNREADABLE = 'ci_await_unreadable';
 
     /** `read_skipped` when the calling seat's registration read budget is spent (card#11283). */
     public const SEAT_READ_LIMITED = 'seat_read_limited';
@@ -127,15 +143,35 @@ final class CiAwaitService
      */
     public static function receivedRepo(string $repo): ?string
     {
-        foreach ((new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs() as $cfg) {
-            foreach ($cfg->subscriptions as $sub) {
-                if ($sub->provider === 'github' && self::key($sub->scopeId) === self::key($repo)) {
-                    return $sub->scopeId;
-                }
+        foreach (self::receivedRepos() as $received) {
+            if (self::key($received) === self::key($repo)) {
+                return $received;
             }
         }
 
         return null;
+    }
+
+    /**
+     * Every GitHub repo this install receives events for — the repos `ci_await` accepts — once
+     * each, in the first configured spelling. `$configs` are the agent configs to read (null: load
+     * them from the config dir, which throws {@see ConfigException} on one that will not load).
+     *
+     * @param  ?list<AgentConfig>  $configs
+     * @return list<string>
+     */
+    public static function receivedRepos(?array $configs = null): array
+    {
+        $repos = [];
+        foreach ($configs ?? (new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs() as $cfg) {
+            foreach ($cfg->subscriptions as $sub) {
+                if ($sub->provider === 'github') {
+                    $repos[self::key($sub->scopeId)] ??= $sub->scopeId;
+                }
+            }
+        }
+
+        return array_values($repos);
     }
 
     /**
@@ -198,7 +234,13 @@ final class CiAwaitService
      * await that is gone by the time the answer is built was claimed — by this call's read or a
      * concurrent one — so it answers `settled`.
      *
-     * @return array{state: string, pr: ?int, expires_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string, read_skipped: ?string, retry_not_before: ?string}
+     * ⛔ A READ THAT SAYS THE REPO CANNOT BE READ (card#11600) answers `unreadable`, carrying the
+     * failure, and the await is GONE: this seat's own is removed with no event, because the caller
+     * refuses the registration (`repo_unreadable`); any other seat's await on the head gets
+     * `ci_await_unreadable`. A read this call skipped (cooldown, rate limit, seat budget) changes
+     * nothing — the await waits, and the sweep's read of the head ends it that way instead.
+     *
+     * @return array{state: string, pr: ?int, expires_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string, read_skipped: ?string, retry_not_before: ?string, unreadable: ?CiRunsReadException}
      */
     public function evaluateRegistration(string $agent, string $repoName, string $headSha, ?int $pr, int $cooldownSeconds, int $seatReadsPerHour): array
     {
@@ -217,7 +259,8 @@ final class CiAwaitService
                 // GitHub rate-limit record and would stop delivery and sweep reads too.
                 $skipped = self::SEAT_READ_LIMITED;
             } else {
-                $read = $this->evaluate($key, $headSha, null);
+                $mineId = CiAwait::query()->where('agent', $agent)->where('repo', $key)->where('head_sha', $headSha)->value('id');
+                $read = $this->evaluate($key, $headSha, null, $mineId === null ? null : (int) $mineId);
                 $skipped = ! $read['read'] && $read['retry_not_before'] !== null ? 'rate_limited' : null;
             }
             $mine = CiAwait::query()->where('agent', $agent)->where('repo', $key)->where('head_sha', $headSha)->first();
@@ -227,7 +270,11 @@ final class CiAwaitService
             ] + RedactedErrorText::logContext($e));
 
             return ['state' => 'unmeasured', 'pr' => $pr, 'expires_at' => null, 'runs_total' => null, 'runs_completed' => null,
-                'read_error' => 'the await is stored, but evaluating it failed: '.RedactedErrorText::of($e), 'read_skipped' => null, 'retry_not_before' => null];
+                'read_error' => 'the await is stored, but evaluating it failed: '.RedactedErrorText::of($e), 'read_skipped' => null, 'retry_not_before' => null, 'unreadable' => null];
+        }
+        if ($read['unreadable'] !== null) {
+            return ['state' => 'unreadable', 'pr' => $pr, 'expires_at' => null, 'runs_total' => null, 'runs_completed' => null,
+                'read_error' => $read['error'], 'read_skipped' => null, 'retry_not_before' => null, 'unreadable' => $read['unreadable']];
         }
 
         $emitFailed = $mine !== null && in_array($mine->id, $read['emit_failed'], true);
@@ -248,6 +295,7 @@ final class CiAwaitService
                 : $read['error'],
             'read_skipped' => $skipped,
             'retry_not_before' => $seatRetryAt !== null ? self::instant($seatRetryAt) : ($read['retry_not_before'] === null ? null : self::instant($read['retry_not_before'])),
+            'unreadable' => null,
         ];
     }
 
@@ -413,10 +461,16 @@ final class CiAwaitService
      * ⚠ A head any of whose awaits carries a `retry_not_before` still in the future is not read
      * (`read: false`): every await on the head is given that instant and the limiting error.
      *
+     * ⛔ A READ THAT SAYS THE REPO CANNOT BE READ ENDS EVERY AWAIT IT LOADED (card#11600): reading
+     * again would answer the same, so each gets `ci_await_unreadable` now instead of
+     * `ci_await_expired` hours later ({@see forgetUnreadable()}). `$silentAwaitId` is the await of a
+     * registration making this read: it is removed WITHOUT an event, because that seat is answered
+     * by the `repo_unreadable` refusal instead.
+     *
      * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
-     * @return array{runs: ?list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, retry_not_before: ?Carbon, read: bool, emit_failed: list<int>}
+     * @return array{runs: ?list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, retry_not_before: ?Carbon, read: bool, emit_failed: list<int>, unreadable: ?CiRunsReadException}
      */
-    private function evaluate(string $key, string $headSha, ?array $deliveredRun): array
+    private function evaluate(string $key, string $headSha, ?array $deliveredRun, ?int $silentAwaitId = null): array
     {
         $awaits = CiAwait::query()->where('repo', $key)->where('head_sha', $headSha)->orderBy('id')->get();
         if ($awaits->isEmpty()) {
@@ -443,6 +497,9 @@ final class CiAwaitService
             // The column holds 1000 characters; a longer error would fail the write that records it.
             $error = mb_substr($e->getMessage(), 0, 1000);
             CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => $error, 'retry_not_before' => $e->retryNotBefore]);
+            if ($e->repoUnreadable) {
+                return ['error' => $error, 'read' => true, 'unreadable' => $e, 'emit_failed' => $this->forgetUnreadable($awaits, $e, $error, $silentAwaitId)] + self::noRead();
+            }
             Log::warning('bridge ci_await: the workflow-run read failed, so nothing was emitted — the await is kept, the ci_await sweep reads the head again, and it expires with this error if no read answers', [
                 'repo' => $repoName, 'head_sha' => $headSha, 'awaits' => count($ids), 'error' => $error,
             ]);
@@ -466,13 +523,44 @@ final class CiAwaitService
             }
         }
 
-        return ['runs' => $runs, 'error' => null, 'all_terminal' => $allTerminal, 'retry_not_before' => null, 'read' => true, 'emit_failed' => $emitFailed];
+        return ['runs' => $runs, 'error' => null, 'all_terminal' => $allTerminal, 'retry_not_before' => null, 'read' => true, 'emit_failed' => $emitFailed, 'unreadable' => null];
     }
 
-    /** @return array{runs: null, error: null, all_terminal: false, retry_not_before: null, read: false, emit_failed: list<int>} */
+    /** @return array{runs: null, error: null, all_terminal: false, retry_not_before: null, read: false, emit_failed: list<int>, unreadable: null} */
     private static function noRead(): array
     {
-        return ['runs' => null, 'error' => null, 'all_terminal' => false, 'retry_not_before' => null, 'read' => false, 'emit_failed' => []];
+        return ['runs' => null, 'error' => null, 'all_terminal' => false, 'retry_not_before' => null, 'read' => false, 'emit_failed' => [], 'unreadable' => null];
+    }
+
+    /**
+     * End every await in `$awaits` because GitHub will not let this install read the repo: each is
+     * claimed and gets ONE `ci_await_unreadable` — by {@see claimAndEmit()}, so a concurrent
+     * reader of the same head cannot emit a second — except `$silentAwaitId`, which is claimed with
+     * no event (its seat is being answered by a refusal). An await whose event could not be written
+     * is kept, as for any emit, and the next read of its head tries again.
+     *
+     * @param  Collection<int, CiAwait>  $awaits
+     * @return list<int> the awaits whose event could not be written
+     */
+    private function forgetUnreadable(Collection $awaits, CiRunsReadException $e, string $error, ?int $silentAwaitId): array
+    {
+        $first = $awaits->first();
+        Log::warning('bridge ci_await: GitHub will not let this install read the repo\'s workflow runs, so every await on this head is ended now with ci_await_unreadable instead of being left to expire', [
+            'repo' => $first?->repo_name, 'head_sha' => $first?->head_sha, 'awaits' => $awaits->count(), 'error' => $error,
+        ]);
+        $failed = [];
+        foreach ($awaits as $await) {
+            if ($await->id === $silentAwaitId) {
+                CiAwait::query()->whereKey($await->id)->delete();
+
+                continue;
+            }
+            if ($this->claimAndEmit($await, self::UNREADABLE, self::unreadablePayload($await, $e, $error), self::unreadableSummary($await, $error)) === EmitResult::Failed) {
+                $failed[] = $await->id;
+            }
+        }
+
+        return $failed;
     }
 
     /**
@@ -574,27 +662,116 @@ final class CiAwaitService
      */
     private function readRuns(string $repoName, string $headSha): array
     {
+        return self::githubRead($repoName, static fn (GitHubReadClient $client): array => $client->workflowRunsForHead($repoName, $headSha));
+    }
+
+    /**
+     * One workflow-runs read of `$repoName` for any head, made exactly as an await's read is made —
+     * the same token resolution and the same failure classes — so `bridge:check` can say whether
+     * `ci_await` on that repo would be answered (card#11600). Null when GitHub answered 2xx.
+     */
+    public static function probeRunsRead(string $repoName): ?CiRunsReadException
+    {
+        try {
+            self::githubRead($repoName, static function (GitHubReadClient $client) use ($repoName): void {
+                $client->probeWorkflowRuns($repoName);
+            });
+        } catch (CiRunsReadException $e) {
+            return $e;
+        }
+
+        return null;
+    }
+
+    /**
+     * Resolve `$repoName`'s read token as the receiver does and make `$read` with it, turning every
+     * way it can fail into a {@see CiRunsReadException} of its class (card#11600):
+     *  - NOT READABLE — reading again cannot answer: no token resolved for any reader
+     *    ({@see noTokenForAnyReader()}), or GitHub answered 401
+     *    (the token is dead), 404 (GitHub's answer to a token that cannot see a private repo) or a
+     *    403 that is not a rate limit (the token lacks the permission). Its message names the
+     *    token's source and file, never the token.
+     *  - RETRYABLE — a rate limit (a 429, or a 403 that says so), any other status, no answer, or
+     *    a 200 whose body is not a run list.
+     *
+     * @template T
+     *
+     * @param  callable(GitHubReadClient): T  $read
+     * @return T
+     *
+     * @throws CiRunsReadException
+     */
+    private static function githubRead(string $repoName, callable $read): mixed
+    {
         $token = (new GitHubTokenResolver)->resolveFor($repoName);
         if (! $token->ok()) {
-            throw new CiRunsReadException('no GitHub read token: '.$token->problem);
+            throw new CiRunsReadException('no GitHub read token: '.$token->problem.' ('.self::tokenOrigin($token).')', repoUnreadable: self::noTokenForAnyReader($token));
         }
 
         try {
-            return (new GitHubReadClient((string) $token->token, self::TIMEOUT_SECONDS))->workflowRunsForHead($repoName, $headSha);
+            return $read(new GitHubReadClient((string) $token->token, self::TIMEOUT_SECONDS));
         } catch (RequestException $e) {
             $status = $e->response->status();
             // A primary limit says X-RateLimit-Remaining: 0; a secondary limit is a 403 that may
             // leave Remaining above zero but carries Retry-After.
             $limited = $status === 429 || ($status === 403 && ($e->response->header('X-RateLimit-Remaining') === '0' || $e->response->header('Retry-After') !== ''));
             $resetAt = $limited ? self::rateLimitReset($e) : null;
+            $unreadable = ! $limited && in_array($status, [401, 403, 404], true);
 
             throw new CiRunsReadException(
-                "GitHub answered HTTP {$status} to the workflow-run read".($limited ? ' (rate limited'.($resetAt === null ? '' : ' until '.self::instant($resetAt)).')' : ''),
+                "GitHub answered HTTP {$status} to the workflow-run read"
+                    .($limited ? ' (rate limited'.($resetAt === null ? '' : ' until '.self::instant($resetAt)).')' : '')
+                    .($unreadable ? ' ('.self::tokenOrigin($token).')' : ''),
                 $resetAt,
+                repoUnreadable: $unreadable,
+                status: $status,
             );
         } catch (ConnectionException|UnexpectedValueException $e) {
             throw new CiRunsReadException(RedactedErrorText::of($e));
         }
+    }
+
+    /**
+     * Whether a token that did not resolve is missing for EVERY process, not only this one. The
+     * sweep also runs from `bridge:tick`, whose OS user may not be the receiver's: a file THIS
+     * process cannot read ({@see TokenFileFault::Unreadable}), a source it could not determine
+     * ({@see TokenFileFault::Undetermined} — `writeback.json` did not load, say), or an "absent"
+     * file under a directory it cannot traverse says nothing about the receiver's read, so ending
+     * every await on it would end awaits the receiver can still settle. Those stay retryable.
+     */
+    private static function noTokenForAnyReader(TokenResolution $token): bool
+    {
+        if ($token->fileFault === TokenFileFault::Absent) {
+            return $token->path !== null && PathVisibility::ancestorIsTraversable($token->path);
+        }
+
+        return in_array($token->fileFault, [TokenFileFault::Empty, TokenFileFault::NotAFile, TokenFileFault::InsecurePermissions, TokenFileFault::Misconfigured], true);
+    }
+
+    /**
+     * Where a repo's read token came from — or was looked for — as a message may print it: the
+     * {@see TokenSource} and the file, never the token.
+     */
+    private static function tokenOrigin(TokenResolution $token): string
+    {
+        $source = match ($token->sourceKind) {
+            TokenSource::WriteTokenPath => "the repo's write_token_path in writeback.json",
+            TokenSource::Store => 'the coord credential store',
+            TokenSource::TokenFile => 'the single GitHub token file',
+            TokenSource::Ambient => 'GH_TOKEN',
+            null => 'no token source',
+        };
+
+        return 'token source: '.$source.($token->path === null ? '' : ', file '.PastedSecretShape::displayPathSetting($token->path));
+    }
+
+    /**
+     * What an operator does about a repo this install's token cannot read: one sentence, carried by
+     * the `repo_unreadable` refusal, the `ci_await_unreadable` event and `bridge:check` alike.
+     */
+    public static function unreadableRemedy(string $repoName): string
+    {
+        return "map {$repoName} in the coord credential store's [git-credential-map] to a key whose token can read its workflow runs, or set {$repoName}'s write_token_path in writeback.json to a file holding such a token";
     }
 
     /**
@@ -698,6 +875,27 @@ final class CiAwaitService
             .' — the await expired before every workflow run was seen terminal'
             .($await->last_error === null ? '' : " (last read failed: {$await->last_error})")
             .'. Run ci-read on this head, or re-register with ci_await.';
+    }
+
+    /** @return array<string, mixed> */
+    private static function unreadablePayload(CiAwait $await, CiRunsReadException $e, string $error): array
+    {
+        return [
+            'repo' => $await->repo_name,
+            'head_sha' => $await->head_sha,
+            'pr' => $await->pr,
+            'registered_at' => self::instant($await->created_at),
+            'status' => $e->status,
+            'error' => $error,
+            'remedy' => self::unreadableRemedy($await->repo_name),
+        ];
+    }
+
+    private static function unreadableSummary(CiAwait $await, string $error): string
+    {
+        return "Stopped waiting for CI on {$await->repo_name}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
+            ." — this bridge's GitHub token cannot read that repo's workflow runs ({$error}), so no read would ever settle the wait. Poll with ci-read instead, and ask your operator to "
+            .self::unreadableRemedy($await->repo_name).'.';
     }
 
     private static function instant(DateTimeInterface $at): string

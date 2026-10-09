@@ -9,8 +9,11 @@ use App\Bridge\CiAwait\CiAwaitConfig;
 use App\Bridge\CiAwait\CiAwaitService;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Scheduling\Handlers\CiAwaitSweepJob;
+use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Tools\ServedToolsRule;
 use App\Models\CiAwait;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
@@ -18,6 +21,11 @@ use Throwable;
 
 /**
  * Can a seat's `ci_await` be settled or expired on this install (card#11200 / DL-452)?
+ *
+ * While any agent is served the CI tools, reads each repo this install receives GitHub events for
+ * once (card#11600, {@see repoReads()}): `ok` when GitHub answers, FAIL when the token cannot read
+ * it (every `ci_await` there is refused `repo_unreadable`), UNVALIDATED when the read did not
+ * measure it.
  *
  * FAILs on a `BRIDGE_CI_AWAIT_*` value the bridge refuses — every `ci_await` call refuses with it.
  * WARNs when the per-agent read limiter's cache store does not answer (card#11283).
@@ -29,7 +37,8 @@ use Throwable;
  * evidence that the repo's webhook sends Workflow runs here at all. ⚠ That last one is the
  * bridge's own record, not the webhook's configuration: none stored means none RETAINED, so a
  * correctly configured repo whose deliveries were pruned, or whose runs have not completed since
- * the hook was added, warns too. Silent with nothing stored and nothing misconfigured.
+ * the hook was added, warns too. Silent with nothing stored, nothing misconfigured, and no agent
+ * served the CI tools.
  */
 final class CiAwaitsCheck implements Check
 {
@@ -59,6 +68,8 @@ final class CiAwaitsCheck implements Check
         } catch (Throwable $e) {
             yield Finding::warn('ci_await: the per-agent read limiter\'s cache store did not answer ('.RedactedErrorText::of($e).') — every ci_await registration skips its own runs read until it does (awaits are still stored, and the sweep and workflow_run deliveries settle them). Check CACHE_STORE.');
         }
+
+        yield from $this->repoReads();
 
         try {
             $present = Schema::hasTable('ci_awaits');
@@ -101,7 +112,7 @@ final class CiAwaitsCheck implements Check
             yield Finding::warn("ci_await: the last workflow-run read FAILED for {$failing->count()} await(s), so none of them can settle until a read answers — most recent: {$latest->repo_name}@{$latest->head_sha}: {$latest->last_error}. The ci_await sweep reads each head again, and an await expires with the error if no read answers.");
         }
         foreach ($undeliverable as $row) {
-            yield Finding::warn("ci_await: the bridge could not write ci_settled / ci_await_expired to the inbox of agent `{$row->agent}` for {$row->awaits} await(s) (last attempt {$row->latest}) — each is kept and retried every sweep pass, and dropped undelivered ".CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS.' s past its expiry. Look for `bridge ci_await:` warnings naming that agent: its inbox file or state directory is not writable by the bridge.');
+            yield Finding::warn("ci_await: the bridge could not write ci_settled / ci_await_unreadable / ci_await_expired to the inbox of agent `{$row->agent}` for {$row->awaits} await(s) (last attempt {$row->latest}) — each is kept and retried every sweep pass, and dropped undelivered ".CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS.' s past its expiry. Look for `bridge ci_await:` warnings naming that agent: its inbox file or state directory is not writable by the bridge.');
         }
         foreach ($silentRepos as $repo) {
             yield Finding::warn("ci_await: an await is stored on {$repo}, and this install holds no stored workflow_run delivery from it — if that repo's webhook does not send \"Workflow runs\" to this bridge, only the ci-await-sweep's own reads settle the await, at least one sweep interval after CI finishes and only while the sweep runs. Add the event on the repo webhook. (None stored is not proof of a missing subscription: retention prunes deliveries, and a new hook has sent none yet.)");
@@ -109,6 +120,45 @@ final class CiAwaitsCheck implements Check
 
         if ($gap === null && $failing->isEmpty() && $undeliverable->isEmpty() && $silentRepos === []) {
             yield Silence::because('every stored await has a clock to read and expire it, its last read answered, its seat\'s inbox took every event written to it, and its repo has delivered workflow runs here');
+        }
+    }
+
+    /**
+     * Can each repo `ci_await` accepts be read for workflow runs (card#11600)? One read per repo
+     * this install receives GitHub events for, made by {@see CiAwaitService::probeRunsRead()} —
+     * the token resolution and failure classes an await's own read uses — and only while some agent
+     * is served the CI tools: with none, no seat can call `ci_await`, and the leg asks GitHub nothing.
+     *
+     * A read whose failure an await would end on (`repo_unreadable`) FAILS, naming the repo, the
+     * token source and file, and the remedy; one an await would retry — a rate limit, a 5xx, no
+     * answer, a token this process could not read — is UNVALIDATED, never a pass; a 2xx is `ok`.
+     * Cost: one request per received repo per run (no GitHub read budget governs `bridge:check`).
+     *
+     * @return iterable<Finding>
+     */
+    private function repoReads(): iterable
+    {
+        try {
+            $configs = (new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs();
+        } catch (ConfigException $e) {
+            yield Finding::unvalidated('ci_await: the agent configs could not be read ('.RedactedErrorText::of($e).'), so which repos ci_await accepts, and whether GitHub lets this install read their workflow runs, was NOT checked.');
+
+            return;
+        }
+        $served = array_filter($configs, static fn (AgentConfig $cfg): bool => ServedToolsRule::servesCiTools($cfg->boardTools));
+        if ($served === []) {
+            return;
+        }
+
+        foreach (CiAwaitService::receivedRepos($configs) as $repo) {
+            $failure = CiAwaitService::probeRunsRead($repo);
+            if ($failure === null) {
+                yield Finding::ok("ci_await: GitHub lets this install read {$repo}'s workflow runs, so a ci_await there can be answered.");
+            } elseif ($failure->repoUnreadable) {
+                yield Finding::fail("ci_await: this install cannot read {$repo}'s workflow runs — ".RedactedErrorText::of($failure).". Every ci_await on {$repo} is refused as repo_unreadable, and an await stored before this ends with ci_await_unreadable. To fix: ".CiAwaitService::unreadableRemedy($repo).'; then re-run bridge:check.');
+            } else {
+                yield Finding::unvalidated("ci_await: whether this install can read {$repo}'s workflow runs was NOT measured — ".RedactedErrorText::of($failure).'. This is not a pass and not evidence the token is bad; ci_await keeps such an await and reads it again. Re-run bridge:check.');
+            }
         }
     }
 }

@@ -10,6 +10,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#11600 / DL-468** — **`ci_await` answers at once on a repo this bridge's GitHub token cannot read, instead of expiring after 6 h** (agent-roundtable#607). A read that GitHub answers `401`, `404` or a `403` that is not a rate limit, or a repo no read token resolves for, is now final rather than retried.
+  - A registration whose own read finds that is **refused as `repo_unreadable`** and stores nothing. The message names the token's source and file (never the token), the status, and the fix: map the repo in the coord credential store's `[git-credential-map]` to a key whose token can read it, or set its `write_token_path` in `writeback.json`. A registration whose read was skipped (cooldown, rate limit, seat budget) is stored as before.
+  - An await whose later read (a delivery's or the sweep's) finds that gets **one new `ci_await_unreadable` intent** and is forgotten. It is staged and pushed like `ci_await_expired`, and its payload carries `repo`, `head_sha`, `pr`, `registered_at`, `status`, `error` and `remedy` (`docs/consumer-guide.md`).
+  - A token file the reading process cannot read, or a source it could not determine, is still retried: the sweep can run from `bridge:tick` as another OS user than the receiver's.
+  - `bridge:check`'s `ci_await.awaits` leg reads each repo this install receives once (one request per repo), while any agent is served the CI tools: `ok` on an answer, FAIL on an unreadable repo naming its token source, file and fix, `unvalidated` on a rate limit, a 5xx or no answer.
+  - Reference channel-server snapshot `0.9.49` → `0.9.50`: the `ci_await` and `ci_await_cancel` descriptions name the new refusal and event.
+
 - **card#11579 / DL-466** — **`bridge:check` now says when a seat cannot have `ci_await` (rt#607).** A seat installed or updated by the documented path could end up without the tool, with nothing saying so.
   - `board_tools.client_pack_source` **FAILS** when the published client pack is an older release's AND its client is older than this checkout's own client (`resources/client-capabilities.json`). The line names what the published client lacks, as `tool (argument, …)`, and `php artisan bridge:client-pack:install` as the fix. An older release's pack with the same client stays a `warn`, and so does every other arm. A release that shipped WITHOUT a pack (DL-442's fail-soft release) is not a `fail`: `bridge:client-pack:install` now records that finding in `<state_dir>/client-packs/no-pack.json` (it still exits 1), and the leg then `warn`s that this release published no client pack, the maintainer must re-run the release workflow, and the update may proceed.
   - `github.webhook_subscription` reads two more settings off the hook list it already walks, each a `warn`: the hook delivering here sends a form-encoded body, which the receiver refuses as `invalid_envelope`; or its most recent delivery was not a 2xx (GitHub's `last_response.code`). A hook with no delivery in GitHub's 30-day window reports no code, which is unknown and warns nothing. The inactive and missing-Workflow-runs warns (card#11283) are unchanged. No new leg.
@@ -20,6 +27,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
+- ⚠ **`bridge:check` can now exit non-zero where it exited 0 (card#11600).** On an install where any agent is served the CI tools, `ci_await.awaits` FAILs for each received repo whose workflow runs the resolved GitHub token cannot read. Fix the token mapping it names, or the repo is refused to every `ci_await`.
+- ⚠ **Seats see a new intent kind, `ci_await_unreadable`, and a new refusal reason, `repo_unreadable`.** A consumer that branches on the `ci_await` terminal kinds handles a third one.
 - ⚠ **`bridge:check` can now exit non-zero where it exited 0 (card#11579).** On an install whose published client pack is an older release's with an older client — for example one that did not run `php artisan bridge:client-pack:install` after a release that changed the client — `board_tools.client_pack_source` now FAILS. A deploy script that gates on `bridge:check` stops there until you run `php artisan bridge:client-pack:install`. If that command answers that this release carries no client pack, it records that and `bridge:check` warns instead of failing, so the update can proceed.
 
 ### Added

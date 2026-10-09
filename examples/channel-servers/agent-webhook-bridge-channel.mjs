@@ -702,7 +702,10 @@ const TOOL_DEFINITIONS = [
       'or the run\'s completion settles it. Otherwise, if ' +
       'they have already all finished, ci_settled is sent immediately (state: settled). A head ' +
       'with no runs yet keeps waiting. A repo this bridge receives no GitHub events for is ' +
-      'REFUSED (reason repo_not_received) — poll with ci-read there. A workflow that only starts ' +
+      'REFUSED (reason repo_not_received) — poll with ci-read there. A repo this bridge\'s GitHub ' +
+      'token cannot read is REFUSED (reason repo_unreadable; nothing is stored, and the message ' +
+      'names the fix for your operator); if a later read finds that, you get ONE ' +
+      'ci_await_unreadable event instead of waiting for the expiry. A workflow that only starts ' +
       'after the others finish (on: workflow_run) can appear after ci_settled; ci-read then reports ' +
       'it pending, and you re-register.',
     inputSchema: {
@@ -731,9 +734,9 @@ const TOOL_DEFINITIONS = [
   {
     name: 'ci_await_cancel',
     description:
-      'Stop waiting for CI on one commit: removes YOUR OWN ci_await on that head, so no ci_settled ' +
-      'or ci_await_expired is sent for it. Answers cancelled: false when you had no wait there ' +
-      '(never registered, already settled or expired, or only another seat waits on it) — safe to ' +
+      'Stop waiting for CI on one commit: removes YOUR OWN ci_await on that head, so no ci_settled, ' +
+      'ci_await_unreadable or ci_await_expired is sent for it. Answers cancelled: false when you had ' +
+      'no wait there (never registered, already ended, or only another seat waits on it) — safe to ' +
       'call unconditionally. No argument names a seat.',
     inputSchema: {
       type: 'object',

@@ -27,6 +27,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Testing\TestResponse;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Support\CallingSeatSeal;
 use Tests\TestCase;
@@ -1172,6 +1173,156 @@ class CiAwaitTest extends TestCase
         $this->assertSentRunsReads(10);
         $this->assertStringContainsString('did not end within 10 pages', (string) CiAwait::query()->sole()->last_error);
         $this->assertSame([], $this->inbox());
+    }
+
+    // ---- a repo this install's token cannot read (card#11600) ----------------------------
+
+    /** @return array<string, array{0: int, 1: array<string, string>}> */
+    public static function unreadableStatuses(): array
+    {
+        return [
+            '404 (a private repo the token cannot see)' => [404, []],
+            '401 (a dead token)' => [401, []],
+            '403 that is not a rate limit (no permission)' => [403, ['X-RateLimit-Remaining' => '4999']],
+        ];
+    }
+
+    /** @param  array<string, string>  $headers */
+    #[DataProvider('unreadableStatuses')]
+    public function test_a_registration_whose_read_says_the_repo_cannot_be_read_is_refused_and_stores_nothing(int $status, array $headers): void
+    {
+        Http::fake([self::RUNS_URL => Http::response(['message' => 'Not Found'], $status, $headers), '127.0.0.1:*' => Http::response('ok', 200)]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA, 'pr' => 7]);
+
+        $this->assertFalse($out->ok, json_encode($out->body()) ?: '');
+        $this->assertSame('repo_unreadable', $out->body()['reason']);
+        $error = (string) $out->body()['error'];
+        $this->assertStringContainsString("GitHub answered HTTP {$status} to the workflow-run read", $error);
+        $this->assertStringContainsString('token source: the single GitHub token file, file '.$this->dir.'/github/token', $error);
+        $this->assertStringContainsString('[git-credential-map]', $error);
+        $this->assertStringContainsString('write_token_path', $error);
+        $this->assertStringContainsString('Nothing was stored', $error);
+        $this->assertStringNotContainsString('gh-read-token', $error, 'the token itself is never printed');
+        $this->assertSame(0, CiAwait::query()->count(), 'nothing is stored');
+        $this->assertSame([], $this->inbox(), 'the refused seat is answered by the refusal, not an event');
+        $this->assertNoChannelPush();
+    }
+
+    public function test_a_registration_with_no_github_read_token_is_refused_naming_where_it_looked(): void
+    {
+        File::delete($this->dir.'/github/token');
+        Http::fake();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertFalse($out->ok, json_encode($out->body()) ?: '');
+        $this->assertSame('repo_unreadable', $out->body()['reason']);
+        $this->assertStringContainsString('no GitHub read token', (string) $out->body()['error']);
+        $this->assertStringContainsString('token source: the single GitHub token file, file '.$this->dir.'/github/token', (string) $out->body()['error']);
+        $this->assertSame(0, CiAwait::query()->count());
+        $this->assertSentRunsReads(0);
+    }
+
+    public function test_a_token_file_this_process_cannot_read_is_retried_not_refused(): void
+    {
+        chmod($this->dir.'/github/token', 0o000);
+        if (is_readable($this->dir.'/github/token')) {
+            $this->markTestSkipped('this process reads a 0000 file (root), so the unreadable arm cannot be reached');
+        }
+        Http::fake(['127.0.0.1:*' => Http::response('ok', 200)]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertTrue($out->ok, json_encode($out->body()) ?: '');
+        $this->assertSame('unmeasured', $out->body()['result']['state']);
+        $this->assertSame(1, CiAwait::query()->count(), 'another process (the receiver) may read the file: the await is kept');
+    }
+
+    public function test_a_registration_whose_read_is_rate_limited_by_a_403_is_stored_and_waits(): void
+    {
+        Http::fake([self::RUNS_URL => Http::response(['message' => 'API rate limit exceeded'], 403, ['X-RateLimit-Remaining' => '0']), '127.0.0.1:*' => Http::response('ok', 200)]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertTrue($out->ok, json_encode($out->body()) ?: '');
+        $this->assertSame(1, CiAwait::query()->count());
+        $this->assertSame([], $this->inbox());
+    }
+
+    public function test_a_registration_whose_read_answers_5xx_is_stored_and_waits(): void
+    {
+        Http::fake([self::RUNS_URL => Http::response(['message' => 'boom'], 503), '127.0.0.1:*' => Http::response('ok', 200)]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertTrue($out->ok, json_encode($out->body()) ?: '');
+        $this->assertSame(1, CiAwait::query()->count());
+        $this->assertSame([], $this->inbox());
+    }
+
+    public function test_a_sweep_read_that_says_the_repo_cannot_be_read_ends_each_await_with_one_ci_await_unreadable(): void
+    {
+        $this->seedAwait('seat-a', pr: 5);
+        $this->seedAwait('seat-b');
+        Http::fake([self::RUNS_URL => Http::response(['message' => 'Not Found'], 404), '127.0.0.1:*' => Http::response('ok', 200)]);
+
+        $this->runSweep();
+        $this->runSweep();
+
+        $this->assertSame(0, CiAwait::query()->count(), 'an unreadable repo is not waited on');
+        $this->assertSentRunsReads(1);
+        $lines = $this->inbox();
+        $this->assertSame(['ci_await_unreadable', 'ci_await_unreadable'], array_column($lines, 'kind'));
+        $this->assertChannelPushes(['seat-a' => ['ci_await_unreadable'], 'seat-b' => ['ci_await_unreadable']]);
+        $mine = array_values(array_filter($lines, fn (array $l): bool => ($l['payload']['pr'] ?? null) === 5))[0];
+        $this->assertSame('ci:'.self::REPO.'@'.self::SHA, $mine['subject_id']);
+        $this->assertEquals([
+            'repo' => self::REPO,
+            'head_sha' => self::SHA,
+            'pr' => 5,
+            'registered_at' => '2026-10-03T10:00:00.000Z',
+            'status' => 404,
+            'error' => 'GitHub answered HTTP 404 to the workflow-run read (token source: the single GitHub token file, file '.$this->dir.'/github/token)',
+            'remedy' => CiAwaitService::unreadableRemedy(self::REPO),
+        ], $mine['payload']);
+    }
+
+    public function test_a_registration_refused_as_unreadable_ends_another_seats_await_on_the_head_with_one_event(): void
+    {
+        $this->seedAwait('seat-b');
+        Http::fake([self::RUNS_URL => Http::response(['message' => 'Not Found'], 404), '127.0.0.1:*' => Http::response('ok', 200)]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertSame('repo_unreadable', $out->body()['reason']);
+        $this->assertSame(0, CiAwait::query()->count());
+        $this->assertChannelPushes(['seat-b' => ['ci_await_unreadable']]);
+    }
+
+    public function test_two_concurrent_reads_that_find_the_repo_unreadable_emit_exactly_once(): void
+    {
+        $this->seedAwait('seat-a');
+        $service = $this->app->make(CiAwaitService::class);
+        $reentered = false;
+        Http::fake([
+            self::RUNS_URL => function () use ($service, &$reentered) {
+                if (! $reentered) {
+                    $reentered = true;
+                    $service->onWorkflowRunCompleted(self::REPO, self::SHA);
+                }
+
+                return Http::response(['message' => 'Not Found'], 404);
+            },
+            '127.0.0.1:*' => Http::response('ok', 200),
+        ]);
+
+        $service->onWorkflowRunCompleted(self::REPO, self::SHA);
+
+        $this->assertTrue($reentered, 'the interleaving never happened, so this measured nothing');
+        $this->assertSentRunsReads(2);
+        $this->assertSame(['ci_await_unreadable'], array_column($this->inbox(), 'kind'));
+        $this->assertChannelPushes(['seat-a' => ['ci_await_unreadable']]);
     }
 
     // ---- expiry --------------------------------------------------------------------------
