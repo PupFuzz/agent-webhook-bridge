@@ -240,7 +240,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // — a family that must not act has to self-guard. Each github family self-guards
         // its provider (the class serves both github and kanban events).
         $intents = $base->intents;
-        $targets = $base->targets;
+        $targets = [...$base->targets, ...$this->cardCommentWake($base, $ctx)];
         $reattributed = $base->reattributedActor;
         foreach ($families as $family) {
             $result = match ($family) {
@@ -260,7 +260,27 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             $reattributed ??= $result->reattributedActor;
         }
 
-        return new ClassifyResult(intents: $intents, targets: $targets, reattributedActor: $reattributed);
+        return new ClassifyResult(intents: $intents, targets: $targets, reattributedActor: $reattributed, dropReason: $base->dropReason);
+    }
+
+    /**
+     * A `card_comment` is ADDRESSED: the base staged it only for the agent the card is
+     * assigned to (card#11581 / DL-467), so it wakes that agent whatever families are
+     * enabled — the kanban sibling of a coordination message addressed to this seat.
+     * Through {@see wakePush()}, so a `route_intents:true` channel gets one push, not two.
+     *
+     * @return list<ReactionTarget>
+     */
+    private function cardCommentWake(ClassifyResult $base, ClassifyContext $ctx): array
+    {
+        $targets = [];
+        foreach ($base->intents as $intent) {
+            if ($intent->kind === self::CARD_COMMENT_KIND) {
+                $targets = [...$targets, ...$this->wakePush($intent, $ctx)];
+            }
+        }
+
+        return $targets;
     }
 
     /**
@@ -1764,12 +1784,5 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         }
 
         return false;
-    }
-
-    private function oneLine(string $text): string
-    {
-        $text = trim((string) preg_replace('/\s+/', ' ', $text));
-
-        return mb_strlen($text) > 140 ? mb_substr($text, 0, 137).'...' : $text;
     }
 }
