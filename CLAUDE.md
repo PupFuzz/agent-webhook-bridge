@@ -111,7 +111,8 @@ php artisan bridge:client-pack:install   # publish THIS release's channel-server
                                          # checked, for the client-update door to serve seats (DL-430) — exit codes
                                          # and what it checks: CLAUDE_DEPLOYMENT.md § Commands
 php artisan bridge:client-fleet [--json] # every board-tools seat's REPORTED channel-server client: running/installed release,
-                                         # last seen, capability gap, and one state from an ordered, total list (DL-432)
+                                         # last seen, capability gap against this checkout's own client (DL-466), and one
+                                         # state from an ordered, total list (DL-432)
 php artisan bridge:client-approve <agent> <release> --reason=…
                                          # approve the published client pack's CONTENT for one agent that requires
                                          # approval; logged with the OS user (DL-433) — gates the offer, never enforced

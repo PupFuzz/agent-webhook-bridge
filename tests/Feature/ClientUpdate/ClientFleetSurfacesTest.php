@@ -8,6 +8,7 @@ use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackStore;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Severity;
+use App\Bridge\Tools\ClientCapabilities;
 use App\Models\SeatClientState;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -110,7 +111,7 @@ class ClientFleetSurfacesTest extends TestCase
         $this->assertCount(1, $findings);
         [$severity, $message] = $findings[0];
         $this->assertSame(Severity::Warn->value, $severity);
-        $this->assertSame('client_fleet: seat legacy is OFF THE UPDATE PATH — its latest board-tools call (1h ago) came from client 0.9.27 with no launch identity — a channel server not started by the client updater, so it will not update itself until its client is bootstrapped from this bridge\'s published pack. `php artisan bridge:client-fleet` shows every seat.', $message);
+        $this->assertSame('client_fleet: seat legacy is OFF THE UPDATE PATH — its latest board-tools call (1h ago) came from client 0.9.27 with no launch identity — a channel server not started by the client updater, so it will not update itself until its client is bootstrapped from this bridge\'s published pack: on the seat, as its own OS user, from a bridge checkout at this bridge\'s release tag, run `python3 bin/provision-board-tools.py --role b --bootstrap-client --agent legacy --project-dir <its-claude-project-dir> --channel-name <its-mcp-servers-key>`, then restart its session. `php artisan bridge:client-fleet` shows every seat.', $message);
     }
 
     private const HTTP_CAVEAT = 'seat colo requires client-update approval and uses the http transport, so its channel server is on this box: if it runs as an OS user that can run `php artisan` here, it can approve itself with `bridge:client-approve` — its approval is then a record, not a gate';
@@ -162,9 +163,16 @@ class ClientFleetSurfacesTest extends TestCase
         $this->artisan('bridge:client-fleet')
             ->expectsOutput('bridge:client-fleet: published client pack: release 0.91.0 (client 0.9.28, content bbbbbbbbbbbb), published 2026-09-27T00:00:00Z.')
             ->expectsOutputToContain('seat legacy [ssh] — OFF THE UPDATE PATH: its latest board-tools call (1h ago) came from client 0.9.27 with no launch identity')
-            ->expectsOutputToContain('    running: not reported · installed: not reported · last seen: 1h ago · approval: not required · capability gap: none')
+            // card#11579: the gap is against this bridge's OWN client, so a 0.9.27 seat lacks ci_await
+            // even though the published pack is 0.9.28 — "none" here was the circular read.
+            ->expectsOutputToContain('    running: not reported · installed: not reported · last seen: 1h ago · approval: not required · capability gap vs this bridge\'s client '.ClientCapabilities::bundled()->currentClientVersion.': ')
             ->expectsOutput('1 seat(s) — off_update_path ×1; 1 need(s) you (bridge:check warns on the same seats).')
             ->assertExitCode(0);
+
+        // A second matcher on the SAME line never sees it (the first `expectsOutputToContain`
+        // consumes it), so the gap's content is read off a plain run.
+        Artisan::call('bridge:client-fleet');
+        $this->assertMatchesRegularExpression('/capability gap vs [^\n]*\bci_await \(/', Artisan::output());
     }
 
     public function test_client_fleet_says_when_nothing_is_published_or_configured(): void

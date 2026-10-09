@@ -373,13 +373,15 @@ class UnvalidatedCallSiteTest extends TestCase
         // moving the exit code. If a future edit ever moves that arm into this list, the leg
         // has stopped answering the question it exists to answer.
         'app/Bridge/Check/Checks/GitHubWebhookSubscriptionCheck.php' => 5,
-        // DL-382 — TWO legs, and neither is a silence this leg measured as abnormal: (1) the
+        // DL-382 — THREE sites, and none is a silence this leg measured as abnormal: (1) the
         // delivery record could not be READ, so the scopes after the throw were never judged
         // (limb (a)); and (2) the record was read and is too short to DERIVE a silence threshold
         // from, while the silence is still inside the floor — the comparison's comparand does not
         // resolve (limb (c)). ⛔ THE SAME SHORT RECORD PAST THE FLOOR IS A `warn`, NOT A THIRD SITE
         // HERE: the floor alone establishes that silence, and a derived threshold is never lower.
-        'app/Bridge/Check/Checks/GitHubDeliveryHistoryCheck.php' => 2,
+        // (3) card#11579: the record could not be READ for the other question — which recorded
+        // scopes no agent subscribes to — so that was never answered (limb (a)).
+        'app/Bridge/Check/Checks/GitHubDeliveryHistoryCheck.php' => 3,
         // card#10567 B4: the fleet ledger could not be READ (an unmigrated install, a database that
         // went away), so which seat needs the operator was never measured — limb (a). A seat
         // whose state is unknown because it never REPORTED is a state (`needs_bootstrap`), not

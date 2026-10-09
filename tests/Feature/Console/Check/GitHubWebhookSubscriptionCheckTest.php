@@ -932,6 +932,88 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame('ok', $this->onlyFinding($doc)['severity']);
     }
 
+    // ---- card#11579: the content type and the last delivery of the hooks delivering here ----
+
+    /**
+     * A matching hook carrying every field GitHub's list-hooks answer documents for these checks
+     * (`config.content_type`, `last_response.code`), healthy unless overridden.
+     *
+     * @param  array<string, mixed>  $config
+     * @param  array<string, mixed>  $lastResponse
+     * @return array<string, mixed>
+     */
+    private static function fullHook(array $config = [], array $lastResponse = ['code' => 200, 'status' => 'active', 'message' => 'OK'], bool $active = true): array
+    {
+        return [
+            'id' => 1, 'active' => $active, 'events' => ['pull_request', 'workflow_run'],
+            'config' => $config + ['url' => self::RECEIVER, 'content_type' => 'json'],
+            'last_response' => $lastResponse,
+        ];
+    }
+
+    /** Control: a hook that is active, sends JSON and workflow_run, and last delivered a 2xx is one ok line. */
+    public function test_a_healthy_hook_is_one_ok_line(): void
+    {
+        $this->bootWithHooks([self::fullHook()]);
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
+    /** A form-encoded hook delivers bodies this receiver cannot parse: every delivery is refused. */
+    public function test_a_hook_sending_form_content_warns(): void
+    {
+        $this->bootWithHooks([self::fullHook(['content_type' => 'form'])]);
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('content type', $findings[1]['message']);
+        $this->assertStringContainsString('application/json', $findings[1]['message']);
+    }
+
+    public function test_a_hook_whose_last_delivery_was_refused_warns(): void
+    {
+        $this->bootWithHooks([self::fullHook([], ['code' => 401, 'status' => 'invalid', 'message' => 'Invalid HTTP Response: 401'])]);
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('most recent delivery', $findings[1]['message']);
+        $this->assertStringContainsString('Recent Deliveries', $findings[1]['message']);
+    }
+
+    /**
+     * GitHub answers `last_response.code` null for a hook with no delivery in its 30-day window
+     * (`{"code": null, "status": "unused"}`, github/rest-api-description's list-hooks example). That
+     * is UNKNOWN, not a failed delivery: an idle repo's healthy hook must not warn.
+     */
+    public function test_a_hook_with_no_delivery_in_github_s_window_is_unknown_not_a_warn(): void
+    {
+        $this->bootWithHooks([self::fullHook([], ['code' => null, 'status' => 'unused', 'message' => null])]);
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
+    /** One matching hook that last delivered a 2xx satisfies it, beside one that did not. */
+    public function test_one_hook_with_a_2xx_last_delivery_is_enough(): void
+    {
+        $this->bootWithHooks([self::fullHook([], ['code' => 500, 'status' => 'failed', 'message' => 'x']), self::fullHook()]);
+
+        [, $doc] = $this->runJson();
+
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
     /**
      * One agent, one github subscription, and the hook-list stub this fixture answers with.
      *

@@ -9,6 +9,7 @@ use App\Bridge\Support\HumanAge;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\UntrustedText;
+use App\Bridge\Tools\ClientCapabilities;
 use Illuminate\Support\Carbon;
 
 /**
@@ -81,7 +82,7 @@ class ClientFleetCommand extends BridgeCommand
                 'installed: '.self::release($seat['installed']),
                 'last seen: '.($seat['last_seen'] === null ? 'not since this bridge started its fleet ledger' : HumanAge::floored((int) Carbon::parse($seat['last_seen'])->diffInSeconds($now, true)).' ago'),
                 'approval: '.($seat['approval_required'] ? 'required' : 'not required'),
-                'capability gap: '.self::gap($seat['capability_gap']),
+                'capability gap'.($seat['capability_gap_against'] !== null ? " vs this bridge's client {$seat['capability_gap_against']}" : '').': '.self::gap($seat['capability_gap']),
             ]));
         }
         $spread = [];
@@ -115,6 +116,6 @@ class ClientFleetCommand extends BridgeCommand
             return 'none';
         }
 
-        return implode(', ', array_map(static fn (array $g): string => $g['tool'].' ('.($g['arguments'] === [] ? 'the whole tool' : implode(', ', $g['arguments'])).')', $gap));
+        return ClientCapabilities::describeGap(array_column($gap, 'arguments', 'tool'));
     }
 }

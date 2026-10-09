@@ -133,7 +133,29 @@ php artisan bridge:provision-tools --agent=<name>  # BOARD TOOLS ARE THE DEFAULT
                                                   # HTTP-door runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
 php artisan bridge:client-pack:install            # publish this release's channel-server client pack, which board-tools
                                                   # seats install and update from (DL-430 / DL-442) — as in § Update
+# Add each repo's webhook by hand (docs/writeback.md § 4. The repo webhook) — bridge:provision cannot.
+php artisan bridge:check                          # REQUIRED STEP, after the pack is published and every repo webhook
+                                                  # exists: STOP if non-zero. client_pack_source FAILS only when the
+                                                  # published pack is an older release's, its client is older than this
+                                                  # checkout's, and this release carries a pack (`bridge:client-pack:install`
+                                                  # records a release that shipped without one, and that is a warn
+                                                  # naming the maintainer's re-run). Read every warn, but expect some
+                                                  # here, before the reload below: a seat client_fleet lists to
+                                                  # bootstrap (with its command), github.delivery_history's no delivery
+                                                  # recorded yet, and a hook whose most recent delivery (its creation
+                                                  # ping) was not a 2xx if it arrived before this receiver was served —
+                                                  # redeliver that ping after the reload (the receiver answers a signed
+                                                  # ping 200). What github.webhook_subscription
+                                                  # checks, and the github.delivery_history warn for a repo that
+                                                  # delivers here with no agent subscribed (ci_await refuses it as
+                                                  # repo_not_received): docs/writeback.md § 4. UNVALIDATED on that leg
+                                                  # is not a pass: the leg is unmeasured for that repo — grant the token
+                                                  # admin:repo_hook to measure it (card#11579 / DL-466)
 sudo systemctl reload apache2 php8.5-fpm
+php artisan bridge:check                          # again, now the receiver is served: every github repo this install
+                                                  # receives should read github.webhook_subscription OK with no warn
+                                                  # beside it. A warn there leaves the exit code alone; clear it with
+                                                  # the remedy its line names
 # NOT DONE YET: configure AND verify the live-event path — § "Live-event path" right below.
 # GitHub answering 200 is not evidence that any agent will ever be woken.
 ```
@@ -245,10 +267,18 @@ php artisan optimize:clear && php artisan optimize
 php artisan bridge:client-pack:install             # publish THIS release's channel-server client pack for seats to
                                                   # update from (DL-430). Exit 1 "carries no client pack" means
                                                   # either this release predates DL-442 (ship a newer one; no
-                                                  # re-run attaches a pack to it) or its release-time build failed;
-                                                  # bridge:check's client_pack_source leg names which and, on the
-                                                  # second, the re-run that attaches it (DL-442)
-php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero
+                                                  # re-run attaches a pack to it) or its release-time build failed.
+                                                  # Either way the command records it and the update may proceed:
+                                                  # bridge:check's client_pack_source then warns, naming the
+                                                  # maintainer's re-run that attaches a pack, instead of failing (DL-466)
+php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero.
+                                                  # client_pack_source FAILS only when the published pack is an older
+                                                  # release's, its client is older than this checkout's, and this release
+                                                  # carries a pack — run the step above. A github.webhook_subscription
+                                                  # warn leaves the exit code alone and does not block the reload: clear
+                                                  # each with the remedy its line names. UNVALIDATED on that leg is not a
+                                                  # pass: the leg is unmeasured for that repo — grant the token
+                                                  # admin:repo_hook to measure it (card#11579 / DL-466)
 sudo systemctl reload php8.5-fpm                  # recycle workers so they re-read config + agent YAMLs
 ```
 
@@ -315,7 +345,7 @@ A seat gets its channel server from **its own bridge**. A seat bootstrapped onto
 1. **Publish** the release's pack: `php artisan bridge:client-pack:install`, in the update block above (DL-430). Until a pack is published no seat updates, and `bridge:check`'s `board_tools.client_pack_source` leg says why.
 2. **Approve** it, only for an agent whose YAML sets `board_tools.client_update.approval_required: true`: `php artisan bridge:client-approve <agent> <release> --reason=…` (DL-433). The bridge offers that seat nothing until then.
 3. **Restart each seat's session**, at a session boundary and with the agent's agreement — the ⛔ callout under *Update an existing install* says why that is an ask. The update runs at launch and never inside a running session.
-4. **Read the fleet**: `php artisan bridge:client-fleet` prints the release each seat reports running and installed, and one state per seat (DL-432).
+4. **Read the fleet**: `php artisan bridge:client-fleet` prints the release each seat reports running and installed, one state per seat (DL-432), and each seat's capability gap against this checkout's own client (DL-466). A seat it lists as `needs_bootstrap` or `off_update_path` is printed with the exact bootstrap command below.
 
 **A seat still running a copied snapshot moves onto the update path once.** On that seat, as its own OS user, from a bridge checkout at your bridge's release tag, run `python3 bin/provision-board-tools.py --role b --bootstrap-client --agent <agent> --project-dir <dir> --channel-name <channel>`, then restart its session. The bootstrap uses that checkout's own updater (DL-444); after it the seat takes every update from its bridge and never reads the checkout again. [`docs/board-tools.md`](docs/board-tools.md) owns the flags and refusals, and every onboarding entry point runs the same bootstrap after a successful round-trip (DL-445). The fleet lists a seat not yet moved as `needs_bootstrap` or `off_update_path`. Copying a snapshot over a seat, or staging one in a coordination repo for seats to pick up, is retired; clearing what the old staging left in a coordination repo is the coord framework's upgrade (`coord:update`), not this repo's.
 
@@ -464,7 +494,7 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 | Webhook 5xx record (DL-409) — the current run of consecutive 5xx, and the last recovery | `…/state/webhook-5xx.json` (+ `webhook-5xx.json.lock`), written by the receiver |
 | GitHub writes this install still owes — `protocol:invalid` labels and correlation comments (DL-419, DL-422) | `…/state/github-writes-owed.json` (+ `github-writes-owed.json.lock`), written by the receiver, and rewritten by `bridge:github-owed --fix` — which also holds `github-writes-owed.json.repair.lock` for its whole run and refuses a second `--fix` while it does (the receiver never opens that one). ⛔ **Operating rule: run every bridge command that writes state as the receiver's user; never with sudo.** This file is why: it is mode **`0600`** and owned by whoever wrote it (the `tempnam()` in `writeFileAtomic()`), so a write as anyone else takes it off the receiver, which then records no further refused writes (each is logged as `record_unwritable`) while the new owner's report says nothing is owed. Where PHP's posix extension is loaded, `bridge:github-owed` REFUSES, non-zero in both modes and before reading, sending or writing anything, **as root** and **as any user other than the owner of the record, its `.lock` or its `.repair.lock`**, and names the user to run as; every writer of the record refuses the same way over the record and its `.lock` (the receiver never opens `.repair.lock`, so a foreign owner there refuses only the command) (a `bridge:replay --force` as root logs `record_unwritable` instead of writing). ⚠ **That refusal is enforced ONLY where PHP's posix extension is loaded** — it reads the process's uid with `posix_geteuid()`, and `composer.json` does not require `ext-posix`. Without it nothing is refused, and the operating rule above is the only guard. ⚠ **Not refused either:** the FIRST write of an absent record by a non-root user other than the receiver's — nothing the bridge can read says which user the receiver runs as. The file is then that user's, the receiver cannot open it and **records no further refused writes** (each is logged as `record_unwritable`) — give the file, its `.lock` and its `.repair.lock` back to the receiver's user. A record that cannot be read or parsed is never rewritten or moved (`docs/writeback.md`) |
 | Which `bridge:inbox` consumers have been shown that recovery | `…/state/webhook-5xx-notice-seen.json`, written by `bridge:inbox` |
-| The published channel-server client pack (DL-430) — what the client-update door serves to seats | `…/state/client-packs/published.json` (+ `published.json.lock`, held by one publish at a time) plus `…/state/client-packs/<X.Y.Z>/client-pack-v<X.Y.Z>.{tar.gz,manifest.json}`, written only by `bridge:client-pack:install` and read by the door on both transports. Data files are `0600` and directories `0700` (the lock file holds no data and takes the umask), owned by whoever wrote them, so a write as another user would leave every seat answered 503: where PHP's posix extension is loaded the command REFUSES (exit 2) as root and as any user other than the owner of the store directory, `published.json` or its lock, and, at publish, the release directory it writes into; without it, the operating rule above is the only guard, and the first write of an absent store as the wrong non-root user is not refused either |
+| The published channel-server client pack (DL-430) — what the client-update door serves to seats | `…/state/client-packs/published.json` (+ `published.json.lock`, held by one publish at a time) plus `…/state/client-packs/<X.Y.Z>/client-pack-v<X.Y.Z>.{tar.gz,manifest.json}`, written only by `bridge:client-pack:install` and read by the door on both transports; and `…/state/client-packs/no-pack.json`, the last release that command found carrying no pack, read only by `bridge:check` (DL-466). Data files are `0600` and directories `0700` (the lock file holds no data and takes the umask), owned by whoever wrote them, so a write as another user would leave every seat answered 503: where PHP's posix extension is loaded the command REFUSES (exit 2) as root and as any user other than the owner of the store directory, `published.json`, its lock or `no-pack.json`, and, at publish, the release directory it writes into; without it, the operating rule above is the only guard, and the first write of an absent store as the wrong non-root user is not refused either |
 | Handler forensic log (`log_intent`) | `…/state/handler-log.jsonl` |
 | Per-target registry (`registry_append`) | `…/state/registry-<target>.jsonl` |
 | Detached-command logs (`spawn_detached`) | `…/state/spawn-<target>.log` |
@@ -521,7 +551,8 @@ php artisan bridge:client-pack:install                # publish THIS release's c
                                                       #   digests, SHA256SUMS and the manifest (DL-430). Never publishes a lower
                                                       #   release than the one already published.
                                                       #   0 published or already published
-                                                      #   1 refused, nothing changed (incl. a release that carries no pack)
+                                                      #   1 refused, no pack published (incl. a release that carries no pack,
+                                                      #     which writes only its no-pack record — see below)
                                                       #   2 could not measure or could not write, nothing changed: no or
                                                       #     malformed VERSION, a malformed BRIDGE_CLIENT_PACK_REPO, no GitHub
                                                       #     token, GitHub unreachable or answering an unreadable body, an
@@ -532,9 +563,14 @@ php artisan bridge:client-pack:install                # publish THIS release's c
                                                       #   A release carries its pack from the first release built with DL-442;
                                                       #   an earlier release, or one whose release-time build failed, answers 1
                                                       #   "carries no client pack". bridge:check's client_pack_source leg warns
-                                                      #   until this checkout's release is the published one, and names the
-                                                      #   workflow re-run that attaches a missing pack.
-php artisan bridge:client-fleet [--json]              # each board-tools seat's REPORTED client, update state and capability gap (DL-432)
+                                                      #   until this checkout's release is the published one — and FAILS
+                                                      #   (non-zero exit) where the published pack's client is also older than
+                                                      #   this checkout's, unless this command recorded that this release
+                                                      #   carries no pack (card#11579 / DL-466) — and names the workflow
+                                                      #   re-run that attaches a missing pack. The no-pack record is
+                                                      #   <state_dir>/client-packs/no-pack.json.
+php artisan bridge:client-fleet [--json]              # each board-tools seat's REPORTED client, update state and capability gap (DL-432) —
+                                                      #   the gap against THIS checkout's client, not the published pack's (DL-466)
                                                       #   0 read · 1 the fleet ledger could not be read · 2 agent YAMLs did not load
 php artisan bridge:client-approve <agent> <release> --reason=…   # approve the published pack's CONTENT for one agent (DL-433);
                                                       #   logged; 0 approved or already approved · 1 refused · 2 could not read

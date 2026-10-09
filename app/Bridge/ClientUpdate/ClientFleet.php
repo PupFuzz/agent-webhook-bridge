@@ -150,18 +150,18 @@ final class ClientFleet
         if ($row->last_call_at !== null && $row->last_call_launch_id === null) {
             $version = $row->last_call_client_version !== null ? "client {$row->last_call_client_version}" : 'a client that reports no version';
 
-            return [FleetState::OffUpdatePath, 'its latest board-tools call ('.HumanAge::floored((int) $row->last_call_at->diffInSeconds($now, true))." ago) came from {$version} with no launch identity — a channel server not started by the client updater, so it will not update itself until its client is bootstrapped from this bridge's published pack"];
+            return [FleetState::OffUpdatePath, 'its latest board-tools call ('.HumanAge::floored((int) $row->last_call_at->diffInSeconds($now, true))." ago) came from {$version} with no launch identity — a channel server not started by the client updater, so it will not update itself until its client is bootstrapped from this bridge's published pack: ".self::bootstrapRemedy($agent)];
         }
 
         if ($row->last_call_at === null && $installed === null) {
             if ($row->last_report_at !== null) {
-                return [FleetState::NeedsBootstrap, 'its install log has reached this bridge but records no successful install, and no call from its client has arrived — its bootstrap did not complete; bootstrap its client again'];
+                return [FleetState::NeedsBootstrap, 'its install log has reached this bridge but records no successful install, and no call from its client has arrived — its bootstrap did not complete; bootstrap its client again: '.self::bootstrapRemedy($agent)];
             }
             $probed = $row->last_exempt_call_at !== null
                 ? '. Only a '.$row->last_exempt_caller.' call has reached the door for it ('.HumanAge::floored((int) $row->last_exempt_call_at->diffInSeconds($now, true)).' ago), which says nothing about its client'
                 : '';
 
-            return [FleetState::NeedsBootstrap, 'no board-tools call from its client and no install report has reached this bridge since it started its fleet ledger, so it has no client on the update path that this bridge knows of'.$probed];
+            return [FleetState::NeedsBootstrap, 'no board-tools call from its client and no install report has reached this bridge since it started its fleet ledger, so it has no client on the update path that this bridge knows of'.$probed.'. Bootstrap it: '.self::bootstrapRemedy($agent)];
         }
 
         $lastSeen = self::lastSeen($row);
@@ -281,9 +281,12 @@ final class ClientFleet
 
             return $digest !== null && in_array($digest, $approved, true);
         };
+        // ⛔ AGAINST THIS BRIDGE'S OWN CLIENT, NEVER THE PUBLISHED PACK'S (card#11579): measured
+        // against a stale pack, a seat on that same stale client read "none" while it lacked tools
+        // this bridge serves — the comparison was circular. Supersedes DL-432's operand.
         $gap = null;
-        if ($caps !== null && $published !== null && $row->last_call_at !== null) {
-            $raw = $caps->gapFor($row->last_call_client_version, $published->clientVersion);
+        if ($caps !== null && $row->last_call_at !== null) {
+            $raw = $caps->gapFor($row->last_call_client_version, $caps->currentClientVersion);
             if ($raw !== null) {
                 $gap = [];
                 foreach ($raw as $tool => $arguments) {
@@ -327,12 +330,30 @@ final class ClientFleet
                 'reported_at' => $iso($row->last_launch_first_reported_at),
             ],
             'capability_gap' => $gap,
+            // The client version the gap is measured against: this checkout's own. Null when its
+            // capability table did not read, which is also when the gap is null.
+            'capability_gap_against' => $caps?->currentClientVersion,
             'log' => $row->install_id === null ? null : [
                 'install_id' => $row->install_id,
                 'seq' => $row->log_seq,
                 'discontinuity' => $row->log_discontinuity,
             ],
         ];
+    }
+
+    /**
+     * The exact command that moves `$agent`'s seat onto the self-updating client (DL-444), as
+     * CLAUDE_DEPLOYMENT.md § Multi-agent channel-server distribution documents it. The two placeholders are the
+     * seat's own and not knowable here.
+     */
+    public static function bootstrapCommand(string $agent): string
+    {
+        return "python3 bin/provision-board-tools.py --role b --bootstrap-client --agent {$agent} --project-dir <its-claude-project-dir> --channel-name <its-mcp-servers-key>";
+    }
+
+    private static function bootstrapRemedy(string $agent): string
+    {
+        return 'on the seat, as its own OS user, from a bridge checkout at this bridge\'s release tag, run `'.self::bootstrapCommand($agent).'`, then restart its session';
     }
 
     /** The seat's own evidence: its latest call or report — never a probe's. */

@@ -191,6 +191,23 @@ final class ClientCapabilities
     }
 
     /**
+     * A non-empty {@see gapFor()} answer as one line of text — `tool (arg, …)` per tool, so a gap of
+     * one argument is never read as the whole tool missing. The one rendering, for every surface
+     * that prints a gap.
+     *
+     * @param  array<string, list<string>>  $gap
+     */
+    public static function describeGap(array $gap): string
+    {
+        $parts = [];
+        foreach ($gap as $tool => $arguments) {
+            $parts[] = $tool.' ('.($arguments === [] ? 'the whole tool' : implode(', ', $arguments)).')';
+        }
+
+        return implode(', ', $parts);
+    }
+
+    /**
      * A version this table can answer for: bare `X.Y.Z` and not newer than the newest client
      * this checkout has a record of — a later client may have dropped anything.
      *
