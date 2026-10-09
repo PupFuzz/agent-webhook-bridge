@@ -1914,9 +1914,10 @@ register nor cancel another's.
    later delivery's read or by the sweep. ⛔ **Except a read that says at once that the repo cannot
    be read** — a `404`, or no token (card#11600; *Read failures* below names which): the call is
    **refused as `repo_unreadable`**, your await is removed again (step 3), and the refusal names the
-   token's source and file and what the operator does about it. A `401` or `403` is not refused: it
-   answers `unmeasured` with the await stored and `retry_not_before` a minute out, and the sweep's
-   confirming read decides. Another seat's await on the same head gets
+   token's source and file and what the operator does about it. A FIRST `401` or `403` is not refused: it
+   answers `unmeasured` with the await stored and `retry_not_before` a minute out. A registration whose
+   read CONFIRMS one (at least a minute later, the same status) is refused like a `404`; otherwise the
+   sweep's confirming read decides. Another seat's await on the same head gets
    `ci_await_unreadable`. A read this step skipped (cooldown, rate limit, seat budget) changes
    nothing: the await is stored and waits, and the read that later finds the repo unreadable ends
    it with `ci_await_unreadable`.

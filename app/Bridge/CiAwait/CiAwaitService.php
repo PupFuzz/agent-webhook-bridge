@@ -77,10 +77,11 @@ use UnexpectedValueException;
  * ⚠ A READ THAT FAILS EMITS NOTHING — unless it says the repo cannot be read. The await is kept
  * with the error recorded and logged by name; the sweep reads the head again like any other stale
  * head, and if no read ever answers the seat gets `ci_await_expired` carrying the last error at
- * expiry. ⛔ A failure that reading again cannot get past (card#11600: no read token for any reader, or
- * GitHub answered 401, 404, or a 403 that is not a rate limit — {@see githubRead()}) ends every
- * await on the head at once with `ci_await_unreadable`, and refuses a registration that read it as
- * `repo_unreadable`: a seat must not wait six hours on a repo this install's token cannot see.
+ * expiry. ⛔ A failure that reading again cannot get past (card#11600: no read token for any reader,
+ * or GitHub answered 404 — {@see githubRead()}) ends every await on the head at once with
+ * `ci_await_unreadable`; a 401 or a non-rate-limited 403 does the same only when a read at least
+ * {@see CONFIRM_AFTER_SECONDS} later answers the same status ({@see evaluate()}). A registration
+ * whose own read ends them is refused as `repo_unreadable`: a seat must not wait six hours on a repo this install's token cannot see.
  *
  * ⭐ THE DELIVERED RUN IS OVERLAID. The list API can lag the webhook: the run whose completion was
  * just delivered may still read `in_progress` (or be absent) in the list read for that delivery. A

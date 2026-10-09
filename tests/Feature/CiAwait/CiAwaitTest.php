@@ -1307,6 +1307,26 @@ class CiAwaitTest extends TestCase
         $this->assertSame([], $this->inbox());
     }
 
+    public function test_a_401_then_a_403_more_than_a_minute_apart_confirms_nothing_and_the_record_becomes_403(): void
+    {
+        $this->seedAwait('seat-a');
+        Http::fake([
+            self::RUNS_URL => Http::sequence()->push(['message' => 'Bad credentials'], 401)->push(['message' => 'Forbidden'], 403),
+            '127.0.0.1:*' => Http::response('ok', 200),
+        ]);
+
+        $this->runSweep();
+        $this->assertSame(401, CiAwait::query()->sole()->unconfirmed_status);
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
+        $this->runSweep();
+
+        $this->assertSentRunsReads(2);
+        $await = CiAwait::query()->sole();
+        $this->assertSame(403, $await->unconfirmed_status, 'the record is the latest status, awaiting its own confirmation');
+        $this->assertSame([], $this->inbox());
+        $this->assertNoChannelPush();
+    }
+
     public function test_a_refresh_refused_as_unreadable_says_the_seats_existing_await_was_removed(): void
     {
         Http::fake([

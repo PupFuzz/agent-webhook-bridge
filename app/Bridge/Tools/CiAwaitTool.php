@@ -28,10 +28,11 @@ use Throwable;
  * here subscribes to it, so no `workflow_run.completed` would ever arrive for it.
  *
  * ⛔ A REPO THIS INSTALL'S TOKEN CANNOT READ IS REFUSED (`repo_unreadable`, card#11600) when the
- * registration's own read says so at once (a 404, or no token for any reader): the await was stored
+ * registration's own read says so (a 404, no token for any reader, or a confirmed 401/403): the await was stored
  * for that read and is removed again — the seat's EARLIER await on the head too, when this call was
- * a refresh, and the answer says which. A 401 or a non-rate-limited 403 is not refused: it waits
- * for a confirming read. Marked an install fault — no argument the seat sends can fix it.
+ * a refresh, and the answer says which. A FIRST 401 or non-rate-limited 403 is not refused: it waits
+ * for a confirming read — and a registration whose own read IS that confirming read (at least a
+ * minute later, same status) is refused like a 404. Marked an install fault — no argument the seat sends can fix it.
  */
 final class CiAwaitTool implements SelfScopedTool
 {
