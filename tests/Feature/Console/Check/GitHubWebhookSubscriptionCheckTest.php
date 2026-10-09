@@ -989,16 +989,19 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertStringContainsString('Recent Deliveries', $findings[1]['message']);
     }
 
-    /** GitHub reports a hook that has never delivered as `code: null, status: unused` — no 2xx yet. */
-    public function test_a_hook_that_has_never_delivered_warns(): void
+    /**
+     * GitHub answers `last_response.code` null for a hook with no delivery in its 30-day window
+     * (`{"code": null, "status": "unused"}`, github/rest-api-description's list-hooks example). That
+     * is UNKNOWN, not a failed delivery: an idle repo's healthy hook must not warn.
+     */
+    public function test_a_hook_with_no_delivery_in_github_s_window_is_unknown_not_a_warn(): void
     {
         $this->bootWithHooks([self::fullHook([], ['code' => null, 'status' => 'unused', 'message' => null])]);
 
-        [, $doc] = $this->runJson();
+        [$exit, $doc] = $this->runJson();
 
-        $findings = $this->legFindings($doc);
-        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
-        $this->assertStringContainsString('most recent delivery', $findings[1]['message']);
+        $this->assertSame(0, $exit);
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
     }
 
     /** One matching hook that last delivered a 2xx satisfies it, beside one that did not. */

@@ -9,6 +9,7 @@ use App\Bridge\Support\HumanAge;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\UntrustedText;
+use App\Bridge\Tools\ClientCapabilities;
 use Illuminate\Support\Carbon;
 
 /**
@@ -115,6 +116,6 @@ class ClientFleetCommand extends BridgeCommand
             return 'none';
         }
 
-        return implode(', ', array_map(static fn (array $g): string => $g['tool'].' ('.($g['arguments'] === [] ? 'the whole tool' : implode(', ', $g['arguments'])).')', $gap));
+        return ClientCapabilities::describeGap(array_column($gap, 'arguments', 'tool'));
     }
 }

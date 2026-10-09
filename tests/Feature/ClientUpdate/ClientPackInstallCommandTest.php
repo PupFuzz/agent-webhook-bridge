@@ -145,7 +145,22 @@ class ClientPackInstallCommandTest extends TestCase
         $this->assertSame(1, $exit);
         $this->assertStringContainsString('carries no client pack', $out);
         $this->assertStringContainsString('still publishes no client pack', $out);
+        $this->assertStringContainsString('the update may proceed', $out);
         $this->assertNull($this->published());
+        $this->assertSame($this->release, (new ClientPackStore)->noPackRecorded()['release'] ?? null, 'the finding is recorded for bridge:check to read');
+    }
+
+    /** Only the no-pack case is recorded: a part-pack release is a refusal of a different kind. */
+    public function test_a_part_pack_release_records_no_no_pack_finding(): void
+    {
+        $f = new ClientPackFixture($this->release);
+        $assets = $this->assetsOf($f);
+        unset($assets['SHA256SUMS']);
+        $this->release($assets);
+
+        $this->install();
+
+        $this->assertNull((new ClientPackStore)->noPackRecorded());
     }
 
     public function test_a_release_missing_one_of_the_three_assets_publishes_nothing(): void

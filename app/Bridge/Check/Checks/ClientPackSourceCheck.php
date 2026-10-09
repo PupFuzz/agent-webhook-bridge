@@ -27,7 +27,11 @@ use Throwable;
  *
  * The causes it cannot tell apart from here — the install never ran the command, or the release
  * carries no pack because its release-time build failed (the fail-soft path, DL-442) — are both
- * named, with the command that tells them apart: `bridge:client-pack:install` says which.
+ * named, with the command that tells them apart: `bridge:client-pack:install` says which, and
+ * RECORDS the second ({@see ClientPackStore::recordNoPack()}). Once it has, a release lag for
+ * this release is a `warn` naming the maintainer's re-run, never the `fail` below: no command on
+ * this box can clear a pack the release does not carry, and a `fail` would stop an update at the
+ * runbook's `bridge:check` step before its php-fpm reload (DL-466 Decision 1, amended).
  *
  * ⛔ ONE ARM IS `fail` (card#11579): an OLDER release's pack whose CLIENT is also older than this
  * checkout's own client ({@see ClientCapabilities::$currentClientVersion}). Every seat that installs
@@ -36,7 +40,8 @@ use Throwable;
  * one command on this box. The client compare is ADDED to the release key, never substituted for
  * it (the r3-M7 reason above), and it fires only where the release also lags: a dev checkout ahead
  * of its last release can carry a newer client than any pack that exists, and a `fail` whose remedy
- * cannot clear it would red every such checkout. Every other arm stays `warn`: no pack, an
+ * cannot clear it would red every such checkout. Nor does it fire for a release recorded as
+ * carrying no pack (above). Every other arm stays `warn`: no pack, an
  * unreadable record, a rollback, or a release lag with an unchanged client — the bridge itself
  * works and its seats keep what they run. Where the capability table does not read, the client
  * compare is not made and the release-lag arm stays the `warn` it was.
@@ -91,11 +96,21 @@ final class ClientPackSourceCheck implements Check
         $order = ChannelSnapshotManifest::compareVersions($published->bridgeRelease, $release);
         if ($order < 0) {
             $own = $this->ownCapabilities();
-            if ($own !== null && ChannelSnapshotManifest::compareVersions($published->clientVersion, $own->currentClientVersion) < 0) {
+            $clientLags = $own !== null && ChannelSnapshotManifest::compareVersions($published->clientVersion, $own->currentClientVersion) < 0;
+            $lacks = '';
+            if ($clientLags) {
                 $gap = $own->gapFor($published->clientVersion, $own->currentClientVersion);
                 $lacks = $gap === null || $gap === []
                     ? ''
-                    : ' — it lacks '.implode(', ', array_keys($gap)).', which this checkout\'s client declares';
+                    : ' — it lacks '.ClientCapabilities::describeGap($gap).', which this checkout\'s client declares';
+            }
+            $noPackAt = $this->noPackRecordedFor($store, $release);
+            if ($noPackAt !== null) {
+                yield Finding::warn("client_pack_source: release {$release} published no client pack — `bridge:client-pack:install` found none on its GitHub release at ".UntrustedText::forOperator($noPackAt).", so this bridge still publishes release {$published->bridgeRelease}'s client pack (client {$published->clientVersion}) and seats stay on that client{$lacks}. The maintainer must re-run release {$release}'s `".self::RELEASE_WORKFLOW.'` workflow run, which attaches a missing pack (a release built before DL-442 gets none from a re-run — ship a newer release); then run `php artisan bridge:client-pack:install` again. The update may proceed: no command on this box can publish a pack the release does not carry.');
+
+                return;
+            }
+            if ($clientLags) {
                 yield Finding::fail("client_pack_source: this bridge publishes release {$published->bridgeRelease}'s client pack (client {$published->clientVersion}), but this checkout is release {$release} with client {$own->currentClientVersion}, so every seat that installs or updates from this bridge gets client {$published->clientVersion}{$lacks}. {$publish}");
 
                 return;
@@ -111,6 +126,23 @@ final class ClientPackSourceCheck implements Check
         }
 
         yield Finding::ok("client_pack_source: this bridge publishes release {$release}'s client pack (client {$published->clientVersion}), the release this checkout is.");
+    }
+
+    /**
+     * When `bridge:client-pack:install` recorded that THIS release carries no pack, or null. A record
+     * naming another release is moot here, and an unreadable record is read as none recorded: the
+     * line is then the one it would be without a record, and its named remedy — running that command
+     * — rewrites the record.
+     */
+    private function noPackRecordedFor(ClientPackStore $store, string $release): ?string
+    {
+        try {
+            $recorded = $store->noPackRecorded();
+        } catch (ClientPackRefused) {
+            return null;
+        }
+
+        return $recorded !== null && $recorded['release'] === $release ? $recorded['checked_at'] : null;
     }
 
     /** This checkout's capability table, or null when it does not read (the client compare is then not made). */

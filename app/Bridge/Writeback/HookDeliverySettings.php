@@ -19,12 +19,14 @@ namespace App\Bridge\Writeback;
  *  - `json`: does at least one ACTIVE matching hook send `config.content_type` `json`? The receiver
  *    parses the body as JSON, so a `form` hook's every delivery is refused (`invalid_envelope`).
  *  - `lastDelivery2xx`: did at least one ACTIVE matching hook's MOST RECENT delivery get a 2xx
- *    (`last_response.code`)? GitHub reports a hook that has never delivered as `code: null`, which
- *    is `false` here: no 2xx has been seen. This is the LAST delivery, not a recency — how long ago
- *    is `github.delivery_history`'s question, off this install's own record.
+ *    (`last_response.code`)? ⛔ A `code: null` is UNKNOWN, never `false`: GitHub answers it for a
+ *    hook with no delivery in its 30-day window (`{"code": null, "status": "unused"}` in
+ *    github/rest-api-description's list-hooks example), which says nothing about whether the next
+ *    delivery would get a 2xx. This is the LAST delivery, not a recency — how long ago is
+ *    `github.delivery_history`'s question, off this install's own record.
  *
  * Each is null when a matching hook did not carry the field readably (`active` a strict bool,
- * `events` a list, `content_type` a string, `last_response` an object carrying `code`) and no
+ * `events` a list, `content_type` a string, `last_response` an object carrying an integer `code`) and no
  * readable hook already answered `true` — an unknown is never read as `false`. Each is folded on its
  * own, so two hooks whose defects complement each other read as one healthy hook; a repo holding two
  * hooks to one receiver is the case where that bound bites.
@@ -51,12 +53,8 @@ final class HookDeliverySettings
         $contentType = is_array($config) && is_string($config['content_type'] ?? null) ? $config['content_type'] : null;
         $sendsJson = $contentType === null ? null : $contentType === 'json';
         $last = is_array($hook) ? ($hook['last_response'] ?? null) : null;
-        $code = is_array($last) && array_key_exists('code', $last) ? $last['code'] : false;
-        $delivered2xx = match (true) {
-            $code === null => false,
-            is_int($code) => $code >= 200 && $code < 300,
-            default => null,
-        };
+        $code = is_array($last) ? ($last['code'] ?? null) : null;
+        $delivered2xx = is_int($code) ? $code >= 200 && $code < 300 : null;
         // A hook that is not active sends nothing, whatever its other settings say.
         $ifActive = static fn (?bool $setting): ?bool => $active === false ? false : ($active === null ? null : $setting);
         $had = $seen !== null;

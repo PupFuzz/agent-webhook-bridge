@@ -35,7 +35,8 @@ use UnexpectedValueException;
  * and that no agent subscribes to. The receiver records an event BEFORE it matches subscriptions, so such a delivery
  * passed the HMAC gate — the repo's webhook works — and wakes nobody, and `ci_await` refuses that repo as
  * `repo_not_received` ({@see CiAwaitService::receivedRepo()}). It is a `warn` naming the repo, judged with ci_await's own
- * case-insensitive key so the line agrees with the refusal it predicts. A repo whose deliveries were all refused at
+ * case-insensitive key so the line agrees with the refusal it predicts, over a stated window so it clears once the
+ * deliveries stop. A repo whose deliveries were all refused at
  * the receiver is not recorded and so is not seen here.
  *
  * ⛔ IT WITNESSES THE DELIVERY SIDE ONLY, AND EVERY PER-SCOPE VERDICT SAYS SO ({@see self::DELIVERY_SIDE_ONLY}). It reads what the
@@ -76,6 +77,9 @@ final class GitHubDeliveryHistoryCheck implements Check
      * all-clear for exactly the class it cannot see.
      */
     public const DELIVERY_SIDE_ONLY = 'THIS LEG WITNESSES THE DELIVERY SIDE ONLY';
+
+    /** The unsubscribed-repo window where retention does not bound the record — the shipped retention default. */
+    public const UNSUBSCRIBED_WINDOW_DAYS = 30;
 
     public function id(): string
     {
@@ -128,7 +132,9 @@ final class GitHubDeliveryHistoryCheck implements Check
     }
 
     /**
-     * One `warn` per github scope this install has recorded deliveries for that no agent subscribes to (card#11579).
+     * One `warn` per github scope this install has recorded deliveries for that no agent subscribes to (card#11579),
+     * within {@see unsubscribedWindowDays()} — so the line clears that long after the repo's webhook is removed, with
+     * retention on or off.
      *
      * @param  array<array-key, list<string>>  $scopes
      * @return iterable<Finding>
@@ -140,9 +146,11 @@ final class GitHubDeliveryHistoryCheck implements Check
             $subscribed[CiAwaitService::key((string) $scope)] = true;
         }
 
+        $days = self::unsubscribedWindowDays();
         try {
             $rows = WebhookEvent::query()
                 ->where('provider', 'github')
+                ->where('received_at', '>=', DbClock::now()->subDays($days))
                 ->groupBy('scope_id')
                 ->orderBy('scope_id')
                 ->selectRaw('scope_id, count(*) as deliveries, max(received_at) as last_at')
@@ -163,7 +171,7 @@ final class GitHubDeliveryHistoryCheck implements Check
             $shown = UntrustedText::forOperator($scope);
             $last = gmdate('Y-m-d H:i:s', (new DateTimeImmutable((string) $row->last_at, $utc))->getTimestamp()).' UTC';
 
-            yield Finding::warn("github delivery history: {$shown} — this install has recorded {$row->deliveries} delivery(ies) for it, the latest at {$last}, so a repo webhook has delivered to this receiver for {$shown}, but no agent this run could read subscribes to it: those deliveries wake no agent, and a seat's ci_await on {$shown} is refused as repo_not_received. If an agent here should follow {$shown}, add a github subscription for it to that agent's YAML, then re-run bridge:check; if none should, remove the repo's webhook to this install (someone with admin:repo_hook on {$shown}). {$record}");
+            yield Finding::warn("github delivery history: {$shown} — this install has recorded {$row->deliveries} delivery(ies) for it in the last {$days}d, the latest at {$last}, so a repo webhook has delivered to this receiver for {$shown}, but no agent this run could read subscribes to it: those deliveries wake no agent, and a seat's ci_await on {$shown} is refused as repo_not_received. If an agent here should follow {$shown}, add a github subscription for it to that agent's YAML, then re-run bridge:check; if none should, remove the repo's webhook to this install (someone with admin:repo_hook on {$shown}). {$record}");
         }
     }
 
@@ -257,14 +265,32 @@ final class GitHubDeliveryHistoryCheck implements Check
     }
 
     /**
+     * How far back the unsubscribed-repo read looks: this install's retention window where retention is on and its
+     * config usable — the record holds nothing older anyway — and {@see UNSUBSCRIBED_WINDOW_DAYS} otherwise, where the
+     * record is never pruned and an unbounded read would keep warning about a webhook removed long ago.
+     */
+    private static function unsubscribedWindowDays(): int
+    {
+        return self::retainedDays() ?? self::UNSUBSCRIBED_WINDOW_DAYS;
+    }
+
+    /** The row window this install's CURRENT retention config prunes `webhook_events` to, or null when it prunes nothing. */
+    private static function retainedDays(): ?int
+    {
+        $retention = RetentionConfig::fromConfig();
+
+        return $retention->enabled && $retention->isUsable() ? $retention->olderThanDays : null;
+    }
+
+    /**
      * What record was read and what it cannot hold, per this install's CURRENT retention config — a prune run under
      * an earlier config, or by hand with `bridge:prune`, is not visible from here.
      */
     private function recordClause(): string
     {
-        $retention = RetentionConfig::fromConfig();
-        $pruned = $retention->enabled && $retention->isUsable() && $retention->olderThanDays !== null
-            ? ", from which rows older than {$retention->olderThanDays}d are pruned (bridge.retention.older_than)"
+        $days = self::retainedDays();
+        $pruned = $days !== null
+            ? ", from which rows older than {$days}d are pruned (bridge.retention.older_than)"
             : ", which this install's current retention config does not prune";
 
         return "The record read is this install's webhook_events store{$pruned}; a GitHub ping is never recorded, and neither is a delivery the receiver refused (a bad signature, a scope mismatch).";

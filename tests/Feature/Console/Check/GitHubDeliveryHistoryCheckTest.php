@@ -260,10 +260,61 @@ class GitHubDeliveryHistoryCheckTest extends TestCase
         $findings = $this->legFindings($doc);
         $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
         $this->assertStringContainsString('other/framework', $findings[1]['message']);
-        $this->assertStringContainsString('2 delivery(ies)', $findings[1]['message']);
+        $this->assertStringContainsString('2 delivery(ies) for it in the last 30d', $findings[1]['message'], 'the window read is the retention window, stated in the line');
         $this->assertStringContainsString('no agent', $findings[1]['message']);
         $this->assertStringContainsString('repo_not_received', $findings[1]['message']);
         $this->assertSame(0, $exit, 'a warn must not move the exit code');
+    }
+
+    /**
+     * The unsubscribed read is bounded to the retention window (default 30d): a row older than that — one the
+     * receiver's after-response prune has not yet reached — is not a repo delivering here now, so it does not warn.
+     */
+    public function test_an_unsubscribed_repo_s_delivery_outside_the_retention_window_does_not_warn(): void
+    {
+        $this->bootInstall();
+        $this->recordDeliveries(self::SCOPE, $this->every(6 * self::HOUR, 20 * self::DAY, endingAgo: self::HOUR));
+        $this->recordDeliveries('other/framework', [40 * self::DAY]);
+
+        [, $doc] = $this->runJson();
+
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
+    /** The window is the install's OWN retention window, not a constant: a 90d retention reads 90 days back. */
+    public function test_the_unsubscribed_window_follows_a_longer_retention_window(): void
+    {
+        $this->bootInstall();
+        config(['bridge.retention.older_than' => '90d']);
+        $this->recordDeliveries(self::SCOPE, $this->every(6 * self::HOUR, 20 * self::DAY, endingAgo: self::HOUR));
+        $this->recordDeliveries('other/framework', [45 * self::DAY]);
+
+        [, $doc] = $this->runJson();
+
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('in the last 90d', $findings[1]['message']);
+    }
+
+    /**
+     * With retention OFF the record is never pruned, so an unbounded read would warn forever about a webhook removed
+     * long ago. The read is bounded to a stated window instead, and the line says which.
+     */
+    public function test_with_retention_off_the_unsubscribed_read_uses_its_stated_window(): void
+    {
+        $this->bootInstall();
+        config(['bridge.retention.enabled' => false]);
+        $this->recordDeliveries(self::SCOPE, $this->every(6 * self::HOUR, 20 * self::DAY, endingAgo: self::HOUR));
+        $this->recordDeliveries('gone/repo', [(GitHubDeliveryHistoryCheck::UNSUBSCRIBED_WINDOW_DAYS + 10) * self::DAY]);
+        $this->recordDeliveries('live/repo', [self::DAY]);
+
+        [, $doc] = $this->runJson();
+
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('live/repo', $findings[1]['message']);
+        $this->assertStringContainsString('in the last '.GitHubDeliveryHistoryCheck::UNSUBSCRIBED_WINDOW_DAYS.'d', $findings[1]['message']);
+        $this->assertStringNotContainsString('gone/repo', json_encode($findings, JSON_THROW_ON_ERROR));
     }
 
     /** The population is every recorded github scope, so it is measured even where no agent declares one. */

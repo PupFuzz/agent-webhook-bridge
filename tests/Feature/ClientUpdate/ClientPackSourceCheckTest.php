@@ -176,6 +176,62 @@ class ClientPackSourceCheckTest extends TestCase
         $this->assertStringContainsString('`php artisan bridge:client-pack:install`', $message);
     }
 
+    /**
+     * A release that shipped WITHOUT a pack (DL-442's fail-soft release), as `bridge:client-pack:install`
+     * recorded it: no command on this box can publish a pack the release does not carry, so the lag is
+     * a `warn` naming the maintainer's re-run and saying the update may proceed — never the `fail`,
+     * which would stop the runbook at `bridge:check` before its php-fpm reload.
+     */
+    public function test_a_release_recorded_as_carrying_no_pack_is_a_warn_not_a_fail(): void
+    {
+        $own = ClientCapabilities::bundled();
+        $this->publish('0.95.0', '0.9.39');
+        (new ClientPackStore)->recordNoPack('0.98.1', '2026-10-09T00:00:00Z');
+
+        $findings = $this->check('0.98.1', $own);
+
+        $this->assertCount(1, $findings);
+        [$severity, $message] = $findings[0];
+        $this->assertSame(Severity::Warn->value, $severity);
+        $this->assertStringContainsString('release 0.98.1 published no client pack', $message);
+        $this->assertStringContainsString('at 2026-10-09T00:00:00Z', $message);
+        $this->assertStringContainsString('The maintainer must re-run', $message);
+        $this->assertStringContainsString('Auto-tag + GitHub Release on merge to main', $message);
+        $this->assertStringContainsString('The update may proceed', $message);
+        $this->assertStringContainsString('ci_await', $message, 'the seats\' gap is still named');
+    }
+
+    /** Control: a no-pack record for ANOTHER release does not soften this release's lag. */
+    public function test_a_no_pack_record_for_another_release_leaves_the_fail(): void
+    {
+        $this->publish('0.95.0', '0.9.39');
+        (new ClientPackStore)->recordNoPack('0.97.0', '2026-10-09T00:00:00Z');
+
+        $findings = $this->check('0.98.1', ClientCapabilities::bundled());
+
+        $this->assertSame(Severity::Fail->value, $findings[0][0]);
+    }
+
+    /** A gap of one ARGUMENT names the argument, not the whole tool — the renderer `bridge:client-fleet` uses. */
+    public function test_the_fail_names_a_missing_argument_as_tool_and_argument(): void
+    {
+        $own = new ClientCapabilities('0.9.5', [
+            'board_x' => ['since' => '0.9.1', 'removed_in' => null, 'arguments' => [
+                'bar' => ['since' => '0.9.1', 'removed_in' => null],
+                'foo' => ['since' => '0.9.5', 'removed_in' => null],
+            ]],
+            'ci_await' => ['since' => '0.9.5', 'removed_in' => null, 'arguments' => [
+                'repo' => ['since' => '0.9.5', 'removed_in' => null],
+            ]],
+        ], []);
+        $this->publish('0.95.0', '0.9.3');
+
+        $findings = $this->check('0.98.1', $own);
+
+        $this->assertSame(Severity::Fail->value, $findings[0][0]);
+        $this->assertStringContainsString('it lacks board_x (foo), ci_await (repo), which', $findings[0][1]);
+    }
+
     /** Control for the fail above: the same release lag with an UNCHANGED client stays a warn. */
     public function test_a_release_lag_with_the_same_client_stays_a_warn(): void
     {

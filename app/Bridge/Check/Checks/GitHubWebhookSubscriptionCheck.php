@@ -13,6 +13,7 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Tools\ServedTools;
+use App\Bridge\Writeback\HookDeliverySettings;
 use Illuminate\Routing\Router;
 
 /**
@@ -251,7 +252,8 @@ final class GitHubWebhookSubscriptionCheck implements Check
      *    tools ⇒ a seat's `ci_await` settles only through the ci-await-sweep's own reads, at
      *    least one sweep interval late — the polling the tool exists to remove;
      *  - no ACTIVE matching hook's most recent delivery got a 2xx ⇒ GitHub's own record says this
-     *    receiver refused or failed it, or the hook has never delivered.
+     *    receiver refused or failed it. A hook with no delivery in GitHub's 30-day window reports
+     *    no code, which is an unknown and prints nothing ({@see HookDeliverySettings}).
      *
      * @return iterable<Finding>
      */
@@ -269,7 +271,7 @@ final class GitHubWebhookSubscriptionCheck implements Check
             yield from $this->workflowRunWarning($ctx, $scope);
         }
         if ($result->lastDelivery2xx === false) {
-            yield Finding::warn("github webhook: {$scope} — the most recent delivery GitHub records on the repo webhook delivering here did not get a 2xx from this install, or the hook has never delivered. Open the hook's Recent Deliveries in the repo's webhook settings (someone with admin:repo_hook on {$scope}): a 4xx response body there is this receiver's refusal reason (sig_mismatch, unknown_scope, scope_mismatch, invalid_envelope, …), a 5xx a failure this install's log names. Fix the cause, redeliver, and re-run bridge:check.");
+            yield Finding::warn("github webhook: {$scope} — the most recent delivery GitHub records on the repo webhook delivering here did not get a 2xx from this install. Open the hook's Recent Deliveries in the repo's webhook settings (someone with admin:repo_hook on {$scope}): a 4xx response body there is this receiver's refusal reason (sig_mismatch, unknown_scope, scope_mismatch, invalid_envelope, …), a 5xx a failure this install's log names. Fix the cause, redeliver, and re-run bridge:check.");
         }
     }
 
