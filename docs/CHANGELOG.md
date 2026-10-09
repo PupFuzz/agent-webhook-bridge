@@ -10,7 +10,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Security
 
-- **card#11578** — **GHSA-rmxm-3fg6-px4f: `@hono/node-server` 2.1.0 → 2.1.3 in `examples/channel-servers/`** (transitive, via `@modelcontextprotocol/sdk` 1.32.1); channel-server snapshot `0.9.48` → `0.9.49`. Fixes `serveStatic` decoding the request path twice, which let a request bypass path-based middleware (affected >= 1.19.10, < 2.1.3). Only the lockfile entry moves. **It does not reach the channel server**: it imports only the SDK's `server/index.js`, `server/stdio.js` and `types.js`, which resolve no `@hono/node-server` module (measured with a resolve hook: zero, against two when the package is imported directly as a control).
+- **card#11578** — **GHSA-rmxm-3fg6-px4f: `@hono/node-server` 2.1.0 → 2.1.3, and GHSA-5r4p-p66f-jhc7: `hono` 4.13.7 → 4.13.11, in `examples/channel-servers/`** (both transitive, via `@modelcontextprotocol/sdk` 1.32.1); channel-server snapshot `0.9.48` → `0.9.49`. The two advisories are one defect in each package: `serveStatic` decodes the request path twice, which lets a request bypass middleware on static paths (affected `@hono/node-server` >= 1.19.10, < 2.1.3; `hono` >= 4.12.4, < 4.13.11). Only the two lockfile entries move. **Neither reaches the channel server**: it imports only the SDK's `server/index.js`, `server/stdio.js` and `types.js`, which resolve no `hono` or `@hono/node-server` module (measured with a resolve hook: zero, against 44 when `hono` is imported directly and two for `@hono/node-server`, as controls).
 
 ## [0.98.1] - 2026-10-07
 
