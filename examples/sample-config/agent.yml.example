@@ -45,6 +45,8 @@ subscriptions:
   - provider: kanban
     scopes: [5]             # kanban board IDs
     event_filter: []        # empty = all events; e.g. ["task.*", "comment.*"] to narrow
+                            # (keep "comment.created" in a narrowed list for card comments
+                            # to reach the assigned seat — docs/consumer-guide.md)
 
   # - provider: github
   #   scopes: ["your-org/your-repo"]   # full_name slug

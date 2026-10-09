@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#11581 / DL-467** — **A comment on a kanban card reaches the seat the card is assigned to, live, as a `card_comment` intent** (agent-roundtable#609). The assignee is matched through the coord roster's `kanban_user_id`, the mapping attribution already uses. Nobody is woken for an unassigned card, the assignee's own comment, or the writeback identity's. Staged to the inbox and pushed under `EventDrivenClassifier`, `route_intents: true`, and `CoordinationClassifier` whatever its `families`. `payload`: `card_id`, `board_id`, `comment_id`, `author_name`, `body` — [`consumer-guide.md`](consumer-guide.md) § *Card comments*. A card comment is board-account information, not operator input.
+  - ⚠ **Opt in per board:** a kanban subscription with a narrowed `event_filter` adds `comment.created`, then `php artisan bridge:provision --reconcile`. An empty filter already delivers it.
+  - ⚠ **Needs the kanban release after v0.52.3.** From an older kanban, or a kanban webhook replay, the delivery carries no `card` / `comment` block: nothing is staged, and each agent's dispatch row reads `dropped` · `card_comment unroutable: snapshot absent …`.
+  - ⚠ A comment a seat posts with `board_comment_card` is written by the writeback identity, so it does not reach the card's assignee while `writeback.json` `identity_id` is set.
+  - A dispatch row for a `comment.created` the agent is not routed now names why (`card_comment: …`) instead of `classifier emitted no reactions`. Custom classifiers: `ClassifyContext` gains `agents` and `ClassifyResult` gains `dropReason`, both optional — no signature changes.
+
 ## [0.98.1] - 2026-10-07
 
 ### Added

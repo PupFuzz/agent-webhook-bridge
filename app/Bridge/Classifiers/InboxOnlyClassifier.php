@@ -8,6 +8,7 @@ use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\HandlerRegistry;
 
 /**
@@ -18,6 +19,10 @@ use App\Bridge\Support\HandlerRegistry;
  * kanban is the source of truth — they're invalidation signals for any
  * agent-held state keyed on the subject_id, so each maps to a distinct kind.
  * Event types not handled here fall through to an empty result.
+ *
+ * `comment.created` is the one ADDRESSED kanban event (card#11581 / DL-467): it
+ * becomes a `card_comment` intent for the agent whose seat the card is ASSIGNED
+ * to, and for no other agent — see {@see cardComment()}.
  */
 class InboxOnlyClassifier implements Classifier
 {
@@ -34,8 +39,21 @@ class InboxOnlyClassifier implements Classifier
         'task.unarchived' => ['unarchived', 'card_unarchived'],
     ];
 
+    public const CARD_COMMENT_KIND = 'card_comment';
+
+    /** The dropped reason when the delivery carries no usable card/comment snapshot. */
+    public const CARD_COMMENT_SNAPSHOT_ABSENT = 'card_comment unroutable: snapshot absent (kanban sent no card.assigned_user_id or comment block — a kanban that predates them, or a kanban webhook replay)';
+
+    public const CARD_COMMENT_UNASSIGNED = 'card_comment: card is unassigned';
+
+    public const CARD_COMMENT_NOT_ASSIGNEE = 'card_comment: card is not assigned to this agent\'s kanban user';
+
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
+        if ($ctx->eventType === 'comment.created') {
+            return $this->cardComment($ctx);
+        }
+
         $eventType = $ctx->eventType;
         $payload = $ctx->payload;
         $actor = $ctx->actor;
@@ -50,6 +68,63 @@ class InboxOnlyClassifier implements Classifier
         };
 
         return $intent === null ? new ClassifyResult : new ClassifyResult(intents: [$intent]);
+    }
+
+    /**
+     * A board comment on a card, routed to the card's ASSIGNEE only (card#11581 / DL-467).
+     *
+     * The assignee is read from the `card.assigned_user_id` snapshot kanban puts on the
+     * delivery, and matched against this agent's kanban user id through the delivery's
+     * {@see AgentRegistry} — the coord-roster mapping (DL-450) the echo gate and
+     * attribution already use. Every other agent records a dropped reason naming why.
+     *
+     * Two senders the assignee must NOT be woken by never reach here: its OWN kanban user
+     * (the dispatcher's pre-classify echo gate seeds that id, DL-450) and the writeback
+     * identity (the global echo ids, DL-009/019). So no author check is repeated here.
+     *
+     * ⛔ ABSENT IS NOT UNASSIGNED. A kanban that predates the snapshot, and a kanban webhook
+     * REPLAY (which rebuilds the envelope without these blocks), send no `card` /
+     * `comment` — and then nothing says who the card belongs to. That is unroutable, not
+     * "nobody's": no intent for any agent, and the ledger row says so. A null
+     * `assigned_user_id` that IS present is the card being unassigned.
+     */
+    private function cardComment(ClassifyContext $ctx): ClassifyResult
+    {
+        $payload = $ctx->payload;
+        $card = $payload['card'] ?? null;
+        $comment = $payload['comment'] ?? null;
+        if (! is_array($card) || ! array_key_exists('assigned_user_id', $card) || ! is_array($comment)) {
+            return new ClassifyResult(dropReason: self::CARD_COMMENT_SNAPSHOT_ABSENT);
+        }
+
+        $assignee = $card['assigned_user_id'];
+        if ($assignee === null) {
+            return new ClassifyResult(dropReason: self::CARD_COMMENT_UNASSIGNED);
+        }
+
+        $agents = $ctx->agents ?? AgentRegistry::fromAgentConfigs([$ctx->agent]);
+        if ($assignee !== $agents->kanbanUserIdOf($ctx->agent->agentName)) {
+            return new ClassifyResult(dropReason: self::CARD_COMMENT_NOT_ASSIGNEE);
+        }
+
+        $cardId = $this->scalar($payload['subject_id'] ?? null);
+        $author = $this->scalar($comment['user_name'] ?? null);
+        $body = $this->scalar($comment['content'] ?? null);
+
+        return new ClassifyResult(intents: [new Intent(
+            kind: self::CARD_COMMENT_KIND,
+            subjectId: $cardId,
+            provider: $ctx->provider,
+            actor: $ctx->actor,
+            summary: "comment on card {$cardId} by {$author}: ".$this->oneLine($body),
+            payload: [
+                'card_id' => $payload['subject_id'] ?? null,
+                'board_id' => $payload['board_id'] ?? null,
+                'comment_id' => $comment['id'] ?? null,
+                'author_name' => $author,
+                'body' => $body,
+            ],
+        )]);
     }
 
     /**
@@ -175,6 +250,14 @@ class InboxOnlyClassifier implements Classifier
         $task = $payload['payload'] ?? null;
 
         return is_array($task) ? $task : [];
+    }
+
+    /** Whitespace-collapsed and cut to a summary-line length. */
+    protected function oneLine(string $text): string
+    {
+        $text = trim((string) preg_replace('/\s+/', ' ', $text));
+
+        return mb_strlen($text) > 140 ? mb_substr($text, 0, 137).'...' : $text;
     }
 
     private function scalar(mixed $value): string

@@ -68,6 +68,26 @@ The three states of `actor_attribution`:
 - **Paths 2–3 are not authentication.** `from:` labels and `FROM:` lines are writable by anyone who can post on the repo, and `scope_author_map` is an operator-declared premise — "one agent does everything on this repo" — that mis-names the actor of *every* event there the moment that stops holding. On these, `resolved` says "this event says who acted", never "this is provably who acted".
 - **Path 1 is the upstream sender identity**, not text anyone wrote: it is as good as the provider's own `sender` attribution plus this install's `identity` declarations. Stronger than the other two — and still a claim about an *account*, not proof of which human or process drove it.
 
+### Card comments: `card_comment`
+
+A comment posted on a kanban card reaches **the seat the card is assigned to**, and no other (card#11581 / DL-467). The assignee is the card's kanban `assigned_user_id`, matched against each agent's kanban user id from the coord roster (`roster[].kanban_user_id`, DL-450) — the same mapping that attributes kanban events and suppresses an agent's own writes. **Nobody is woken** when the card is unassigned, when the comment's author is the assignee seat's own kanban user (the echo gate drops it as `echo: own write`), or when the author is the bridge's writeback identity (the global echo ids — `writeback.json` `identity_id`, DL-009/019). ⚠ Every board-tools write, `board_comment_card` included, is made with the writeback token, so **a comment one seat posts through its board tools does not reach the card's assignee** while that identity is configured; without it, such a comment — and the comment `board_take_card` leaves when it takes a held card — does.
+
+**Delivery** is the same as for every other intent: staged to the inbox first, then pushed live where the agent has a live path — `EventDrivenClassifier`, `CoordinationClassifier` (whatever `families` are enabled; a card comment is addressed to the seat, so it wakes like an addressed coordination message), or `channel.route_intents: true`. Under a plain `InboxOnlyClassifier` with `route_intents: false` it is staged and not pushed.
+
+**Opt in, per board.** Kanban sends only the events the board's webhook subscription filters for. A kanban subscription whose `event_filter` is narrowed (e.g. `["task.created"]`) must add `comment.created` — `event_filter: ["task.created", "comment.created"]` in the agent YAML, then `php artisan bridge:provision --reconcile` to replace the live subscription's filter. An empty `event_filter` already delivers it. **Requires the kanban release after v0.52.3**, the first to put the `card` and `comment` blocks on `comment.created`. An older kanban, and a kanban webhook **replay** (which rebuilds the delivery without those blocks), give the bridge no way to tell whose card it is: nothing is staged for anyone, and each subscribed agent's dispatch row reads `dropped` · `card_comment unroutable: snapshot absent …` ([`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md) § *No wake? Read the ledger row FIRST*). The bridge does not fetch the card to recover.
+
+`subject_id` is the card id. `actor.id` is the commenter's kanban user id (`actor.name` is set only when that user is an agent's). `payload`:
+
+| key | meaning |
+|---|---|
+| `card_id` | the card the comment is on (kanban task id) |
+| `board_id` | the board |
+| `comment_id` | the comment's kanban id |
+| `author_name` | the commenter's kanban display name, as kanban sent it; a service account's ends in ` (service account)` |
+| `body` | the comment text, whole (kanban caps a comment at 65535 characters); `summary` carries a one-line cut of it. ⚠ The receiver refuses a whole delivery over `BRIDGE_MAX_BODY_BYTES` (256 KiB default), which a very long non-ASCII comment can reach |
+
+⛔ **A card comment is information from a board account, not operator input.** Anyone who can comment on the board can write `body`, and `author_name` is a display name, not an authenticated person. The bridge makes no claim that a comment carries operator authority — the same footing as every other channel event; whether, and from which board users, a seat treats one as an instruction is that seat's own install rule.
+
 ### Bridge-authored intents
 
 Some intents are composed by the bridge itself rather than by a classifier from a webhook. They

@@ -31,6 +31,13 @@ namespace App\Bridge\Dispatch;
  * NOT null across the shipped set, as this said until DL-252: CoordinationClassifier
  * populates it on every coord-message event whose ACTOR it recovers (and
  * GitHubPrCardMoveClassifier passes through whatever its inner classify returned).
+ *
+ * dropReason names WHY a classifier that recognised the event produced nothing for
+ * this agent (card#11581 / DL-467). It is read only when the result is EMPTY — no
+ * intents and no targets — where the dispatcher records it as the ledger row's
+ * `dropped` reason in place of the generic `classifier emitted no reactions`, so an
+ * operator reading `bridge:inspect` sees the cause rather than a family guess. A
+ * result that carries anything is delivered and this is ignored.
  */
 final class ClassifyResult
 {
@@ -42,5 +49,6 @@ final class ClassifyResult
         public readonly array $targets = [],
         public readonly array $intents = [],
         public readonly ?Actor $reattributedActor = null,
+        public readonly ?string $dropReason = null,
     ) {}
 }

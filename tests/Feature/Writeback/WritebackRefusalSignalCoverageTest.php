@@ -164,6 +164,7 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         'Bridge/Adapters/KanbanAdapter.php::parse#1' => 'WEBHOOK ENVELOPE: the delivery\'s scope id, read at the receiver door before any card exists',
         'Bridge/Classifiers/InboxOnlyClassifier.php::newCardIntent#1' => 'WEBHOOK PAYLOAD: copies the envelope\'s board onto the staged intent; nothing is compared and nothing is written',
         'Bridge/Classifiers/InboxOnlyClassifier.php::lifecycleIntent#1' => 'WEBHOOK PAYLOAD: the same copy on the lifecycle families',
+        'Bridge/Classifiers/InboxOnlyClassifier.php::cardComment#1' => 'WEBHOOK PAYLOAD: the same copy on the card_comment intent (DL-467); routing reads the card\'s ASSIGNEE, never its board',
         'Bridge/Tools/BoardToolsScopeHeader.php::read#1' => 'RESPONSE HEADER: the LEGACY spelling of another install\'s scope echo, read newest-first behind `configured_board_id` (DL-302/DL-304). It describes a responder, not a card',
         'Bridge/Tools/SshTransportProbe.php::probeLive#1' => 'PROBE EXPECTATION: whether an operator\'s expected-scope entry declares a board at all (a scope-less agent, card#11283) — config, on a diagnostic that writes nothing',
         'Bridge/Tools/SshTransportProbe.php::probeLive#2' => 'PROBE EXPECTATION: the board an operator\'s expected-scope entry declares, compared to that header echo — config against config, on a diagnostic that writes nothing',
