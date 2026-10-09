@@ -109,6 +109,15 @@ final class CiAwaitService
     /** Sent instead of waiting out the expiry when GitHub will not let this install read the repo (card#11600). */
     public const UNREADABLE = 'ci_await_unreadable';
 
+    /**
+     * How long a 401 or a non-rate-limited 403 waits for the read that confirms it (card#11600). One
+     * minute is what GitHub asks of a secondary rate limit that names no reset.
+     */
+    public const CONFIRM_AFTER_SECONDS = 60;
+
+    /** `read_skipped` when the head is waiting for the read that confirms a 401 or 403 (card#11600). */
+    public const UNREADABLE_UNCONFIRMED = 'unreadable_unconfirmed';
+
     /** `read_skipped` when the calling seat's registration read budget is spent (card#11283). */
     public const SEAT_READ_LIMITED = 'seat_read_limited';
 
@@ -261,7 +270,7 @@ final class CiAwaitService
             } else {
                 $mineId = CiAwait::query()->where('agent', $agent)->where('repo', $key)->where('head_sha', $headSha)->value('id');
                 $read = $this->evaluate($key, $headSha, null, $mineId === null ? null : (int) $mineId);
-                $skipped = ! $read['read'] && $read['retry_not_before'] !== null ? 'rate_limited' : null;
+                $skipped = ! $read['read'] && $read['retry_not_before'] !== null ? ($read['unconfirmed'] ? self::UNREADABLE_UNCONFIRMED : 'rate_limited') : null;
             }
             $mine = CiAwait::query()->where('agent', $agent)->where('repo', $key)->where('head_sha', $headSha)->first();
         } catch (Throwable $e) {
@@ -463,12 +472,16 @@ final class CiAwaitService
      *
      * ⛔ A READ THAT SAYS THE REPO CANNOT BE READ ENDS EVERY AWAIT IT LOADED (card#11600): reading
      * again would answer the same, so each gets `ci_await_unreadable` now instead of
-     * `ci_await_expired` hours later ({@see forgetUnreadable()}). `$silentAwaitId` is the await of a
+     * `ci_await_expired` hours later ({@see forgetUnreadable()}). A 404 or a missing token says so
+     * at once; a 401 or a non-rate-limited 403 is recorded as `unconfirmed_status` with
+     * `retry_not_before` {@see CONFIRM_AFTER_SECONDS} out, and says so only when a read made at
+     * least that long after one recorded on a loaded await answers the same status. Any other
+     * outcome between them clears the record. `$silentAwaitId` is the await of a
      * registration making this read: it is removed WITHOUT an event, because that seat is answered
      * by the `repo_unreadable` refusal instead.
      *
      * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
-     * @return array{runs: ?list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, retry_not_before: ?Carbon, read: bool, emit_failed: list<int>, unreadable: ?CiRunsReadException}
+     * @return array{runs: ?list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, retry_not_before: ?Carbon, read: bool, emit_failed: list<int>, unreadable: ?CiRunsReadException, unconfirmed: bool}
      */
     private function evaluate(string $key, string $headSha, ?array $deliveredRun, ?int $silentAwaitId = null): array
     {
@@ -484,20 +497,23 @@ final class CiAwaitService
         $limiting = $awaits->filter(static fn (CiAwait $a): bool => $a->retry_not_before !== null && $a->retry_not_before->isAfter($measuredAt))
             ->sortByDesc(static fn (CiAwait $a): int => $a->retry_not_before->getTimestamp())->first();
         if ($limiting !== null) {
-            CiAwait::query()->whereKey($ids)->update(['retry_not_before' => $limiting->retry_not_before, 'last_error' => $limiting->last_error]);
+            CiAwait::query()->whereKey($ids)->update(['retry_not_before' => $limiting->retry_not_before, 'last_error' => $limiting->last_error, 'unconfirmed_status' => $limiting->unconfirmed_status]);
             Log::info('bridge ci_await: the head is rate limited, so it was not read — the sweep reads it after the reset', [
                 'repo' => $repoName, 'head_sha' => $headSha, 'retry_not_before' => self::instant($limiting->retry_not_before),
             ]);
 
-            return ['retry_not_before' => Carbon::instance($limiting->retry_not_before)] + self::noRead();
+            return ['retry_not_before' => Carbon::instance($limiting->retry_not_before), 'unconfirmed' => $limiting->unconfirmed_status !== null] + self::noRead();
         }
         try {
             $runs = $this->readRuns($repoName, $headSha);
         } catch (CiRunsReadException $e) {
             // The column holds 1000 characters; a longer error would fail the write that records it.
             $error = mb_substr($e->getMessage(), 0, 1000);
-            CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => $error, 'retry_not_before' => $e->retryNotBefore]);
-            if ($e->repoUnreadable) {
+            $confirmed = $e->needsConfirmation && $awaits->contains(static fn (CiAwait $a): bool => $a->unconfirmed_status === $e->status
+                && $a->last_read_at !== null && $a->last_read_at->lte($measuredAt->copy()->subSeconds(self::CONFIRM_AFTER_SECONDS)));
+            CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => $error, 'retry_not_before' => $e->retryNotBefore,
+                'unconfirmed_status' => $e->needsConfirmation ? $e->status : null]);
+            if ($e->repoUnreadable || $confirmed) {
                 return ['error' => $error, 'read' => true, 'unreadable' => $e, 'emit_failed' => $this->forgetUnreadable($awaits, $e, $error, $silentAwaitId)] + self::noRead();
             }
             Log::warning('bridge ci_await: the workflow-run read failed, so nothing was emitted — the await is kept, the ci_await sweep reads the head again, and it expires with this error if no read answers', [
@@ -506,7 +522,7 @@ final class CiAwaitService
 
             return ['error' => $error, 'retry_not_before' => $e->retryNotBefore === null ? null : Carbon::instance($e->retryNotBefore), 'read' => true] + self::noRead();
         }
-        CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null, 'retry_not_before' => null]);
+        CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null, 'retry_not_before' => null, 'unconfirmed_status' => null]);
 
         if ($deliveredRun !== null) {
             $runs = self::overlay($runs, $deliveredRun);
@@ -523,13 +539,13 @@ final class CiAwaitService
             }
         }
 
-        return ['runs' => $runs, 'error' => null, 'all_terminal' => $allTerminal, 'retry_not_before' => null, 'read' => true, 'emit_failed' => $emitFailed, 'unreadable' => null];
+        return ['runs' => $runs, 'error' => null, 'all_terminal' => $allTerminal, 'retry_not_before' => null, 'read' => true, 'emit_failed' => $emitFailed, 'unreadable' => null, 'unconfirmed' => false];
     }
 
-    /** @return array{runs: null, error: null, all_terminal: false, retry_not_before: null, read: false, emit_failed: list<int>, unreadable: null} */
+    /** @return array{runs: null, error: null, all_terminal: false, retry_not_before: null, read: false, emit_failed: list<int>, unreadable: null, unconfirmed: false} */
     private static function noRead(): array
     {
-        return ['runs' => null, 'error' => null, 'all_terminal' => false, 'retry_not_before' => null, 'read' => false, 'emit_failed' => [], 'unreadable' => null];
+        return ['runs' => null, 'error' => null, 'all_terminal' => false, 'retry_not_before' => null, 'read' => false, 'emit_failed' => [], 'unreadable' => null, 'unconfirmed' => false];
     }
 
     /**
@@ -687,10 +703,13 @@ final class CiAwaitService
      * Resolve `$repoName`'s read token as the receiver does and make `$read` with it, turning every
      * way it can fail into a {@see CiRunsReadException} of its class (card#11600):
      *  - NOT READABLE — reading again cannot answer: no token resolved for any reader
-     *    ({@see noTokenForAnyReader()}), or GitHub answered 401
-     *    (the token is dead), 404 (GitHub's answer to a token that cannot see a private repo) or a
-     *    403 that is not a rate limit (the token lacks the permission). Its message names the
-     *    token's source and file, never the token.
+     *    ({@see noTokenForAnyReader()}), or GitHub answered 404 (its answer to a token that cannot
+     *    see a private repo). Its message names the token's source and file, never the token.
+     *  - NOT READABLE IF CONFIRMED — GitHub answered 401, or a 403 that is not a rate limit by its
+     *    headers or body. A secondary rate limit can answer 403 with no header and no reset
+     *    ("wait at least one minute"), and a token rotated outside the bridge can answer 401
+     *    briefly, so it is retryable with `retryNotBefore` {@see CONFIRM_AFTER_SECONDS} out, and
+     *    final only when that later read answers the same status ({@see evaluate()}).
      *  - RETRYABLE — a rate limit (a 429, or a 403 that says so), any other status, no answer, or
      *    a 200 whose body is not a run list.
      *
@@ -713,22 +732,37 @@ final class CiAwaitService
         } catch (RequestException $e) {
             $status = $e->response->status();
             // A primary limit says X-RateLimit-Remaining: 0; a secondary limit is a 403 that may
-            // leave Remaining above zero but carries Retry-After.
-            $limited = $status === 429 || ($status === 403 && ($e->response->header('X-RateLimit-Remaining') === '0' || $e->response->header('Retry-After') !== ''));
-            $resetAt = $limited ? self::rateLimitReset($e) : null;
-            $unreadable = ! $limited && in_array($status, [401, 403, 404], true);
+            // leave Remaining above zero but carries Retry-After — or carries neither, and says so
+            // only in its body's message (GitHub Docs, *Rate limits for the REST API*). The body is
+            // read for that one test and never printed.
+            $headerLimited = $status === 429 || ($status === 403 && ($e->response->header('X-RateLimit-Remaining') === '0' || $e->response->header('Retry-After') !== ''));
+            $bodyLimited = ! $headerLimited && $status === 403 && self::bodySaysRateLimit($e);
+            $limited = $headerLimited || $bodyLimited;
+            // A limit only the body names carries no reset; GitHub asks for at least a minute.
+            $resetAt = $headerLimited ? self::rateLimitReset($e) : ($bodyLimited ? Carbon::now()->addSeconds(self::CONFIRM_AFTER_SECONDS) : null);
+            $unreadable = $status === 404;
+            $confirm = ! $limited && in_array($status, [401, 403], true);
 
             throw new CiRunsReadException(
                 "GitHub answered HTTP {$status} to the workflow-run read"
                     .($limited ? ' (rate limited'.($resetAt === null ? '' : ' until '.self::instant($resetAt)).')' : '')
-                    .($unreadable ? ' ('.self::tokenOrigin($token).')' : ''),
-                $resetAt,
+                    .($unreadable || $confirm ? ' ('.self::tokenOrigin($token).')' : ''),
+                $confirm ? Carbon::now()->addSeconds(self::CONFIRM_AFTER_SECONDS) : $resetAt,
                 repoUnreadable: $unreadable,
                 status: $status,
+                needsConfirmation: $confirm,
             );
         } catch (ConnectionException|UnexpectedValueException $e) {
             throw new CiRunsReadException(RedactedErrorText::of($e));
         }
+    }
+
+    /** Whether a refused read's body says it is a rate limit. Only this test reads the body; nothing prints it. */
+    private static function bodySaysRateLimit(RequestException $e): bool
+    {
+        $message = $e->response->json('message');
+
+        return is_string($message) && stripos($message, 'rate limit') !== false;
     }
 
     /**

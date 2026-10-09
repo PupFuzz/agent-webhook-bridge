@@ -12,6 +12,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -172,6 +173,40 @@ class CiAwaitsCheckTest extends TestCase
         $this->assertStringContainsString('token source: the single GitHub token file, file '.$dir.'/github/token', $findings[0]->message);
         $this->assertStringContainsString('[git-credential-map]', $findings[0]->message);
         $this->assertStringNotContainsString('gh-check-token', $findings[0]->message);
+    }
+
+    /** @return array<string, array{0: int, 1: string}> */
+    public static function unconfirmedStatuses(): array
+    {
+        return [
+            'a header-less 403' => [403, 'Resource not accessible by integration'],
+            'a header-less secondary-limit 403' => [403, 'You have exceeded a secondary rate limit.'],
+            'a 401' => [401, 'Bad credentials'],
+        ];
+    }
+
+    #[DataProvider('unconfirmedStatuses')]
+    public function test_a_single_401_or_header_less_403_is_unvalidated_not_a_fail(int $status, string $message): void
+    {
+        $this->installServingCiTools();
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['message' => $message], $status)]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString("HTTP {$status}", $findings[0]->message);
+        $this->assertStringNotContainsString($message, $findings[0]->message);
+    }
+
+    public function test_a_single_401_or_403_says_a_confirming_read_is_needed(): void
+    {
+        $this->installServingCiTools();
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['message' => 'Forbidden'], 403)]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertStringContainsString('confirming read', $findings[0]->message);
     }
 
     public function test_a_received_repo_with_no_read_token_fails(): void

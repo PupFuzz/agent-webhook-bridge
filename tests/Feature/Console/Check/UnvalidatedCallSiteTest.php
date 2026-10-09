@@ -399,10 +399,12 @@ class UnvalidatedCallSiteTest extends TestCase
         // card#11200 / DL-452: two sites, both limb (a) — the database did not answer whether the
         // `ci_awaits` table exists, or the stored awaits could not be read after it did, so no
         // await was judged. A MISSING table is a `warn`, not a site here: the leg did establish it.
-        // card#11600: two more, both limb (a) — the agent configs did not load, so which repos to
-        // read was never known; or a repo's workflow-runs read failed in a way an await retries (a
-        // rate limit, a 5xx, no answer, a token THIS process could not read), so it measured nothing.
-        'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 4,
+        // card#11600: three more, all limb (a) — the agent configs did not load, so which repos to
+        // read was never known; a repo's workflow-runs read failed in a way an await retries (a
+        // rate limit, a 5xx, no answer, a token THIS process could not read), so it measured nothing;
+        // or it answered one 401 / 403, which only a confirming read a minute later can settle, and
+        // this leg makes one read.
+        'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 5,
         // card#11201, one per arm: the token file is there and THIS process could not read it
         // (limb 2 — the receiver runs as its own user); writeback.json did not load, so which
         // legs need the file was not determined (limb a — two sites: with no leg switched on, and

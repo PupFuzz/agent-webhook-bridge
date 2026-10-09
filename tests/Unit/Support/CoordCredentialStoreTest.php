@@ -92,9 +92,9 @@ class CoordCredentialStoreTest extends TestCase
         $this->assertSame(['key' => 'Owner', 'matched' => 'github.com/o'], $store->routeFor('/o/s.git'));
         $this->assertNull($store->routeFor('x/y'), 'a blank host line maps nothing');
         $this->assertNull($store->routeFor('O/r'), 'the case written, never folded');
-        $this->assertSame(['/abs/owner', null], $store->tokenFileFor('Owner'));
-        $this->assertSame(['/abs/owner', null], $store->tokenFileFor('owner'), 'the [github] name folds');
-        $this->assertSame(['/abs/with=equals:and-colon', null], $store->tokenFileFor('url'), 'split at the FIRST delimiter');
+        $this->assertSame(['/abs/owner', false, null], $store->tokenFileFor('Owner'));
+        $this->assertSame(['/abs/owner', false, null], $store->tokenFileFor('owner'), 'the [github] name folds');
+        $this->assertSame(['/abs/with=equals:and-colon', false, null], $store->tokenFileFor('url'), 'split at the FIRST delimiter');
     }
 
     public function test_the_candidates_are_the_helpers_ladder(): void

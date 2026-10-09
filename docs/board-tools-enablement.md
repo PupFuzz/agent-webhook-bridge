@@ -181,9 +181,10 @@ its session starts (card#11579 / DL-466):
 - `github.delivery_history` — warns on a repo that delivers here with no agent subscribed, which
   `ci_await` refuses as `repo_not_received`.
 - `ci_await.awaits` — every repo this install receives reads OK while any agent is served the CI
-  tools. A FAIL names a repo whose workflow runs its GitHub token cannot read, which `ci_await`
+  tools. A FAIL names a repo GitHub answers `404` for, or one with no read token, which `ci_await`
   refuses as `repo_unreadable`, with the token's source and file and the fix (card#11600 /
-  DL-468). UNVALIDATED is not a pass: the read did not measure that repo.
+  DL-468). A single `401` or `403` is UNVALIDATED until a read a minute later confirms it: re-run.
+  UNVALIDATED is not a pass: the read did not measure that repo.
 
 ## Not automated, and why
 

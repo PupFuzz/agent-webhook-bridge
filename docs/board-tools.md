@@ -28,7 +28,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none` / `unrouted` — the unassigned cards in no home lane, the PM's routing queue, card#11267) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused — except `unrouted`'s unassigned test, which the board has no term for and the bridge applies to the rows it returns; the window says `total`, `truncated` and `total_is_lower_bound`. |
-| `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA is terminal, you get ONE `ci_settled` event on your channel; if that does not happen before the wait expires, ONE `ci_await_expired`. A repo this bridge's GitHub token cannot read is refused (`repo_unreadable`), and a wait whose later read finds that ends at once with ONE `ci_await_unreadable` (card#11600). **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
+| `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA is terminal, you get ONE `ci_settled` event on your channel; if that does not happen before the wait expires, ONE `ci_await_expired`. A repo this bridge's GitHub token cannot read is refused (`repo_unreadable`), and a wait whose later read finds that ends with ONE `ci_await_unreadable` (card#11600; a `401` or `403` must be confirmed by a second read first). **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
 | `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it. Never touches another seat's. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
@@ -1323,7 +1323,7 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `install_fault.no_kanban_user` | `board_take_card` | your seat carries no kanban user id for this kanban host (or the install's kanban API base names no host), so a seat with no id is refused by name, never moved unassigned |
 | `install_fault.no_agent` | the ssh door (exit 1) | the forced command passed no `--agent` |
 | `repo_not_received` | `ci_await` | no agent on this install subscribes to that GitHub repo, so no `workflow_run` delivery would ever settle the await; nothing was stored |
-| `repo_unreadable` | `ci_await` | this bridge cannot read the repo's workflow runs on GitHub — no read token resolves for it, or GitHub answered `401`, `404` or a `403` that is not a rate limit — so no read would ever settle the await; nothing was stored. The message names the token's source and file and the operator's remedy (card#11600). Marked an install fault: no argument fixes it |
+| `repo_unreadable` | `ci_await` | this bridge cannot read the repo's workflow runs on GitHub — GitHub answered `404`, or no read token resolves for it for any reader (*Read failures* below) — so no read would ever settle the await; nothing was stored (on a refresh, your existing await on the head was removed, and the message says so). A `401` or `403` is never refused on one read. The message names the token's source and file and the operator's remedy (card#11600). Marked an install fault: no argument fixes it |
 | `too_many_awaits` | `ci_await` | a NEW await would take you past `BRIDGE_CI_AWAIT_MAX_PER_SEAT`; nothing was stored (a refresh is never refused for it) |
 | `install_fault.ci_await_config_invalid` | `ci_await` | a `BRIDGE_CI_AWAIT_*` setting (`TTL`, `MAX_PER_SEAT`, `READ_COOLDOWN`) is outside its range |
 | `install_fault.ci_await_store_unavailable` | `ci_await`, `ci_await_cancel` | the `ci_awaits` table is missing (`php artisan migrate`) or the database did not answer |
@@ -1886,8 +1886,10 @@ register nor cancel another's.
    bounds a seat that forgets to cancel, not a race.
 3. Stores the await, or **refreshes** yours on the same head (its expiry restarts; `refreshed: true`).
    One await per seat per head. A database failure here answers that nothing was stored
-   (`install_fault.ci_await_store_unavailable`), and so does step 4's `repo_unreadable`, which removes
-   the await again; anything else that fails after it answers `state: unmeasured` with the await kept.
+   (`install_fault.ci_await_store_unavailable`). Step 4's `repo_unreadable` removes the await again:
+   on a new await nothing is left stored, and on a refresh your EXISTING await on the head is removed,
+   which the refusal says. Anything else that fails after it answers `state: unmeasured` with the
+   await kept.
 4. **Reads the head's runs once**, so CI that already finished settles now — unless:
    - a read of the same head ANSWERED within `BRIDGE_CI_AWAIT_READ_COOLDOWN` seconds (default 60;
      `0` always reads): it answers `waiting` with `read_skipped: "cooldown"` and sends no request.
@@ -1896,6 +1898,8 @@ register nor cancel another's.
      with `read_skipped: "rate_limited"` and `retry_not_before`, sends no request, and never answers
      `settled`. Your await carries the limit's error and reset like the rest of the head's, so the
      sweep reads it after the reset;
+   - the head's last read answered a `401` or `403` that waits for its **confirming read** (see
+     *Read failures*): the same, with `read_skipped: "unreadable_unconfirmed"`;
    - **your agent's registrations have already caused `BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR` reads in
      the current window** (default 60; card#11283 / DL-461) — a FIXED one-hour window opened by the
      agent's first counted read, not a rolling hour, so up to twice the value can land around a
@@ -1907,10 +1911,12 @@ register nor cancel another's.
      spend the install's GitHub quota; a refusal would have sent that seat back to polling.
 
    Whatever this read answers, nothing depends on it: an await it leaves `waiting` is settled by a
-   later delivery's read or by the sweep. ⛔ **Except a read that says the repo cannot be read**
-   (card#11600; *Read failures* below names which): the call is **refused as `repo_unreadable`**,
-   your await is removed again — nothing is stored — and the refusal names the token's source and
-   file and what the operator does about it. Another seat's await on the same head gets
+   later delivery's read or by the sweep. ⛔ **Except a read that says at once that the repo cannot
+   be read** — a `404`, or no token (card#11600; *Read failures* below names which): the call is
+   **refused as `repo_unreadable`**, your await is removed again (step 3), and the refusal names the
+   token's source and file and what the operator does about it. A `401` or `403` is not refused: it
+   answers `unmeasured` with the await stored and `retry_not_before` a minute out, and the sweep's
+   confirming read decides. Another seat's await on the same head gets
    `ci_await_unreadable`. A read this step skipped (cooldown, rate limit, seat budget) changes
    nothing: the await is stored and waits, and the read that later finds the repo unreadable ends
    it with `ci_await_unreadable`.
@@ -1928,7 +1934,7 @@ The answer:
   "runs_total": 3,           // null when the read failed
   "runs_completed": 1,
   "read_error": "…",         // only on state: unmeasured
-  "read_skipped": "cooldown", // only when no read was made: "cooldown", "rate_limited" or "seat_read_limited"
+  "read_skipped": "cooldown", // only when no read was made: "cooldown", "rate_limited", "unreadable_unconfirmed" or "seat_read_limited"
   "retry_not_before": "…",   // when the head is rate limited (skipped, or your own read was), or your seat's read budget is spent — when a read is possible again
   "warning": "…"             // only when this bridge holds no stored workflow_run delivery from the repo
 }
@@ -1977,7 +1983,9 @@ needs the base branch's required contexts and the latest run per workflow, which
 definition, and the bridge does not restate it. On `ci_settled`, run `ci-read` **once** on the head.
 
 **Read failures.** A read that fails — a rate limit (a 429, or a 403 with `X-RateLimit-Remaining: 0`
-or with `Retry-After`, GitHub's secondary limit), any other status but the three below, no answer, a
+or with `Retry-After`, or whose body's message names a rate limit: GitHub's secondary limit can carry
+neither header, and then it waits at least a minute; the body is read for that test and never printed),
+any other status but those below, no answer, a
 read token THIS process could not read or determine (the sweep can run from `bridge:tick` as another
 OS user than the receiver's), a 200 whose body is not a run list, a list that does not end within the
 read's page bound, or a list that changed between pages — **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
@@ -1989,16 +1997,18 @@ one (seconds or an HTTP date — GitHub's secondary limit, which can also carry 
 out), else `X-RateLimit-Reset` only when `X-RateLimit-Remaining` is `0`. If no read ever answers, the
 await ends in `ci_await_expired` carrying the last error.
 
-⛔ **A read that says the repo cannot be read ends the wait at once** (card#11600): GitHub answered
-`401` (the token is dead), `404` (what GitHub answers a token that cannot see a private repo) or a
-`403` that is not a rate limit (the token lacks the permission), or no read token resolves for the
-repo for any reader (none is placed, the file is empty or not a file, it is group/world readable, or
-the coord credential store maps the repo to a key with no usable file). Reading again would answer
-the same, so instead of waiting out the expiry every await on that head gets **one**
-`ci_await_unreadable` — the same claim as a settle, so a concurrent read cannot send a second — and
-is forgotten; a registration that read it is refused as `repo_unreadable` instead (step 4).
-`bridge:check`'s `ci_await.awaits` leg reads each repo this install receives once, while any agent
-is served the CI tools, and FAILs naming a repo it cannot read.
+⛔ **A read that says the repo cannot be read ends the wait** (card#11600 / DL-468). At once: GitHub
+answered `404` (what it answers a token that cannot see a private repo), or no read token resolves for
+the repo for ANY reader — which `TokenFileFault`s count is DL-468 Decision 1's to state. After a
+**confirming read**: GitHub answered `401`, or a `403` that is not a rate limit. One such answer can be
+a secondary rate limit that names no reset, or a token rotated outside the bridge, so it is recorded on
+the head's awaits with `retry_not_before` 60 s out, and only a read at least that much later that
+answers the same status ends them; any other answer in between clears the record. Then every await on
+that head gets **one** `ci_await_unreadable` — the same claim as a settle, so a concurrent read cannot
+send a second — and is forgotten; a registration whose own read is a `404` or finds no token is
+refused as `repo_unreadable` instead (step 4). `bridge:check`'s `ci_await.awaits` leg reads each repo
+this install receives once, while any agent is served the CI tools: it FAILs on a `404` or no token,
+and a single `401` or `403` reads `unvalidated`, naming the status and the confirming read it needs.
 
 **Expiry.** An await lives `BRIDGE_CI_AWAIT_TTL` seconds (default 21600, 6 h; 60 to 604800 accepted —
 anything else refuses every `ci_await` as `install_fault.ci_await_config_invalid` and fails `bridge:check`,

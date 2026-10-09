@@ -125,9 +125,9 @@ terminal. One per await (inbox at least once, by line `id`, as above), never aft
 | `last_error` | why that last read failed, or null when it answered — a null here with a non-null `last_read_at` means CI was still running at that read |
 
 **`ci_await_unreadable`** (card#11600) — a read of the head's runs said this bridge cannot read the
-repo's workflow runs on GitHub: no read token resolves for it, or GitHub answered `401`, `404`, or a
-`403` that is not a rate limit. Reading again would answer the same, so the await is ended now
-rather than left to expire. One per await (inbox at least once, by line `id`, as above), and the
+repo's workflow runs on GitHub: GitHub answered `404` or no read token resolves for it, or GitHub
+answered `401` or a non-rate-limited `403` twice, at least a minute apart. Reading again would answer
+the same, so the await is ended rather than left to expire. One per await (inbox at least once, by line `id`, as above), and the
 await gets no other terminal event. Poll with `ci-read` there, and pass `remedy` to your operator. A
 registration whose own read finds this is refused as `repo_unreadable` instead, with no event.
 `subject_id` as above. `payload`:
@@ -136,7 +136,7 @@ registration whose own read finds this is refused as `repo_unreadable` instead, 
 |---|---|
 | `repo`, `head_sha`, `pr` | the awaited head |
 | `registered_at` | when the await was first stored (UTC, milliseconds) |
-| `status` | GitHub's HTTP status (`401`, `403` or `404`), or null when no read token resolved and no request was made |
+| `status` | GitHub's HTTP status (`404`, or a confirmed `401` / `403`), or null when no read token resolved and no request was made |
 | `error` | what the read answered, naming the token's source and file (never the token) |
 | `remedy` | what the operator does: map the repo in the coord credential store's `[git-credential-map]` to a key whose token can read it, or set the repo's `write_token_path` in `writeback.json` |
 

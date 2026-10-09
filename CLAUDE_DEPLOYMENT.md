@@ -152,9 +152,11 @@ php artisan bridge:check                          # REQUIRED STEP, after the pac
                                                   # is not a pass: the leg is unmeasured for that repo — grant the token
                                                   # admin:repo_hook to measure it (card#11579 / DL-466)
                                                   # ci_await.awaits FAILs on a repo this install receives whose
-                                                  # workflow runs its GitHub token cannot read — ci_await refuses it
-                                                  # as repo_unreadable (read only while some agent is served the CI
-                                                  # tools): map the repo in the coord credential store's
+                                                  # workflow runs its GitHub token cannot read (a 404, or no token;
+                                                  # a single 401/403 is UNVALIDATED until a re-run a minute later
+                                                  # confirms it) — ci_await refuses it as repo_unreadable (read only
+                                                  # while some agent is served the CI tools): map the repo in the
+                                                  # coord credential store's
                                                   # [git-credential-map] to a key that can read it, or set its
                                                   # write_token_path in writeback.json (card#11600 / DL-468)
 sudo systemctl reload apache2 php8.5-fpm
@@ -286,9 +288,11 @@ php artisan bridge:check                           # VALIDATE BEFORE serving —
                                                   # pass: the leg is unmeasured for that repo — grant the token
                                                   # admin:repo_hook to measure it (card#11579 / DL-466)
                                                   # ci_await.awaits FAILs on a repo this install receives whose
-                                                  # workflow runs its GitHub token cannot read — ci_await refuses it
-                                                  # as repo_unreadable (read only while some agent is served the CI
-                                                  # tools): map the repo in the coord credential store's
+                                                  # workflow runs its GitHub token cannot read (a 404, or no token;
+                                                  # a single 401/403 is UNVALIDATED until a re-run a minute later
+                                                  # confirms it) — ci_await refuses it as repo_unreadable (read only
+                                                  # while some agent is served the CI tools): map the repo in the
+                                                  # coord credential store's
                                                   # [git-credential-map] to a key that can read it, or set its
                                                   # write_token_path in writeback.json (card#11600 / DL-468)
 sudo systemctl reload php8.5-fpm                  # recycle workers so they re-read config + agent YAMLs
