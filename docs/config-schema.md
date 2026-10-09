@@ -93,7 +93,7 @@ Each entry:
 |---|---|---|---|
 | `provider` | `kanban` \| `github` | — | Must have an adapter (`bridge:check` **fails** on an unknown provider, DL-015). |
 | `scopes` | list | — | kanban board ids (`[5]`) / GitHub `org/repo` slugs. A scope failing `ScopeId` validation is rejected (it's the path-traversal boundary). |
-| `event_filter` | list | `[]` (all) | e.g. `["task.*","comment.*"]`. |
+| `event_filter` | list | `[]` (all) | e.g. `["task.*","comment.*"]`. Sent to kanban as the board webhook subscription's filter by `bridge:provision` (`--reconcile` replaces a subscription whose live filter differs); the bridge does not filter on receipt. A kanban scope that should deliver card comments to the assigned seat lists `comment.created` (or `[]`) — [`consumer-guide.md`](consumer-guide.md) § *Card comments* (DL-467). |
 
 Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Only `kanban` is API-provisionable (`bridge:provision` skips github with a non-zero exit).
 
