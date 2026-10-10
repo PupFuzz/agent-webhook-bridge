@@ -33,8 +33,16 @@ final class AuthoredIntentPush
      */
     public function send(Intent $intent, string $agentName): void
     {
-        $agent = AgentConfig::load($agentName, (string) config('bridge.config_dir'));
+        $this->sendTo($intent, AgentConfig::load($agentName, (string) config('bridge.config_dir')));
+    }
 
+    /**
+     * {@see send()} for a caller already holding the seat's loaded config.
+     *
+     * @throws HandlerException|ConfigException
+     */
+    public function sendTo(Intent $intent, AgentConfig $agent): void
+    {
         $this->handlers->channelPush()->handle(
             ReactionTarget::make(
                 handler: HandlerRegistry::CHANNEL_PUSH,

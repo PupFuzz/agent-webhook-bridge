@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Classifiers;
 
+use App\Bridge\CiAwait\CiHeadRunTracker;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\Actor;
@@ -9,6 +10,7 @@ use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Handlers\CiHeadAggregateHandler;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
@@ -61,6 +63,9 @@ use App\Bridge\Writeback\WritebackMapping;
  *     CI/push a NON-WAKE — it flows through `impl_non_wake_disposition` rather than being
  *     dropped before the gate, so `inbox_stage` still records it. Keys on WHO, never on
  *     the conclusion: a bot run is non-actionable for an impl seat green or red.
+ *     Under `inbox_stage`, `impl_ci_delivery: aggregate` (the default, card#11667) attaches
+ *     a `ci_head_aggregate` target to every completed run and stages no per-run `impl_ci`
+ *     for one in AGGREGATED_CONCLUSIONS (or a `cancelled` run a newer run supersedes) — the head's one `ci_settled` carries it instead.
  *
  * WAKE-EMIT INVARIANT (DL-191): every family hand-emits its `channel_push` through
  * {@see wakePush()}, which suppresses the push on a `route_intents:true` channel —
@@ -223,6 +228,20 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * provenance cue when its workflow NAME matches `provenance_patterns`.
      */
     private const DEFAULT_BENIGN_CONCLUSIONS = ['success', 'cancelled', 'skipped', 'neutral'];
+
+    /**
+     * The completed-run conclusions whose per-run `impl_ci` is NOT staged under
+     * `impl_ci_delivery: aggregate` (card#11667, sola-pm on rt#614): the head's one `ci_settled`
+     * carries them. A `cancelled` run is aggregated away ONLY while a newer run of its workflow on
+     * the head supersedes it ({@see concludedAggregated()}); an unsuperseded one keeps its own
+     * `impl_ci`, because the report that it happened must not rest on the best-effort aggregate
+     * alone. A fixed set, not
+     * {@see DEFAULT_BENIGN_CONCLUSIONS}' configurable one: `benign_conclusions` decides what WAKES,
+     * and widening it must not start hiding runs from the inbox. Any conclusion outside it — a
+     * failure the deny-list or `ci_failure_workflow_patterns` made a non-wake, or one GitHub adds
+     * later — keeps its per-run `impl_ci`.
+     */
+    private const AGGREGATED_CONCLUSIONS = ['success', 'skipped', 'neutral'];
 
     /**
      * Branches whose non-wake push is still staged — and so routed — on a
@@ -791,12 +810,19 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             }
         }
 
+        // card#11667: the per-head aggregate rides every completed run this agent is staged CI
+        // for — which is what `inbox_stage` decides — whatever the run's conclusion or actor.
+        $inboxStage = $cfg->string('impl_non_wake_disposition', 'drop') === 'inbox_stage';
+        $aggregate = $inboxStage && $cfg->implCiDelivery === ClassifierConfig::IMPL_CI_AGGREGATE
+            ? $this->ciHeadAggregateTargets($eventType, $payload, $ctx)
+            : [];
+
         if ($signal !== null) {
             // Wake-worthy event → surgical channel_push (suppressed on a route_intents
             // channel by wakePush(), DL-191). The Intent is staged either way.
             $intent = $this->makeImplIntent($signal, $ctx, $cfg);
 
-            return new ClassifyResult(intents: [$intent], targets: $this->wakePush($intent, $ctx));
+            return new ClassifyResult(intents: [$intent], targets: [...$this->wakePush($intent, $ctx), ...$aggregate]);
         }
 
         // Non-wake terminal impl event. DEFAULT `drop` = gate-drop (lean inbox — no
@@ -804,7 +830,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // SessionStart history: build a normal Intent with NO channel_push (a
         // broad-wake install routes it via the channel's route_intents; a surgical
         // install stays on `drop` and never reaches here).
-        if ($cfg->string('impl_non_wake_disposition', 'drop') !== 'inbox_stage') {
+        if (! $inboxStage) {
             return null;
         }
         $staged = null;
@@ -819,8 +845,55 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         if ($staged === null) {
             return null; // a branch-delete push / a non-terminal workflow_run is not inbox-worthy
         }
+        // Under `impl_ci_delivery: aggregate` a run that ended in one of
+        // AGGREGATED_CONCLUSIONS is carried by the head's one `ci_settled` instead of its own
+        // `impl_ci`. Any other conclusion keeps its per-run `impl_ci`.
+        if ($aggregate !== [] && $this->concludedAggregated($payload, $ctx->scopeId)) {
+            return new ClassifyResult(targets: $aggregate);
+        }
 
-        return new ClassifyResult(intents: [$this->makeImplIntent($staged, $ctx, $cfg)], targets: []);
+        return new ClassifyResult(intents: [$this->makeImplIntent($staged, $ctx, $cfg)], targets: $aggregate);
+    }
+
+    /**
+     * The `ci_head_aggregate` target for a COMPLETED `workflow_run` on a full head SHA, or none
+     * (card#11667). A run that is not complete cannot settle its head, and a head the tracker
+     * cannot key (no 40-hex `head_sha`) is never tracked.
+     *
+     * @param  array<mixed>  $payload
+     * @return list<ReactionTarget>
+     */
+    private function ciHeadAggregateTargets(string $eventType, array $payload, ClassifyContext $ctx): array
+    {
+        $run = is_array($payload['workflow_run'] ?? null) ? $payload['workflow_run'] : [];
+        $headSha = $run['head_sha'] ?? null;
+        if (! str_starts_with($eventType, 'workflow_run.') || ($run['status'] ?? null) !== 'completed'
+            || ! is_string($headSha) || preg_match('/\A[0-9a-f]{40}\z/', $headSha) !== 1) {
+            return [];
+        }
+
+        return [ReactionTarget::make(
+            handler: CiHeadAggregateHandler::NAME,
+            targetId: "ci:{$ctx->scopeId}@{$headSha}",
+            payload: ['repo' => $ctx->scopeId, 'head_sha' => $headSha],
+        )];
+    }
+
+    /** @param  array<mixed>  $payload */
+    private function concludedAggregated(array $payload, string $scopeId): bool
+    {
+        $run = is_array($payload['workflow_run'] ?? null) ? $payload['workflow_run'] : [];
+        $conclusion = is_string($run['conclusion'] ?? null) ? strtolower($run['conclusion']) : '';
+        if (in_array($conclusion, self::AGGREGATED_CONCLUSIONS, true)) {
+            return true;
+        }
+
+        // A cancelled run is carried by the aggregate only once the tracker shows a newer run of its
+        // workflow. The tracker is written before dispatch, so this run is already in it; a run it
+        // could not record, or a successor whose `requested` has not arrived yet, reads as
+        // unsuperseded and keeps its `impl_ci` — an extra event, never a missing one.
+        return $conclusion === 'cancelled' && is_int($run['id'] ?? null) && is_string($run['head_sha'] ?? null)
+            && CiHeadRunTracker::isSuperseded($scopeId, $run['head_sha'], $run['id']);
     }
 
     /**

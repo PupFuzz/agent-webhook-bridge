@@ -95,21 +95,48 @@ carry `provider: "bridge"` and a null actor. `seat_idle_nudge` and `pm_standup` 
 `channel_push` **only** and are never staged to the inbox; `ci_settled`, `ci_await_unreadable` and `ci_await_expired` are
 **staged to the inbox first and then pushed**, because the await they answer is deleted when they
 are sent and nothing else would carry them to a seat whose channel was down (their line `id` is
-defined in [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`*).
+defined in [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`*). The per-head
+aggregate `ci_settled` is always staged, and pushed only where its entry below says.
 
-**`ci_settled`** (card#11200 / DL-452) — every workflow run GitHub lists for a head this seat
-registered with `ci_await` is terminal. One terminal event per await, written to the inbox at least
-once — collapse duplicates on the line `id` — and pushed live once; the live push carries no line id, so a
-seat reading both its channel and `bridge:inbox` sees it on each. ⛔ **It is not a verdict:** run
-`ci-read` once on the head for green/red ([`board-tools.md`](board-tools.md) § *`ci_await` and
-`ci_await_cancel`* owns why and the limits). `subject_id` is `ci:<repo>@<head_sha>`. `payload`:
+**`ci_settled`** (card#11200 / DL-452; card#11667 / DL-470) — a head's CI is settled: at least one
+workflow run, and the LATEST run of every workflow on it (by `workflow_id`, ranked by `run_number`
+then id, as `ci-read` ranks them) is complete. An older run of a workflow with a newer run on the head
+is *superseded*: it holds nothing open and decides nothing. Two senders, one event:
+
+- **Your `ci_await`** — for a head you registered; decided on a read of GitHub's run list. One terminal
+  event per await.
+- **The per-head aggregate** — sent to an agent whose `impl-ci-wake` family stages CI
+  (`impl_non_wake_disposition: inbox_stage`) under `impl_ci_delivery: aggregate`, the default, for
+  every head of its repos, in place of a per-run `impl_ci` for each run that ended `success`,
+  `skipped` or `neutral`, or `cancelled` with a newer run of its workflow on the head
+  ([`config-schema.md`](config-schema.md)). Decided from the
+  `workflow_run` deliveries the bridge received — no GitHub read. Pushed live where `impl_ci` was
+  (`channel.route_intents: true`) or where you hold a `ci_await` on the head; staged to the inbox either
+  way. A failed run still sends its own `impl_ci_failed` at once, and a `cancelled` run with no newer run
+  of its workflow still sends its own `impl_ci` (the head's `ci_settled` follows when it settles — red, unless a newer run of that workflow supersedes it — and is itself best-effort).
+  ⚠ **The aggregate is per-head and best-effort.** It is edge-triggered from `workflow_run` deliveries
+  and nothing retries it: a green, skipped or neutral head whose last completion was lost, gated for you
+  (echo / signal, DL-203) or not recorded leaves **no record of that head**. Only a failure or an
+  unsuperseded cancellation is reported per run; for any other head, `ci_await` (level-triggered, reads
+  GitHub) or `ci-read` is how you ask. A run that starts after a head settled —
+  an `on: workflow_run` follow-on, a re-run — settles the head again once it completes, and sends a
+  second `ci_settled`; the same settled state is never sent to you twice, by either sender.
+
+Written to the inbox at least once — collapse duplicates on the line `id` — and pushed live once; the
+live push carries no line id, so a seat reading both its channel and `bridge:inbox` sees it on each.
+⛔ **`runs_verdict` is run-level:** it reads run conclusions only, while `ci-read` also reads jobs and
+the base branch's required contexts — run `ci-read` once on the head before acting on green
+([`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`* owns the limits).
+`subject_id` is `ci:<repo>@<head_sha>`. `payload`:
 
 | key | meaning |
 |---|---|
-| `repo`, `head_sha`, `pr` | the awaited head, as registered (`pr` null when none was given) |
-| `runs` | every run on the list, each `{workflow, conclusion, html_url}` — `workflow` is the run's workflow name, `conclusion` GitHub's string for it |
+| `repo`, `head_sha`, `pr` | the head; `pr` as registered for an await (null when none was given), and for the aggregate the PR the runs' deliveries named, else the answered await's, else null |
+| `runs` | every run seen on the head, each `{workflow, conclusion, html_url, superseded}` — `workflow` is the run's workflow name, `conclusion` GitHub's string for it, `superseded` true for a run a newer run of its workflow decides instead |
 | `all_terminal` | always `true` |
-| `measured_at` | when the bridge read the run list (UTC, milliseconds) |
+| `runs_verdict` | `green` when every deciding run concluded `success`, `neutral` or `skipped` (`ci-read`'s `BENIGN_CONCLUSIONS`), else `red` — a `cancelled` run with no newer run of its workflow is red, as is a conclusion GitHub adds later |
+| `non_success_runs` | each deciding run whose conclusion is neither `success` nor `skipped`, `{workflow, conclusion, html_url}` — what a red `ci_settled` asks you to look at; the `summary` names them with their urls too |
+| `measured_at` | when the bridge read the run list, or decided the aggregate (UTC, milliseconds) |
 
 There is no `late_runs_possible` key; board-tools.md § *Limits* says why.
 

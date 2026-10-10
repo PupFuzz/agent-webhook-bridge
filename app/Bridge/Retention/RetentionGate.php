@@ -173,6 +173,7 @@ final class RetentionGate
                 'payloads_nulled' => $result->payloadsNulled,
                 'inbox_lines_removed' => $result->inboxLinesRemoved,
                 'inbox_files_trimmed' => $result->inboxFilesTrimmed,
+                'ci_head_rows_deleted' => $result->ciHeadRowsDeleted,
             ]);
         });
     }

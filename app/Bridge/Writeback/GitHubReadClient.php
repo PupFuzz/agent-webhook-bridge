@@ -570,7 +570,7 @@ final class GitHubReadClient
      * Each row carries the run's `run_attempt` (null when the body names none), so a caller can
      * tell a delivery for an earlier attempt of a re-run from one for the attempt now listed.
      *
-     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
+     * @return list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      */
     public function workflowRunsForHead(string $repo, string $headSha): array
     {
@@ -624,7 +624,7 @@ final class GitHubReadClient
     /**
      * One page of {@see self::workflowRunsForHead()}'s walk: its `total_count` and its runs.
      *
-     * @return array{0: int, 1: list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>}
+     * @return array{0: int, 1: list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>}
      */
     private function workflowRunsPage(string $repo, string $headSha, int $page): array
     {
@@ -647,6 +647,8 @@ final class GitHubReadClient
             $runs[] = [
                 'id' => $run['id'],
                 'workflow' => is_string($run['name'] ?? null) ? $run['name'] : '',
+                'workflow_id' => is_int($run['workflow_id'] ?? null) ? $run['workflow_id'] : null,
+                'run_number' => is_int($run['run_number'] ?? null) ? $run['run_number'] : null,
                 'status' => $run['status'],
                 'conclusion' => is_string($run['conclusion'] ?? null) ? $run['conclusion'] : null,
                 'html_url' => is_string($run['html_url'] ?? null) ? $run['html_url'] : '',

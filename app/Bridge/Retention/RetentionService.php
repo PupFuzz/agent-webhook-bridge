@@ -2,8 +2,12 @@
 
 namespace App\Bridge\Retention;
 
+use App\Bridge\CiAwait\CiHeadSettlementLedger;
 use App\Bridge\Support\BridgePaths;
+use App\Models\CiHeadRun;
 use App\Models\WebhookEvent;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 
 /**
@@ -79,6 +83,7 @@ final class RetentionService
         $linesRemoved = null;
         $filesTrimmed = null;
         $payloadsNulled = null;
+        $ciHeadRowsDeleted = null;
 
         if ($olderThanDays !== null) {
             $cutoff = now()->subDays($olderThanDays);
@@ -102,6 +107,7 @@ final class RetentionService
             }
 
             [$linesRemoved, $filesTrimmed] = $this->pruneInboxFiles((float) $cutoff->format('U.u'), $dry);
+            $ciHeadRowsDeleted = $this->pruneCiHeadRows($cutoff, $dry, $batch);
         }
 
         if ($nullPayloadsOlderThanDays !== null) {
@@ -121,7 +127,36 @@ final class RetentionService
             }
         }
 
-        return new RetentionResult($eventsDeleted, $linesRemoved, $filesTrimmed, $payloadsNulled);
+        return new RetentionResult($eventsDeleted, $linesRemoved, $filesTrimmed, $payloadsNulled, $ciHeadRowsDeleted);
+    }
+
+    /**
+     * The per-head aggregate's bookkeeping (card#11667) on the events' window: tracked runs last
+     * touched before the cutoff, and settled-state rows written before it. Each table is bounded
+     * by `$batch` like the events leg. A head whose runs are pruned and that then runs again is
+     * judged on the runs tracked from then on — a new state, so never a resend of an old one.
+     */
+    private function pruneCiHeadRows(Carbon $cutoff, bool $dry, ?int $batch): int
+    {
+        $deleted = 0;
+        foreach ([[(new CiHeadRun)->getTable(), 'coalesce(updated_at, created_at) < ?'], [CiHeadSettlementLedger::TABLE, 'created_at < ?']] as [$table, $older]) {
+            $rows = DB::table($table)->whereRaw($older, [$cutoff]);
+            if ($batch === null) {
+                $deleted += (clone $rows)->count();
+                if (! $dry) {
+                    $rows->delete();
+                }
+
+                continue;
+            }
+            $ids = (clone $rows)->orderBy('id')->limit($batch)->pluck('id')->all();
+            $deleted += count($ids);
+            if (! $dry && $ids !== []) {
+                DB::table($table)->whereIn('id', $ids)->delete();
+            }
+        }
+
+        return $deleted;
     }
 
     /**

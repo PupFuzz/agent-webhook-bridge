@@ -51,6 +51,20 @@ class ClassifierConfigTest extends TestCase
         $this->assertSame([], $cfg->section('missing_section'));
     }
 
+    public function test_impl_ci_delivery_defaults_to_aggregate_and_accepts_per_run(): void
+    {
+        $this->assertSame(ClassifierConfig::IMPL_CI_AGGREGATE, ClassifierConfig::empty()->implCiDelivery);
+        $this->assertSame(ClassifierConfig::IMPL_CI_AGGREGATE, ClassifierConfig::fromClassifierSection(['config' => ['families' => ['impl-ci-wake']]])->implCiDelivery);
+        $this->assertSame(ClassifierConfig::IMPL_CI_PER_RUN, ClassifierConfig::fromClassifierSection(['config' => ['impl_ci_delivery' => 'per_run']])->implCiDelivery);
+    }
+
+    public function test_an_unknown_impl_ci_delivery_is_refused_where_the_config_loads(): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("classifier.config.impl_ci_delivery is 'per-run' — it must be 'aggregate' (the default) or 'per_run'");
+        ClassifierConfig::fromClassifierSection(['config' => ['impl_ci_delivery' => 'per-run']]);
+    }
+
     public function test_section_non_mapping_throws_with_the_prefixed_label(): void
     {
         $cfg = ClassifierConfig::fromClassifierSection(['config' => ['impl_ci_wake' => 'scalar']]);
