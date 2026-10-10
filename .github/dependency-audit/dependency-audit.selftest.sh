@@ -469,6 +469,14 @@ PATCHED_TABLE='>=1.13.0#>=1.20.0#1.20.0#clean#axios GHSA-542g-h47m-68v8: EQUAL t
 all versions after 1.0#1.5.3#2.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): a word can name a bound with no version, so text carrying one is not cleared by its fix
 > = 1.0.0 || > = 2.1.3#2.1.3#2.2.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): the fix named other than as an exclusive upper bound can begin an interval at it, so not cleared
  #1.5.3#2.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): a range naming no version is not cleared by its fix
+1.0.0-2.5.0#1.5.3#2.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604 r2): a span written without spaces reads as one version whose tag is off the belowtag list, so not cleared
+1.0.0-and-later#1.2.0#5.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604 r2): a word joined to a version by hyphens reads as a tag off the belowtag list, so not cleared
+1.0.0-2.x#1.2.0#5.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604 r2): a partial upper end joined without spaces reads as a tag off the belowtag list, so not cleared
+1.0.0+#1.2.0#5.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604 r2): a trailing plus reads as build metadata, so not cleared
+=< 1.5.3#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11604 r2): =< is inclusive, so the fix it names is not an exclusive bound
+< = 1.5.3#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11604 r2): a spaced <= is inclusive, so the fix it names is not an exclusive bound
+>= 1.0.0, <1.5.3 =#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11604 r2): an = after the fix makes its < inclusive, so not an exclusive bound
+> = 1.0.0#1.5.3#9.0.0#clean#SYNTHETIC (card 11604 r2): an open interval beginning below the fix is cleared at or above it, as a read open range is by its patched text
 1.17.0#>=1.20.0#1.19.0#RANGE-UNPARSEABLE#axios GHSA-r4gj-5m52-g5wh: a bare version is not read, below the fix; this table hands in no reviewed record (§G does)
 1.17.0#NULL#1.20.0#RANGE-UNPARSEABLE#SYNTHETIC: a bare version with no patched version is not read either
 <6.20.45,>=7,<7.30.7,>=8,<8.83.28,>=9,<9.52.17,>=10,<10.48.23,>=11,<11.31.0#6.20.45,7.30.7,8.83.28,9.52.17,10.48.23,11.31.0#8.83.28#RANGE-UNPARSEABLE#laravel GHSA-gv7v-rgg6-548h: multi-line, at its own line fix — not read, so its patched text never clears it; this table hands in no reviewed record (§G does)
@@ -1046,14 +1054,26 @@ range_mutant "a range naming no version cleared by its fix" \
   's/| (\$ns | length) > 0$/| true/' \
   1 "SYNTHETIC (card 11604): a range naming no version is not cleared by its fix" clean patched_rows
 range_mutant "a named version equal to the fix accepted whatever its operator" \
-  's/(\$c < 0 or (\$c == 0 and \.\[0\] == "<"))/($c <= 0)/' \
-  1 "SYNTHETIC (card 11604): the fix named other than as an exclusive upper bound can begin an interval at it, so not cleared" clean patched_rows
+  's/^\( *\)and (\$m\[0\] \/\/ "" | gsub(.*)) == "<"$/\1and true/; s/^\( *\)and \$m\[2\] == null))))));$/\1and true))))));/' \
+  2 "SYNTHETIC (card 11604): the fix named other than as an exclusive upper bound can begin an interval at it, so not cleared" clean patched_rows
 range_mutant "a named version above the fix accepted" \
-  's/(\$c < 0 or (\$c == 0 and \.\[0\] == "<"))/true/' \
+  's/and (\$c < 0$/and (true/' \
   1 "SYNTHETIC (r3 review): a single pipe, naming 2.0.0 above the fix — not read, so its patched text never clears it; this table hands in no reviewed record (§G does)" clean patched_rows
 range_mutant "a named version that cannot be compared with the fix accepted" \
-  's/| \$c != null and (\$c < 0 or/| ($c < 0 or/' \
+  's/^\( *\)| \$c != null$/\1| true/' \
   1 "SYNTHETIC (card 11604): a tagged version on a higher core is not decided (the rule reads only an untagged one), and the text names a version that cannot be compared with the fix" clean patched_rows
+range_mutant "a named version with a tag off the belowtag list accepted (card 11604 r2)" \
+  's/^\( *\)and ((\$n\.pre | not) or (\$n | belowtag))$/\1and true/' \
+  1 "SYNTHETIC (card 11604 r2): a span written without spaces reads as one version whose tag is off the belowtag list, so not cleared" clean patched_rows
+range_mutant "a named version carrying build metadata accepted (card 11604 r2)" \
+  's/^\( *\)and (\$m\[1\] | test(.*) | not)$/\1and true/' \
+  1 "SYNTHETIC (card 11604 r2): a trailing plus reads as build metadata, so not cleared" clean patched_rows
+range_mutant "any operator carrying < accepted on the fix (card 11604 r2)" \
+  's/^\( *\)and (\$m\[0\] \/\/ "" | gsub(.*)) == "<"$/\1and ($m[0] \/\/ "" | test("<"))/' \
+  1 "SYNTHETIC (card 11604 r2): =< is inclusive, so the fix it names is not an exclusive bound" clean patched_rows
+range_mutant "an = after the fix ignored (card 11604 r2)" \
+  's/^\( *\)and \$m\[2\] == null))))));$/\1and true))))));/' \
+  1 "SYNTHETIC (card 11604 r2): an = after the fix makes its < inclusive, so not an exclusive bound" clean patched_rows
 range_mutant "an unordered pair never cleared (the higher-core reading removed)" \
   's/^\( *\)elif (ranges_of(\$range; true) | .*$/\1elif false then "clean"/' \
   1 "express GHSA-rv95-896h-c2vc (card 11604): an untagged version on a higher core than both bounds, whose tags cannot be ordered" RANGE-UNPARSEABLE patched_rows
