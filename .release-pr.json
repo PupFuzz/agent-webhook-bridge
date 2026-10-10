@@ -8,7 +8,7 @@
   "artifacts": [
     "VERSION → {{version}}",
     "docs/CHANGELOG.md → [{{version}}] section",
-    "docs/RELEASES.md § Recent releases row"
+    "docs/recent-changes.md § Recent releases row"
   ],
   "retired_artifacts": [
     "CLAUDE.md § Recent releases row"

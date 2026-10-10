@@ -11,7 +11,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ### Changed
 
 - **card#11669** — **Docs and release config only: `CLAUDE.md` is cut to what a session needs on every turn, and the rest moves to the doc that owns it.** No runtime change.
-  - The Recent releases table moves to the new `docs/RELEASES.md`, and the release artifact moves with it: `.release-pr.json` now declares `docs/RELEASES.md § Recent releases row` and lists the `CLAUDE.md` entry under `retired_artifacts`. `VERSIONING.md` step 5 names the new file. A release PR now adds its row to `docs/RELEASES.md`.
+  - The Recent releases table moves to the new `docs/recent-changes.md`, and the release artifact moves with it: `.release-pr.json` now declares `docs/recent-changes.md § Recent releases row` and lists the `CLAUDE.md` entry under `retired_artifacts`. `VERSIONING.md` step 5 names the new file. A release PR now adds its row to `docs/recent-changes.md`.
   - Critical paths moves to `CLAUDE_ARCHITECTURE.md` § Critical paths. The coord and toolkit parity runs, the client-capabilities generator and the client-pack build check move to `CLAUDE_TESTING.md` § Tool runs outside the suite. `bridge:writeback-exposure` joins `CLAUDE_DEPLOYMENT.md` § Commands, which already listed every other operator command `CLAUDE.md` repeated.
   - Text that repeated another source is deleted, and `CLAUDE.md` points to that source instead: `CLAUDE_DECISIONS.md`'s header, `VERSIONING.md` steps 10–12, `CLAUDE_DEPLOYMENT.md` § Commands, the seat-tool docs, the docs the subfile index summarises, and the user-level engineering canon (standing rule 9).
 

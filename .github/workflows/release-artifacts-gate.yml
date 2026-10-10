@@ -3,7 +3,7 @@
 # reading a proper subset cannot fail on the member it never reads. `changelog-gate.yml`
 # (DL-276) reads two of this repo's three declared members, `VERSION` and the
 # `docs/CHANGELOG.md [<VERSION>]` section, plus the release-body size limit that this action
-# does not check; the third, the Recent releases row (in `CLAUDE.md` then, in `docs/RELEASES.md`
+# does not check; the third, the Recent releases row (in `CLAUDE.md` then, in `docs/recent-changes.md`
 # since card#11669), is read by nothing. The two gates COMPOSE — neither replaces the other.
 # This one takes its members from `.release-pr.json`'s `artifacts` array, which until now
 # merely PRINTED them as a checklist, so a fourth member is guarded by DECLARING it rather
