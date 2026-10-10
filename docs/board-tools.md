@@ -2056,7 +2056,9 @@ that pass reads and finds finished is settled instead. The await is **kept**: it
 `ci_await_unreadable` or `ci_await_expired` — still follows. Once per await: the send stamps
 `overdue_sent_at` in the transaction that stages the line, only where it is still null, so concurrent
 passes send one, and no refresh re-arms it. An `overdue_at` later than `expires_at` never fires;
-the expiry comes first. ⚠ A head timed from history can run long for reasons the bridge cannot
+the expiry comes first. Nor does one for a head the per-head aggregate has already sent you a `ci_settled`
+for (it leaves your await registered, DL-470 Decision 6): you were told the head settled, and the await's
+own settle still follows. ⚠ A head timed from history can run long for reasons the bridge cannot
 see in its rows — a lost `requested` delivery starts its time late, a redelivered `completed` ends it
 late — and the percentile leaves such a head out only once there are at least 20 samples.
 

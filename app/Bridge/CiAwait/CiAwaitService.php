@@ -454,6 +454,7 @@ final class CiAwaitService
     {
         $now = Carbon::now();
         $due = CiAwait::query()->where('overdue_at', '<=', $now)->whereNull('overdue_sent_at')->where('expires_at', '>', $now)
+            ->whereNotExists(fn ($q) => self::settlementSentTo($q))
             ->where(fn ($q) => $q->whereNull('emit_failed_at')->orWhere('emit_failed_at', '<', $now->copy()->subSeconds($retryAfterSeconds)))
             ->orderByRaw('emit_failed_at is not null')->orderBy('overdue_at')->orderBy('id')
             ->limit($limit)->get();
@@ -466,6 +467,21 @@ final class CiAwaitService
         }
 
         return ['emitted' => $emitted, 'failed' => $failed];
+    }
+
+    /**
+     * Narrows `$q`, a subquery of `ci_awaits`, to awaits whose seat was already sent a `ci_settled`
+     * for their head (`ci_head_settlements`, card#11667). The per-head aggregate leaves the await in
+     * place, so it can still be registered after the seat was told the head settled; an overdue
+     * event then would tell it to check CI it has just been told about. The await's own settle still
+     * follows, and the seat's `ci_settled` already carries what the bridge saw.
+     */
+    private static function settlementSentTo(\Illuminate\Database\Query\Builder $q): \Illuminate\Database\Query\Builder
+    {
+        return $q->select(DB::raw(1))->from(CiHeadSettlementLedger::TABLE)
+            ->whereColumn(CiHeadSettlementLedger::TABLE.'.agent', 'ci_awaits.agent')
+            ->whereColumn(CiHeadSettlementLedger::TABLE.'.repo', 'ci_awaits.repo')
+            ->whereColumn(CiHeadSettlementLedger::TABLE.'.head_sha', 'ci_awaits.head_sha');
     }
 
     /** {@see emitOverdue()}'s claim and send for one await. Never throws. */
@@ -490,7 +506,8 @@ final class CiAwaitService
 
         try {
             $claimed = DB::transaction(function () use ($await, $intent, $now): bool {
-                if (CiAwait::query()->whereKey($await->id)->whereNull('overdue_sent_at')->update(['overdue_sent_at' => $now, 'emit_failed_at' => null]) !== 1) {
+                if (CiAwait::query()->whereKey($await->id)->whereNull('overdue_sent_at')->whereNotExists(fn ($q) => self::settlementSentTo($q))
+                    ->update(['overdue_sent_at' => $now, 'emit_failed_at' => null]) !== 1) {
                     return false;
                 }
                 $this->intents->stageAuthored($await->agent, self::OVERDUE.":{$await->uuid}", microtime(true), $intent);

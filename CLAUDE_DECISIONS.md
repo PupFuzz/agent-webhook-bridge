@@ -8713,6 +8713,7 @@ diagnostic on the failure path.
   2. **A repo whose webhook does not send Workflow runs has no history** and always gets the default.
   3. **Granularity is the sweep interval** (300 s by default): the event arrives at the first pass at or after the deadline.
   4. **A deadline past the expiry never fires**; the expiry comes first.
+  4b. **No overdue event once the seat was sent a `ci_settled` for the head.** The aggregate leaves the await registered (DL-470 Decision 6), so the sweep skips an await when `ci_head_settlements` holds any state for its (agent, repo, head), in the selecting query and again in the claim's UPDATE. The seat has been told the head settled, possibly on a partial view; the await's own settle still follows. Nothing is stamped, so the skip costs one indexed lookup per pass until the await ends. Residual: an aggregate that commits between the claim's check and its commit can still be followed by one overdue event.
   5. **An await stored before the migration** has no deadline until it is refreshed, and gets no overdue event.
 
 - **Alternatives rejected.** (a) *Derive the deadline from a GitHub runs read of past heads*: GitHub quota per registration, which this event exists to save. (b) *A fixed default only*: the card asks for the repo's normal time, and repos differ by an order of magnitude. (c) *Make the overdue event terminal*: the seat would lose the `ci_settled` that follows a slow but successful run. (d) *Re-arm on refresh*: a seat refreshing its wait would be told twice for one head.

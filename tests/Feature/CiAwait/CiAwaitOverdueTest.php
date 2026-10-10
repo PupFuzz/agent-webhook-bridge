@@ -3,6 +3,7 @@
 namespace Tests\Feature\CiAwait;
 
 use App\Bridge\CiAwait\CiAwaitService;
+use App\Bridge\CiAwait\CiHeadSettlementLedger;
 use App\Bridge\CiAwait\OverdueDeadline;
 use App\Bridge\ClientUpdate\CallerReport;
 use App\Bridge\Scheduling\Handlers\CiAwaitSweepJob;
@@ -166,6 +167,27 @@ class CiAwaitOverdueTest extends TestCase
         $this->sweepAt('2026-10-10T10:10:00.000Z');
 
         $this->assertSame(['ci_settled'], $this->kinds(), 'the pass reads stale heads before it looks for overdue awaits');
+    }
+
+    public function test_an_await_whose_head_the_aggregate_already_settled_for_the_seat_gets_no_overdue_event(): void
+    {
+        $this->register(['overdue_after_seconds' => 600]);
+        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, str_repeat('a', 40));
+
+        $this->sweepAt('2026-10-10T10:10:00.000Z');
+
+        $this->assertSame([], $this->kinds(), 'the seat was already sent a ci_settled for this head; the await stays registered');
+        $this->assertNull(CiAwait::query()->firstOrFail()->overdue_sent_at, 'nothing was claimed, so no stamp');
+    }
+
+    public function test_another_seats_settlement_of_the_head_does_not_silence_this_seats_overdue_event(): void
+    {
+        $this->register(['overdue_after_seconds' => 600]);
+        CiHeadSettlementLedger::claim('seat-b', self::REPO, self::SHA, str_repeat('a', 40));
+
+        $this->sweepAt('2026-10-10T10:10:00.000Z');
+
+        $this->assertSame(['ci_await_overdue'], $this->kinds());
     }
 
     // ---- the deadline -----------------------------------------------------------------------
