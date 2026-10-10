@@ -324,20 +324,20 @@ class CiAwaitTest extends TestCase
             'subject_id' => 'ci:octo/widgets@'.self::SHA,
             'provider' => 'bridge',
             'actor' => ['id' => null, 'name' => null, 'is_known_agent' => false],
-            'summary' => 'CI settled on octo/widgets@0123456789ab (PR #12): all 2 workflow run(s) are terminal. This is not a verdict — run ci-read once on this head for green/red.',
+            'summary' => "CI settled on octo/widgets@0123456789ab (PR #12): RED — E2E → failure. Run-level only: ci-read stays the authoritative verdict (it reads jobs and the branch's required checks).",
             'payload' => [
                 'repo' => self::REPO,
                 'head_sha' => self::SHA,
                 'pr' => 12,
                 'runs' => [
-                    ['workflow' => 'CI', 'conclusion' => 'success', 'html_url' => 'https://github.com/octo/widgets/actions/runs/1'],
-                    ['workflow' => 'E2E', 'conclusion' => 'failure', 'html_url' => 'https://github.com/octo/widgets/actions/runs/2'],
+                    ['workflow' => 'CI', 'conclusion' => 'success', 'html_url' => 'https://github.com/octo/widgets/actions/runs/1', 'superseded' => false],
+                    ['workflow' => 'E2E', 'conclusion' => 'failure', 'html_url' => 'https://github.com/octo/widgets/actions/runs/2', 'superseded' => false],
                 ],
                 'all_terminal' => true,
+                'runs_verdict' => 'red',
                 'measured_at' => '2026-10-03T10:00:00.000Z',
             ],
         ], array_diff_key($a, ['id' => 1, 'ts' => 1, 'agent' => 1]));
-        $this->assertArrayNotHasKey('verdict', $a['payload'], 'the bridge does not decide green or red');
         $this->assertChannelPushes(['seat-a' => ['ci_settled'], 'seat-b' => ['ci_settled']]);
     }
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Webhook;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\CiAwait\CiAwaitGate;
+use App\Bridge\CiAwait\CiHeadRunTracker;
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Exceptions\InvalidEnvelopeException;
 use App\Bridge\Http\PlainTextResponse;
@@ -53,6 +54,7 @@ class WebhookController extends Controller
         private StandupGate $standupGate,
         private JobSchedulerGate $jobGate,
         private CiAwaitGate $ciAwaitGate,
+        private CiHeadRunTracker $ciHeadRuns,
     ) {}
 
     public function receive(Request $request): Response
@@ -99,6 +101,11 @@ class WebhookController extends Controller
         // is what keeps that contract true of every registered provider.
         /** @var array<mixed> $payload */
         $payload = json_decode($body, true);
+
+        // Every workflow_run delivery updates its run's tracked state BEFORE dispatch, because the
+        // impl-ci-wake family's per-head aggregate is decided inside dispatch from that state
+        // (card#11667). One indexed write; no GitHub read.
+        $this->ciHeadRuns->record($provider, $event->eventType, $scopeId, $payload);
         $this->dispatcher->dispatch($provider, $scopeId, $event, $payload);
 
         // A seat awaiting CI on this run's head is told once every run there is terminal

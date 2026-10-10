@@ -36,12 +36,23 @@ final class ClassifierConfig
      * @param  array<string, string>  $scopeAuthorMap  scope_id (lowercased) => the sole author-agent on that repo
      * @param  list<string>  $enabledFamilies  the event families this classifier runs (empty ⇒ the classifier's own default)
      * @param  array<mixed>  $raw  the full `classifier.config` mapping, for family-specific typed reads
+     * @param  string  $implCiDelivery  `impl_ci_delivery` — {@see IMPL_CI_AGGREGATE} (default) or {@see IMPL_CI_PER_RUN}
      */
     private function __construct(
         public readonly array $scopeAuthorMap,
         public readonly array $enabledFamilies,
         public readonly array $raw,
+        public readonly string $implCiDelivery = self::IMPL_CI_AGGREGATE,
     ) {}
+
+    /**
+     * `impl_ci_delivery: aggregate` (the default, card#11667): the `impl-ci-wake` family stages no
+     * per-run `impl_ci` for a run that concluded green, and sends one `ci_settled` per settled head
+     * instead. `per_run` keeps the per-run `impl_ci` for every finished run, as before.
+     */
+    public const IMPL_CI_AGGREGATE = 'aggregate';
+
+    public const IMPL_CI_PER_RUN = 'per_run';
 
     /**
      * The all-defaults instance — an absent or empty `classifier.config` block.
@@ -71,6 +82,7 @@ final class ClassifierConfig
             scopeAuthorMap: self::parseScopeAuthorMap($config),
             enabledFamilies: self::parseStringList($config, 'families'),
             raw: $config,
+            implCiDelivery: self::parseImplCiDelivery($config),
         );
     }
 
@@ -209,6 +221,27 @@ final class ClassifierConfig
     }
 
     // ---- parsing helpers (fail-closed) ----
+
+    /**
+     * Parsed EAGERLY, like `families`, so a misspelt value is refused where the agent config loads —
+     * the error `bridge:check` reports for an agent YAML — and never read as either mode.
+     *
+     * @param  array<mixed>  $config
+     */
+    private static function parseImplCiDelivery(array $config): string
+    {
+        $raw = $config['impl_ci_delivery'] ?? null;
+        if ($raw === null) {
+            return self::IMPL_CI_AGGREGATE;
+        }
+        if (! in_array($raw, [self::IMPL_CI_AGGREGATE, self::IMPL_CI_PER_RUN], true)) {
+            $shown = is_scalar($raw) ? var_export($raw, true) : get_debug_type($raw);
+
+            throw new ConfigException("classifier.config.impl_ci_delivery is {$shown} — it must be '".self::IMPL_CI_AGGREGATE."' (the default) or '".self::IMPL_CI_PER_RUN."'");
+        }
+
+        return $raw;
+    }
 
     /**
      * `scope_author_map: { "owner/repo": agent }` → lowercased scope_id => agent.

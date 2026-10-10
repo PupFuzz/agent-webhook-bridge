@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Classifiers;
 
+use App\Bridge\CiAwait\HeadRuns;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\Actor;
@@ -9,6 +10,7 @@ use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Handlers\CiHeadAggregateHandler;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
@@ -775,12 +777,19 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             }
         }
 
+        // card#11667: the per-head aggregate rides every completed run this agent is staged CI
+        // for — which is what `inbox_stage` decides — whatever the run's conclusion or actor.
+        $inboxStage = $cfg->string('impl_non_wake_disposition', 'drop') === 'inbox_stage';
+        $aggregate = $inboxStage && $cfg->implCiDelivery === ClassifierConfig::IMPL_CI_AGGREGATE
+            ? $this->ciHeadAggregateTargets($eventType, $payload, $ctx)
+            : [];
+
         if ($signal !== null) {
             // Wake-worthy event → surgical channel_push (suppressed on a route_intents
             // channel by wakePush(), DL-191). The Intent is staged either way.
             $intent = $this->makeImplIntent($signal, $ctx, $cfg);
 
-            return new ClassifyResult(intents: [$intent], targets: $this->wakePush($intent, $ctx));
+            return new ClassifyResult(intents: [$intent], targets: [...$this->wakePush($intent, $ctx), ...$aggregate]);
         }
 
         // Non-wake terminal impl event. DEFAULT `drop` = gate-drop (lean inbox — no
@@ -788,7 +797,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // SessionStart history: build a normal Intent with NO channel_push (a
         // broad-wake install routes it via the channel's route_intents; a surgical
         // install stays on `drop` and never reaches here).
-        if ($cfg->string('impl_non_wake_disposition', 'drop') !== 'inbox_stage') {
+        if (! $inboxStage) {
             return null;
         }
         $staged = null;
@@ -800,8 +809,47 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         if ($staged === null) {
             return null; // a branch-delete push / a non-terminal workflow_run is not inbox-worthy
         }
+        // A green run under `impl_ci_delivery: aggregate` is carried by the head's one
+        // `ci_settled` instead of its own `impl_ci`. Only green: a run that can turn the head
+        // red still gets its own `impl_ci`, as before.
+        if ($aggregate !== [] && $this->concludedGreen($payload)) {
+            return new ClassifyResult(targets: $aggregate);
+        }
 
-        return new ClassifyResult(intents: [$this->makeImplIntent($staged, $ctx, $cfg)], targets: []);
+        return new ClassifyResult(intents: [$this->makeImplIntent($staged, $ctx, $cfg)], targets: $aggregate);
+    }
+
+    /**
+     * The `ci_head_aggregate` target for a COMPLETED `workflow_run` on a full head SHA, or none
+     * (card#11667). A run that is not complete cannot settle its head, and a head the tracker
+     * cannot key (no 40-hex `head_sha`) is never tracked.
+     *
+     * @param  array<mixed>  $payload
+     * @return list<ReactionTarget>
+     */
+    private function ciHeadAggregateTargets(string $eventType, array $payload, ClassifyContext $ctx): array
+    {
+        $run = is_array($payload['workflow_run'] ?? null) ? $payload['workflow_run'] : [];
+        $headSha = $run['head_sha'] ?? null;
+        if (! str_starts_with($eventType, 'workflow_run.') || ($run['status'] ?? null) !== 'completed'
+            || ! is_string($headSha) || preg_match('/\A[0-9a-f]{40}\z/', $headSha) !== 1) {
+            return [];
+        }
+
+        return [ReactionTarget::make(
+            handler: CiHeadAggregateHandler::NAME,
+            targetId: "ci:{$ctx->scopeId}@{$headSha}",
+            payload: ['repo' => $ctx->scopeId, 'head_sha' => $headSha],
+        )];
+    }
+
+    /** @param  array<mixed>  $payload */
+    private function concludedGreen(array $payload): bool
+    {
+        $run = is_array($payload['workflow_run'] ?? null) ? $payload['workflow_run'] : [];
+        $conclusion = is_string($run['conclusion'] ?? null) ? strtolower($run['conclusion']) : '';
+
+        return in_array($conclusion, HeadRuns::GREEN_CONCLUSIONS, true);
     }
 
     /**

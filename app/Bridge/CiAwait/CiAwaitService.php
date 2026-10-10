@@ -50,10 +50,11 @@ use UnexpectedValueException;
  * ({@see sweepUnsettled()}: a head none of whose awaits was read, or whose oldest read is one sweep interval old, up to
  * the per-pass cap), PROVIDED THE SWEEP RUNS — a pass needs a webhook or `bridge:tick`.
  *
- * ⭐ THE ONLY THING THE BRIDGE DECIDES IS "EVERY RUN IS `completed`". It does NOT decide green or
- * red: a verdict needs the base branch's required contexts and the latest run per workflow, which
- * is `ci-read`'s definition, and a second one here would drift from it. The payload carries each
- * run's conclusion as data; the seat runs `ci-read` once on the head for the verdict.
+ * ⭐ SETTLED, AND HOW IT ENDED, ARE {@see HeadRuns}' ANSWERS — the same predicate the per-head
+ * aggregate applies to tracked runs (card#11667): the latest run per workflow decides, and every
+ * deciding run must be `completed`. The payload carries a RUN-LEVEL `runs_verdict`; the
+ * authoritative verdict stays `ci-read`'s (jobs and the base branch's required contexts), which
+ * the summary names.
  *
  * ⭐ LEVEL-TRIGGERED: THE SWEEP CARRIES CORRECTNESS, DELIVERIES ARE ACCELERATORS. A delivery's read
  * settles only the awaits it loaded, a registration's read can see a list that lags, and a final
@@ -351,7 +352,7 @@ final class CiAwaitService
      * (null when the payload named no readable run id). Never throws: it runs after the response,
      * where nothing would report a throw.
      *
-     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
+     * @param  ?array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
      */
     public function onWorkflowRunCompleted(string $repo, string $headSha, ?array $deliveredRun = null): void
     {
@@ -481,8 +482,8 @@ final class CiAwaitService
      * registration making this read: it is removed WITHOUT an event, because that seat is answered
      * by the `repo_unreadable` refusal instead.
      *
-     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
-     * @return array{runs: ?list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, retry_not_before: ?Carbon, read: bool, emit_failed: list<int>, unreadable: ?CiRunsReadException, unconfirmed: bool}
+     * @param  ?array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
+     * @return array{runs: ?list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, retry_not_before: ?Carbon, read: bool, emit_failed: list<int>, unreadable: ?CiRunsReadException, unconfirmed: bool}
      */
     private function evaluate(string $key, string $headSha, ?array $deliveredRun, ?int $silentAwaitId = null): array
     {
@@ -529,12 +530,16 @@ final class CiAwaitService
             $runs = self::overlay($runs, $deliveredRun);
         }
 
-        // No run at all is NOT settled: CI that has not been queued yet looks exactly like this.
-        $allTerminal = $runs !== [] && array_filter($runs, static fn (array $r): bool => $r['status'] !== 'completed') === [];
+        // Settled is HeadRuns' answer — the one the per-head aggregate gives on tracked runs
+        // (card#11667): no run at all is NOT settled, and a run a newer run of its workflow
+        // supersedes does not hold the head open.
+        $head = HeadRuns::of($runs);
+        $allTerminal = $head->settled();
         $emitFailed = [];
         if ($allTerminal) {
             foreach ($awaits as $await) {
-                if ($this->claimAndEmit($await, self::SETTLED, self::settledPayload($await, $runs, $measuredAt), self::settledSummary($await, count($runs))) === EmitResult::Failed) {
+                $settled = $head->settledPayload($await->repo_name, $await->head_sha, $await->pr, $measuredAt);
+                if ($this->claimAndEmit($await, self::SETTLED, $settled, $head->settledSummary($await->repo_name, $await->head_sha, $await->pr), $head->fingerprint()) === EmitResult::Failed) {
                     $emitFailed[] = $await->id;
                 }
             }
@@ -587,9 +592,9 @@ final class CiAwaitService
      * or where either attempt is unknown, is left as listed: the delivery may be for an earlier
      * attempt of a run that has since been re-run.
      *
-     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
-     * @param  array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $delivered
-     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
+     * @param  list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
+     * @param  array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, run_attempt: ?int}  $delivered
+     * @return list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      */
     private static function overlay(array $runs, array $delivered): array
     {
@@ -620,9 +625,16 @@ final class CiAwaitService
      * else's. The row is emitted again on a later pass: the sweep reads its head again, and expiry
      * retries it ({@see expireDue()}).
      *
+     * `$settledState` is a `ci_settled`'s {@see HeadRuns::fingerprint()}: it is recorded in
+     * {@see CiHeadSettlementLedger} in the same transaction, so the per-head aggregate does not send
+     * this seat the same settled state again (card#11667). Where the ledger ALREADY holds it — the
+     * aggregate sent this seat that state before the await was stored — the await is claimed with
+     * no event and answered {@see EmitResult::ClaimedElsewhere}: the seat has the event, and a
+     * registration says `settled`.
+     *
      * @param  array<string, mixed>  $payload
      */
-    private function claimAndEmit(CiAwait $await, string $kind, array $payload, string $summary): EmitResult
+    private function claimAndEmit(CiAwait $await, string $kind, array $payload, string $summary, ?string $settledState = null): EmitResult
     {
         $intent = new Intent(
             kind: $kind,
@@ -634,9 +646,15 @@ final class CiAwaitService
         );
 
         try {
-            $claimed = DB::transaction(function () use ($await, $intent): bool {
+            $alreadySent = false;
+            $claimed = DB::transaction(function () use ($await, $intent, $settledState, &$alreadySent): bool {
                 if (CiAwait::query()->whereKey($await->id)->delete() !== 1) {
                     return false;
+                }
+                if ($settledState !== null && ! CiHeadSettlementLedger::claim($await->agent, $await->repo, $await->head_sha, $settledState)) {
+                    $alreadySent = true;
+
+                    return true;
                 }
                 $this->intents->stageAuthored($await->agent, "ci_await:{$await->uuid}", microtime(true), $intent);
 
@@ -659,6 +677,11 @@ final class CiAwaitService
         if (! $claimed) {
             return EmitResult::ClaimedElsewhere;
         }
+        if ($alreadySent) {
+            Log::info('bridge ci_await: the await is answered by the ci_settled already sent to this seat for the same settled state — nothing is sent twice', ['agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha]);
+
+            return EmitResult::ClaimedElsewhere;
+        }
 
         Log::info("bridge ci_await: {$kind} emitted", ['agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha]);
         try {
@@ -673,7 +696,7 @@ final class CiAwaitService
     }
 
     /**
-     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
+     * @return list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      *
      * @throws CiRunsReadException naming why no complete run list was read
      */
@@ -866,28 +889,6 @@ final class CiAwaitService
                 'remedy' => 'php artisan bridge:jobs add '.CiAwaitSweepJob::INSTANCE.' --handler='.CiAwaitSweepJob::NAME.' (docs/periodic-jobs.md)',
             ]);
         }
-    }
-
-    /**
-     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
-     * @return array<string, mixed>
-     */
-    private static function settledPayload(CiAwait $await, array $runs, Carbon $measuredAt): array
-    {
-        return [
-            'repo' => $await->repo_name,
-            'head_sha' => $await->head_sha,
-            'pr' => $await->pr,
-            'runs' => array_map(static fn (array $r): array => ['workflow' => $r['workflow'], 'conclusion' => $r['conclusion'], 'html_url' => $r['html_url']], $runs),
-            'all_terminal' => true,
-            'measured_at' => self::instant($measuredAt),
-        ];
-    }
-
-    private static function settledSummary(CiAwait $await, int $runs): string
-    {
-        return "CI settled on {$await->repo_name}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
-            .": all {$runs} workflow run(s) are terminal. This is not a verdict — run ci-read once on this head for green/red.";
     }
 
     /** @return array<string, mixed> */
