@@ -83,6 +83,21 @@ final class HeadRuns
         return true;
     }
 
+    /**
+     * Whether `$runId` is a run of this list that a newer run of its workflow decides instead. A run
+     * the list does not hold is not superseded: nothing known says so.
+     */
+    public function supersedes(int $runId): bool
+    {
+        foreach ($this->runs as $run) {
+            if ($run['id'] === $runId) {
+                return ! isset($this->deciding[$runId]);
+            }
+        }
+
+        return false;
+    }
+
     /** `green` or `red` — meaningful only once {@see settled()}. */
     public function verdict(): string
     {

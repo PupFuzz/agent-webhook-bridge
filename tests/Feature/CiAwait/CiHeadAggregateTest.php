@@ -145,10 +145,28 @@ class CiHeadAggregateTest extends TestCase
         $this->complete(1, 'CI', 'cancelled');
         $this->complete(2, 'Lint', 'success');
 
-        $this->assertSame(['ci_settled'], $this->kinds(), 'a cancelled run delivers no per-run impl_ci: the aggregate carries it');
+        $this->assertSame(['impl_ci', 'ci_settled'], $this->kinds(), 'an unsuperseded cancelled run keeps its own impl_ci, and the head settles red as well');
         $settled = $this->lastSettled();
         $this->assertSame('red', $settled['payload']['runs_verdict']);
         $this->assertStringContainsString('CI → cancelled', $settled['summary']);
+    }
+
+    public function test_an_unsuperseded_cancelled_run_is_reported_though_its_head_never_settles(): void
+    {
+        $this->requestAll([1 => 'CI', 2 => 'Lint']);
+
+        $this->complete(1, 'CI', 'cancelled');
+
+        $this->assertSame(['impl_ci'], $this->kinds(), 'the report does not wait on the aggregate: Lint is still open, so no ci_settled yet');
+    }
+
+    public function test_an_unsuperseded_cancelled_run_is_reported_when_its_run_was_never_tracked(): void
+    {
+        // No `requested` delivery and a tracker that holds nothing for the head: nothing says a
+        // newer run supersedes it, so it is reported.
+        $this->complete(1, 'CI', 'cancelled');
+
+        $this->assertContains('impl_ci', $this->kinds());
     }
 
     public function test_a_red_aggregate_names_every_run_that_did_not_succeed_with_its_url(): void
@@ -161,7 +179,7 @@ class CiHeadAggregateTest extends TestCase
         $this->complete(4, 'Labels', 'skipped');
         $this->complete(5, 'Build', 'success');
 
-        $this->assertSame(['impl_ci_failed', 'ci_settled'], $this->kinds(), 'only the failure is delivered per run');
+        $this->assertSame(['impl_ci_failed', 'impl_ci', 'ci_settled'], $this->kinds(), 'the failure and the unsuperseded cancelled run are delivered per run; neutral, skipped and success are not');
         $settled = $this->lastSettled();
         $this->assertSame('red', $settled['payload']['runs_verdict']);
         $this->assertEquals([
@@ -258,7 +276,7 @@ class CiHeadAggregateTest extends TestCase
         $this->assertSame([], $this->pushedKinds());
     }
 
-    public function test_a_ci_await_on_the_head_is_answered_by_the_aggregate_once(): void
+    public function test_a_ci_await_on_the_head_gets_one_ci_settled_pushed_not_one_per_sender(): void
     {
         CiAwait::query()->create(['agent' => 'seat-a', 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA, 'pr' => 17, 'expires_at' => Carbon::now()->addHour()]);
         // The await's own read on run 1's completion (ci_await's unchanged behaviour): run 2 is open.
@@ -270,8 +288,34 @@ class CiHeadAggregateTest extends TestCase
 
         $this->assertSame(['ci_settled'], $this->kinds());
         $this->assertSame(['ci_settled'], $this->pushedKinds());
-        $this->assertSame(0, CiAwait::query()->count(), 'the aggregate claimed the await');
-        $this->assertCount(1, Http::recorded(fn (Request $r): bool => str_contains($r->url(), 'api.github.com')), 'the settling delivery reads nothing: the aggregate claimed the await before the await path could look');
+        $this->assertSame(0, CiAwait::query()->count(), 'the await settled on its own read (list plus the delivered run) and found the state already sent');
+    }
+
+    public function test_an_await_the_aggregate_left_ends_silently_when_github_agrees_with_the_state_sent(): void
+    {
+        CiAwait::query()->create(['agent' => 'seat-a', 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA, 'pr' => 17, 'expires_at' => Carbon::now()->addHour()]);
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response($this->listOf([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'completed', 'success']]))]);
+        $this->requestAll([1 => 'CI', 2 => 'Lint']);
+
+        $this->complete(1, 'CI', 'success');
+        $this->complete(2, 'Lint', 'success');
+
+        $this->assertSame(['ci_settled'], $this->kinds(), 'one event for the state, not one per sender');
+        $this->assertSame(0, CiAwait::query()->count(), 'the await settled on its own list and found the state already sent');
+    }
+
+    public function test_an_await_the_aggregate_left_is_not_ended_by_a_head_github_lists_as_still_running(): void
+    {
+        CiAwait::query()->create(['agent' => 'seat-a', 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA, 'pr' => 17, 'expires_at' => Carbon::now()->addHour()]);
+        // The bridge has seen two runs; GitHub lists a third (created late) that is still running.
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response($this->listOf([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'completed', 'success'], [3, 'Deploy', 'in_progress', null]]))]);
+        $this->requestAll([1 => 'CI', 2 => 'Lint']);
+
+        $this->complete(1, 'CI', 'success');
+        $this->complete(2, 'Lint', 'success');
+
+        $this->assertSame(['ci_settled'], $this->kinds(), 'the aggregate settled on the runs it saw');
+        $this->assertSame(1, CiAwait::query()->count(), 'the await keeps waiting for the run GitHub lists');
     }
 
     public function test_a_ci_await_registered_after_the_aggregate_is_answered_settled_without_a_second_event(): void

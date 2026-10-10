@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Classifiers;
 
+use App\Bridge\CiAwait\CiHeadRunTracker;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\Actor;
@@ -62,7 +63,7 @@ use App\Bridge\Writeback\WritebackMapping;
  *     the conclusion: a bot run is non-actionable for an impl seat green or red.
  *     Under `inbox_stage`, `impl_ci_delivery: aggregate` (the default, card#11667) attaches
  *     a `ci_head_aggregate` target to every completed run and stages no per-run `impl_ci`
- *     for one in AGGREGATED_CONCLUSIONS — the head's one `ci_settled` carries it instead.
+ *     for one in AGGREGATED_CONCLUSIONS (or a `cancelled` run a newer run supersedes) — the head's one `ci_settled` carries it instead.
  *
  * WAKE-EMIT INVARIANT (DL-191): every family hand-emits its `channel_push` through
  * {@see wakePush()}, which suppresses the push on a `route_intents:true` channel —
@@ -229,13 +230,16 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     /**
      * The completed-run conclusions whose per-run `impl_ci` is NOT staged under
      * `impl_ci_delivery: aggregate` (card#11667, sola-pm on rt#614): the head's one `ci_settled`
-     * carries them — a `cancelled` with no successor still turns it red. A fixed set, not
+     * carries them. A `cancelled` run is aggregated away ONLY while a newer run of its workflow on
+     * the head supersedes it ({@see concludedAggregated()}); an unsuperseded one keeps its own
+     * `impl_ci`, because the report that it happened must not rest on the best-effort aggregate
+     * alone. A fixed set, not
      * {@see DEFAULT_BENIGN_CONCLUSIONS}' configurable one: `benign_conclusions` decides what WAKES,
      * and widening it must not start hiding runs from the inbox. Any conclusion outside it — a
      * failure the deny-list or `ci_failure_workflow_patterns` made a non-wake, or one GitHub adds
      * later — keeps its per-run `impl_ci`.
      */
-    private const AGGREGATED_CONCLUSIONS = ['success', 'skipped', 'cancelled', 'neutral'];
+    private const AGGREGATED_CONCLUSIONS = ['success', 'skipped', 'neutral'];
 
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
@@ -825,7 +829,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // Under `impl_ci_delivery: aggregate` a run that ended in one of
         // AGGREGATED_CONCLUSIONS is carried by the head's one `ci_settled` instead of its own
         // `impl_ci`. Any other conclusion keeps its per-run `impl_ci`.
-        if ($aggregate !== [] && $this->concludedAggregated($payload)) {
+        if ($aggregate !== [] && $this->concludedAggregated($payload, $ctx->scopeId)) {
             return new ClassifyResult(targets: $aggregate);
         }
 
@@ -857,12 +861,20 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /** @param  array<mixed>  $payload */
-    private function concludedAggregated(array $payload): bool
+    private function concludedAggregated(array $payload, string $scopeId): bool
     {
         $run = is_array($payload['workflow_run'] ?? null) ? $payload['workflow_run'] : [];
         $conclusion = is_string($run['conclusion'] ?? null) ? strtolower($run['conclusion']) : '';
+        if (in_array($conclusion, self::AGGREGATED_CONCLUSIONS, true)) {
+            return true;
+        }
 
-        return in_array($conclusion, self::AGGREGATED_CONCLUSIONS, true);
+        // A cancelled run is carried by the aggregate only once the tracker shows a newer run of its
+        // workflow. The tracker is written before dispatch, so this run is already in it; a run it
+        // could not record, or a successor whose `requested` has not arrived yet, reads as
+        // unsuperseded and keeps its `impl_ci` — an extra event, never a missing one.
+        return $conclusion === 'cancelled' && is_int($run['id'] ?? null) && is_string($run['head_sha'] ?? null)
+            && CiHeadRunTracker::isSuperseded($scopeId, $run['head_sha'], $run['id']);
     }
 
     /**

@@ -108,10 +108,17 @@ is *superseded*: it holds nothing open and decides nothing. Two senders, one eve
 - **The per-head aggregate** — sent to an agent whose `impl-ci-wake` family stages CI
   (`impl_non_wake_disposition: inbox_stage`) under `impl_ci_delivery: aggregate`, the default, for
   every head of its repos, in place of a per-run `impl_ci` for each run that ended `success`,
-  `skipped`, `cancelled` or `neutral` ([`config-schema.md`](config-schema.md)). Decided from the
+  `skipped` or `neutral`, or `cancelled` with a newer run of its workflow on the head
+  ([`config-schema.md`](config-schema.md)). Decided from the
   `workflow_run` deliveries the bridge received — no GitHub read. Pushed live where `impl_ci` was
-  (`channel.route_intents: true`) or where it answered your `ci_await`; staged to the inbox either way.
-  A failed run still sends its own `impl_ci_failed` at once. A run that starts after a head settled —
+  (`channel.route_intents: true`) or where you hold a `ci_await` on the head; staged to the inbox either
+  way. A failed run still sends its own `impl_ci_failed` at once, and a `cancelled` run with no newer run
+  of its workflow still sends its own `impl_ci` (the head's `ci_settled` follows once it settles, red).
+  ⚠ **The aggregate is per-head and best-effort.** It is edge-triggered from `workflow_run` deliveries
+  and nothing retries it: a green, skipped or neutral head whose last completion was lost, gated for you
+  (echo / signal, DL-203) or not recorded leaves **no record of that head**. Only a failure or an
+  unsuperseded cancellation is reported per run; for any other head, `ci_await` (level-triggered, reads
+  GitHub) or `ci-read` is how you ask. A run that starts after a head settled —
   an `on: workflow_run` follow-on, a re-run — settles the head again once it completes, and sends a
   second `ci_settled`; the same settled state is never sent to you twice, by either sender.
 

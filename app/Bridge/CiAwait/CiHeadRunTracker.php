@@ -84,6 +84,12 @@ final class CiHeadRunTracker
             ])->all());
     }
 
+    /** Whether a tracked run of the head is superseded by a newer run of its workflow. */
+    public static function isSuperseded(string $repo, string $headSha, int $runId): bool
+    {
+        return HeadRuns::of(self::runsOf($repo, $headSha))->supersedes($runId);
+    }
+
     /** The PR a tracked run of the head named, or null when none did. */
     public static function prOf(string $repo, string $headSha): ?int
     {

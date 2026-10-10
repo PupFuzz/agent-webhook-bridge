@@ -35,12 +35,15 @@ use Throwable;
  * `on: workflow_run` follow-on, a re-run) changes the fingerprint once it completes, so the head
  * settles again and the agent gets a second event — never silence, never the same state twice.
  *
- * ⭐ A `ci_await` IS ANSWERED BY THE AGGREGATE. The agent's own await on the head, if any, is
- * claimed (deleted) in the same transaction and the one `ci_settled` answers both; the await's
- * own path writes the same ledger, so the reverse order sends nothing twice either.
+ * ⭐ A `ci_await` IS LEFT IN PLACE. The aggregate decides from the runs the bridge has SEEN, so it can
+ * settle before GitHub's full run list is terminal; deleting the agent's await would end the wait on
+ * a partial view. The await keeps its own settle on GitHub's list, and both senders record the
+ * settled state in the ledger, so the same state is never sent twice in either order — an await
+ * that settles to the state already sent is forgotten with no event, one that settles to a new
+ * state sends it.
  *
  * Staged to the inbox always (as `impl_ci` was) and pushed live where `impl_ci` would have been —
- * `channel.route_intents: true` — or where it answered the agent's `ci_await`, which promises a push.
+ * `channel.route_intents: true` — or where the agent has a `ci_await` on the head, which promises a push.
  */
 final class CiHeadAggregate
 {
@@ -70,12 +73,11 @@ final class CiHeadAggregate
             payload: $head->settledPayload($repoName, $headSha, $pr, Carbon::now()),
         );
 
-        $answeredAwait = false;
-        $emitted = DB::transaction(function () use ($agent, $key, $headSha, $fingerprint, $intent, $mine, &$answeredAwait): bool {
+        $awaited = $mine()->exists();
+        $emitted = DB::transaction(function () use ($agent, $key, $headSha, $fingerprint, $intent): bool {
             if (! CiHeadSettlementLedger::claim($agent->agentName, $key, $headSha, $fingerprint)) {
                 return false;
             }
-            $answeredAwait = $mine()->delete() > 0;
             $this->intents->stageAuthored($agent->agentName, "ci_head:{$agent->agentName}:{$key}@{$headSha}:{$fingerprint}", microtime(true), $intent);
 
             return true;
@@ -84,8 +86,8 @@ final class CiHeadAggregate
             return false;
         }
 
-        Log::info('bridge ci_head: ci_settled emitted', ['agent' => $agent->agentName, 'repo' => $repoName, 'head_sha' => $headSha, 'answered_await' => $answeredAwait]);
-        if ($agent->channel->routeIntents || $answeredAwait) {
+        Log::info('bridge ci_head: ci_settled emitted', ['agent' => $agent->agentName, 'repo' => $repoName, 'head_sha' => $headSha, 'awaited' => $awaited]);
+        if ($agent->channel->routeIntents || $awaited) {
             try {
                 (new AuthoredIntentPush($this->handlers))->sendTo($intent, $agent);
             } catch (Throwable $e) {
