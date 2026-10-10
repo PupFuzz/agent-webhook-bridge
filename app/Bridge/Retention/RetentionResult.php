@@ -15,5 +15,6 @@ final class RetentionResult
         public readonly ?int $inboxLinesRemoved = null,
         public readonly ?int $inboxFilesTrimmed = null,
         public readonly ?int $payloadsNulled = null,
+        public readonly ?int $ciHeadRowsDeleted = null,
     ) {}
 }
