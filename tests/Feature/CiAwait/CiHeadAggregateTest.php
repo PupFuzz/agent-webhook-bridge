@@ -109,6 +109,17 @@ class CiHeadAggregateTest extends TestCase
         $this->assertStringContainsString('RED — CI → failure', $this->inbox()[1]['summary']);
     }
 
+    public function test_a_head_whose_last_run_fails_settles_red(): void
+    {
+        $this->requestAll([1 => 'CI', 2 => 'Lint']);
+
+        $this->complete(1, 'CI', 'success');
+        $this->complete(2, 'Lint', 'timed_out');
+
+        $this->assertSame(['impl_ci_failed', 'ci_settled'], $this->kinds());
+        $this->assertSame('red', $this->lastSettled()['payload']['runs_verdict']);
+    }
+
     public function test_a_cancelled_run_superseded_by_a_newer_run_of_its_workflow_does_not_turn_the_head_red(): void
     {
         $this->deliver('requested', 1, 'CI', null, runNumber: 1);
@@ -133,6 +144,7 @@ class CiHeadAggregateTest extends TestCase
         $this->complete(1, 'CI', 'cancelled');
         $this->complete(2, 'Lint', 'success');
 
+        $this->assertSame(['impl_ci', 'ci_settled'], $this->kinds(), 'a cancelled run is not green, so it keeps its own impl_ci');
         $settled = $this->lastSettled();
         $this->assertSame('red', $settled['payload']['runs_verdict']);
         $this->assertStringContainsString('CI → cancelled', $settled['summary']);
@@ -155,15 +167,19 @@ class CiHeadAggregateTest extends TestCase
 
     public function test_the_same_settled_state_is_never_sent_twice(): void
     {
-        $this->requestAll([1 => 'CI']);
-        $this->complete(1, 'CI', 'success');
+        $this->deliver('requested', 1, 'CI', null, runNumber: 1);
+        $this->deliver('requested', 3, 'CI', null, runNumber: 2);
+        $this->complete(3, 'CI', 'success', runNumber: 2);
+        $this->assertSame(['ci_settled'], $this->kinds(), 'the newer run decides; the older one is superseded');
 
-        // GitHub redelivers (a new delivery id), and the requested delivery arrives out of order.
-        $this->complete(1, 'CI', 'success');
-        $this->deliver('requested', 1, 'CI', null);
+        // The superseded run finishes after the head settled: another completed delivery for the
+        // head, and the same deciding runs — the same state. (A byte-identical redelivery never
+        // gets this far: its delivery id is the body's hash, deduped before dispatch.)
+        $this->complete(1, 'CI', 'cancelled', runNumber: 1);
+        $this->deliver('requested', 3, 'CI', null, runNumber: 2);
 
-        $this->assertSame(['ci_settled'], $this->kinds());
-        $this->assertSame('completed', CiHeadRun::query()->where('run_id', 1)->value('status'), 'a late requested never moves the run backwards');
+        $this->assertSame(['ci_settled', 'impl_ci'], $this->kinds(), 'the cancelled run keeps its own impl_ci; no second ci_settled');
+        $this->assertSame('completed', CiHeadRun::query()->where('run_id', 3)->value('status'), 'a late requested never moves the run backwards');
     }
 
     public function test_a_re_run_that_turns_green_settles_the_head_again(): void
