@@ -151,11 +151,27 @@ terminal. One per await (inbox at least once, by line `id`, as above), never aft
 | `last_read_at` | when the bridge last read the run list for it, or null if it never did |
 | `last_error` | why that last read failed, or null when it answered — a null here with a non-null `last_read_at` means CI was still running at that read |
 
+**`ci_await_overdue`** (card#11674 / DL-471) — the await passed its overdue deadline (`overdue_at`,
+the repo's normal CI time or the seat's own `overdue_after_seconds`; board-tools.md § *Overdue* owns how
+it is derived) and the head is not yet seen settled. **Not terminal**: the await stays, and its ending
+event — `ci_settled`, `ci_await_unreadable` or `ci_await_expired` — still follows. This is the seat's
+cue to run `ci-read` once on the head; until it arrives, wait. At most one per await (inbox at least once,
+line `id` `ci_await_overdue:<uuid>`), never after the await's ending event. `subject_id` as above. `payload`:
+
+| key | meaning |
+|---|---|
+| `repo`, `head_sha`, `pr` | the awaited head |
+| `registered_at`, `overdue_at`, `expires_at` | when the await was first stored, when it became overdue, and when it will expire (UTC, milliseconds) |
+| `overdue_basis` | `history`, `default` or `override` — where `overdue_at` came from |
+| `last_read_at`, `last_error` | as on `ci_await_expired` |
+| `runs_seen` | what the bridge last saw: each run its `workflow_run` deliveries reported for the head, `{workflow, status, conclusion, html_url}` — empty when none reached it, null when they could not be read; the `summary` names the runs still open |
+
 **`ci_await_unreadable`** (card#11600) — a read of the head's runs said this bridge cannot read the
 repo's workflow runs on GitHub: GitHub answered `404` or no read token resolves for it, or GitHub
 answered `401` or a non-rate-limited `403` twice, at least a minute apart. Reading again would answer
 the same, so the await is ended rather than left to expire. One per await (inbox at least once, by line `id`, as above), and the
-await gets no other terminal event. Poll with `ci-read` there, and pass `remedy` to your operator. A
+await gets no other terminal event. ⛔ Do not poll there: pass `remedy` to your operator, who either
+makes the repo readable or tells you it is not covered. A
 registration whose own read finds this is refused as `repo_unreadable` instead, with no event.
 `subject_id` as above. `payload`:
 

@@ -8,6 +8,15 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#11674 / DL-471** — **`ci_await` tells a seat once when CI on its head is overdue, so the seat waits for events instead of checking by hand.** Every stored await now has an overdue deadline, `overdue_at`, returned in the `ci_await` answer with `overdue_basis`. When the sweep finds an await past it, still unsettled and unexpired, the seat gets one new `ci_await_overdue` intent, and the await is kept: `ci_settled`, `ci_await_unreadable` or `ci_await_expired` still ends it. Its payload carries the head, the deadline, the last runs read and what the bridge's `workflow_run` deliveries say about each run (`docs/consumer-guide.md`).
+  - **The deadline is the repo's normal CI time, from data the bridge already stores, with no GitHub read**: the 95th percentile of how long the repo's recently finished heads took, from the `workflow_run` deliveries tracked in `ci_head_runs` (card#11667), plus a quarter of it, at least 5 minutes. A re-run head is left out. A repo with too little history gets the new `.env` key `BRIDGE_CI_AWAIT_OVERDUE_DEFAULT` (default 1800 s, 60..604800). `docs/board-tools.md` § *Overdue* owns the rule.
+  - **New optional `ci_await` argument `overdue_after_seconds`** (60..604800) sets the seat's own deadline. On a refresh it replaces the deadline unless the await's `ci_await_overdue` was already sent; a refresh without it keeps the deadline the await has.
+  - `bridge:check`'s `ci_await.config` leg also checks `BRIDGE_CI_AWAIT_OVERDUE_DEFAULT`.
+  - **The docs no longer tell a seat to poll with `ci-read`** on a repo the bridge cannot cover (`repo_not_received`, `ci_await_unreadable`): the seat tells its operator, who wires the repo's webhook or makes it readable, or says it is not covered.
+  - Reference channel-server snapshot **0.9.51 → 0.9.52**: `ci_await` declares `overdue_after_seconds` and its description names `ci_await_overdue`.
+
 ### Changed
 
 - **card#11676** — **A seat on a `route_intents: true` channel is no longer woken by `push` events on other seats' PR branches.** With `impl_non_wake_disposition: inbox_stage`, the `impl-ci-wake` family staged every non-delete push as an `impl_push`, and on such a channel staging is waking. Seats share one GitHub account, so each seat was woken by every PR-branch push on its repos. A push is now staged there only when its branch is in the new `classifier.config` key `impl_push_wake_branches` (default `[dev, main]`); any other push, tags included, is dropped with the reason `impl push: branch is not in impl_push_wake_branches (route_intents channel)`. A merge or push to a listed branch still wakes every seat on the repo, and the `release_branch` wake is unchanged. Only `push`-event wakes are filtered: the CI runs a PR-branch push triggers (`workflow_run`) have no branch filter and still stage to every seat on such a channel, unchanged. Nothing changes on a `route_intents: false` channel or under `impl_non_wake_disposition: drop`. `docs/config-schema.md` documents the key.
@@ -27,6 +36,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
+- ⚠ **MIGRATION — run `php artisan migrate`** (`ci_awaits.overdue_at`, `overdue_basis`, `overdue_sent_at`; card#11674). Until it runs, every `ci_await` is refused as `install_fault.ci_await_store_unavailable` (which names `php artisan migrate`), and the sweep's overdue part fails each pass while its read and expiry parts still run.
 - ⚠ **MIGRATION — run `php artisan migrate`** (`ci_head_runs`, `ci_head_settlements`). Until it runs, no aggregate `ci_settled` is sent, and the runs it would carry are not staged either (each `workflow_run` delivery logs a `bridge ci_head:` warning); `ci_await` cannot emit `ci_settled` and retries on later passes.
 - ⚠ **An agent on `impl_non_wake_disposition: inbox_stage` stops getting `impl_ci` for passing, skipped and neutral runs, and for a cancelled run a newer run supersedes** and gets `ci_settled` instead. Set `impl_ci_delivery: per_run` on an agent that needs the per-run events.
 

@@ -703,12 +703,16 @@ const TOOL_DEFINITIONS = [
       'or the run\'s completion settles it. Otherwise, if ' +
       'they have already all finished, ci_settled is sent immediately (state: settled). A head ' +
       'with no runs yet keeps waiting. A repo this bridge receives no GitHub events for is ' +
-      'REFUSED (reason repo_not_received) — poll with ci-read there. A repo this bridge\'s GitHub ' +
+      'REFUSED (reason repo_not_received) — do NOT poll there: tell your operator, who wires the ' +
+      'repo\'s webhook to this bridge or tells you the repo is not covered. A repo this bridge\'s GitHub ' +
       'token cannot read (GitHub answers 404, or no token) is REFUSED (reason repo_unreadable; ' +
       'your wait on that head is not kept, and the message names the fix for your operator); a 401 ' +
       'or 403 is not refused on one read. If a later read finds the repo unreadable (a 401 or 403 ' +
       'only when a second read a minute later agrees), you get ONE ci_await_unreadable event ' +
-      'instead of waiting for the expiry. A workflow that only starts ' +
+      'instead of waiting for the expiry. If CI has not finished by the repo\'s normal CI time ' +
+      '(overdue_at in the answer — derived from the repo\'s recent heads, or set with ' +
+      'overdue_after_seconds), you get ONE ci_await_overdue event and the wait stays: that event, ' +
+      'not polling, is your cue to run ci-read once. Until an event arrives, wait. A workflow that only starts ' +
       'after the others finish (on: workflow_run) can appear after ci_settled; ci-read then reports ' +
       'it pending, and you re-register.',
     inputSchema: {
@@ -729,6 +733,14 @@ const TOOL_DEFINITIONS = [
           minimum: 1,
           description: 'Optional: the pull request number, carried back in the events. Omit it when there is none.',
         },
+        overdue_after_seconds: {
+          type: 'integer',
+          minimum: 60,
+          maximum: 604800,
+          description:
+            'Optional: your own overdue deadline, in seconds from this call (60 to 604800). Omit it to ' +
+            'take the repo\'s normal CI time, derived from its recent heads.',
+        },
       },
       required: ['repo', 'head_sha'],
       additionalProperties: false,
@@ -738,7 +750,7 @@ const TOOL_DEFINITIONS = [
     name: 'ci_await_cancel',
     description:
       'Stop waiting for CI on one commit: removes YOUR OWN ci_await on that head, so no ci_settled, ' +
-      'ci_await_unreadable or ci_await_expired is sent for it. Answers cancelled: false when you had ' +
+      'ci_await_unreadable, ci_await_expired or ci_await_overdue is sent for it. Answers cancelled: false when you had ' +
       'no wait there (never registered, already ended, or only another seat waits on it) — safe to ' +
       'call unconditionally. No argument names a seat.',
     inputSchema: {

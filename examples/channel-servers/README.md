@@ -345,7 +345,8 @@ each answered with an explicit status — never silently omitted) and `board_sea
 cards on your board matching filters, matches only, or `summary: true` for counts) and `ci_await` /
 `ci_await_cancel` (DL-452: wait for CI on one commit without polling — the bridge sends one
 `ci_settled` event when every workflow run on that head is terminal, and refuses a repo its GitHub
-token cannot read as `repo_unreadable` — card#11600) — and acts as a
+token cannot read as `repo_unreadable` — card#11600 — and one `ci_await_overdue` when a head runs
+past its repo's normal CI time — card#11674) — and acts as a
 **dumb proxy** for them: on a `tools/call` it
 forwards `{tool, args, client_version}` to `BRIDGE_TOOLS_ENDPOINT` with the resolved
 `Authorization: Bearer <token>` and returns the bridge's response verbatim.

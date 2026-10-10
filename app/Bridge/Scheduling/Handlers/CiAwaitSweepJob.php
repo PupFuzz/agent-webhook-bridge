@@ -17,8 +17,9 @@ use Throwable;
 
 /**
  * The clock half of `ci_await` (card#11200 / DL-452), and the half that carries its correctness:
- * each pass reads unsettled heads whose last read is stale ({@see CiAwaitService::sweepUnsettled()})
- * and emits `ci_await_expired` once per await past its expiry ({@see CiAwaitService::expireDue()}).
+ * each pass reads unsettled heads whose last read is stale ({@see CiAwaitService::sweepUnsettled()}),
+ * emits `ci_await_overdue` once per await past its overdue deadline ({@see CiAwaitService::emitOverdue()},
+ * card#11674), and emits `ci_await_expired` once per await past its expiry ({@see CiAwaitService::expireDue()}).
  *
  * ⭐ WHY IT IS A JOB (docs/periodic-jobs.md's decision order, step 4). A delivery settles only the
  * awaits its read loaded, a registration's read can see a lagging list, a final delivery can be
@@ -30,9 +31,10 @@ use Throwable;
  * for a head not read within the interval, at most `BRIDGE_CI_AWAIT_SWEEP_READS` per pass — so at
  * most that × 3600 / the interval head reads per hour, install-wide.
  *
- * ⚑ THE TWO HALVES ARE ISOLATED: one throwing does not skip the other, and the pass still throws
+ * ⚑ THE THREE PARTS ARE ISOLATED: one throwing does not skip the others, and the pass still throws
  * afterwards so the registry records the failure ({@see JobOutcome}'s one failure channel). The read
- * half runs first, so an await whose CI finished just before its expiry is settled, not expired.
+ * part runs first, so an await whose CI finished just before its overdue deadline or its expiry is
+ * settled, not reported overdue or expired.
  *
  * ⚑ {@see JobCapability::ReadAndAlert}: it deletes rows of the bridge's own `ci_awaits` bookkeeping,
  * reads GitHub and tells a seat. It writes nothing on kanban or GitHub.
@@ -49,6 +51,9 @@ final class CiAwaitSweepJob implements JobHandler
 
     /** Expired awaits emitted per pass; a backlog drains across passes. */
     public const MAX_EXPIRED_PER_PASS = 50;
+
+    /** Overdue awaits emitted per pass; a backlog drains across passes. */
+    public const MAX_OVERDUE_PER_PASS = 50;
 
     public function __construct(private readonly CiAwaitService $awaits) {}
 
@@ -74,6 +79,13 @@ final class CiAwaitSweepJob implements JobHandler
             }
         } catch (Throwable $e) {
             $failed[] = 'reading unsettled heads failed: '.RedactedErrorText::of($e);
+        }
+        try {
+            $overdue = $this->awaits->emitOverdue(self::MAX_OVERDUE_PER_PASS, $ctx->intervalS);
+            $done[] = "sent {$overdue['emitted']} ci_await_overdue"
+                .($overdue['failed'] === 0 ? '' : ", {$overdue['failed']} could not be written to their seat's inbox");
+        } catch (Throwable $e) {
+            $failed[] = 'sending overdue events failed: '.RedactedErrorText::of($e);
         }
         try {
             $expiry = $this->awaits->expireDue(self::MAX_EXPIRED_PER_PASS, $ctx->intervalS);

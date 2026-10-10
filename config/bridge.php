@@ -494,6 +494,13 @@ return [
     | workflow_run delivery settle it. A register/cancel loop, or a stream of
     | fresh SHAs, cannot spend the install's GitHub quota.
     |
+    | overdue_default — how long after registration a wait is OVERDUE when the
+    | repo has too little CI history to derive its normal CI time from, in
+    | seconds (default 1800, 60..604800; card#11674). With enough history the
+    | deadline is derived from the repo's own recent heads (App\Bridge\CiAwait\
+    | OverdueDeadline), and a seat can pass its own. One `ci_await_overdue`
+    | event per wait; the wait stays registered.
+    |
     | A value outside its range is REFUSED, not clamped: `ci_await` refuses as
     | `install_fault.ci_await_config_invalid` and `bridge:check`
     | (`ci_await.awaits`) fails, naming the key and the value.
@@ -506,6 +513,7 @@ return [
         'read_cooldown' => env('BRIDGE_CI_AWAIT_READ_COOLDOWN', 60),
         'sweep_reads' => env('BRIDGE_CI_AWAIT_SWEEP_READS', 10),
         'seat_reads_per_hour' => env('BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR', 60),
+        'overdue_default' => env('BRIDGE_CI_AWAIT_OVERDUE_DEFAULT', 1800),
     ],
 
     /*
