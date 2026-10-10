@@ -79,7 +79,7 @@ php artisan bridge:provision-tools       # mint per-agent board-tools bearers (D
                                          # --host-a= / --ssh-port= / --pubkey-from= fill it in — docs/board-tools-enablement.md
 php artisan bridge:inbox                 # surface staged intents (Claude Code hook-aware), plus any run of webhook 5xx
                                          # and, once per consumer, its recovery with the bridge:reconcile remedy (DL-409)
-php artisan bridge:prune --older-than=30d # retention: prune old events/dispatches/inbox lines (manual/unbounded; the receiver self-prunes since DL-199)
+php artisan bridge:prune --older-than=30d # retention: prune old events/dispatches/ci_head_* rows/inbox lines (manual/unbounded; the receiver self-prunes since DL-199)
 php artisan bridge:reconcile             # board-vs-GitHub drift reconciler (report-only; --fix applies) — rerunnable writeback backstop
 php artisan bridge:replay <N>            # re-dispatch a stored event by id (recovery for errored/missed dispatches)
 php artisan bridge:github-owed           # the GitHub writes this install DECIDED on and could not land — protocol:invalid
