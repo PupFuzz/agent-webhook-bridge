@@ -42,6 +42,12 @@ BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API ba
 # Absolute, the file itself (not a symlink), readable by the PHP-FPM pool user. Unset ⇒ takes
 # refuse and kanban deliveries 5xx, and `bridge:check` FAILS until it is set.
 BRIDGE_COORD_CONFIG_PATH=/home/kanban/.config/coord/coordination.config.json
+# The coord credential store, which routes each repo to its own GitHub token file (DL-456). SET IT
+# on every install: the framework keeps it at ~/.config/coord/credentials.ini in the coordination
+# project's account. Unset ⇒ credentials.ini beside BRIDGE_COORD_CONFIG_PATH, right on a solo seat
+# only — on a pm install usually nothing is there, repos fall back to the single token file, and
+# `bridge:check` WARNs (card#11619). Absolute, not a symlink, readable by the PHP-FPM pool user.
+BRIDGE_COORD_CREDENTIALS_PATH=/home/kanban/.config/coord/credentials.ini
 # BRIDGE_MAX_BODY_BYTES=262144        # optional; default 256K. Keep ≤ the FPM pool's post_max_size.
 # BRIDGE_INSTALL_SUFFIX=-prod         # -prod/-dev cross-DSN safety marker
 # DB_TIMEZONE=+00:00                  # MySQL session time_zone; defaults to +00:00 and must match app.timezone (DL-346)
@@ -280,6 +286,11 @@ php artisan bridge:client-pack:install             # publish THIS release's chan
                                                   # bridge:check's client_pack_source then warns, naming the
                                                   # maintainer's re-run that attaches a pack, instead of failing (DL-466)
 php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero.
+                                                  # github.token_file WARNs "BRIDGE_COORD_CREDENTIALS_PATH is unset"
+                                                  # when no store sits at the guessed path beside the roster: set the
+                                                  # key in .env to the store's absolute path (the framework's is
+                                                  # ~/.config/coord/credentials.ini in the coordination account),
+                                                  # re-run optimize, then this check (card#11619)
                                                   # client_pack_source FAILS only when the published pack is an older
                                                   # release's, its client is older than this checkout's, and this release
                                                   # carries a pack — run the step above. A github.webhook_subscription

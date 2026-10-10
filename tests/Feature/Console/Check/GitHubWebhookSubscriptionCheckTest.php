@@ -393,7 +393,7 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
     public function test_a_repo_with_no_resolvable_token_is_unvalidated_and_issues_no_request(): void
     {
         // No `github/token` secret is placed, `GH_TOKEN` is unset by the host pin, and the
-        // credential helper is neutralised by the install builder — so resolution fails before
+        // install builder points the coord credential store at an absent file — so resolution fails before
         // any request. `Http::preventStrayRequests()` (TestCase) is the control: a leg that
         // reached the network here would throw rather than pass.
         $this->bootGithubInstall(null, withToken: false);

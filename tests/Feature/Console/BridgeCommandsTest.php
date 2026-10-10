@@ -803,6 +803,65 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString($pasted, Artisan::output());
     }
 
+    /**
+     * An install whose roster sits in its own directory with `BRIDGE_COORD_CREDENTIALS_PATH` unset —
+     * the pm shape, where the framework keeps the store elsewhere (card#11619). Returns the path the
+     * bridge guesses for the store, which nothing has written.
+     */
+    private function rosterWithoutCredentialsSetting(): string
+    {
+        $coord = $this->dir.'/coord-repo';
+        File::ensureDirectoryExists($coord);
+        File::copy(base_path('tests/Fixtures/coord-roster-empty.json'), $coord.'/coordination.config.json');
+        config(['bridge.coord_config_path' => $coord.'/coordination.config.json', 'bridge.coord_credentials_path' => null]);
+        $this->writeWritebackWithToken();
+        $this->placeUsableGithubTokenFile();
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])] + $this->fakePreload());
+
+        return $coord.'/credentials.ini';
+    }
+
+    public function test_check_warns_when_the_defaulted_coord_credential_store_is_absent(): void
+    {
+        $guessed = $this->rosterWithoutCredentialsSetting();
+
+        Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertMatchesRegularExpression('/^WARN: github token file: BRIDGE_COORD_CREDENTIALS_PATH is unset, so the bridge looked for the coord credential store beside BRIDGE_COORD_CONFIG_PATH, at '.preg_quote($guessed, '/').', and there is no file there\./m', $out);
+        $this->assertStringContainsString('Set BRIDGE_COORD_CREDENTIALS_PATH in .env', $out);
+        $this->assertStringNotContainsString('ghp_usable', $out);
+        Artisan::call('bridge:check', ['--format' => 'json']);
+        $json = Artisan::output();
+        $this->assertStringContainsString('BRIDGE_COORD_CREDENTIALS_PATH is unset', $json);
+        $this->assertStringNotContainsString('ghp_usable', $json);
+    }
+
+    /** @return array<string, array{0: callable(self, string): void}> */
+    public static function credentialStoreNotMissingAtDefault(): array
+    {
+        return [
+            'the setting names an absent store' => [fn (self $t, string $guessed) => config(['bridge.coord_credentials_path' => $t->dir.'/elsewhere/credentials.ini'])],
+            'a store exists at the default' => [fn (self $t, string $guessed) => (new CoordCredentialStoreFixture(dirname($guessed)))->write([], [])],
+            // The unset roster has its own message (CoordCredentialStore::faultClause()).
+            'the roster is unset' => [fn (self $t, string $guessed) => config(['bridge.coord_config_path' => null])],
+        ];
+    }
+
+    /** @param  callable(self, string): void  $arrange */
+    #[DataProvider('credentialStoreNotMissingAtDefault')]
+    public function test_check_does_not_warn_about_the_defaulted_store_when(callable $arrange): void
+    {
+        $arrange($this, $this->rosterWithoutCredentialsSetting());
+
+        Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString('github token file', $out, 'the leg ran');
+        $this->assertStringNotContainsString('BRIDGE_COORD_CREDENTIALS_PATH is unset', $out);
+        $this->assertStringNotContainsString('ghp_usable', $out);
+    }
+
     /** @return array<string, array{0: callable(self, string): void, 1: string}> */
     public static function pastedTokenPathSettings(): array
     {
