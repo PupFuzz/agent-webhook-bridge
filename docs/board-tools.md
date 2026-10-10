@@ -2060,7 +2060,10 @@ the expiry comes first. Nor does one for a head whose CURRENT settled state you 
 `ci_settled` for, by the per-head aggregate or by the await's own settle (the aggregate leaves your await
 registered, DL-470 Decision 6): you were told that state, and the await's own settle still follows. A
 head that has since been re-run, or gained a run, is a new state: a re-registration on it is told when
-it is overdue. ⚠ A head timed from history can run long for reasons the bridge cannot
+it is overdue. ⚠ The skip trusts the view the bridge tracks from `workflow_run` deliveries: if a re-run's
+deliveries are lost, the head still looks like the state you were sent, and the cue is suppressed until
+the expiry. A skipped await is not stamped, and a pass looks at only a bounded number of due awaits
+(ten times its send cap of 50), so very many skipped awaits ahead of a due one can hold it back. ⚠ A head timed from history can run long for reasons the bridge cannot
 see in its rows — a lost `requested` delivery starts its time late, a redelivered `completed` ends it
 late — and the percentile leaves such a head out only once there are at least 20 samples.
 

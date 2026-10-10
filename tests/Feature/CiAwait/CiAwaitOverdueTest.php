@@ -241,6 +241,34 @@ class CiAwaitOverdueTest extends TestCase
         $this->assertSame($before, CiAwait::query()->firstOrFail()->expires_at->toIso8601String(), 'the refusal says nothing was stored, so the expiry did not move');
     }
 
+    public function test_awaits_skipped_for_a_sent_state_do_not_use_up_the_send_cap(): void
+    {
+        foreach ([1, 2, 3] as $n) {
+            $this->dueAwait($n, skipped: true);
+        }
+        $this->dueAwait(4, skipped: false);
+        Carbon::setTestNow('2026-10-10T10:10:00.000Z');
+
+        $result = $this->app->make(CiAwaitService::class)->emitOverdue(1, 300);
+
+        $this->assertSame(1, $result['emitted'], 'three skips sat ahead of the due await under a cap of one');
+        $this->assertSame(['ci_await_overdue'], $this->kinds());
+    }
+
+    public function test_more_skips_than_the_scan_bound_can_starve_a_later_await(): void
+    {
+        foreach (range(1, 10) as $n) {   // the scan looks at 10x the cap, here 10
+            $this->dueAwait($n, skipped: true);
+        }
+        $this->dueAwait(11, skipped: false);
+        Carbon::setTestNow('2026-10-10T10:10:00.000Z');
+
+        $result = $this->app->make(CiAwaitService::class)->emitOverdue(1, 300);
+
+        $this->assertSame(0, $result['emitted'], 'the bound is real: skips are never stamped, so this await waits behind them');
+        $this->assertSame([], $this->kinds());
+    }
+
     // ---- the deadline -----------------------------------------------------------------------
 
     public function test_a_repo_with_too_little_history_is_overdue_after_the_configured_default(): void
@@ -451,6 +479,25 @@ class CiAwaitOverdueTest extends TestCase
             'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}", 'pr' => null,
             'created_at' => $created, 'updated_at' => $updated,
         ]);
+    }
+
+    /** An await past its deadline on its own head; `$skipped` gives that head's current state as already sent to the seat. */
+    private function dueAwait(int $n, bool $skipped): void
+    {
+        $sha = str_pad((string) $n, 40, 'f', STR_PAD_LEFT);
+        CiAwait::query()->create([
+            'agent' => 'seat-a', 'repo' => CiAwaitService::key(self::REPO), 'repo_name' => self::REPO, 'head_sha' => $sha, 'pr' => null,
+            'expires_at' => Carbon::parse('2026-10-10T16:00:00Z'), 'overdue_at' => Carbon::parse('2026-10-10T10:00:00Z')->addSeconds($n), 'overdue_basis' => 'override',
+        ]);
+        if ($skipped) {
+            DB::table('ci_head_runs')->insert([
+                'run_id' => 900 + $n, 'repo' => CiAwaitService::key(self::REPO), 'repo_name' => self::REPO, 'head_sha' => $sha,
+                'workflow_id' => 77, 'workflow' => 'CI', 'run_number' => 1, 'run_attempt' => 1, 'event' => 'push',
+                'status' => 'completed', 'conclusion' => 'success', 'html_url' => "https://github.com/octo/widgets/actions/runs/{$n}", 'pr' => null,
+                'created_at' => Carbon::parse('2026-10-10T09:00:00Z'), 'updated_at' => Carbon::parse('2026-10-10T09:05:00Z'),
+            ]);
+            CiHeadSettlementLedger::claim('seat-a', self::REPO, $sha, HeadRuns::of(CiHeadRunTracker::runsOf(self::REPO, $sha))->fingerprint());
+        }
     }
 
     /** One tracked run on the awaited head, as the `workflow_run` deliveries would leave it. */

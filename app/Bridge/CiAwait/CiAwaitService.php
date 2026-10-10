@@ -1012,7 +1012,12 @@ final class CiAwaitService
 
     private function upsert(string $agent, string $repoName, string $headSha, ?int $pr, Carbon $expiresAt, OverdueDeadline $overdue): bool
     {
-        return DB::transaction(fn (): bool => $this->upsertRow($agent, $repoName, $headSha, $pr, $expiresAt, $overdue));
+        // ⛔ attempts: 2. The transaction makes a refused refresh store nothing, but its UPDATE holds a
+        // gap lock until commit, so two same-head registrations by one seat can deadlock on MariaDB
+        // (error 1213). Laravel rolls the loser back and runs this again; by then the winner's row
+        // exists, so the retry's UPDATE matches it and takes the refresh path. A second deadlock
+        // propagates and is refused as a store fault, which is what it then is.
+        return DB::transaction(fn (): bool => $this->upsertRow($agent, $repoName, $headSha, $pr, $expiresAt, $overdue), attempts: 2);
     }
 
     private function upsertRow(string $agent, string $repoName, string $headSha, ?int $pr, Carbon $expiresAt, OverdueDeadline $overdue): bool
