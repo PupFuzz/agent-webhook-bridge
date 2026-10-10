@@ -1,0 +1,136 @@
+[
+  {
+    "ghsa_id": "GHSA-rmxm-3fg6-px4f",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/honojs/node-server/security/advisories/GHSA-rmxm-3fg6-px4f",
+    "summary": "`serveStatic` decodes the request path a second time, leading to bypass of middleware on static paths",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "@hono/node-server"
+        },
+        "vulnerable_version_range": "> = 1.19.10, < 2.1.3",
+        "patched_versions": "2.1.3"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-9mqv-5hh9-4cgg",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/honojs/node-server/security/advisories/GHSA-9mqv-5hh9-4cgg",
+    "summary": "Unauthenticated memory-leak DoS via aborted WebSocket handshake",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "@hono/node-server"
+        },
+        "vulnerable_version_range": ">= 2.0.0, <= 2.0.9",
+        "patched_versions": "2.0.10"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-frvp-7c67-39w9",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/honojs/node-server/security/advisories/GHSA-frvp-7c67-39w9",
+    "summary": "Path traversal in `serve-static` on Windows via encoded backslash (`%5C`)",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "@hono/node-server"
+        },
+        "vulnerable_version_range": ">= 2.0.0, < 2.0.5",
+        "patched_versions": "2.0.5"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "@hono/node-server"
+        },
+        "vulnerable_version_range": "< 1.19.15",
+        "patched_versions": "1.19.15"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-92pp-h63x-v22m",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/honojs/node-server/security/advisories/GHSA-92pp-h63x-v22m",
+    "summary": "Middleware bypass via repeated slashes in serveStatic",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "@hono/node-server"
+        },
+        "vulnerable_version_range": "< 1.19.13",
+        "patched_versions": "1.19.13"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-wc8c-qw6v-h7f6",
+    "severity": "high",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/honojs/node-server/security/advisories/GHSA-wc8c-qw6v-h7f6",
+    "summary": "Authorization bypass for protected static paths via encoded slashes in Serve Static Middleware",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "@hono/node-server"
+        },
+        "vulnerable_version_range": "< 1.19.10",
+        "patched_versions": "1.19.10"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-hgxw-5xg3-69jx",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/honojs/node-server/security/advisories/GHSA-hgxw-5xg3-69jx",
+    "summary": "Denial of Service risk when receiving Host header that cannot be parsed",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "@hono/node-server"
+        },
+        "vulnerable_version_range": ">=1.3.0 < 1.10.1",
+        "patched_versions": "1.10.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-rjq5-w47x-x359",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/honojs/node-server/security/advisories/GHSA-rjq5-w47x-x359",
+    "summary": "Can't handle \"double dots\" in URL",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "@hono/node-server"
+        },
+        "vulnerable_version_range": ">=1.3.0 <1.4.1",
+        "patched_versions": "1.4.1"
+      }
+    ]
+  }
+]

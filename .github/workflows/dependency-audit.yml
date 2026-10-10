@@ -252,7 +252,8 @@ jobs:
           #       Such a comparison is UNDECIDABLE. It reads RANGE-UNPARSEABLE unless the answer
           #       does not depend on it (another bound of its interval is false, or another
           #       alternative holds). A lower/upper pair whose order is undecidable is refused
-          #       outright, because the empty-interval rule cannot be applied to it.
+          #       outright, because the empty-interval rule cannot be applied to it (the range is not
+          #       read; agreed (3) below clears a version above both bounds).
           #   Each connective and each reading of V stated above has a row in the §V range table
           #   of dependency-audit.selftest.sh, and each guard behind a reading of V has a mutant
           #   there that removes it. Of the forms NOT read, `^`, `x` and a single `|` have rows.
@@ -268,7 +269,8 @@ jobs:
           #   A BARE version ("1.17.0") is NOT read (pm ruling on card#11106, comment 10035): the
           #   same text means one version in axios GHSA-654m-c8p4-x5fp (reviewed record "= 1.15.2")
           #   and a lower bound in axios GHSA-r4gj-5m52-g5wh (reviewed record ">= 1.17.0, < 1.20.0").
-          #   Like any unread range, the reviewed global record decides it (reviewed_hit, below).
+          #   Like any unread range, what every reading agrees on decides it first (agreed, below;
+          #   card#11604), then the reviewed global record (reviewed_hit).
           VMATCH_JQ='
             def vparse:
               . as $v
@@ -311,7 +313,9 @@ jobs:
                 else [ $chunks[] | scan("(>=|<=|>|<|=)\\s*([^\\s<>=,;&|]+)") | {op: .[0], b: (.[1] | vparse)} ]
                      | if any(.b == null) then null else . end
                 end;
-            def interval:     # [{op, b}] ANDed -> ONE non-empty {lo, hi, eq}, or null
+            # $keep (only `agreed` passes true) keeps a lower/upper pair whose order is
+            # undecidable as {lo, hi, unordered: true} instead of refusing it; holds decides it.
+            def interval_of($keep):  # [{op, b}] ANDed -> ONE non-empty {lo, hi, eq}, or null
               if . == null then null
               elif (map(select(.op == "=")) | length) > 0 and length > 1 then null
               else
@@ -323,36 +327,43 @@ jobs:
                 | map(select(.op == "=")) as $e
                 | if ($l | length) > 1 or ($u | length) > 1 then null
                   elif ($l | length) == 1 and ($u | length) == 1 and vcmp($l[0].b; $u[0].b) == null
-                  then null   # UNDECIDABLE: bounds that cannot be ordered cannot be shown non-empty
+                  then (if $keep then {lo: $l[0], hi: $u[0], eq: null, unordered: true}
+                        else null end)   # UNDECIDABLE: bounds that cannot be ordered cannot be shown non-empty
                   elif ($l | length) == 1 and ($u | length) == 1
                        and (vcmp($l[0].b; $u[0].b) as $c
                             | $c > 0 or ($c == 0 and ($l[0].op == ">" or $u[0].op == "<")))
                   then null   # EMPTY: an advisory never means "no version" — this is a misread
                   else {lo: $l[0], hi: $u[0], eq: $e[0]} end
               end;
+            def interval: interval_of(false);
             def bounded: . != null and .lo != null and .hi != null;
-            def alternative:  # one ||-alternative -> [interval] ORed, or null
+            def alternative($keep):  # one ||-alternative -> [interval] ORed, or null
               gsub("^\\s+|\\s+$"; "") as $a
               | (($a | capture("^(?<a>[^\\s,]+)\\s+(?:-|through)\\s+(?<b>[^\\s,]+)$")) // null) as $hy
               | if $hy != null then
                   [ [ {op: ">=", b: ($hy.a | vparse)}, {op: "<=", b: ($hy.b | vparse)} ]
-                    | if any(.b == null) then null else . end | interval ]
+                    | if any(.b == null) then null else . end | interval_of($keep) ]
                 else
                   [ $a | splits("\\s*,\\s*") | terms ] as $pieces
                   | if ($pieces | any(. == null)) then null
-                    elif ($pieces | length) == 1 then [ $pieces[0] | interval ]
-                    elif ($pieces | all(length == 1)) then [ $pieces | add | interval ]   # comma = AND
-                    elif ($pieces | all(interval | bounded)) then [ $pieces[] | interval ] # comma = OR
+                    elif ($pieces | length) == 1 then [ $pieces[0] | interval_of($keep) ]
+                    elif ($pieces | all(length == 1)) then [ $pieces | add | interval_of($keep) ]   # comma = AND
+                    elif ($pieces | all(interval | bounded)) then [ $pieces[] | interval_of($keep) ] # comma = OR
                     else null end
                 end
               | if . == null or any(. == null) then null else . end;
+            def core: {c: .c, pre: false, tag: ""};
             def holds($ver):  # true or false; null = UNDECIDABLE
               if .eq != null then satisfies($ver; "="; .eq.b)
+              # An unordered pair always shares one core (vcmp orders any two cores), so an
+              # untagged version on a higher core is above both bounds whatever order their tags take.
+              elif .unordered then (if ($ver.pre | not) and vcmp($ver; .hi.b | core) == 1 then false else null end)
               else [ (.lo, .hi) | select(. != null) | satisfies($ver; .op; .b) ] | all3 end;
-            def ranges($range):  # range text -> [interval] ORed, or null when it is not read
+            def ranges_of($range; $keep):  # range text -> [interval] ORed, or null when it is not read
               [ $range | gsub("^\\s+|\\s+$"; "") | gsub("=>"; ">=")
-                | splits("\\s*\\|\\|\\s*") | alternative ]
+                | splits("\\s*\\|\\|\\s*") | alternative($keep) ]
               | if any(. == null) then null else add end;
+            def ranges($range): ranges_of($range; false);
             def in_range($ver; $range):
               ranges($range) as $iv
               | if $iv == null then "RANGE-UNPARSEABLE"
@@ -390,12 +401,12 @@ jobs:
             #     at 2.0.1 stays AFFECTED).
             #     A range that is read but cannot be compared at this version (a pre-release such
             #     as 1.5.0-p1 against ">=1.0.0 <1.5.0") stays RANGE-UNPARSEABLE, never cleared
-            #     ("undecided"). A range that is NOT READ is never cleared by its patched text
-            #     either (pm ruling on card#11106, 2026-10-06): an unread range cannot tell a lower
-            #     bound from an upper one, so no reading of it can show the fix is the fix of that line.
-            #     The reviewed global record decides it instead (THE REVIEWED GLOBAL RECORD,
-            #     below). An entry with no patched value, or one not read, is decided by its range
-            #     alone.
+            #     ("undecided"). A range that is NOT READ is not cleared by patched_state either
+            #     (pm ruling on card#11106, 2026-10-06): an unread range cannot tell a lower bound
+            #     from an upper one. Its patched text clears it only through agreed (2), where no
+            #     reading of the text can disagree (card#11604), and otherwise the reviewed global
+            #     record decides it (THE REVIEWED GLOBAL RECORD, below). An entry with no patched
+            #     value, or one not read, is decided by its range alone.
             #   READ: one or more versions, each optionally prefixed `>=` or `=>`, separated by `,`,
             #     `;` or `||` ("1.20.0", ">= v5.8.0", "6.20.45,7.30.7,8.83.28", "7.18.2; 6.23.0").
             #     Anything else (a patched RANGE such as ">=5.4.19, <6.0.0", prose, a `:` typo) is
@@ -470,8 +481,47 @@ jobs:
             def is_pkg:  # one vulnerabilities[] entry -> itself when it names the audited package, else nothing
               select((.package.ecosystem // "" | ascii_downcase) == ($ecosystem | ascii_downcase))
               | select((.package.name // "" | ascii_downcase) == ($package | ascii_downcase));
+            # WHAT EVERY READING OF AN UNREAD RANGE AGREES ON (card#11604, operator ruling). A range
+            # this grammar does not read is decided here first, only where no reading of its text
+            # could disagree; anything else goes to the reviewed global record below. In order:
+            #   (1) a BARE version ("1.16.0") the installed version equals -> AFFECTED. Whatever the
+            #     bare text means (one version, or a lower bound as in axios GHSA-r4gj-5m52-g5wh),
+            #     it holds that version. Any other version is NOT decided by it.
+            #   (2) at or above the ONE patched version of the advisory -> clean, only where the text is
+            #     nothing but versions, comparison operators and the connectives `, ; | & -` (a word
+            #     can name a bound with no version), names at least one version, and every version it
+            #     names is below that fix, or equal to it as an exclusive `<` upper bound
+            #     (@hono/node-server GHSA-rmxm-3fg6-px4f "> = 1.19.10, < 2.1.3", patched 2.1.3).
+            #     No interval of any reading can then begin at or above the fix, or reach above it.
+            #     A patched list of several versions is not read here (which line the version is on
+            #     is a guess: readings (1) and (2) of patched_state).
+            #   (3) an untagged version on a higher core than a lower/upper pair whose tags cannot be
+            #     ordered -> clean, through ranges_of with $keep (express GHSA-rv95-896h-c2vc
+            #     ">=5.0.0-alpha.1, <5.0.0-beta.3" at 5.2.1): above both bounds in either order.
+            #   Rows: the card#11604 rows of §V, §P and §G in dependency-audit.selftest.sh; each guard
+            #   has a §M mutant.
+            def bare($ver; $range):  # (1): true when $range is one bare version equal to $ver
+              ($range | gsub("^\\s+|\\s+$"; "")) as $r
+              | ($r | test("^[vV]?[0-9][^\\s<>=,;|&]*$"))
+                and (($r | vparse) as $x | $x != null and vcmp($ver; $x) == 0);
+            def fix_above($ver; $range; $text):  # (2): true when every reading of $range leaves $ver at or above its one fix
+              ($text // "" | gsub("^\\s+|\\s+$"; "") | plist) as $ps
+              | $ps != null and ($ps | length) == 1
+                and (vcmp($ver; $ps[0]) as $k | $k != null and $k >= 0)
+                and ($range | gsub("[vV]?[0-9][^\\s<>=,;|&]*"; "") | test("^[\\s<>=,;|&-]*$"))
+                and ([ $range | scan("(<=?)?\\s*([vV]?[0-9][^\\s<>=,;|&]*)") ] as $ns
+                     | ($ns | length) > 0
+                       and ($ns | all((.[1] | vparse) as $n
+                                      | $n != null and (vcmp($n; $ps[0]) as $c
+                                        | $c != null and ($c < 0 or ($c == 0 and .[0] == "<"))))));
+            def agreed($ver; $range; $text):  # "AFFECTED" | "clean" | null = no agreement, the reviewed record decides
+              if bare($ver; $range) then "AFFECTED"
+              elif fix_above($ver; $range; $text) then "clean"
+              elif (ranges_of($range; true) | . != null and (map(holds($ver)) | all(. == false))) then "clean"
+              else null end;
             # THE REVIEWED GLOBAL RECORD (card#11106, pm ruling 2026-10-06). A range of a repository
-            # advisory that this grammar does not read is not guessed at: the REVIEWED global record
+            # advisory that this grammar does not read, and that agreed leaves undecided, is not
+            # guessed at: the REVIEWED global record
             # GitHub keeps of the same advisory (`/advisories/<GHSA>`, type "reviewed") lists the
             # ranges of the package one per `vulnerabilities[]` entry, and each entry goes through
             # in_range on its own. No other grammar is read. The caller looks the record up (the
@@ -509,16 +559,24 @@ jobs:
                   | is_pkg
                   | {r: (.vulnerable_version_range // ""), p: (.patched_versions // "")} as $vr
                   | if ranges($vr.r) == null then
-                      # THE RANGE IS NOT READ: its patched text never clears it, and the reviewed
-                      # global record decides, or it fails closed.
+                      # THE RANGE IS NOT READ: what every reading of it agrees on decides it (agreed),
+                      # then the reviewed global record, or it fails closed.
                       ($adv.ghsa_id // "") as $id
-                      | reviewed_hit($ver; $id; $reviewed[$id]) as $rv
-                      | select($rv.hit != false)
-                      | {verdict: (if $rv.hit == true then "AFFECTED" else "RANGE-UNPARSEABLE" end),
-                         ghsa: $id, severity: ($adv.severity // ""), range: $vr.r,
-                         patched: "range not read, so its patched text is not read either; \($rv.why)",
-                         reviewed: $rv.why,
-                         lookup: ($id != "" and ($reviewed | has($id) | not))}
+                      | agreed($ver; $vr.r; $vr.p) as $ag
+                      | select($ag != "clean")
+                      | if $ag == "AFFECTED" then
+                          {verdict: "AFFECTED", ghsa: $id, severity: ($adv.severity // ""), range: $vr.r,
+                           patched: "the version is the bare version the range names, which every reading of it holds",
+                           lookup: false}
+                        else
+                          reviewed_hit($ver; $id; $reviewed[$id]) as $rv
+                          | select($rv.hit != false)
+                          | {verdict: (if $rv.hit == true then "AFFECTED" else "RANGE-UNPARSEABLE" end),
+                             ghsa: $id, severity: ($adv.severity // ""), range: $vr.r,
+                             patched: "range not read, and no reading of it is agreed at this version; \($rv.why)",
+                             reviewed: $rv.why,
+                             lookup: ($id != "" and ($reviewed | has($id) | not))}
+                        end
                     else
                       in_range($ver; $vr.r) as $hit
                       | select($hit == true or $hit == "RANGE-UNPARSEABLE")

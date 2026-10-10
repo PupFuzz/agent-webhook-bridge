@@ -32,7 +32,9 @@
 # reading widened or removed), and the reviewed-record mutants that use a global record the
 # shipped block refuses. The §M mutants each require the leg that guard holds to change verdict:
 # a fail-closed leg goes GREEN, or a range-grammar row (§V), patched-version row (§P) or
-# reviewed-record row (§G) takes the named wrong reading.
+# reviewed-record row (§G) takes the named wrong reading. The card#11604 mutants each remove one
+# guard of `agreed` (what every reading of an unread range agrees on), or put back the reading of a
+# bare version as exact that card#11604 rules out.
 # Without them, a leg could be passing
 # because the fixture is odd rather than because the shipped logic is closed. The §X mutant
 # re-mints the swallowed-error defect and requires the class guard to catch it.
@@ -378,7 +380,8 @@ RANGE_TABLE='>= 1.3.0; <=2.10.1#2.10.1#AFFECTED#commonmark GHSA-97jj-33gv-5xf9 (
 < 2.0.0-beta.3#2.0.0-beta.1#RANGE-UNPARSEABLE#SYNTHETIC: two pre-release tags on one core cannot be ordered
 < 2.0.0-beta.3#2.0.0-beta.3#clean#SYNTHETIC: identical pre-release tags compare equal
 > 2.0.0-rc.1, < 2.0.0#2.0.0-rc.2#RANGE-UNPARSEABLE#SYNTHETIC: one undecidable bound beside a true one is undecidable
->= 2.0.0-rc.1 < 2.0.0-rc.5#3.0.0#RANGE-UNPARSEABLE#SYNTHETIC: bounds whose pre-release tags cannot be ordered, so emptiness is undecidable
+>= 2.0.0-rc.1 < 2.0.0-rc.5#3.0.0#clean#SYNTHETIC (card 11604): bounds whose pre-release tags cannot be ordered are not read, and an untagged version on a higher core is above both in either order
+>= 2.0.0-rc.1 < 2.0.0-rc.5#1.5.0#RANGE-UNPARSEABLE#SYNTHETIC: bounds whose pre-release tags cannot be ordered, so emptiness is undecidable, and a version below them is not decided
 >= 1.0.0 < 2.0.0#1.0.0-beta#AFFECTED#SYNTHETIC: >= admits the pre-releases of its own core (Composer reads >= X as >= X-dev)
 > 1.0.0, < 2.0.0#1.0.0-p1#RANGE-UNPARSEABLE#SYNTHETIC: a Composer patch tag sits ABOVE its core, an npm tag below
 = 1.2.3#1.2.3-stable#RANGE-UNPARSEABLE#SYNTHETIC: Composer reads -stable as EQUAL to its core, npm below
@@ -392,7 +395,9 @@ RANGE_TABLE='>= 1.3.0; <=2.10.1#2.10.1#AFFECTED#commonmark GHSA-97jj-33gv-5xf9 (
 = 1.2.3#1.2.3#AFFECTED#SYNTHETIC: exact equality holds on its own version
 = 1.2.3#1.2.4#clean#SYNTHETIC: exact equality does not hold on another version
 1.17.0#1.19.0#RANGE-UNPARSEABLE#axios GHSA-r4gj-5m52-g5wh: a bare version is not read, since its reviewed global record reads ">= 1.17.0, < 1.20.0" (pm ruling card#11106 c-10035; §G decides it)
-1.15.2#1.15.2#RANGE-UNPARSEABLE#axios GHSA-654m-c8p4-x5fp: a bare version is not read, even where its reviewed global record reads "= 1.15.2" (§G decides it)'
+1.15.2#1.15.2#AFFECTED#axios GHSA-654m-c8p4-x5fp (card 11604): a bare version holds the version equal to it in every reading (its reviewed global record reads "= 1.15.2")
+1.16.0#1.16.0#AFFECTED#follow-redirects GHSA-8r9p-f939-6h3c (card 11604): the version equal to the bare version
+1.16.0#1.16.1#RANGE-UNPARSEABLE#follow-redirects GHSA-8r9p-f939-6h3c (card 11604): with no patched version, a version above the bare version is not decided'
 
 LIB_BLOCK="$(extract "$CALLEE" dep-audit-lib)"
 vmatch_prog() {  # $1 = dep-audit-lib block text -> the VMATCH_JQ program that text defines
@@ -450,7 +455,20 @@ PATCHED_TABLE='>=1.13.0#>=1.20.0#1.20.0#clean#axios GHSA-542g-h47m-68v8: EQUAL t
 >=1.13.0#>=1.20.0#9.9.9#clean#axios GHSA-542g-h47m-68v8: above the patched version
 >=1.13.0#>=1.20.0#1.20.0-beta.1#AFFECTED#SYNTHETIC: a pre-release of the patched version is below it
 >1.0.0#>= 1.13.2#1.13.2#clean#axios GHSA-qj83-cq47-w5f8: a spaced >= on the patched version
-1.17.0#>=1.20.0#1.20.0#RANGE-UNPARSEABLE#axios GHSA-r4gj-5m52-g5wh: a bare version is not read, so its patched text never clears it, even at the fix; this table hands in no reviewed record (§G does)
+1.17.0#>=1.20.0#1.20.0#clean#axios GHSA-r4gj-5m52-g5wh (card 11604): at its one fix, which every reading of the bare version leaves the version at or above
+1.17.0#>=1.20.0#1.18.0#RANGE-UNPARSEABLE#axios GHSA-r4gj-5m52-g5wh (card 11604): a bare version is not read as exact, so 1.18.0, below the fix and not equal to it, is not decided; this table hands in no reviewed record (§G does)
+1.17.0#>=1.20.0#1.17.0#AFFECTED#axios GHSA-r4gj-5m52-g5wh (card 11604): the version equal to the bare version
+1.16.0#1.16.1#1.16.1#clean#follow-redirects GHSA-8r9p-f939-6h3c (card 11604): at its one fix, above the bare version
+1.16.0#1.16.1#1.15.9#RANGE-UNPARSEABLE#follow-redirects GHSA-8r9p-f939-6h3c (card 11604): below the fix and not equal to the bare version, so not decided; this table hands in no reviewed record (§G does)
+> = 1.19.10, < 2.1.3#2.1.3#2.1.3#clean#@hono/node-server GHSA-rmxm-3fg6-px4f (card 11604): at its one fix, which the range names only as an exclusive upper bound
+> = 1.19.10, < 2.1.3#2.1.3#2.1.2#RANGE-UNPARSEABLE#@hono/node-server GHSA-rmxm-3fg6-px4f (card 11604): below the fix, so not decided; this table hands in no reviewed record (§G does)
+>=5.0.0-alpha.1, <5.0.0-beta.3#5.0.0-beta.3#5.2.1#clean#express GHSA-rv95-896h-c2vc (card 11604): an untagged version on a higher core than both bounds, whose tags cannot be ordered
+>=5.0.0-alpha.1, <5.0.0-beta.3#5.0.0-beta.3#5.0.0-alpha.5#RANGE-UNPARSEABLE#express GHSA-rv95-896h-c2vc (card 11604): a tagged version on the core of both bounds is not decided
+>=5.0.0-alpha.1, <5.0.0-beta.3#5.0.0-beta.3#4.21.0#RANGE-UNPARSEABLE#express GHSA-rv95-896h-c2vc (card 11604): a version on a lower core than both bounds is not decided
+>=5.0.0-alpha.1, <5.0.0-beta.3#5.0.0-beta.3#5.2.1-beta.1#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): a tagged version on a higher core is not decided (the rule reads only an untagged one), and the text names a version that cannot be compared with the fix
+all versions after 1.0#1.5.3#2.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): a word can name a bound with no version, so text carrying one is not cleared by its fix
+> = 1.0.0 || > = 2.1.3#2.1.3#2.2.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): the fix named other than as an exclusive upper bound can begin an interval at it, so not cleared
+ #1.5.3#2.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): a range naming no version is not cleared by its fix
 1.17.0#>=1.20.0#1.19.0#RANGE-UNPARSEABLE#axios GHSA-r4gj-5m52-g5wh: a bare version is not read, below the fix; this table hands in no reviewed record (§G does)
 1.17.0#NULL#1.20.0#RANGE-UNPARSEABLE#SYNTHETIC: a bare version with no patched version is not read either
 <6.20.45,>=7,<7.30.7,>=8,<8.83.28,>=9,<9.52.17,>=10,<10.48.23,>=11,<11.31.0#6.20.45,7.30.7,8.83.28,9.52.17,10.48.23,11.31.0#8.83.28#RANGE-UNPARSEABLE#laravel GHSA-gv7v-rgg6-548h: multi-line, at its own line fix — not read, so its patched text never clears it; this table hands in no reviewed record (§G does)
@@ -554,7 +572,9 @@ REVIEWED_SYNTH='{
   "GHSA-syn0-0000-0009": {"ghsa_id": "GHSA-syn0-0000-0009", "type": "reviewed", "withdrawn_at": null,
     "vulnerabilities": [{"package": {"ecosystem": "npm", "name": "p"}, "vulnerable_version_range": "< 2.0.0-beta.3"}]},
   "GHSA-syn0-0000-0010": {"ghsa_id": "GHSA-syn0-0000-0010", "type": "reviewed", "withdrawn_at": null,
-    "vulnerabilities": [{"package": {"ecosystem": "npm", "name": "p"}, "vulnerable_version_range": ">= 1.0.0"}]}
+    "vulnerabilities": [{"package": {"ecosystem": "npm", "name": "p"}, "vulnerable_version_range": ">= 1.0.0"}]},
+  "GHSA-syn0-0000-0011": {"lookup_failed": "the lookup exited non-zero: gh: Not Found (HTTP 404)"},
+  "GHSA-syn0-0000-0012": {"lookup_failed": "the lookup exited non-zero: gh: Resource not accessible by integration (HTTP 403)"}
 }'
 REVIEWED_TABLE='GHSA-gv7v-rgg6-548h#composer:laravel/framework#<6.20.45,>=7,<7.30.7,>=8,<8.83.28,>=9,<9.52.17,>=10,<10.48.23,>=11,<11.31.0#6.20.45,7.30.7,8.83.28,9.52.17,10.48.23,11.31.0#8.83.28#clean#laravel GHSA-gv7v-rgg6-548h: at the fix of its own line
 GHSA-gv7v-rgg6-548h#composer:laravel/framework#<6.20.45,>=7,<7.30.7,>=8,<8.83.28,>=9,<9.52.17,>=10,<10.48.23,>=11,<11.31.0#6.20.45,7.30.7,8.83.28,9.52.17,10.48.23,11.31.0#8.84.1#clean#laravel GHSA-gv7v-rgg6-548h: a later minor of a line whose fix shipped
@@ -580,7 +600,12 @@ GHSA-r4gj-5m52-g5wh#npm:axios#1.17.0#>=1.20.0#1.20.0#clean#axios GHSA-r4gj-5m52-
 GHSA-654m-c8p4-x5fp#npm:axios#1.15.2#>=1.16.0#1.15.2#AFFECTED#axios GHSA-654m-c8p4-x5fp: its reviewed global record reads "= 1.15.2", which holds 1.15.2
 GHSA-654m-c8p4-x5fp#npm:axios#1.15.2#>=1.16.0#1.17.0#clean#axios GHSA-654m-c8p4-x5fp: "= 1.15.2" does not hold 1.17.0
 GHSA-654m-c8p4-x5fp#npm:axios#1.15.2#>=1.16.0#1.20.0#clean#axios GHSA-654m-c8p4-x5fp: "= 1.15.2" does not hold 1.20.0
-GHSA-rm8p-cx58-hcvx#npm:axios#1.10.0#1.11.0#1.20.0#RANGE-UNPARSEABLE#axios GHSA-rm8p-cx58-hcvx: KNOWN LIMIT withdrawn, fails closed: its reviewed global record was withdrawn 2025-07-24 while the repository advisory is still published, so it reds at every version (DEPENDENCY-AUDIT.md)
+GHSA-rm8p-cx58-hcvx#npm:axios#1.10.0#1.11.0#1.20.0#clean#axios GHSA-rm8p-cx58-hcvx (card 11604): at or above its one fix, decided without its reviewed global record, which was withdrawn 2025-07-24
+GHSA-rm8p-cx58-hcvx#npm:axios#1.10.0#1.11.0#1.10.0#AFFECTED#axios GHSA-rm8p-cx58-hcvx (card 11604): the version equal to the bare version, decided without its withdrawn record
+GHSA-rm8p-cx58-hcvx#npm:axios#1.10.0#1.11.0#1.10.5#RANGE-UNPARSEABLE#axios GHSA-rm8p-cx58-hcvx: KNOWN LIMIT withdrawn, fails closed: between the bare version and the fix no reading agrees, and its reviewed global record is withdrawn, so it reds (DEPENDENCY-AUDIT.md)
+GHSA-syn0-0000-0011#npm:axios#1.17.0#>=1.20.0#1.18.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): the GHSA-r4gj-5m52-g5wh entry at 1.18.0 with its global lookup answering 404 stays unread
+GHSA-syn0-0000-0012#npm:follow-redirects#1.16.0#1.16.1#1.15.9#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): the follow-redirects GHSA-8r9p-f939-6h3c entry below its fix with its global lookup answering 403 stays unread
+GHSA-syn0-0000-0011#npm:axios#1.17.0#>=1.20.0#1.20.0#clean#SYNTHETIC (card 11604): at its one fix the entry is decided without the global lookup that answered 404
 GHSA-syn0-0000-0001#npm:p#sometime after 1.0#1.0.0#3.0.0#RANGE-UNPARSEABLE#SYNTHETIC: a global record that is not reviewed is not used
 GHSA-syn0-0000-0002#npm:p#sometime after 1.0#1.0.0#3.0.0#RANGE-UNPARSEABLE#SYNTHETIC: a lookup that failed stays unread
 GHSA-syn0-0000-0003#npm:p#sometime after 1.0#1.0.0#3.0.0#RANGE-UNPARSEABLE#SYNTHETIC: a reviewed record with one range not read and none holding stays unread
@@ -703,31 +728,31 @@ fi
 # The same rule end to end, over the LIVE advisory set the defect was measured on: axios's own
 # repository advisories (fixtures/advisories/axios@axios.json), through discovery, the registry
 # hop, the reviewed-record lookups and the finding count. At 1.20.0 every advisory is fixed at or
-# below the version, and the run reds only on the withdrawn GHSA-rm8p-cx58-hcvx; at 1.19.0 the
-# ranges fixed in 1.20.0 still red, and one fixed in 1.18.0 does not.
+# below the version, and the run is GREEN with no lookup made; at 1.19.0 the ranges fixed in 1.20.0
+# still red, and one fixed in 1.18.0 does not.
 axios_repo() {  # $1 = repo dir name, $2 = axios version -> a repo with an npm lockfile pinning it
   local d="$TMP/$1"; mkdir -p "$d"
   jq -n --arg v "$2" '{name: "fixture-app", lockfileVersion: 3, requires: true, packages: {"": {name: "fixture-app", version: "0.0.0"}, "node_modules/axios": {version: $v}}}' > "$d/package-lock.json"
   printf '%s' "$d"
 }
 REG_AXIOS='case "$1" in axios) printf %s "axios/axios";; *) return 1;; esac'
-out="$(run_audit "$(axios_repo axios-at-fix 1.20.0)" "$(seam "$OSV_CLEAN" "$ADV_FIXTURE" "$REG_AXIOS")")"; rc=$?
-# KNOWN LIMIT withdrawn (DEPENDENCY-AUDIT.md, pm ruling card#11106 c-10035): GHSA-rm8p-cx58-hcvx
-# writes the bare version "1.10.0", which is not read, and its reviewed global record was
-# withdrawn, so it stays RANGE-UNPARSEABLE at every version, and the axios fix version reds on it
-# alone. Every other advisory is fixed at or below 1.20.0.
-if [ "$rc" -ne 0 ] && [ "$(pop findings)" = "0" ] && [ "$(pop errors)" = "1" ] && [ "$(pop resolved)" = "1" ] \
-   && has "$out" 'AUDIT-ERROR[SOURCE2-RANGE-UNPARSEABLE]' && has "$out" 'GHSA-rm8p-cx58-hcvx' \
-   && has "$out" 'its reviewed global record is withdrawn'; then
-  ok "axios 1.20.0 against its live advisory set → RED on GHSA-rm8p-cx58-hcvx alone (findings=0, errors=1: its reviewed global record is withdrawn — the KNOWN LIMIT withdrawn)"
+# card#11604: the three bare-version advisories (GHSA-r4gj-5m52-g5wh "1.17.0", GHSA-654m-c8p4-x5fp
+# "1.15.2", GHSA-rm8p-cx58-hcvx "1.10.0", whose reviewed global record is withdrawn) are each at or
+# below their one fix at 1.20.0, so every reading agrees and no global record is looked up.
+: > "$TMP/rev_calls"
+out="$(run_audit "$(axios_repo axios-at-fix 1.20.0)" "$(seam "$OSV_CLEAN" "$ADV_FIXTURE" "$REG_AXIOS" "$REV_LOGGED")")"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(pop findings)" = "0" ] && [ "$(pop errors)" = "0" ] && [ "$(pop resolved)" = "1" ] \
+   && [ ! -s "$TMP/rev_calls" ]; then
+  ok "axios 1.20.0 against its live advisory set → GREEN (findings=0, errors=0), no reviewed global record looked up (card#11604)"
 else
-  fail "axios 1.20.0 should red on GHSA-rm8p-cx58-hcvx alone, named as withdrawn (rc=$rc, findings='$(pop findings)', errors='$(pop errors)'): $out"
+  fail "axios 1.20.0 should be GREEN with no reviewed-record lookup (rc=$rc, findings='$(pop findings)', errors='$(pop errors)', lookups='$(tr '\n' ' ' < "$TMP/rev_calls")'): $out"
 fi
 out="$(run_audit "$(axios_repo axios-below-fix 1.19.0)" "$(seam "$OSV_CLEAN" "$ADV_FIXTURE" "$REG_AXIOS")")"; rc=$?
 # The expected finding count is DERIVED from the fixture, never typed: every axios entry with a
 # lower bound only (an open range the parser reads) whose patched text is ">=1.20.0", plus
-# GHSA-r4gj-5m52-g5wh, whose bare range "1.17.0" is not read and whose reviewed global record
-# (">= 1.17.0, < 1.20.0") holds 1.19.0. GHSA-rm8p-cx58-hcvx is the one error, as at 1.20.0.
+# GHSA-r4gj-5m52-g5wh, whose bare range "1.17.0" no reading decides at 1.19.0 and whose reviewed
+# global record (">= 1.17.0, < 1.20.0") holds 1.19.0. GHSA-rm8p-cx58-hcvx is at or above its one fix
+# (1.11.0), so it is not an error (card#11604).
 AXIOS_WANT_FINDINGS="$(jq '[.[] | select(.withdrawn_at == null) | .vulnerabilities[]
   | select(.package.name == "axios" and .patched_versions == ">=1.20.0")
   | select(.vulnerable_version_range | test("^\\s*(?:>=|=>|>)\\s*[0-9][^\\s<>=,;|&]*\\s*$"))] | length + 1' \
@@ -735,11 +760,45 @@ AXIOS_WANT_FINDINGS="$(jq '[.[] | select(.withdrawn_at == null) | .vulnerabiliti
 if [ "$rc" -ne 0 ] && has "$out" 'SOURCE2 axios@1.19.0 GHSA-542g-h47m-68v8' \
    && has "$out" 'SOURCE2 axios@1.19.0 GHSA-r4gj-5m52-g5wh' \
    && ! has "$out" 'GHSA-42h9-826w-cgv3' && [[ $AXIOS_WANT_FINDINGS =~ ^[1-9][0-9]*$ ]] \
-   && [ "$(pop findings)" = "$AXIOS_WANT_FINDINGS" ] && [ "$(pop errors)" = "1" ] \
-   && has "$out" 'GHSA-rm8p-cx58-hcvx'; then
-  ok "axios 1.19.0 against its live advisory set → RED: findings=$(pop findings) (the fixture's open ranges fixed in 1.20.0, and GHSA-r4gj-5m52-g5wh read off its reviewed global record), not on one fixed in 1.18.0, errors=1 (GHSA-rm8p-cx58-hcvx, withdrawn)"
+   && [ "$(pop findings)" = "$AXIOS_WANT_FINDINGS" ] && [ "$(pop errors)" = "0" ] \
+   && ! has "$out" 'GHSA-rm8p-cx58-hcvx'; then
+  ok "axios 1.19.0 against its live advisory set → RED: findings=$(pop findings) (the fixture's open ranges fixed in 1.20.0, and GHSA-r4gj-5m52-g5wh read off its reviewed global record), not on one fixed in 1.18.0, errors=0 (GHSA-rm8p-cx58-hcvx at or above its fix)"
 else
-  fail "axios 1.19.0 should red with findings=$AXIOS_WANT_FINDINGS (derived from the fixture) including GHSA-r4gj-5m52-g5wh, not on GHSA-42h9-826w-cgv3, and errors=1 on GHSA-rm8p-cx58-hcvx (rc=$rc, findings='$(pop findings)', errors='$(pop errors)'): $out"
+  fail "axios 1.19.0 should red with findings=$AXIOS_WANT_FINDINGS (derived from the fixture) including GHSA-r4gj-5m52-g5wh, not on GHSA-42h9-826w-cgv3, and errors=0 with GHSA-rm8p-cx58-hcvx absent (rc=$rc, findings='$(pop findings)', errors='$(pop errors)'): $out"
+fi
+
+# card#11604 end to end, over the live advisory sets the daily red was measured on
+# (fixtures/advisories/follow-redirects@follow-redirects.json, expressjs@express.json,
+# honojs@node-server.json), with EVERY reviewed-record lookup failing as the global endpoint did
+# (404/403). At the installed versions every entry is decided by what every reading agrees on, so
+# the run is GREEN and makes no lookup; below a fix, the undecided entry still reds, its failed
+# lookup named.
+npm_repo() {  # $1 = repo dir name, then "name@version" pairs -> a repo with an npm lockfile pinning them
+  local d="$TMP/$1" pkgs='{}' nv; shift; mkdir -p "$d"
+  for nv in "$@"; do
+    pkgs="$(jq -c --arg n "${nv%@*}" --arg v "${nv##*@}" '. + {("node_modules/" + $n): {version: $v}}' <<< "$pkgs")"
+  done
+  jq -n --argjson p "$pkgs" '{name: "fixture-app", lockfileVersion: 3, requires: true, packages: ({"": {name: "fixture-app", version: "0.0.0"}} + $p)}' > "$d/package-lock.json"
+  printf '%s' "$d"
+}
+REG_11604='case "$1" in follow-redirects) printf %s "follow-redirects/follow-redirects";; express) printf %s "expressjs/express";; @hono/node-server) printf %s "honojs/node-server";; *) return 1;; esac'
+REV_LOGGED_FAIL='printf "%s\n" "$1" >> "'"$TMP"'/rev_calls"; echo "gh: Not Found (HTTP 404)" >&2; return 1;'
+: > "$TMP/rev_calls"
+out="$(run_audit "$(npm_repo live-11604 follow-redirects@1.16.1 express@5.2.1 @hono/node-server@2.1.3)" "$(seam "$OSV_CLEAN" "$ADV_FIXTURE" "$REG_11604" "$REV_LOGGED_FAIL")")"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(pop findings)" = "0" ] && [ "$(pop errors)" = "0" ] && [ "$(pop resolved)" = "3" ] \
+   && [ ! -s "$TMP/rev_calls" ]; then
+  ok "follow-redirects 1.16.1, express 5.2.1, @hono/node-server 2.1.3 against their live advisory sets, every global lookup failing → GREEN, no lookup made (card#11604)"
+else
+  fail "follow-redirects 1.16.1, express 5.2.1, @hono/node-server 2.1.3 should be GREEN with no lookup (rc=$rc, findings='$(pop findings)', errors='$(pop errors)', resolved='$(pop resolved)', lookups='$(tr '\n' ' ' < "$TMP/rev_calls")'): $out"
+fi
+: > "$TMP/rev_calls"
+out="$(run_audit "$(npm_repo below-11604 follow-redirects@1.15.12)" "$(seam "$OSV_CLEAN" "$ADV_FIXTURE" "$REG_11604" "$REV_LOGGED_FAIL")")"; rc=$?
+if [ "$rc" -ne 0 ] && pop_has error_codes SOURCE2-RANGE-UNPARSEABLE \
+   && has "$out" 'GHSA-8r9p-f939-6h3c "1.16.0" (the lookup of its global record failed' \
+   && grep -qx 'GHSA-8r9p-f939-6h3c' "$TMP/rev_calls"; then
+  ok "follow-redirects 1.15.12 (below the fix, not the bare version) with the global lookup failing → RED, SOURCE2-RANGE-UNPARSEABLE with the failed lookup named"
+else
+  fail "follow-redirects 1.15.12 should red on GHSA-8r9p-f939-6h3c with its failed lookup named (rc=$rc, codes='$(pop error_codes)', lookups='$(tr '\n' ' ' < "$TMP/rev_calls")'): $out"
 fi
 
 # a version the audit cannot compare, on a package that HAS advisories
@@ -892,7 +951,7 @@ range_mutant "three-valued OR in in_range replaced by plain any" \
   1 "SYNTHETIC: two pre-release tags on one core cannot be ordered" clean
 range_mutant "undecidable-order interval rule removed" \
   's/and vcmp(\$l\[0\]\.b; \$u\[0\]\.b) == null$/and false/' \
-  1 "SYNTHETIC: bounds whose pre-release tags cannot be ordered, so emptiness is undecidable" clean
+  1 "SYNTHETIC: bounds whose pre-release tags cannot be ordered, so emptiness is undecidable, and a version below them is not decided" clean
 range_mutant ">= admitting the pre-releases of its own core removed" \
   's/^ *or (\$ver\.pre and (\$bound\.pre | not) and vcmp(\$ver | \.pre = false; \$bound) == 0)$//' \
   1 "SYNTHETIC: >= admits the pre-releases of its own core (Composer reads >= X as >= X-dev)" clean
@@ -966,6 +1025,44 @@ range_mutant "a version equal to one the range names read as above it" \
 range_mutant "an unread range cleared by its patched text (the r4 defect)" \
   's/^\( *\)| select(\$rv\.hit != false)$/\1| select($rv.hit != false and (patched_state($ver; $vr.p; $vr.r).state != "clean"))/' \
   1 "SYNTHETIC (r4 review): an unread range is never cleared by its patched text, so its upper bound 2.5.0 is never overruled" clean patched_rows
+# WHAT EVERY READING OF AN UNREAD RANGE AGREES ON (card#11604), each guard of `agreed` removed on
+# its own against a row, and the reading card#11604 rules out (a bare version as exact) put back.
+range_mutant "a bare version equal to the version no longer read as affected" \
+  's/^\( *\)if bare(\$ver; \$range) then "AFFECTED"$/\1if false then "AFFECTED"/' \
+  1 "follow-redirects GHSA-8r9p-f939-6h3c (card 11604): the version equal to the bare version" RANGE-UNPARSEABLE
+range_mutant "a bare version read as exact (clean at any other version)" \
+  's/^\( *\)if bare(\$ver; \$range) then "AFFECTED"$/\1if bare($ver; $range) then "AFFECTED" elif bare($range | vparse; $range) then "clean"/' \
+  1 "axios GHSA-r4gj-5m52-g5wh (card 11604): a bare version is not read as exact, so 1.18.0, below the fix and not equal to it, is not decided; this table hands in no reviewed record (§G does)" clean patched_rows
+range_mutant "the version cleared by the fix without being at or above it" \
+  's/and (vcmp(\$ver; \$ps\[0\]) as \$k | \$k != null and \$k >= 0)$/and true/' \
+  1 "@hono/node-server GHSA-rmxm-3fg6-px4f (card 11604): below the fix, so not decided; this table hands in no reviewed record (§G does)" clean patched_rows
+range_mutant "a patched list of several versions read through its first" \
+  's/| \$ps != null and (\$ps | length) == 1$/| $ps != null/' \
+  1 "laravel GHSA-78fx-h6xr-vch4: a later major above every fix and every version the range names — not read, so its patched text never clears it; this table hands in no reviewed record (§G does)" clean patched_rows
+range_mutant "text carrying a word cleared by its fix" \
+  's/^\( *\)and (\$range | gsub(.*test(.*))$/\1and true/' \
+  1 "SYNTHETIC (card 11604): a word can name a bound with no version, so text carrying one is not cleared by its fix" clean patched_rows
+range_mutant "a range naming no version cleared by its fix" \
+  's/| (\$ns | length) > 0$/| true/' \
+  1 "SYNTHETIC (card 11604): a range naming no version is not cleared by its fix" clean patched_rows
+range_mutant "a named version equal to the fix accepted whatever its operator" \
+  's/(\$c < 0 or (\$c == 0 and \.\[0\] == "<"))/($c <= 0)/' \
+  1 "SYNTHETIC (card 11604): the fix named other than as an exclusive upper bound can begin an interval at it, so not cleared" clean patched_rows
+range_mutant "a named version above the fix accepted" \
+  's/(\$c < 0 or (\$c == 0 and \.\[0\] == "<"))/true/' \
+  1 "SYNTHETIC (r3 review): a single pipe, naming 2.0.0 above the fix — not read, so its patched text never clears it; this table hands in no reviewed record (§G does)" clean patched_rows
+range_mutant "a named version that cannot be compared with the fix accepted" \
+  's/| \$c != null and (\$c < 0 or/| ($c < 0 or/' \
+  1 "SYNTHETIC (card 11604): a tagged version on a higher core is not decided (the rule reads only an untagged one), and the text names a version that cannot be compared with the fix" clean patched_rows
+range_mutant "an unordered pair never cleared (the higher-core reading removed)" \
+  's/^\( *\)elif (ranges_of(\$range; true) | .*$/\1elif false then "clean"/' \
+  1 "express GHSA-rv95-896h-c2vc (card 11604): an untagged version on a higher core than both bounds, whose tags cannot be ordered" RANGE-UNPARSEABLE patched_rows
+range_mutant "an unordered pair read as not holding a tagged version on a higher core" \
+  's/(if (\$ver\.pre | not) and vcmp(/(if vcmp(/' \
+  1 "SYNTHETIC (card 11604): a tagged version on a higher core is not decided (the rule reads only an untagged one), and the text names a version that cannot be compared with the fix" clean patched_rows
+range_mutant "an unordered pair read as not holding any untagged version" \
+  's/ and vcmp(\$ver; \.hi\.b | core) == 1 then false/ then false/' \
+  1 "SYNTHETIC: bounds whose pre-release tags cannot be ordered, so emptiness is undecidable, and a version below them is not decided" clean
 # THE REVIEWED GLOBAL RECORD (card#11106, pm ruling 2026-10-06), each guard removed on its own
 # against a §G row. A failed lookup and a record that was never looked up have their own branch
 # only for the reason they print: with either branch removed, the record-identity guard below
