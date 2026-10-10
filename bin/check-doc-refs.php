@@ -199,7 +199,7 @@ function refsFromToken(string $tok): array
  *  - fqcn:…  → a class file OR a namespace directory
  *  - a path with '/'  → that file (a `...` segment globs migration timestamps)
  *  - a bare Foo.php (no '/')  → any file with that basename anywhere in the repo
- *    (basenames are unique here; this catches the CLAUDE.md "Critical paths" form)
+ *    (basenames are unique here; this catches the CLAUDE_ARCHITECTURE.md "Critical paths" form)
  */
 function refResolves(string $root, string $ref): bool
 {

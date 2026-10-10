@@ -459,6 +459,96 @@ class DispatchServiceTest extends TestCase
         $this->assertSame(1, $this->inboxCount());
     }
 
+    // ---- impl_push_wake_branches (card#11676): which pushes a route_intents channel receives ----
+    //
+    // Asserted through dispatch, because the claim is about DELIVERY: on a route_intents
+    // channel staging is waking (DL-006), so only the routed push can witness it.
+
+    /**
+     * Two seats on one impl repo, each on the inbox_stage + route_intents:true profile
+     * (sola's, DL-190), each with its own channel URL so a push is attributable to a seat.
+     *
+     * @param  list<string>|null  $wakeBranches  null ⇒ key absent (the default applies)
+     */
+    private function writeImplPushSeats(?array $wakeBranches = null): void
+    {
+        foreach (['seat-a' => 8791, 'seat-b' => 8792] as $seat => $port) {
+            File::put($this->dir."/{$seat}.yml",
+                "subscriptions:\n  - provider: github\n    scopes: ['org/impl']\n"
+                ."classifier:\n  class: '".CoordinationClassifier::class."'\n"
+                ."  config:\n"
+                ."    families: ['impl-ci-wake']\n"
+                ."    impl_non_wake_disposition: inbox_stage\n"
+                .($wakeBranches === null ? '' : '    impl_push_wake_branches: ['.implode(', ', $wakeBranches)."]\n")
+                ."channel:\n  url: http://127.0.0.1:{$port}/\n  route_intents: true\n");
+        }
+    }
+
+    private function dispatchImplPush(string $ref): void
+    {
+        $dto = new EventDto(deliveryId: 'evt-push-'.md5($ref), scopeId: 'org/impl', eventType: 'push', actorId: '999');
+        $this->dispatcher()->dispatch('github', 'org/impl', $dto, [
+            'ref' => $ref,
+            'after' => 'abc123',
+            'head_commit' => ['id' => 'abc123', 'message' => 'a commit', 'url' => 'https://c/abc123'],
+            'commits' => [['id' => 'abc123']],
+            'repository' => ['full_name' => 'org/impl', 'html_url' => 'https://r/org/impl'],
+        ]);
+    }
+
+    public function test_a_push_to_a_base_branch_wakes_every_seat_on_the_repo(): void
+    {
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeImplPushSeats();
+
+        $this->dispatchImplPush('refs/heads/dev');
+
+        foreach (['http://127.0.0.1:8791/', 'http://127.0.0.1:8792/'] as $url) {
+            Http::assertSent(fn ($r) => $r->url() === $url
+                && ($r->data()['intent']['kind'] ?? null) === 'impl_push'
+                && ($r->data()['intent']['payload']['branch'] ?? null) === 'dev');
+        }
+        Http::assertSentCount(2);
+    }
+
+    public function test_a_push_to_a_feature_branch_wakes_no_seat(): void
+    {
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeImplPushSeats();
+
+        $this->dispatchImplPush('refs/heads/card-123-feature');
+
+        Http::assertNothingSent();
+        $this->assertSame(0, $this->inboxCount());
+        $this->assertSame(2, AgentDispatch::where('outcome', AgentDispatch::OUTCOME_DROPPED)
+            ->where('reason', CoordinationClassifier::IMPL_PUSH_NOT_A_WAKE_BRANCH)->count());
+    }
+
+    public function test_a_configured_base_branch_beyond_the_default_wakes(): void
+    {
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeImplPushSeats(['dev', 'main', 'registry/dev', 'registry/main']);
+
+        $this->dispatchImplPush('refs/heads/registry/dev');
+
+        Http::assertSentCount(2);
+    }
+
+    public function test_with_the_filter_off_a_feature_branch_push_is_delivered_as_before(): void
+    {
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeImplPushSeats([]);
+
+        $this->dispatchImplPush('refs/heads/card-123-feature');
+
+        foreach (['http://127.0.0.1:8791/', 'http://127.0.0.1:8792/'] as $url) {
+            Http::assertSent(fn ($r) => $r->url() === $url
+                && ($r->data()['intent']['payload']['branch'] ?? null) === 'card-123-feature');
+        }
+        Http::assertSentCount(2);
+        $this->assertSame(2, $this->inboxCount());
+    }
+
     public function test_coordination_classifier_hand_emit_does_not_double_push_on_route_intents(): void
     {
         // DL-191 end-to-end guard: a hand-emitting CoordinationClassifier family
@@ -595,6 +685,24 @@ class DispatchServiceTest extends TestCase
         // while the seat received nothing at all, which is what happened on a live one.
         // The `(reattributed author)` half is the tell that the FROM:-line path is what
         // ran, so it is asserted whole rather than by substring.
+        $this->assertSame('echo: own write (reattributed author)', (string) $d->reason);
+        $this->assertSame(0, $this->inboxCount());
+        Http::assertNothingSent();
+    }
+
+    public function test_this_agents_own_comment_addressed_to_itself_is_echo_dropped_end_to_end(): void
+    {
+        // The poster named on BOTH lines. Its TO: line grants it membership (comment_to,
+        // default-on) on a thread whose labels name only someone else, so the recipient
+        // gate passes on the body alone; the FROM: line must still drop it as its own
+        // write. The reason is asserted whole for the card#9152 reason given above.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeSharedIdentityCoordAgent();
+
+        $this->dispatchCoord('evt-own-to-self', 'issue_comment.created', $this->coordComment(['from:other', 'to:other'], "FROM: me\nTO: me\nnote to self"));
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
         $this->assertSame('echo: own write (reattributed author)', (string) $d->reason);
         $this->assertSame(0, $this->inboxCount());
         Http::assertNothingSent();
