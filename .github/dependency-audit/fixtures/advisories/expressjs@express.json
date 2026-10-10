@@ -1,0 +1,80 @@
+[
+  {
+    "ghsa_id": "GHSA-pj86-cfqh-vqx6",
+    "severity": "low",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/expressjs/express/security/advisories/GHSA-pj86-cfqh-vqx6",
+    "summary": "REJECTED (not a vulnerability): improperly controlled modification of query properties in express",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "express"
+        },
+        "vulnerable_version_range": "<4.22.0",
+        "patched_versions": "4.22.0"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "express"
+        },
+        "vulnerable_version_range": "<5.1.0",
+        "patched_versions": "5.1.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-qw6h-vgh9-j6wx",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/expressjs/express/security/advisories/GHSA-qw6h-vgh9-j6wx",
+    "summary": "express vulnerable to XSS via response.redirect()",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "express"
+        },
+        "vulnerable_version_range": "<4.20.0",
+        "patched_versions": "4.20.0"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "express"
+        },
+        "vulnerable_version_range": ">=5.0.0-alpha.1, <5.0.0",
+        "patched_versions": "5.0.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-rv95-896h-c2vc",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/expressjs/express/security/advisories/GHSA-rv95-896h-c2vc",
+    "summary": "Express.js Open Redirect in malformed URLs",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "express"
+        },
+        "vulnerable_version_range": "<4.19.2",
+        "patched_versions": "4.19.2"
+      },
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "express"
+        },
+        "vulnerable_version_range": ">=5.0.0-alpha.1, <5.0.0-beta.3",
+        "patched_versions": "5.0.0-beta.3"
+      }
+    ]
+  }
+]
