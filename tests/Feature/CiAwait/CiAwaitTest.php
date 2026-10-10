@@ -324,7 +324,7 @@ class CiAwaitTest extends TestCase
             'subject_id' => 'ci:octo/widgets@'.self::SHA,
             'provider' => 'bridge',
             'actor' => ['id' => null, 'name' => null, 'is_known_agent' => false],
-            'summary' => "CI settled on octo/widgets@0123456789ab (PR #12): RED — E2E → failure. Run-level only: ci-read stays the authoritative verdict (it reads jobs and the branch's required checks).",
+            'summary' => "CI settled on octo/widgets@0123456789ab (PR #12): RED — E2E → failure (https://github.com/octo/widgets/actions/runs/2). Run-level only: ci-read stays the authoritative verdict (it reads jobs and the branch's required checks).",
             'payload' => [
                 'repo' => self::REPO,
                 'head_sha' => self::SHA,
@@ -335,6 +335,7 @@ class CiAwaitTest extends TestCase
                 ],
                 'all_terminal' => true,
                 'runs_verdict' => 'red',
+                'non_success_runs' => [['workflow' => 'E2E', 'conclusion' => 'failure', 'html_url' => 'https://github.com/octo/widgets/actions/runs/2']],
                 'measured_at' => '2026-10-03T10:00:00.000Z',
             ],
         ], array_diff_key($a, ['id' => 1, 'ts' => 1, 'agent' => 1]));

@@ -2,7 +2,6 @@
 
 namespace App\Bridge\Classifiers;
 
-use App\Bridge\CiAwait\HeadRuns;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\Actor;
@@ -223,6 +222,17 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * provenance cue when its workflow NAME matches `provenance_patterns`.
      */
     private const DEFAULT_BENIGN_CONCLUSIONS = ['success', 'cancelled', 'skipped', 'neutral'];
+
+    /**
+     * The completed-run conclusions whose per-run `impl_ci` is NOT staged under
+     * `impl_ci_delivery: aggregate` (card#11667, sola-pm on rt#614): the head's one `ci_settled`
+     * carries them — a `cancelled` with no successor still turns it red. A fixed set, not
+     * {@see DEFAULT_BENIGN_CONCLUSIONS}' configurable one: `benign_conclusions` decides what WAKES,
+     * and widening it must not start hiding runs from the inbox. Any conclusion outside it — a
+     * failure the deny-list or `ci_failure_workflow_patterns` made a non-wake, or one GitHub adds
+     * later — keeps its per-run `impl_ci`.
+     */
+    private const AGGREGATED_CONCLUSIONS = ['success', 'skipped', 'cancelled', 'neutral'];
 
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
@@ -809,10 +819,10 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         if ($staged === null) {
             return null; // a branch-delete push / a non-terminal workflow_run is not inbox-worthy
         }
-        // A green run under `impl_ci_delivery: aggregate` is carried by the head's one
-        // `ci_settled` instead of its own `impl_ci`. Only green: a run that can turn the head
-        // red still gets its own `impl_ci`, as before.
-        if ($aggregate !== [] && $this->concludedGreen($payload)) {
+        // Under `impl_ci_delivery: aggregate` a run that ended in one of
+        // AGGREGATED_CONCLUSIONS is carried by the head's one `ci_settled` instead of its own
+        // `impl_ci`. Any other conclusion keeps its per-run `impl_ci`.
+        if ($aggregate !== [] && $this->concludedAggregated($payload)) {
             return new ClassifyResult(targets: $aggregate);
         }
 
@@ -844,12 +854,12 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /** @param  array<mixed>  $payload */
-    private function concludedGreen(array $payload): bool
+    private function concludedAggregated(array $payload): bool
     {
         $run = is_array($payload['workflow_run'] ?? null) ? $payload['workflow_run'] : [];
         $conclusion = is_string($run['conclusion'] ?? null) ? strtolower($run['conclusion']) : '';
 
-        return in_array($conclusion, HeadRuns::GREEN_CONCLUSIONS, true);
+        return in_array($conclusion, self::AGGREGATED_CONCLUSIONS, true);
     }
 
     /**

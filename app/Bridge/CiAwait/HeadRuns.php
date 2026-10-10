@@ -32,6 +32,13 @@ final class HeadRuns
     /** The run conclusions read as passing — `ci-read`'s `BENIGN_CONCLUSIONS`. */
     public const GREEN_CONCLUSIONS = ['success', 'neutral', 'skipped'];
 
+    /**
+     * The conclusions a red aggregate does NOT list (card#11667, sola-pm on rt#614): every other
+     * deciding run — `neutral` included, though it reads green — is named with its url, so a seat
+     * can act without reading CI.
+     */
+    public const UNLISTED_CONCLUSIONS = ['success', 'skipped'];
+
     public const GREEN = 'green';
 
     public const RED = 'red';
@@ -121,6 +128,20 @@ final class HeadRuns
     }
 
     /**
+     * The deciding runs whose conclusion is not one of {@see UNLISTED_CONCLUSIONS}, each
+     * `{workflow, conclusion, html_url}`. A superseded run is never listed: a newer run decides.
+     *
+     * @return list<array{workflow: string, conclusion: ?string, html_url: string}>
+     */
+    public function nonSuccessRuns(): array
+    {
+        return array_values(array_map(
+            static fn (array $r): array => ['workflow' => $r['workflow'], 'conclusion' => $r['conclusion'], 'html_url' => $r['html_url']],
+            array_filter($this->decidingRuns(), static fn (array $r): bool => ! in_array(strtolower((string) $r['conclusion']), self::UNLISTED_CONCLUSIONS, true)),
+        ));
+    }
+
+    /**
      * The `ci_settled` payload both senders carry.
      *
      * @return array<string, mixed>
@@ -134,6 +155,7 @@ final class HeadRuns
             'runs' => $this->payloadRuns(),
             'all_terminal' => true,
             'runs_verdict' => $this->verdict(),
+            'non_success_runs' => $this->nonSuccessRuns(),
             'measured_at' => Carbon::instance($measuredAt)->utc()->format('Y-m-d\TH:i:s.v\Z'),
         ];
     }
@@ -146,8 +168,7 @@ final class HeadRuns
         if ($this->verdict() === self::GREEN) {
             $detail = 'GREEN — the latest run of each of '.count($deciding).' workflow(s) concluded success, neutral or skipped';
         } else {
-            $red = array_values(array_filter($deciding, static fn (array $r): bool => ! in_array(strtolower((string) $r['conclusion']), self::GREEN_CONCLUSIONS, true)));
-            $detail = 'RED — '.implode(', ', array_map(static fn (array $r): string => $r['workflow'].' → '.($r['conclusion'] ?? 'no conclusion'), $red));
+            $detail = 'RED — '.implode(', ', array_map(static fn (array $r): string => $r['workflow'].' → '.($r['conclusion'] ?? 'no conclusion').' ('.$r['html_url'].')', $this->nonSuccessRuns()));
         }
 
         return "{$head}: {$detail}".($superseded > 0 ? " ({$superseded} superseded run(s) not counted)" : '')

@@ -106,7 +106,8 @@ class CiHeadAggregateTest extends TestCase
 
         $this->assertSame(['impl_ci_failed', 'ci_settled'], $this->kinds());
         $this->assertSame('red', $this->inbox()[1]['payload']['runs_verdict']);
-        $this->assertStringContainsString('RED — CI → failure', $this->inbox()[1]['summary']);
+        $this->assertEquals([['workflow' => 'CI', 'conclusion' => 'failure', 'html_url' => 'https://github.com/octo/widgets/actions/runs/1']], $this->inbox()[1]['payload']['non_success_runs']);
+        $this->assertStringContainsString('RED — CI → failure (https://github.com/octo/widgets/actions/runs/1)', $this->inbox()[1]['summary']);
     }
 
     public function test_a_head_whose_last_run_fails_settles_red(): void
@@ -144,10 +145,41 @@ class CiHeadAggregateTest extends TestCase
         $this->complete(1, 'CI', 'cancelled');
         $this->complete(2, 'Lint', 'success');
 
-        $this->assertSame(['impl_ci', 'ci_settled'], $this->kinds(), 'a cancelled run is not green, so it keeps its own impl_ci');
+        $this->assertSame(['ci_settled'], $this->kinds(), 'a cancelled run delivers no per-run impl_ci: the aggregate carries it');
         $settled = $this->lastSettled();
         $this->assertSame('red', $settled['payload']['runs_verdict']);
         $this->assertStringContainsString('CI → cancelled', $settled['summary']);
+    }
+
+    public function test_a_red_aggregate_names_every_run_that_did_not_succeed_with_its_url(): void
+    {
+        $this->requestAll([1 => 'CI', 2 => 'Lint', 3 => 'Docs', 4 => 'Labels', 5 => 'Build']);
+
+        $this->complete(1, 'CI', 'failure');
+        $this->complete(2, 'Lint', 'cancelled');
+        $this->complete(3, 'Docs', 'neutral');
+        $this->complete(4, 'Labels', 'skipped');
+        $this->complete(5, 'Build', 'success');
+
+        $this->assertSame(['impl_ci_failed', 'ci_settled'], $this->kinds(), 'only the failure is delivered per run');
+        $settled = $this->lastSettled();
+        $this->assertSame('red', $settled['payload']['runs_verdict']);
+        $this->assertEquals([
+            ['workflow' => 'CI', 'conclusion' => 'failure', 'html_url' => 'https://github.com/octo/widgets/actions/runs/1'],
+            ['workflow' => 'Lint', 'conclusion' => 'cancelled', 'html_url' => 'https://github.com/octo/widgets/actions/runs/2'],
+            ['workflow' => 'Docs', 'conclusion' => 'neutral', 'html_url' => 'https://github.com/octo/widgets/actions/runs/3'],
+        ], $settled['payload']['non_success_runs']);
+        $this->assertStringContainsString('Lint → cancelled (https://github.com/octo/widgets/actions/runs/2)', $settled['summary']);
+    }
+
+    public function test_a_failure_made_non_wake_by_the_workflow_filter_keeps_its_per_run_impl_ci(): void
+    {
+        File::put($this->dir.'/seat-a.yml', (string) str_replace("    impl_non_wake_disposition: inbox_stage\n", "    impl_non_wake_disposition: inbox_stage\n    ci_failure_workflow_patterns: ['deploy']\n", (string) File::get($this->dir.'/seat-a.yml')));
+        $this->requestAll([1 => 'CI']);
+
+        $this->complete(1, 'CI', 'failure');
+
+        $this->assertSame(['impl_ci', 'ci_settled'], $this->kinds());
     }
 
     public function test_a_run_that_starts_after_the_aggregate_settles_the_head_again(): void
@@ -178,7 +210,7 @@ class CiHeadAggregateTest extends TestCase
         $this->complete(1, 'CI', 'cancelled', runNumber: 1);
         $this->deliver('requested', 3, 'CI', null, runNumber: 2);
 
-        $this->assertSame(['ci_settled', 'impl_ci'], $this->kinds(), 'the cancelled run keeps its own impl_ci; no second ci_settled');
+        $this->assertSame(['ci_settled'], $this->kinds(), 'no per-run impl_ci for the cancelled run, and no second ci_settled');
         $this->assertSame('completed', CiHeadRun::query()->where('run_id', 3)->value('status'), 'a late requested never moves the run backwards');
     }
 
