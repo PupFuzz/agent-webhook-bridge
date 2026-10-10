@@ -53,7 +53,11 @@ use App\Bridge\Exceptions\UnreadableFileException;
  * resolve NO token for any repo then, because the store may map it.
  *
  * The setting: `bridge.coord_credentials_path`, else `credentials.ini` beside
- * `bridge.coord_config_path` (DL-450's roster, which the framework keeps in the same directory). The
+ * `bridge.coord_config_path` (DL-450's roster). That default is a GUESS that holds on a solo seat
+ * only: on a pm install the roster sits in the coordination repo checkout while the framework keeps
+ * the store at `~/.config/coord/credentials.ini`, so the default names a file that is not there, and
+ * an absent store is an empty one — a mapped repo silently falls to the single token file
+ * (card#11619). {@see missingAtDefault()} is what lets `bridge:check` say so. The
  * ambient `$COORD_CREDENTIALS` is never read — the reason DL-450 Decision 1 gives for `$COORD_CONFIG`.
  * The file is read with {@see UntrustedPathContents}: it belongs to the coordination project's user
  * and `bridge:check` may read it as root, so a symlink at the path is refused.
@@ -103,6 +107,9 @@ final class CoordCredentialStore
         private readonly ?int $owner = null,
     ) {}
 
+    /** Whether the path came from the roster's directory rather than from the setting. */
+    private bool $defaulted = false;
+
     /** The store the bridge reads: the setting, else `credentials.ini` beside the coord roster. */
     public static function configured(): self
     {
@@ -112,7 +119,10 @@ final class CoordCredentialStore
         }
         $roster = config('bridge.coord_config_path');
         if (is_string($roster) && trim($roster) !== '' && str_starts_with(trim($roster), '/')) {
-            return self::at(dirname(trim($roster)).'/'.self::FILE);
+            $store = self::at(dirname(trim($roster)).'/'.self::FILE);
+            $store->defaulted = true;
+
+            return $store;
         }
 
         return new self(null, self::UNSET, '', false);
@@ -155,6 +165,15 @@ final class CoordCredentialStore
     public function readable(): bool
     {
         return $this->fault === null;
+    }
+
+    /**
+     * The setting is unset, the path was guessed from the roster's directory, and this process can
+     * see that no store is there — read as an empty store, which is right only where the guess was.
+     */
+    public function missingAtDefault(): bool
+    {
+        return $this->defaulted && $this->fault === null && ! $this->present;
     }
 
     /**
