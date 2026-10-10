@@ -986,6 +986,41 @@ class CoordinationClassifierTest extends TestCase
         $this->assertSame([], $r->targets);
     }
 
+    public function test_impl_push_wake_branches_withholds_a_feature_push_only_on_a_route_intents_channel(): void
+    {
+        // route_intents:false — staging is the quiet digest and never reaches the channel,
+        // so the filter does not apply (the test above is the same push on that channel).
+        // route_intents:true — staging IS delivering (DL-006), so the push is withheld.
+        $push = ['ref' => 'refs/heads/feature-x', 'after' => 'abc123', 'head_commit' => ['message' => 'wip'], 'commits' => []];
+        $r = $this->classify('push', $push, 'org/impl',
+            classifierConfig: $this->implConfig(['impl_non_wake_disposition' => 'inbox_stage']), routeIntents: true);
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+        $this->assertSame(CoordinationClassifier::IMPL_PUSH_NOT_A_WAKE_BRANCH, $r->dropReason);
+    }
+
+    public function test_impl_push_wake_branches_withholds_a_tag_push_on_a_route_intents_channel(): void
+    {
+        $push = ['ref' => 'refs/tags/main', 'after' => 'abc123', 'head_commit' => ['message' => 'tag'], 'commits' => []];
+        $r = $this->classify('push', $push, 'org/impl',
+            classifierConfig: $this->implConfig(['impl_non_wake_disposition' => 'inbox_stage']), routeIntents: true);
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_impl_push_wake_branches_does_not_touch_the_release_landed_wake(): void
+    {
+        // A release-branch push is a wake signal, not an impl_push: it wakes even when the
+        // configured list does not name the release branch.
+        $push = ['ref' => 'refs/heads/main', 'after' => 'def456', 'head_commit' => ['message' => 'release'], 'commits' => []];
+        $r = $this->classify('push', $push, 'org/impl',
+            classifierConfig: $this->implConfig(['impl_non_wake_disposition' => 'inbox_stage', 'impl_push_wake_branches' => ['dev']]), routeIntents: true);
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_release_landed', $r->intents[0]->kind);
+    }
+
     public function test_inbox_stage_skips_non_terminal_workflow_run(): void
     {
         $r = $this->classify('workflow_run.requested',

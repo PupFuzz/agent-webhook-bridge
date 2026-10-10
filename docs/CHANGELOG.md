@@ -8,6 +8,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#11676** — **A seat on a `route_intents: true` channel is no longer woken by `push` events on other seats' PR branches.** With `impl_non_wake_disposition: inbox_stage`, the `impl-ci-wake` family staged every non-delete push as an `impl_push`, and on such a channel staging is waking. Seats share one GitHub account, so each seat was woken by every PR-branch push on its repos. A push is now staged there only when its branch is in the new `classifier.config` key `impl_push_wake_branches` (default `[dev, main]`); any other push, tags included, is dropped with the reason `impl push: branch is not in impl_push_wake_branches (route_intents channel)`. A merge or push to a listed branch still wakes every seat on the repo, and the `release_branch` wake is unchanged. Only `push`-event wakes are filtered: the CI runs a PR-branch push triggers (`workflow_run`) have no branch filter and still stage to every seat on such a channel, unchanged. Nothing changes on a `route_intents: false` channel or under `impl_non_wake_disposition: drop`. `docs/config-schema.md` documents the key.
+  - **Upgrading:** default on. An install whose integration branches are not `dev` / `main` lists them (e.g. `impl_push_wake_branches: [dev, main, registry/dev, registry/main]`); `impl_push_wake_branches: []` restores the old behaviour.
+
 ## [0.99.0] - 2026-10-10
 
 ### Changed
