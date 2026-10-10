@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.99.0] - 2026-10-10
+
 ### Changed
 
 - **card#11619 / DL-469** — **`bridge:check` warns when the coord credential store it guessed is not there, and every install now sets `BRIDGE_COORD_CREDENTIALS_PATH`.** With the key unset the bridge looks for `credentials.ini` beside `BRIDGE_COORD_CONFIG_PATH`. That holds on a solo seat only: on a pm install the roster is in the coordination repo checkout while the framework keeps the store at `~/.config/coord/credentials.ini`. An absent store reads as an empty one, so a repo the real store maps silently fell back to the single token file (unless it declares a `write_token_path`), and a repo under another owner got a 404 (measured on sola pm: `PupFuzz/agent-board-framework: token from token file (…) → HTTP 404`).
