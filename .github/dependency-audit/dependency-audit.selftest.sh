@@ -397,7 +397,8 @@ RANGE_TABLE='>= 1.3.0; <=2.10.1#2.10.1#AFFECTED#commonmark GHSA-97jj-33gv-5xf9 (
 1.17.0#1.19.0#RANGE-UNPARSEABLE#axios GHSA-r4gj-5m52-g5wh: a bare version is not read, since its reviewed global record reads ">= 1.17.0, < 1.20.0" (pm ruling card#11106 c-10035; §G decides it)
 1.15.2#1.15.2#AFFECTED#axios GHSA-654m-c8p4-x5fp (card 11604): a bare version holds the version equal to it in every reading (its reviewed global record reads "= 1.15.2")
 1.16.0#1.16.0#AFFECTED#follow-redirects GHSA-8r9p-f939-6h3c (card 11604): the version equal to the bare version
-1.16.0#1.16.1#RANGE-UNPARSEABLE#follow-redirects GHSA-8r9p-f939-6h3c (card 11604): with no patched version, a version above the bare version is not decided'
+1.16.0#1.16.1#RANGE-UNPARSEABLE#follow-redirects GHSA-8r9p-f939-6h3c (card 11604): with no patched version, a version above the bare version is not decided
+>=1.0.0-a.1 <1.0.0-b.2 || >=3.0.0#2.0.0#clean#SYNTHETIC (card 11604 r3): an unordered pair as one alternative of a composite whose other alternative excludes the version, above both bounds'
 
 LIB_BLOCK="$(extract "$CALLEE" dep-audit-lib)"
 vmatch_prog() {  # $1 = dep-audit-lib block text -> the VMATCH_JQ program that text defines
