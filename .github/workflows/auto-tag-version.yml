@@ -78,7 +78,7 @@ jobs:
             # Recovery: bump VERSION + re-run the release flow.
             echo "ERROR: $TAG exists at $EXISTING but merge is $MERGE_SHA."
             echo "Two release merges to main have claimed the same version."
-            echo "Open a follow-up PR that bumps VERSION + CHANGELOG + CLAUDE.md, then re-merge."
+            echo "Open a follow-up PR that bumps VERSION + CHANGELOG + docs/RELEASES.md, then re-merge."
             exit 1
           fi
 
