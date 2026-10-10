@@ -219,7 +219,8 @@ jobs:
           #     alternative := V ("-" | "through") V                      inclusive span
           #                  | piece ( "," piece )*
           #     piece       := term ( ( ws | ";" | "&&" ) term )*         AND
-          #     term        := ( ">=" | ">" | "<=" | "<" | "=" ) ws? V     ("=>" is read as ">=")
+          #     term        := ( ">=" | ">" | "<=" | "<" | "=" ) ws? V     ("=>" is read as ">=",
+          #                                                                 unless eq_after_version)
           #   The COMMA IS AMBIGUOUS across publishers, and a wrong guess FAILS OPEN. So:
           #     every piece is a single term     -> comma = AND  (GitHub, Composer, PEP 440)
           #     every piece is a bounded interval -> comma = OR  (websockets/ws GHSA-96hv-2xvq-fx4p:
@@ -359,10 +360,25 @@ jobs:
               # untagged version on a higher core is above both bounds whatever order their tags take.
               elif .unordered then (if ($ver.pre | not) and vcmp($ver; .hi.b | core) == 1 then false else null end)
               else [ (.lo, .hi) | select(. != null) | satisfies($ver; .op; .b) ] | all3 end;
+            # AN = AFTER A VERSION (card#11642 r3). An `=` written after a version can close the
+            # operator before that version (`< 1.5 =` is `<= 1.5`), so where another operator follows
+            # the `=` (`< 1.5 =< 1.4`, `< 1.5 => 1.0`) it has two live readings, `<= 1.5 < 1.4` and
+            # `< 1.5 <= 1.4`, and no rewrite may pick one. Such text is not read (ranges_of) and not
+            # cleared by its fix (fix_above): it fails closed. The test is on the text as written,
+            # before any rewrite: an `=` whose nearest non-space character before it is anything but
+            # an operator or a connective (a version, or a word, which is refused anyway), and whose
+            # nearest non-space character after it is `<`, `>` or `=`. An `=<` or `=>` that no
+            # version precedes (`=< 1.5`, `>= 1.0, =< 1.5`) has one reading and is still given its
+            # one spelling. This is the one test of it; both readers call it.
+            def eq_after_version:  # true when an = follows a version and another operator follows the =
+              test("[^\\s<>=,;|&]\\s*=\\s*[<>=]");
             def ranges_of($range; $keep):  # range text -> [interval] ORed, or null when it is not read
+              if ($range | eq_after_version) then null
+              else
               [ $range | gsub("^\\s+|\\s+$"; "") | gsub("=>"; ">=")
                 | splits("\\s*\\|\\|\\s*") | alternative($keep) ]
-              | if any(. == null) then null else add end;
+              | if any(. == null) then null else add end
+              end;
             def ranges($range): ranges_of($range; false);
             def in_range($ver; $range):
               ranges($range) as $iv
@@ -494,11 +510,22 @@ jobs:
             #     no `=` on either side (@hono/node-server GHSA-rmxm-3fg6-px4f "> = 1.19.10, < 2.1.3",
             #     patched 2.1.3). A named version carrying `+`, or a tag off the belowtag list, refuses:
             #     a span written without spaces ("1.0.0-2.5.0") or a word joined by a hyphen reads as
-            #     one version with a tag. No interval of any reading can then begin at or above the
-            #     fix. An interval beginning below the fix is cleared at or above the fix, as
-            #     patched_state clears a read open range, whether it is open ("> = 1.0.0") or a span
-            #     joined without spaces whose lower end carries a pre-release tag ("1.0.0-rc.1-2.5.0",
-            #     read as one version with a belowtag tag).
+            #     one version with a tag. So does a tag with a `-`-joined segment that starts with a
+            #     digit, which is a span hidden in a tag ("1.0.0-beta.1-3" can mean ">=1.0.0-beta.1
+            #     <=3"; card#11642 r1). A named version with fewer than three core numbers is compared
+            #     at its reach, the version upto gives it (`<= 1` is read as `< 2.0.0`), unless its
+            #     operator is exactly `<` with no `=` after it. Text where an `=` follows a version and
+            #     another operator follows that `=` is refused (eq_after_version: `< 1.5 =< 1.4` can
+            #     be `<= 1.5 < 1.4` or `< 1.5 <= 1.4`). Then each operator is given one spelling
+            #     (opcanon: no whitespace inside it, `=<` as `<=`, `=>` as `>=`, which can now only
+            #     be an `=<`/`=>` that no version precedes), and the text is refused unless every
+            #     operator is one of `>= <= > < =` and each is attached to exactly one version
+            #     (before it, or a trailing `=` after it), so no `=` is left that could be read as
+            #     part of the operator on either side of it. Then every bounded interval
+            #     of any reading ends below the fix, or at it exclusively, so a version at or above
+            #     the fix is outside it; and an
+            #     open interval ("> = 1.0.0") begins below the fix, which is the one shape of
+            #     interval patched_state also clears by its patched text in a read range.
             #     A patched list of several versions is not read here (which line the version is on
             #     is a guess: readings (1) and (2) of patched_state).
             #   (3) an untagged version on a higher core than a lower/upper pair whose tags cannot be
@@ -512,22 +539,33 @@ jobs:
               ($range | gsub("^\\s+|\\s+$"; "")) as $r
               | ($r | test("^[vV]?[0-9][^\\s<>=,;|&]*$"))
                 and (($r | vparse) as $x | $x != null and vcmp($ver; $x) == 0);
+            def opcanon:  # one spelling per operator: no whitespace inside it, "=<" read as "<=" and "=>" as ">="
+              gsub("(?<=[<>=])\\s+(?=[<>=])"; "") | gsub("=<"; "<=") | gsub("=>"; ">=");
             def fix_above($ver; $range; $text):  # (2): true when no reading of $range has an interval holding $ver that begins at or above its one fix
               ($text // "" | gsub("^\\s+|\\s+$"; "") | plist) as $ps
               | $ps != null and ($ps | length) == 1
                 and (vcmp($ver; $ps[0]) as $k | $k != null and $k >= 0)
                 and ($range | gsub("[vV]?[0-9][^\\s<>=,;|&]*"; "") | test("^[\\s<>=,;|&-]*$"))
-                and ([ $range | scan("([<>=][<>=\\s]*)?([vV]?[0-9][^\\s<>=,;|&]*)(\\s*=)?") ] as $ns
-                     | ($ns | length) > 0
+                and ($range | eq_after_version | not)
+                and (($range | opcanon) as $r
+                     | [ $r | scan("[<>=]+") ] as $ops
+                     | [ $r | scan("([<>=]+)?\\s*([vV]?[0-9][^\\s<>=,;|&]*)(\\s*=)?") ] as $ns
+                     | ($ops | all(IN(">=", "<=", ">", "<", "=")))
+                       and ($ops | length) == ([ $ns[] | .[0], .[2] | select(. != null) ] | length)
+                       and ($ns | length) > 0
                        and ($ns | all(. as $m | ($m[1] | vparse) as $n
+                                      | ($m[0] // "") as $op
                                       | $n != null
                                         and ($m[1] | test("\\+") | not)
                                         and (($n.pre | not) or ($n | belowtag))
-                                        and (vcmp($n; $ps[0]) as $c
+                                        and ($n.tag | split("-")[1:] | any(test("^[0-9]")) | not)
+                                        and ((if ($n.c | length) < 3 and ($op != "<" or $m[2] != null) then ($n | upto) else $n end)
+                                             as $reach
+                                             | vcmp($reach; $ps[0]) as $c
                                              | $c != null
                                                and ($c < 0
                                                     or ($c == 0
-                                                        and ($m[0] // "" | gsub("\\s"; "")) == "<"
+                                                        and $op == "<"
                                                         and $m[2] == null))))));
             def agreed($ver; $range; $text):  # "AFFECTED" | "clean" | null = no agreement, the reviewed record decides
               if bare($ver; $range) then "AFFECTED"
