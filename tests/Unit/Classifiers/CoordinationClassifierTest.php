@@ -911,6 +911,23 @@ class CoordinationClassifierTest extends TestCase
         $this->assertSame([], $this->classify('issue_comment.created', $this->comment(9, ['to:other'], 'no directive'), 'org/coord', classifierConfig: $cfg)->intents);
     }
 
+    public function test_comment_to_naming_one_labelled_recipient_does_not_wake_the_other(): void
+    {
+        // rt#614 item 5: a comment's body TO: line, not the thread's to: labels, decides
+        // who wakes. On a thread labelled to:x AND to:y, a comment "TO: x" wakes x only;
+        // y's to_me label grant is narrowed away and, under the default
+        // coord_non_addressed_disposition (drop), y gets nothing at all.
+        $payload = $this->comment(9, ['from:z', 'to:x', 'to:y'], "FROM: z\nTO: x\nfor x only");
+
+        $y = $this->classify('issue_comment.created', $payload, 'org/coord', me: 'y');
+        $this->assertSame([], $y->intents);
+        $this->assertSame([], $y->targets);
+
+        $x = $this->classify('issue_comment.created', $payload, 'org/coord', me: 'x');
+        $this->assertCount(1, $x->intents);
+        $this->assertSame('coord_comment', $x->intents[0]->kind);
+    }
+
     // ---- coord-message: coord_extra_actions (Phase-2, DL-190) — allow-list extension ----
 
     public function test_coord_extra_actions_surfaces_configured_action(): void

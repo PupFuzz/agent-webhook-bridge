@@ -600,6 +600,24 @@ class DispatchServiceTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_this_agents_own_comment_addressed_to_itself_is_echo_dropped_end_to_end(): void
+    {
+        // The poster named on BOTH lines. Its TO: line grants it membership (comment_to,
+        // default-on) on a thread whose labels name only someone else, so the recipient
+        // gate passes on the body alone; the FROM: line must still drop it as its own
+        // write. The reason is asserted whole for the card#9152 reason given above.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeSharedIdentityCoordAgent();
+
+        $this->dispatchCoord('evt-own-to-self', 'issue_comment.created', $this->coordComment(['from:other', 'to:other'], "FROM: me\nTO: me\nnote to self"));
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
+        $this->assertSame('echo: own write (reattributed author)', (string) $d->reason);
+        $this->assertSame(0, $this->inboxCount());
+        Http::assertNothingSent();
+    }
+
     // ---- card#9152 / DL-373: the config that makes the leg above pass for the wrong reason ----
     //
     // WHY THESE THREE ARE ONE GROUP. The acceptance a seat runs when it joins a roundtable
