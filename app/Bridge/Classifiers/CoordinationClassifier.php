@@ -54,7 +54,9 @@ use App\Bridge\Writeback\WritebackMapping;
  *     surgical: hand-emits a channel_push ONLY for wake-worthy events, else
  *     gate-dropped. Config: `impl_repos` gates to a repo subset (empty ⇒ all
  *     subscribed); `impl_non_wake_disposition: inbox_stage` keeps a broad CI/push
- *     inbox (no channel_push) instead of gate-dropping non-wake events;
+ *     inbox (no channel_push) instead of gate-dropping non-wake events — on a
+ *     `route_intents:true` channel a push is staged only to an
+ *     `impl_push_wake_branches` branch (default `[dev, main]`, `[]` = every branch);
  *     `impl_wake_deny_actors` (logins and/or numeric ids) makes an automation account's
  *     CI/push a NON-WAKE — it flows through `impl_non_wake_disposition` rather than being
  *     dropped before the gate, so `inbox_stage` still records it. Keys on WHO, never on
@@ -222,6 +224,18 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      */
     private const DEFAULT_BENIGN_CONCLUSIONS = ['success', 'cancelled', 'skipped', 'neutral'];
 
+    /**
+     * Branches whose non-wake push is still staged — and so routed — on a
+     * `route_intents:true` channel; override via `classifier.config.impl_push_wake_branches`,
+     * an explicit `[]` turns the filter off. Seats share one GitHub account, so every
+     * PR-branch push echoes back to every seat on the repo; the PR's author learns of it
+     * through that push's CI run instead.
+     */
+    private const DEFAULT_IMPL_PUSH_WAKE_BRANCHES = ['dev', 'main'];
+
+    /** The dropped reason for a push {@see pushRoutesToChannel()} withheld. */
+    public const IMPL_PUSH_NOT_A_WAKE_BRANCH = 'impl push: branch is not in impl_push_wake_branches (route_intents channel)';
+
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
         // InboxOnly base: kanban `task.*` events stage to the agent inbox; a GitHub
@@ -242,6 +256,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $intents = $base->intents;
         $targets = [...$base->targets, ...$this->cardCommentWake($base, $ctx)];
         $reattributed = $base->reattributedActor;
+        $dropReason = $base->dropReason;
         foreach ($families as $family) {
             $result = match ($family) {
                 'coord-message' => $this->coordMessageFamily($ctx, $cfg),
@@ -258,9 +273,10 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             $intents = [...$intents, ...$result->intents];
             $targets = [...$targets, ...$result->targets];
             $reattributed ??= $result->reattributedActor;
+            $dropReason ??= $result->dropReason;
         }
 
-        return new ClassifyResult(intents: $intents, targets: $targets, reattributedActor: $reattributed, dropReason: $base->dropReason);
+        return new ClassifyResult(intents: $intents, targets: $targets, reattributedActor: $reattributed, dropReason: $dropReason);
     }
 
     /**
@@ -794,6 +810,9 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $staged = null;
         if ($eventType === 'push') {
             $staged = $this->pushInboxSignal($payload);
+            if ($staged !== null && ! $this->pushRoutesToChannel($this->pushBranch($payload), $ctx, $cfg)) {
+                return new ClassifyResult(dropReason: self::IMPL_PUSH_NOT_A_WAKE_BRANCH);
+            }
         } elseif (str_starts_with($eventType, 'workflow_run.')) {
             $staged = $this->workflowRunInboxSignal($payload);
         }
@@ -973,8 +992,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         if (($payload['deleted'] ?? false) === true) {
             return null;
         }
-        $ref = is_scalar($payload['ref'] ?? null) ? (string) $payload['ref'] : '';
-        $branch = str_starts_with($ref, 'refs/heads/') ? substr($ref, strlen('refs/heads/')) : $ref;
+        $branch = $this->pushBranch($payload);
         $repo = is_array($payload['repository'] ?? null) ? $payload['repository'] : [];
         $head = is_array($payload['head_commit'] ?? null) ? $payload['head_commit'] : [];
         $headSha = is_scalar($payload['after'] ?? null) ? (string) $payload['after']
@@ -993,6 +1011,36 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'commit_count' => count($commits),
             ],
         ];
+    }
+
+    /**
+     * The pushed ref with `refs/heads/` stripped; any other ref (a tag) is returned whole.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function pushBranch(array $payload): string
+    {
+        $ref = is_scalar($payload['ref'] ?? null) ? (string) $payload['ref'] : '';
+
+        return str_starts_with($ref, 'refs/heads/') ? substr($ref, strlen('refs/heads/')) : $ref;
+    }
+
+    /**
+     * Whether a non-wake push to `$branch` may be staged. Only a `route_intents:true`
+     * channel is filtered: there the dispatcher routes every staged intent (DL-006) and has
+     * no stage-without-route path, so not staging is the only way not to deliver. On a
+     * `route_intents:false` channel staging is the quiet inbox digest and never reaches
+     * the channel, so it is left as it was. A tag push keeps its full `refs/tags/…` ref
+     * from {@see pushBranch()}, so it matches no branch name.
+     */
+    private function pushRoutesToChannel(string $branch, ClassifyContext $ctx, ClassifierConfig $cfg): bool
+    {
+        if (! $ctx->agent->channel->routeIntents) {
+            return true;
+        }
+        $branches = $cfg->strings('impl_push_wake_branches', self::DEFAULT_IMPL_PUSH_WAKE_BRANCHES);
+
+        return $branches === [] || in_array(strtolower($branch), $branches, true);
     }
 
     /**
