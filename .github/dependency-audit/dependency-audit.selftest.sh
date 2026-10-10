@@ -478,6 +478,23 @@ all versions after 1.0#1.5.3#2.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): a w
 < = 1.5.3#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11604 r2): a spaced <= is inclusive, so the fix it names is not an exclusive bound
 >= 1.0.0, <1.5.3 =#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11604 r2): an = after the fix makes its < inclusive, so not an exclusive bound
 > = 1.0.0#1.5.3#9.0.0#clean#SYNTHETIC (card 11604 r2): an open interval beginning below the fix is cleared at or above it, as a read open range is by its patched text
+> = 0.9.0, < = 1#1.5.3#1.9.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r1): a partial upper bound reaches past its own numbers (<= 1 is read as < 2.0.0), so it names a version above the fix and is not cleared
+< = 1.5#1.5.3#1.5.4#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r1): a partial <= 1.5 reaches 1.6.0, above the fix, so not cleared
+> = 1.0, < 1.5#1.5.0#1.5.0#clean#SYNTHETIC (card 11642 r1): a partial bound written exactly < reaches no further than its own numbers, so the fix it names is an exclusive upper bound
+1.0.0-beta.1-3#1.5.3#2.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r1): a tag with a hyphen-joined numeric segment is a span hidden in a tag (>=1.0.0-beta.1 <=3), so not cleared
+<11.44.1, >=12.0.0, <12.1.1#12.1.1,11.44.1#13.30.1#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r1): laravel GHSA-78fx-h6xr-vch4 written with full versions, above both fixes; a patched list of several versions is not read here
+>= 1.0 =< 1.5.3#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r3): an = after a version with an operator after it has two readings (the = closes >= 1.0 and < 1.5.3 stays exclusive, or it opens <= 1.5.3), so not cleared
+< 1.5 =#1.5.3#1.5.9#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r2): an = after a partial < makes it inclusive, so it is compared at its reach (1.6.0), above the fix
+<> 1.0#1.5.3#2.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r2): an operator other than >= <= > < = (here <>, which can mean "not 1.0") is not read, so not cleared
+<1.5.3, =#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r2): an operator attached to no version is not read, so not cleared
+>= 1.0, =< 1.5.3#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r3): an =< that no version precedes is spelled <= before the scan, so the fix it names is not an exclusive bound
+=> 1.0.0, < 1.5.3#1.5.3#1.5.3#clean#SYNTHETIC (card 11642 r3): an => that no version precedes has one reading (>=), so the range is read and the fix, its exclusive upper bound, is outside it
+>= 1.0.0 < 1.5.3 =< 1.2.0#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r3): an = between a version and a following < can make the < before it inclusive (<= 1.5.3), so not cleared at the fix
+>= 1.0.0 < 1.5.3 = < 1.2.0#1.5.3#1.5.3#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r3): a spaced = between a version and a following < can make the < before it inclusive (<= 1.5.3), so not cleared at the fix
+< 1.5 =< 1.4.0#1.5.0#1.5.2#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r3): an = between a partial version and a following < can make it <= 1.5, which reaches 1.6.0, so not cleared
+> 1.0.0 < 1.5 => 1.0.0#1.5.0#1.5.2#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r3): an = between a partial version and a following > can make it <= 1.5, which reaches 1.6.0, so not cleared
+>= 1.0.0, < 1.5 =< 1.4.9#1.5.0#1.5.2#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r3): after a comma, an = between a partial version and a following < can make it <= 1.5, which reaches 1.6.0, so not cleared
+< 1.5.0 => 1.0.0#1.5.0#1.5.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11642 r3): the range grammar does not read => as >= where an = after a version can make the < before it inclusive (<= 1.5.0), so the range is not read and not cleared at its fix
 1.17.0#>=1.20.0#1.19.0#RANGE-UNPARSEABLE#axios GHSA-r4gj-5m52-g5wh: a bare version is not read, below the fix; this table hands in no reviewed record (§G does)
 1.17.0#NULL#1.20.0#RANGE-UNPARSEABLE#SYNTHETIC: a bare version with no patched version is not read either
 <6.20.45,>=7,<7.30.7,>=8,<8.83.28,>=9,<9.52.17,>=10,<10.48.23,>=11,<11.31.0#6.20.45,7.30.7,8.83.28,9.52.17,10.48.23,11.31.0#8.83.28#RANGE-UNPARSEABLE#laravel GHSA-gv7v-rgg6-548h: multi-line, at its own line fix — not read, so its patched text never clears it; this table hands in no reviewed record (§G does)
@@ -493,7 +510,7 @@ all versions after 1.0#1.5.3#2.0.0#RANGE-UNPARSEABLE#SYNTHETIC (card 11604): a w
 >= 1.0.0#1.5.3, 2.1.0#3.0.0#clean#SYNTHETIC: KNOWN LIMIT (2) ABOVE EVERY LINE, fails open: a later major above every listed fix and every version the range names
 >= 1.0.0#2.1.0, 3.0.4#1.9.0#AFFECTED#SYNTHETIC: sharing no leading number with any fix, the highest decides
 >= 1.0.0#2.3.5, 3.0.4#2.4.0#clean#SYNTHETIC: KNOWN LIMIT (1) OWN LINE, fails open: a minor line with no listed fix, above a fix on an earlier minor
->=1.0.0 <2.5.0 or >=3.0.0 <3.1.0#2.0.0, 3.1.0#2.1.0#RANGE-UNPARSEABLE#SYNTHETIC (r4 review): an unread range is never cleared by its patched text, so its upper bound 2.5.0 is never overruled
+>=1.0.0 <2.5.0 or >=3.0.0 <3.1.0#2.0.0, 3.1.0#2.1.0#RANGE-UNPARSEABLE#SYNTHETIC (r4 review): an unread range carrying a word is not cleared by its patched text, so its upper bound 2.5.0 is never overruled
 >= 1.0.0#2.3.5, 2.4.1#2.4.0#AFFECTED#SYNTHETIC: two fixes on one major, the nearer line decides
 >= 1.0.0#2.3.5, 2.4.1#2.3.6#clean#SYNTHETIC: two fixes on one major, at or above the nearer line fix
 >= 1.0.0#2.1.0, 2.6.0#2.5.3#AFFECTED#SYNTHETIC: two fixes equally near, the higher decides
@@ -909,7 +926,7 @@ range_mutant() {  # $1=label $2=sed program $3=sites expected $4=row source (exa
   fi
 }
 range_mutant "naive fix (comma always AND, no one-interval rule)" \
-  's/gsub("=>"; ">=")/gsub("=>"; ">=") | gsub(","; " ")/; s/if (\$l | length) > 1 or (\$u | length) > 1 then null/if false then null/' \
+  's/| gsub("=>"; ">=")$/| gsub("=>"; ">=") | gsub(","; " ")/; s/if (\$l | length) > 1 or (\$u | length) > 1 then null/if false then null/' \
   2 "ws GHSA-96hv-2xvq-fx4p (comma = OR) THE FAIL-OPEN CONTROL" clean
 range_mutant "one-interval rule removed" \
   's/if (\$l | length) > 1 or (\$u | length) > 1 then null/if false then null/' \
@@ -1033,7 +1050,7 @@ range_mutant "a version equal to one the range names read as above it" \
 # consulted there, with no range to hold it to.
 range_mutant "an unread range cleared by its patched text (the r4 defect)" \
   's/^\( *\)| select(\$rv\.hit != false)$/\1| select($rv.hit != false and (patched_state($ver; $vr.p; $vr.r).state != "clean"))/' \
-  1 "SYNTHETIC (r4 review): an unread range is never cleared by its patched text, so its upper bound 2.5.0 is never overruled" clean patched_rows
+  1 "SYNTHETIC (r4 review): an unread range carrying a word is not cleared by its patched text, so its upper bound 2.5.0 is never overruled" clean patched_rows
 # WHAT EVERY READING OF AN UNREAD RANGE AGREES ON (card#11604), each guard of `agreed` removed on
 # its own against a row, and the reading card#11604 rules out (a bare version as exact) put back.
 range_mutant "a bare version equal to the version no longer read as affected" \
@@ -1047,15 +1064,15 @@ range_mutant "the version cleared by the fix without being at or above it" \
   1 "@hono/node-server GHSA-rmxm-3fg6-px4f (card 11604): below the fix, so not decided; this table hands in no reviewed record (§G does)" clean patched_rows
 range_mutant "a patched list of several versions read through its first" \
   's/| \$ps != null and (\$ps | length) == 1$/| $ps != null/' \
-  1 "laravel GHSA-78fx-h6xr-vch4: a later major above every fix and every version the range names — not read, so its patched text never clears it; this table hands in no reviewed record (§G does)" clean patched_rows
+  1 "SYNTHETIC (card 11642 r1): laravel GHSA-78fx-h6xr-vch4 written with full versions, above both fixes; a patched list of several versions is not read here" clean patched_rows
 range_mutant "text carrying a word cleared by its fix" \
   's/^\( *\)and (\$range | gsub(.*test(.*))$/\1and true/' \
   1 "SYNTHETIC (card 11604): a word can name a bound with no version, so text carrying one is not cleared by its fix" clean patched_rows
 range_mutant "a range naming no version cleared by its fix" \
-  's/| (\$ns | length) > 0$/| true/' \
+  's/^\( *\)and (\$ns | length) > 0$/\1and true/' \
   1 "SYNTHETIC (card 11604): a range naming no version is not cleared by its fix" clean patched_rows
 range_mutant "a named version equal to the fix accepted whatever its operator" \
-  's/^\( *\)and (\$m\[0\] \/\/ "" | gsub(.*)) == "<"$/\1and true/; s/^\( *\)and \$m\[2\] == null))))));$/\1and true))))));/' \
+  's/^\( *\)and \$op == "<"$/\1and true/; s/^\( *\)and \$m\[2\] == null))))));$/\1and true))))));/' \
   2 "SYNTHETIC (card 11604): the fix named other than as an exclusive upper bound can begin an interval at it, so not cleared" clean patched_rows
 range_mutant "a named version above the fix accepted" \
   's/and (\$c < 0$/and (true/' \
@@ -1070,11 +1087,50 @@ range_mutant "a named version carrying build metadata accepted (card 11604 r2)" 
   's/^\( *\)and (\$m\[1\] | test(.*) | not)$/\1and true/' \
   1 "SYNTHETIC (card 11604 r2): a trailing plus reads as build metadata, so not cleared" clean patched_rows
 range_mutant "any operator carrying < accepted on the fix (card 11604 r2)" \
-  's/^\( *\)and (\$m\[0\] \/\/ "" | gsub(.*)) == "<"$/\1and ($m[0] \/\/ "" | test("<"))/' \
+  's/^\( *\)and \$op == "<"$/\1and ($op | test("<"))/' \
   1 "SYNTHETIC (card 11604 r2): =< is inclusive, so the fix it names is not an exclusive bound" clean patched_rows
 range_mutant "an = after the fix ignored (card 11604 r2)" \
   's/^\( *\)and \$m\[2\] == null))))));$/\1and true))))));/' \
   1 "SYNTHETIC (card 11604 r2): an = after the fix makes its < inclusive, so not an exclusive bound" clean patched_rows
+range_mutant "a partial version compared at its own numbers, not its reach (card 11642 r1)" \
+  's/((if (\$n\.c | length) < 3 and (\$op != "<" or \$m\[2\] != null) then (\$n | upto) else \$n end)$/(($n)/' \
+  1 "SYNTHETIC (card 11642 r1): a partial upper bound reaches past its own numbers (<= 1 is read as < 2.0.0), so it names a version above the fix and is not cleared" clean patched_rows
+range_mutant "a partial version written exactly < compared at its reach (card 11642 r1)" \
+  's/ and (\$op != "<" or \$m\[2\] != null) then (\$n | upto)/ then ($n | upto)/' \
+  1 "SYNTHETIC (card 11642 r1): a partial bound written exactly < reaches no further than its own numbers, so the fix it names is an exclusive upper bound" RANGE-UNPARSEABLE patched_rows
+range_mutant "a span hidden in a tag accepted (card 11642 r1)" \
+  's/^\( *\)and (\$n\.tag | split("-")\[1:\] | any(test("^\[0-9\]")) | not)$/\1and true/' \
+  1 "SYNTHETIC (card 11642 r1): a tag with a hyphen-joined numeric segment is a span hidden in a tag (>=1.0.0-beta.1 <=3), so not cleared" clean patched_rows
+range_mutant "=< canonicalised to an exclusive < (card 11642 r2)" \
+  's/gsub("=<"; "<=")/gsub("=<"; "<")/' \
+  1 "SYNTHETIC (card 11642 r3): an =< that no version precedes is spelled <= before the scan, so the fix it names is not an exclusive bound" clean patched_rows
+range_mutant "whitespace inside an operator kept (card 11642 r2)" \
+  's/gsub("(?<=\[<>=\])\\\\s+(?=\[<>=\])"; "") | //' \
+  1 "@hono/node-server GHSA-rmxm-3fg6-px4f (card 11604): at its one fix, which the range names only as an exclusive upper bound" RANGE-UNPARSEABLE patched_rows
+range_mutant "a trailing = ignored by the partial reach (card 11642 r2)" \
+  's/ and (\$op != "<" or \$m\[2\] != null) then/ and $op != "<" then/' \
+  1 "SYNTHETIC (card 11642 r2): an = after a partial < makes it inclusive, so it is compared at its reach (1.6.0), above the fix" clean patched_rows
+range_mutant "an operator off the five spellings accepted (card 11642 r2)" \
+  's/| (\$ops | all(IN(">=", "<=", ">", "<", "=")))$/| true/' \
+  1 "SYNTHETIC (card 11642 r2): an operator other than >= <= > < = (here <>, which can mean \"not 1.0\") is not read, so not cleared" clean patched_rows
+range_mutant "an operator attached to no version ignored (card 11642 r2)" \
+  's/^\( *\)and (\$ops | length) == (.*$/\1and true/' \
+  1 "SYNTHETIC (card 11642 r2): an operator attached to no version is not read, so not cleared" clean patched_rows
+# card#11642 r3: an = after a version with an operator after it (eq_after_version), removed
+# where it is defined (every reader then picks a reading), at each of its two callers on its own,
+# and widened to refuse an =< / => that no version precedes.
+range_mutant "an = after a version read as part of the next operator (eq_after_version removed, card 11642 r3)" \
+  's/^\( *\)test("\[^\\\\s<>=,;|&\]\\\\s\*=\\\\s\*\[<>=\]");$/\1false;/' \
+  1 "SYNTHETIC (card 11642 r3): an = between a version and a following < can make the < before it inclusive (<= 1.5.3), so not cleared at the fix" clean patched_rows
+range_mutant "the fix check reads an = after a version as part of the next operator (card 11642 r3)" \
+  's/^\( *\)and (\$range | eq_after_version | not)$/\1and true/' \
+  1 "SYNTHETIC (card 11642 r3): an = between a partial version and a following < can make it <= 1.5, which reaches 1.6.0, so not cleared" clean patched_rows
+range_mutant "the range grammar reads an => after a version as >= (card 11642 r3)" \
+  's/^\( *\)if (\$range | eq_after_version) then null$/\1if false then null/' \
+  1 "SYNTHETIC (card 11642 r3): the range grammar does not read => as >= where an = after a version can make the < before it inclusive (<= 1.5.0), so the range is not read and not cleared at its fix" clean patched_rows
+range_mutant "an => that no version precedes refused (card 11642 r3)" \
+  's/^\( *\)test("\[^\\\\s<>=,;|&\]\\\\s\*=\\\\s\*\[<>=\]");$/\1test("=\\\\s*[<>]");/' \
+  1 "SYNTHETIC (card 11642 r3): an => that no version precedes has one reading (>=), so the range is read and the fix, its exclusive upper bound, is outside it" RANGE-UNPARSEABLE patched_rows
 range_mutant "an unordered pair never cleared (the higher-core reading removed)" \
   's/^\( *\)elif (ranges_of(\$range; true) | .*$/\1elif false then "clean"/' \
   1 "express GHSA-rv95-896h-c2vc (card 11604): an untagged version on a higher core than both bounds, whose tags cannot be ordered" RANGE-UNPARSEABLE patched_rows
