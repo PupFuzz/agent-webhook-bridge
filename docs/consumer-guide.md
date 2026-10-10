@@ -113,7 +113,7 @@ is *superseded*: it holds nothing open and decides nothing. Two senders, one eve
   `workflow_run` deliveries the bridge received — no GitHub read. Pushed live where `impl_ci` was
   (`channel.route_intents: true`) or where you hold a `ci_await` on the head; staged to the inbox either
   way. A failed run still sends its own `impl_ci_failed` at once, and a `cancelled` run with no newer run
-  of its workflow still sends its own `impl_ci` (the head's `ci_settled` follows once it settles, red).
+  of its workflow still sends its own `impl_ci` (the head's `ci_settled` follows when it settles — red, unless a newer run of that workflow supersedes it — and is itself best-effort).
   ⚠ **The aggregate is per-head and best-effort.** It is edge-triggered from `workflow_run` deliveries
   and nothing retries it: a green, skipped or neutral head whose last completion was lost, gated for you
   (echo / signal, DL-203) or not recorded leaves **no record of that head**. Only a failure or an

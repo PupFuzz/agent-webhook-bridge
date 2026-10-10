@@ -136,6 +136,7 @@ class CiHeadAggregateTest extends TestCase
         $this->assertSame('green', $settled['payload']['runs_verdict']);
         $this->assertSame([true, false, false], array_column($settled['payload']['runs'], 'superseded'));
         $this->assertSame(1, count(array_keys($this->kinds(), 'ci_settled')));
+        $this->assertNotContains('impl_ci', $this->kinds(), 'a superseded cancelled run is carried by the aggregate, not reported on its own');
     }
 
     public function test_an_unsuperseded_cancelled_run_makes_the_aggregate_red(): void
