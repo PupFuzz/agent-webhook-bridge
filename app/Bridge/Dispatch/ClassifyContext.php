@@ -4,6 +4,7 @@ namespace App\Bridge\Dispatch;
 
 use App\Bridge\Contracts\Classifier;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
 
 /**
@@ -34,6 +35,12 @@ use App\Bridge\Support\SubscriptionRegistry;
  *   path. Null when the classifier was invoked outside the dispatch loop (every
  *   direct-construction test site); a reader must then build its own and gets
  *   exactly the answer it gets today, at that cost.
+ * - agents: THE DELIVERY'S agent registry, the one the dispatcher's echo gate
+ *   already asked. A classifier needing an agent's KANBAN USER ID (the card_comment
+ *   routing is the first, card#11581 / DL-467) reads it through
+ *   `kanbanUserIdOf()` here — the coord-roster mapping attribution and self
+ *   echo-suppression use (DL-450), never a second one. Null outside the dispatch
+ *   loop, on the same terms as `subscriptions`.
  */
 final class ClassifyContext
 {
@@ -48,5 +55,6 @@ final class ClassifyContext
         public readonly string $scopeId,
         public readonly AgentConfig $agent,
         public readonly ?SubscriptionRegistry $subscriptions = null,
+        public readonly ?AgentRegistry $agents = null,
     ) {}
 }

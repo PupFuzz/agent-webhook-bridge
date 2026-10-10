@@ -49,11 +49,15 @@ final class GitHubWebhookProbeResult
         public readonly ?bool $active = null,
         /** Present only (card#11283): does an active matching hook send `workflow_run` (or `*`)? Null = unread. */
         public readonly ?bool $workflowRun = null,
+        /** Present only (card#11579): does an active matching hook send `content_type` json? Null = unread. */
+        public readonly ?bool $json = null,
+        /** Present only (card#11579): did an active matching hook's most recent delivery get a 2xx? Null = unread. */
+        public readonly ?bool $lastDelivery2xx = null,
     ) {}
 
-    public static function present(string $source, ?bool $active = null, ?bool $workflowRun = null): self
+    public static function present(string $source, ?bool $active = null, ?bool $workflowRun = null, ?bool $json = null, ?bool $lastDelivery2xx = null): self
     {
-        return new self(GitHubWebhookProbeKind::Present, source: $source, active: $active, workflowRun: $workflowRun);
+        return new self(GitHubWebhookProbeKind::Present, source: $source, active: $active, workflowRun: $workflowRun, json: $json, lastDelivery2xx: $lastDelivery2xx);
     }
 
     /**

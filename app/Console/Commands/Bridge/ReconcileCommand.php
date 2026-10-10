@@ -175,9 +175,8 @@ class ReconcileCommand extends BridgeCommand
         // skips only that repo's cards; other repos still run. The RAW mapping key is
         // probed ([git-credential-map] is case-sensitive); repoUsable/clients are keyed
         // by the canonical form (how cards resolve their repo). The resolved leg is named
-        // (DL-186) so an auth failure points at WHICH credential source won (a stale
-        // <secret_dir>/github/token shadowing the store map is the common upgrade footgun);
-        // never the token, only the source.
+        // (DL-186) so an auth failure points at WHICH credential source won; never the
+        // token, only the source.
         foreach ($mappings as $repo => $mapping) {
             $canon = $refs->canonicalizeSource((string) $repo) ?? (string) $repo;
             $result = $probe->probe((string) $repo);

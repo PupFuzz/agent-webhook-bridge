@@ -65,8 +65,10 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
         // Its repos are the ones seats register heads for with `ci_await`, stored in the database,
         // never in writeback.json. It reads in the receiver (a `workflow_run` delivery, an HTTP-door
         // registration) and from the CLI (the bridge:tick sweep, an ssh-door registration), the same
-        // way in both. A head whose reads fail is kept and read again, and `ci_await.awaits`
-        // (bridge:check) warns with the read's own error — "no GitHub read token: …" — when none answers.
+        // way in both. A head whose read can be retried is kept and read again, and `ci_await.awaits`
+        // (bridge:check) warns with the read's own error when none answers; a repo no reader has a
+        // token for, or whose token GitHub refuses, ends the await at once (card#11600), and
+        // `ci_await.awaits` reads every received repo once and FAILs naming it — "no GitHub read token: …".
         'App\Bridge\CiAwait\CiAwaitService' => 'receiver delivery and HTTP-door registration (both inside the receiver), bridge:tick sweep and ssh-door registration (CLI); reported by ci_await.awaits',
     ];
 

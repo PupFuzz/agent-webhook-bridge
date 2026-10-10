@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
+use App\Bridge\ClientUpdate\ClientFleet;
 use App\Bridge\ClientUpdate\ClientPackRefused;
 use App\Bridge\ClientUpdate\ClientPackStore;
 use App\Bridge\ClientUpdate\PublishedClientPack;
@@ -283,7 +284,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         // on a dev checkout ahead of its last release it warned forever, with a re-copy remedy
         // that takes a seat OFF the update path. The remedy moves with the operand: bootstrap,
         // never re-copy. With nothing published, both are exactly what they were.
-        $bootstrap = "on the seat, `provision-board-tools.py --role b --bootstrap-client --agent {$agent} --project-dir <its-claude-project-dir> --channel-name <its-mcp-servers-key>`";
+        $bootstrap = 'on the seat, `'.ClientFleet::bootstrapCommand($agent).'`';
         try {
             $published = $this->store->published();
             $publishedFault = null;

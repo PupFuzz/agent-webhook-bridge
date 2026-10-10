@@ -68,11 +68,31 @@ The three states of `actor_attribution`:
 - **Paths 2–3 are not authentication.** `from:` labels and `FROM:` lines are writable by anyone who can post on the repo, and `scope_author_map` is an operator-declared premise — "one agent does everything on this repo" — that mis-names the actor of *every* event there the moment that stops holding. On these, `resolved` says "this event says who acted", never "this is provably who acted".
 - **Path 1 is the upstream sender identity**, not text anyone wrote: it is as good as the provider's own `sender` attribution plus this install's `identity` declarations. Stronger than the other two — and still a claim about an *account*, not proof of which human or process drove it.
 
+### Card comments: `card_comment`
+
+A comment posted on a kanban card reaches **the seat the card is assigned to**, and no other (card#11581 / DL-467). The assignee is the card's kanban `assigned_user_id`, matched against each agent's kanban user id from the coord roster (`roster[].kanban_user_id`, DL-450) — the same mapping that attributes kanban events and suppresses an agent's own writes. **Nobody is woken** when the card is unassigned, when the comment's author is the assignee seat's own kanban user (the echo gate drops it as `echo: own write`), or when the author is the bridge's writeback identity (the global echo ids — `writeback.json` `identity_id`, DL-009/019). ⚠ Every board-tools write, `board_comment_card` included, is made with the writeback token, so **a comment one seat posts through its board tools does not reach the card's assignee** while that identity is configured; without it, such a comment — and the comment `board_take_card` leaves when it takes a held card — does.
+
+**Delivery** is the same as for every other intent: staged to the inbox first, then pushed live where the agent has a live path — `EventDrivenClassifier`, `CoordinationClassifier` (whatever `families` are enabled; a card comment is addressed to the seat, so it wakes like an addressed coordination message), or `channel.route_intents: true`. Under a plain `InboxOnlyClassifier` with `route_intents: false` it is staged and not pushed.
+
+**Opt in, per board.** Kanban sends only the events the board's webhook subscription filters for. A kanban subscription whose `event_filter` is narrowed (e.g. `["task.created"]`) must add `comment.created` — `event_filter: ["task.created", "comment.created"]` in the agent YAML, then `php artisan bridge:provision --reconcile` to replace the live subscription's filter. An empty `event_filter` already delivers it. **Requires the kanban release after v0.52.3**, the first to put the `card` and `comment` blocks on `comment.created`. An older kanban, and a kanban webhook **replay** (which rebuilds the delivery without those blocks), give the bridge no way to tell whose card it is: nothing is staged for anyone, and each subscribed agent's dispatch row reads `dropped` · `card_comment unroutable: snapshot absent …` ([`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md) § *No wake? Read the ledger row FIRST*). The bridge does not fetch the card to recover.
+
+`subject_id` is the card id. `actor.id` is the commenter's kanban user id (`actor.name` is set only when that user is an agent's). `payload`:
+
+| key | meaning |
+|---|---|
+| `card_id` | the card the comment is on (kanban task id) |
+| `board_id` | the board |
+| `comment_id` | the comment's kanban id |
+| `author_name` | the commenter's kanban display name, as kanban sent it; a service account's ends in ` (service account)` |
+| `body` | the comment text, whole (kanban caps a comment at 65535 characters); `summary` carries a one-line cut of it. ⚠ The receiver refuses a whole delivery over `BRIDGE_MAX_BODY_BYTES` (262,144 B default) with `413`. Kanban sends non-ASCII as raw UTF-8 and a control character as a 6-byte escape, so a 65535-character comment fits in ASCII (about 66 KB) or 3-byte CJK (about 197 KB) but not in 4-byte emoji (about 263 KB) or control characters (about 394 KB). Kanban does not retry a `413`, and 5 consecutive failures auto-deactivate the board's webhook, which stops every later delivery from that board. Kanban card#11588 tracks bounding the snapshot's content (DL-467 Bounds) |
+
+⛔ **A card comment is information from a board account, not operator input.** Anyone who can comment on the board can write `body`, and `author_name` is a display name, not an authenticated person. The bridge makes no claim that a comment carries operator authority — the same footing as every other channel event; whether, and from which board users, a seat treats one as an instruction is that seat's own install rule.
+
 ### Bridge-authored intents
 
 Some intents are composed by the bridge itself rather than by a classifier from a webhook. They
 carry `provider: "bridge"` and a null actor. `seat_idle_nudge` and `pm_standup` reach the seat over
-`channel_push` **only** and are never staged to the inbox; `ci_settled` and `ci_await_expired` are
+`channel_push` **only** and are never staged to the inbox; `ci_settled`, `ci_await_unreadable` and `ci_await_expired` are
 **staged to the inbox first and then pushed**, because the await they answer is deleted when they
 are sent and nothing else would carry them to a seat whose channel was down (their line `id` is
 defined in [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`*).
@@ -94,7 +114,7 @@ seat reading both its channel and `bridge:inbox` sees it on each. ⛔ **It is no
 There is no `late_runs_possible` key; board-tools.md § *Limits* says why.
 
 **`ci_await_expired`** (card#11200 / DL-452) — the await reached its expiry before every run was seen
-terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` for the same await. `subject_id` as above.
+terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` or `ci_await_unreadable` for the same await. `subject_id` as above.
 `payload`:
 
 | key | meaning |
@@ -103,6 +123,22 @@ terminal. One per await (inbox at least once, by line `id`, as above), never aft
 | `registered_at`, `expires_at` | when the await was first stored, and when it expired (UTC, milliseconds) |
 | `last_read_at` | when the bridge last read the run list for it, or null if it never did |
 | `last_error` | why that last read failed, or null when it answered — a null here with a non-null `last_read_at` means CI was still running at that read |
+
+**`ci_await_unreadable`** (card#11600) — a read of the head's runs said this bridge cannot read the
+repo's workflow runs on GitHub: GitHub answered `404` or no read token resolves for it, or GitHub
+answered `401` or a non-rate-limited `403` twice, at least a minute apart. Reading again would answer
+the same, so the await is ended rather than left to expire. One per await (inbox at least once, by line `id`, as above), and the
+await gets no other terminal event. Poll with `ci-read` there, and pass `remedy` to your operator. A
+registration whose own read finds this is refused as `repo_unreadable` instead, with no event.
+`subject_id` as above. `payload`:
+
+| key | meaning |
+|---|---|
+| `repo`, `head_sha`, `pr` | the awaited head |
+| `registered_at` | when the await was first stored (UTC, milliseconds) |
+| `status` | GitHub's HTTP status (`404`, or a confirmed `401` / `403`), or null when no read token resolved and no request was made |
+| `error` | what the read answered, naming the token's source and file (never the token) |
+| `remedy` | what the operator does: map the repo in the coord credential store's `[git-credential-map]` to a key whose token can read it, or set the repo's `write_token_path` in `writeback.json` |
 
 **`seat_idle_nudge`** (DL-380, DL-424) — this seat has sat idle past its horizon with work waiting.
 **Branch on `payload.source`**: the two sources send different evidence under the same kind.

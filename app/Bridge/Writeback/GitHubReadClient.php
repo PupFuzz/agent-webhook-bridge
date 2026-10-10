@@ -180,14 +180,14 @@ final class GitHubReadClient
                 ])->throw()->json();
             } catch (Throwable $e) {
                 if ($match !== null) {
-                    return GitHubHookListAnswer::found(null, null);
+                    return GitHubHookListAnswer::found();
                 }
 
                 throw $e;
             }
 
             if ($match !== null && (! is_array($body) || ! array_is_list($body))) {
-                return GitHubHookListAnswer::found(null, null);
+                return GitHubHookListAnswer::found();
             }
             if (! is_array($body) || ! array_is_list($body)) {
                 self::warnUnreadableBody(
@@ -236,7 +236,7 @@ final class GitHubReadClient
             // the walk unmakes that absence while never pre-empting a later page's match.
             if (count($body) < self::HOOK_PAGE_SIZE) {
                 if ($match !== null) {
-                    return GitHubHookListAnswer::found($match->active, $match->workflowRun);
+                    return GitHubHookListAnswer::found($match);
                 }
                 if ($unreadableElement) {
                     self::warnUnreadableBody(
@@ -251,7 +251,7 @@ final class GitHubReadClient
             }
         }
 
-        return $match !== null ? GitHubHookListAnswer::found(null, null) : GitHubHookListAnswer::undetermined();
+        return $match !== null ? GitHubHookListAnswer::found() : GitHubHookListAnswer::undetermined();
     }
 
     /**
@@ -609,6 +609,16 @@ final class GitHubReadClient
         }
 
         throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} did not end within ".self::RUNS_PAGE_LIMIT.' pages of '.self::RUNS_PAGE_SIZE.' — the list was not read to its end, so whether every run is terminal is unknown');
+    }
+
+    /**
+     * One request for one workflow run of any head (`GET /repos/{repo}/actions/runs?per_page=1`):
+     * can this token read the repo's workflow runs at all? Throws RequestException on any non-2xx,
+     * like every read here; a 2xx answers yes and its body is not read (card#11600).
+     */
+    public function probeWorkflowRuns(string $repo): void
+    {
+        $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs", ['per_page' => 1, 'exclude_pull_requests' => 'true'])->throw();
     }
 
     /**

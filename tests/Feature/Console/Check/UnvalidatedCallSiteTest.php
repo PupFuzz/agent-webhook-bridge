@@ -373,13 +373,15 @@ class UnvalidatedCallSiteTest extends TestCase
         // moving the exit code. If a future edit ever moves that arm into this list, the leg
         // has stopped answering the question it exists to answer.
         'app/Bridge/Check/Checks/GitHubWebhookSubscriptionCheck.php' => 5,
-        // DL-382 — TWO legs, and neither is a silence this leg measured as abnormal: (1) the
+        // DL-382 — THREE sites, and none is a silence this leg measured as abnormal: (1) the
         // delivery record could not be READ, so the scopes after the throw were never judged
         // (limb (a)); and (2) the record was read and is too short to DERIVE a silence threshold
         // from, while the silence is still inside the floor — the comparison's comparand does not
         // resolve (limb (c)). ⛔ THE SAME SHORT RECORD PAST THE FLOOR IS A `warn`, NOT A THIRD SITE
         // HERE: the floor alone establishes that silence, and a derived threshold is never lower.
-        'app/Bridge/Check/Checks/GitHubDeliveryHistoryCheck.php' => 2,
+        // (3) card#11579: the record could not be READ for the other question — which recorded
+        // scopes no agent subscribes to — so that was never answered (limb (a)).
+        'app/Bridge/Check/Checks/GitHubDeliveryHistoryCheck.php' => 3,
         // card#10567 B4: the fleet ledger could not be READ (an unmigrated install, a database that
         // went away), so which seat needs the operator was never measured — limb (a). A seat
         // whose state is unknown because it never REPORTED is a state (`needs_bootstrap`), not
@@ -394,10 +396,15 @@ class UnvalidatedCallSiteTest extends TestCase
         // built by an earlier release), so no on/off value was read at all — limb (a). A record
         // that IS present and empty is a declared silence, not a site here.
         'app/Bridge/Check/Checks/InstallFlagValuesCheck.php' => 1,
-        // card#11200 / DL-452: TWO sites, both limb (a) — the database did not answer whether the
+        // card#11200 / DL-452: two sites, both limb (a) — the database did not answer whether the
         // `ci_awaits` table exists, or the stored awaits could not be read after it did, so no
         // await was judged. A MISSING table is a `warn`, not a site here: the leg did establish it.
-        'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 2,
+        // card#11600: three more, all limb (a) — the agent configs did not load, so which repos to
+        // read was never known; a repo's workflow-runs read failed in a way an await retries (a
+        // rate limit, a 5xx, no answer, a token THIS process could not read), so it measured nothing;
+        // or it answered one 401 / 403, which only a confirming read a minute later can settle, and
+        // this leg makes one read.
+        'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 5,
         // card#11201, one per arm: the token file is there and THIS process could not read it
         // (limb 2 — the receiver runs as its own user); writeback.json did not load, so which
         // legs need the file was not determined (limb a — two sites: with no leg switched on, and

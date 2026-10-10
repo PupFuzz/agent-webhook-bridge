@@ -2,6 +2,7 @@
 
 namespace App\Bridge\ClientUpdate;
 
+use App\Bridge\Check\Checks\ClientPackSourceCheck;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Support\RedactedErrorText;
@@ -13,6 +14,8 @@ use RuntimeException;
  * `<state_dir>/client-packs/`:
  *
  *   published.json                          the one pack this bridge serves ({@see PublishedClientPack})
+ *   no-pack.json                            the last release `bridge:client-pack:install` found carrying no
+ *                                           pack, and when ({@see recordNoPack()})
  *   <X.Y.Z>/client-pack-v<X.Y.Z>.tar.gz     a pack, as the release carried it
  *   <X.Y.Z>/client-pack-v<X.Y.Z>.manifest.json
  *
@@ -35,6 +38,8 @@ use RuntimeException;
 final class ClientPackStore
 {
     public const PUBLISHED = 'published.json';
+
+    public const NO_PACK = 'no-pack.json';
 
     public function dir(): string
     {
@@ -63,6 +68,56 @@ final class ClientPackStore
         }
 
         return PublishedClientPack::fromJson($bytes, $path);
+    }
+
+    public function noPackPath(): string
+    {
+        return $this->dir().'/'.self::NO_PACK;
+    }
+
+    /**
+     * Record that GitHub release `v<$release>` carries no client pack at all — DL-442's fail-soft
+     * release, whose pack build failed and which shipped without one. Only
+     * {@see ClientPackSourceCheck} reads it: no remedy on this box can publish a pack that release
+     * does not carry, so that check must not FAIL on it. One record, replaced atomically: only the
+     * latest finding matters, because the check consults it only for the release this checkout
+     * is. Nothing is served from it.
+     *
+     * @throws ClientPackStoreFault the write failed
+     */
+    public function recordNoPack(string $release, string $checkedAt): void
+    {
+        try {
+            BridgePaths::ensureDir($this->dir());
+            BridgePaths::writeFileAtomic($this->noPackPath(), json_encode(['bridge_release' => $release, 'checked_at' => $checkedAt], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
+        } catch (RuntimeException $e) {
+            throw new ClientPackStoreFault('a store write failed: '.RedactedErrorText::of($e), previous: $e);
+        }
+    }
+
+    /**
+     * The release {@see recordNoPack()} last recorded as carrying no pack, and when; null when
+     * none is recorded.
+     *
+     * @return array{release: string, checked_at: string}|null
+     *
+     * @throws ClientPackRefused a record that exists and cannot be read or parsed — never read as "none"
+     */
+    public function noPackRecorded(): ?array
+    {
+        $path = $this->noPackPath();
+        if (! file_exists($path)) {
+            return null;
+        }
+        $bytes = @file_get_contents($path);
+        $r = is_string($bytes) ? json_decode($bytes, true, 3) : null;
+        if (! is_array($r)
+            || ! is_string($r['bridge_release'] ?? null) || preg_match(ClientPackManifest::STRICT_VERSION, $r['bridge_release']) !== 1
+            || ! is_string($r['checked_at'] ?? null)) {
+            throw new ClientPackRefused("the no-pack record {$path} could not be read or is malformed");
+        }
+
+        return ['release' => $r['bridge_release'], 'checked_at' => $r['checked_at']];
     }
 
     /**
@@ -116,14 +171,14 @@ final class ClientPackStore
      * Why THIS process must not write the store, or null when it may — {@see StateWriterRefusal}'s
      * rule over the store's own paths. Its data files are `0600` and its directories `0700`, owned
      * by whoever wrote them, and the doors read them as the receiver's user, so a store written by
-     * anyone else answers every seat 503. Checked over the store directory, `published.json` and
-     * its lock; `publish()` adds the release directory it is about to write into. Files inside a
-     * release directory are not checked: the directory's owner is the only user that can replace
-     * them.
+     * anyone else answers every seat 503. Checked over the store directory, `published.json`, its
+     * lock and `no-pack.json`; `publish()` adds the release directory it is about to write into.
+     * Files inside a release directory are not checked: the directory's owner is the only user
+     * that can replace them.
      */
     public function writerRefusal(?string $release = null): ?string
     {
-        $owned = [$this->dir(), $this->publishedPath(), $this->publishedPath().'.lock'];
+        $owned = [$this->dir(), $this->publishedPath(), $this->publishedPath().'.lock', $this->noPackPath()];
         if ($release !== null) {
             $owned[] = $this->dir().'/'.$release;
         }

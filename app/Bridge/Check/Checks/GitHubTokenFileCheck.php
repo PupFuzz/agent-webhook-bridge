@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
+use App\Bridge\Support\CoordCredentialStore;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PastedSecretShape;
 use App\Bridge\Support\PathVisibility;
@@ -79,6 +80,14 @@ use Throwable;
  * lower the verdict. {@see receiverRead()} owns
  * the comparison and what it cannot see. A `fail` stands as it is: it holds for every reader.
  *
+ * ⚑ A STORE MISSING AT ITS DEFAULTED PATH IS A WARN, NOT A PASS (card#11619). With
+ * `BRIDGE_COORD_CREDENTIALS_PATH` unset the store path is guessed from the roster's directory,
+ * which is right on a solo seat and wrong on a pm install; an absent store is an empty one, so the
+ * guess failing is silent everywhere else — a mapped repo with no write_token_path just resolves the single file. The
+ * warn fires whether or not a leg here is switched on, because `bridge:reconcile` and the other
+ * CLI GitHub reads resolve through the same store. An explicitly set path that is absent is not
+ * warned: the operator named it.
+ *
  * ⚑ WHAT A MISSING FILE ALREADY COST is counted where the bridge keeps it: a comment or label
  * dropped for want of a token is recorded in {@see GitHubWriteDebt} for `bridge:github-owed`.
  * That record keeps a write for its own expiry window, so an older drop is not counted, and
@@ -118,6 +127,14 @@ final class GitHubTokenFileCheck implements Check
         if (config('bridge.providers.github.credential_helper') !== null) {
             yield Finding::warn('github token file: BRIDGE_GITHUB_CREDENTIAL_HELPER is set and has NO effect — nothing runs the credential helper since DL-456, and the coord credential store is read in-process for every repo it maps (an empty value no longer keeps it out). '
                 .'Remove it; a repo that must not use its store key declares a write_token_path in writeback.json.');
+        }
+
+        $store = CoordCredentialStore::configured();
+        if ($store->missingAtDefault()) {
+            yield Finding::warn('github token file: '.CoordCredentialStore::SETTING." is unset, so the bridge looked for the coord credential store beside BRIDGE_COORD_CONFIG_PATH, at {$store->shownPath()}, and there is no file there. "
+                .'An absent store is read as an EMPTY one: every repo without a write_token_path is treated as unmapped and falls back to the single token file, including repos the real store maps to their own key. '
+                .'That default holds on a solo seat only — on a pm install the roster sits in the coordination repo checkout and the framework keeps the store at ~/.config/coord/credentials.ini in the coordination project\'s account. '
+                .'Set '.CoordCredentialStore::SETTING.' in .env to the store\'s absolute path (a file the receiver\'s PHP-FPM pool user can read; if this install has no store, set it to this path to say so), run `php artisan config:cache` again if the config is cached, and re-run bridge:check.');
         }
 
         /** @var array<string, array{repos: list<string>, writes: bool}> $enabled */

@@ -12,11 +12,11 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * ci_await_cancel (card#11200 / DL-452) — remove the calling seat's OWN await on one head, so no
- * `ci_settled` or `ci_await_expired` is sent for it.
+ * `ci_settled`, `ci_await_unreadable` or `ci_await_expired` is sent for it.
  *
  * ⛔ SELF-SCOPED, like {@see CiAwaitTool}: only an await the calling seat registered is ever
  * removed, and no argument can name another seat. Cancelling a head this seat does not await
- * answers `cancelled: false` — whether nothing was registered, it already settled or expired, or
+ * answers `cancelled: false` — whether nothing was registered, it already settled, ended as unreadable or expired, or
  * only ANOTHER seat awaits it — so a hook may cancel unconditionally.
  */
 final class CiAwaitCancelTool implements SelfScopedTool

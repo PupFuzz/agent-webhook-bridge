@@ -26,6 +26,13 @@ use Throwable;
  *
  * ⛔ A REPO THIS INSTALL RECEIVES NO GITHUB EVENTS FOR IS REFUSED (`repo_not_received`): no agent
  * here subscribes to it, so no `workflow_run.completed` would ever arrive for it.
+ *
+ * ⛔ A REPO THIS INSTALL'S TOKEN CANNOT READ IS REFUSED (`repo_unreadable`, card#11600) when the
+ * registration's own read says so (a 404, no token for any reader, or a confirmed 401/403): the await was stored
+ * for that read and is removed again — the seat's EARLIER await on the head too, when this call was
+ * a refresh, and the answer says which. A FIRST 401 or non-rate-limited 403 is not refused: it waits
+ * for a confirming read — and a registration whose own read IS that confirming read (at least a
+ * minute later, same status) is refused like a 404. Marked an install fault — no argument the seat sends can fix it.
  */
 final class CiAwaitTool implements SelfScopedTool
 {
@@ -98,6 +105,11 @@ final class CiAwaitTool implements SelfScopedTool
         }
 
         $result = $service->evaluateRegistration($agentName, $configured, $headSha, $pr, $cooldown, $seatReads);
+        if ($result['unreadable'] !== null) {
+            Log::warning('ci_await: refused — GitHub will not let this install read the repo', ['agent' => $agentName, 'repo' => $configured, 'head_sha' => $headSha, 'error' => $result['read_error']]);
+
+            throw new ToolRefusalException("ci_await: this bridge cannot read `{$configured}`'s workflow runs on GitHub — {$result['read_error']} — so nothing would ever tell you the CI there finished. ".($refreshed ? 'Your existing await on this head was removed.' : 'Nothing was stored.').' Poll with ci-read instead, and ask your operator to '.CiAwaitService::unreadableRemedy($configured).'.', installFault: true, reason: 'repo_unreadable');
+        }
         try {
             $deliveryKnown = CiAwaitService::hasRecordedWorkflowRun($configured);
         } catch (Throwable $e) {

@@ -121,13 +121,15 @@ class ForeignRelayAdoptionTest extends TestCase
                 .'`ClientFleet` carries it (already redacted there), escaped as text from a file another account could have written.',
         ],
         'Bridge/ClientPackInstallCommand.php' => [
-            'relays' => 5, 'escaped' => 6,
+            'relays' => 6, 'escaped' => 7,
             'ruling' => '⛔ FOREIGN ×3 (card#10567 / DL-430) — the GitHub release read and the asset download, relaying '
                 .'a GitHub response body or the read client\'s own unreadable-body text; and a `ClientPackRefused` '
                 .'from checking the downloaded assets, which interpolates values read out of the release\'s manifest '
-                .'and SHA256SUMS. All three escaped. ✔ NOT FOREIGN ×2 — a `ClientPackRefused` over this install\'s own '
+                .'and SHA256SUMS. All three escaped. ✔ NOT FOREIGN ×3 — a `ClientPackRefused` over this install\'s own '
                 .'published-pack record, and a `ClientPackStoreFault`, which can wrap that same record\'s parse fault. '
-                .'Both escaped, as text from a file another account could have written (review r3). The fault\'s '
+                .'Both escaped, as text from a file another account could have written (review r3). And a '
+                .'`ClientPackStoreFault` from writing the no-pack record (card#11579 / DL-466): a failed write to this '
+                .'install\'s own state dir, escaped like the other. The fault\'s '
                 .'`recovery` is NOT a relay and is printed whole: the store composes it only from this install\'s '
                 .'own paths and account names, and the escape\'s length bound would cut it. '
                 .'⚑ THE OTHER ESCAPE IS NOT A RELAY and carries no `×` token: the GitHub token resolver\'s `problem` '

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Check\Checks\ClientPackSourceCheck;
 use App\Bridge\ClientUpdate\BridgeRelease;
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackRefused;
@@ -25,7 +26,9 @@ use Throwable;
  *
  * CHECKED before anything is published, each a refusal naming what failed:
  *   - the release carries all three assets — the pack, its manifest and `SHA256SUMS` — or none
- *     (none: the release shipped without a pack, and whatever was published before stays);
+ *     (none: the release shipped without a pack, and whatever was published before stays; that
+ *     finding is recorded in the store, {@see ClientPackStore::recordNoPack()}, so `bridge:check`
+ *     does not FAIL on a lag no command on this box can clear);
  *   - each downloaded asset's size, and its GitHub-recorded `digest` where GitHub reports one;
  *   - `SHA256SUMS` lists the pack and the manifest, with their sha256;
  *   - the manifest is exactly the DL-428 format and names this release;
@@ -33,7 +36,8 @@ use Throwable;
  *   - the publication rules {@see ClientPackStore::publish()} owns (never lower; one release,
  *     one pack).
  *
- * EXIT: 0 published, or this exact pack was already published · 1 refused, nothing changed ·
+ * EXIT: 0 published, or this exact pack was already published · 1 refused, no pack published (the
+ * no-pack case writes only its record) ·
  * 2 could not measure or could not write, nothing changed: no or malformed `VERSION`, a malformed
  * `bridge.client_pack.repo`, no GitHub token, GitHub unreachable or unreadable, a publication
  * record it cannot read, or a store this process may not or could not write
@@ -109,7 +113,14 @@ class ClientPackInstallCommand extends BridgeCommand
             }
         }
         if ($byName === []) {
-            $this->error("bridge:client-pack:install: release {$tag} carries no client pack — its pack build failed at release time and the release shipped without one. Nothing was changed; {$current}.");
+            try {
+                $store->recordNoPack($release, now()->toIso8601ZuluString());
+            } catch (ClientPackStoreFault $e) {
+                $this->error("bridge:client-pack:install: release {$tag} carries no client pack, and recording that failed — ".UntrustedText::forOperator(RedactedErrorText::of($e)).". No pack was published; {$current}.");
+
+                return 2;
+            }
+            $this->error("bridge:client-pack:install: release {$tag} carries no client pack — its pack build failed at release time and the release shipped without one. No pack was published; {$current}. This is recorded, so bridge:check reports it as a warning, not a failure: the update may proceed, and the maintainer must re-run that release's `".ClientPackSourceCheck::RELEASE_WORKFLOW.'` workflow run (a release built before DL-442 gets no pack from a re-run — ship a newer one), then this command is run again.');
 
             return 1;
         }

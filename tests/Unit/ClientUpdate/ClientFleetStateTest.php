@@ -260,17 +260,44 @@ class ClientFleetStateTest extends TestCase
         $this->assertFalse($this->derive([], null)['warns']);
     }
 
-    public function test_the_capability_gap_is_against_the_published_client(): void
+    /**
+     * card#11579 ask 4: the gap is against THIS BRIDGE'S OWN client (the checkout's capability
+     * table), never the published pack's. Measured against a stale pack, a seat on that same stale
+     * client read "capability gap: none" while it lacked ci_await — the check was circular.
+     */
+    public function test_the_capability_gap_is_against_this_bridges_own_client_not_the_published_one(): void
     {
-        $seat = $this->derive(['last_call_at' => '2026-09-28T11:30:00Z', 'last_call_client_version' => '0.9.15'], $this->published());
-        $this->assertIsArray($seat['capability_gap']);
-        $this->assertNotSame([], $seat['capability_gap'], 'a 0.9.15 client lacks what 0.9.28 declares');
+        $own = ClientCapabilities::bundled()->currentClientVersion;
 
-        $current = $this->derive($this->launched('0.91.0'), $this->published());
-        $this->assertSame([], $current['capability_gap']);
+        $onThePack = $this->derive($this->launched('0.91.0'), $this->published());
+        $this->assertIsArray($onThePack['capability_gap']);
+        $this->assertContains('ci_await', array_column($onThePack['capability_gap'], 'tool'), 'a seat on the published 0.9.28 client lacks what this bridge\'s own client declares');
+        $this->assertSame($own, $onThePack['capability_gap_against']);
+
+        $atOwn = $this->derive(['last_call_at' => '2026-09-28T11:30:00Z', 'last_call_client_version' => $own], $this->published());
+        $this->assertSame([], $atOwn['capability_gap']);
+
+        $nothingPublished = $this->derive(['last_call_at' => '2026-09-28T11:30:00Z', 'last_call_client_version' => '0.9.15'], null);
+        $this->assertNotSame([], $nothingPublished['capability_gap'], 'the gap needs no publication: it is measured against this bridge\'s own client');
 
         $unreported = $this->derive(['last_call_at' => '2026-09-28T11:30:00Z'], $this->published());
         $this->assertNull($unreported['capability_gap'], 'no version reported ⇒ the gap is unknown, never empty');
+    }
+
+    /** card#11579 ask 5: a seat that must be bootstrapped is told the exact command, with its own agent name. */
+    public function test_a_seat_needing_bootstrap_is_given_the_exact_command(): void
+    {
+        $command = '`python3 bin/provision-board-tools.py --role b --bootstrap-client --agent seat --project-dir <its-claude-project-dir> --channel-name <its-mcp-servers-key>`';
+
+        $off = $this->derive(['last_call_at' => '2026-09-28T11:30:00Z', 'last_call_client_version' => '0.9.27'], $this->published());
+        $this->assertSame('off_update_path', $off['state']);
+        $this->assertStringContainsString($command, $off['reason']);
+
+        foreach ([[], ['last_report_at' => '2026-09-28T11:00:00Z', 'install_id' => 'I1']] as $row) {
+            $never = $this->derive($row, $this->published());
+            $this->assertSame('needs_bootstrap', $never['state']);
+            $this->assertStringContainsString($command, $never['reason']);
+        }
     }
 
     public function test_a_seat_supplied_reason_is_escaped_before_it_is_printed(): void

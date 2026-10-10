@@ -1,0 +1,74 @@
+[
+  {
+    "ghsa_id": "GHSA-8r9p-f939-6h3c",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/follow-redirects/follow-redirects/security/advisories/GHSA-8r9p-f939-6h3c",
+    "summary": "Incomplete regular-expression escaping in the sensitiveHeaders option lets metacharacter-named credential headers silently bypass cross-origin stripping in follow-redirects",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "follow-redirects"
+        },
+        "vulnerable_version_range": "1.16.0",
+        "patched_versions": "1.16.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-q3jh-wrc6-jgq8",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/follow-redirects/follow-redirects/security/advisories/GHSA-q3jh-wrc6-jgq8",
+    "summary": "Array-form request headers bypass cross-origin sensitive-header stripping in follow-redirects (Authorization, Cookie, Proxy-Authorization, and sensitiveHeaders forwarded to the redirect target)",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "follow-redirects"
+        },
+        "vulnerable_version_range": "1.16.0",
+        "patched_versions": "1.16.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-r4q5-vmmm-2653",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/follow-redirects/follow-redirects/security/advisories/GHSA-r4q5-vmmm-2653",
+    "summary": "Custom Authentication Headers Leaked to Cross-Domain Redirect Targets",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "follow-redirects"
+        },
+        "vulnerable_version_range": "<= 1.15.11",
+        "patched_versions": "1.16.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-cxjh-pqwp-8mfp",
+    "severity": "medium",
+    "state": "published",
+    "withdrawn_at": null,
+    "html_url": "https://github.com/follow-redirects/follow-redirects/security/advisories/GHSA-cxjh-pqwp-8mfp",
+    "summary": "Proxy-Authorization header kept across hosts",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "follow-redirects"
+        },
+        "vulnerable_version_range": "<1.15.5",
+        "patched_versions": "1.15.6"
+      }
+    ]
+  }
+]

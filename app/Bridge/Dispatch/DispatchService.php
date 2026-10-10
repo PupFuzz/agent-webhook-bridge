@@ -174,7 +174,7 @@ final class DispatchService
             // (ruled, DL-203): the classifier error is real and must stay
             // replayable regardless of how the gate would have disposed of it.
             try {
-                $ctx = new ClassifyContext($dto->eventType, $payload, $actor, $provider, $scopeId, $agent, $this->subscriptions);
+                $ctx = new ClassifyContext($dto->eventType, $payload, $actor, $provider, $scopeId, $agent, $this->subscriptions, $this->agents);
                 $result = $classifier->classify($ctx);
             } catch (Throwable $e) {
                 $this->recordError($dispatch, $e);
@@ -355,8 +355,9 @@ final class DispatchService
             // A classifier that emitted no intents AND no targets (e.g. a recipient
             // filter dropped this agent) did no work — record a gate-drop, not a
             // delivery, so the ledger / inspect / replay can tell them apart (DL-036).
+            // A classifier that knows WHY it emitted nothing says so (DL-467).
             if ($result->intents === [] && $targets === []) {
-                $this->markDropped($dispatch, 'classifier emitted no reactions');
+                $this->markDropped($dispatch, $result->dropReason ?? 'classifier emitted no reactions');
             } else {
                 $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null, $unconfirmedPush, $owedNotes === [] ? null : implode('; ', $owedNotes));
             }

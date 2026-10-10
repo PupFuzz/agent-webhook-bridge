@@ -138,11 +138,16 @@ return [
     | token, under PHP-FPM and the CLI alike. No helper subprocess is run and no
     | token is copied: the bridge reads the file the store points at.
     |
-    | Unset ⇒ `credentials.ini` beside BRIDGE_COORD_CONFIG_PATH, which is where
-    | the framework keeps both. Must be ABSOLUTE, for the reason the roster path
-    | must (DL-450 Decision 1). The ambient $COORD_CREDENTIALS is never read: FPM
-    | does not inherit it, and a CLI-only answer would let bridge:check vouch for a
-    | store the receiver does not read.
+    | SET IT EXPLICITLY on every install. Unset ⇒ `credentials.ini` beside
+    | BRIDGE_COORD_CONFIG_PATH, a GUESS that holds on a solo seat only: on a pm
+    | install the roster is in the coordination repo checkout while the framework
+    | keeps the store at ~/.config/coord/credentials.ini (coord_credentials.py
+    | default_store_path()), so the guess names a file that is not there and a
+    | mapped repo silently falls back to the single token file. bridge:check WARNs
+    | when the guessed path holds no store (card#11619). Must be ABSOLUTE, for the
+    | reason the roster path must (DL-450 Decision 1). The ambient
+    | $COORD_CREDENTIALS is never read: FPM does not inherit it, and a CLI-only
+    | answer would let bridge:check vouch for a store the receiver does not read.
     |
     | A store that is absent is an EMPTY store (every repo unmapped). A store that
     | is present and cannot be read or parsed resolves NO token for any repo — it

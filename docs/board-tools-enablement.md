@@ -163,6 +163,29 @@ OS user) collapse into a single root-run wrapper — see
 [`docs/board-tools.md § Same-box SSH enablement — the one-shot wrapper (card 5090)`](board-tools.md#same-box-ssh-enablement--the-one-shot-wrapper-card-5090).
 The packet prints a pointer to it too.
 
+## Done means `bridge:check` says so
+
+A seat is enabled when `php artisan bridge:check` on the bridge is clean on these legs, not when
+its session starts (card#11579 / DL-466):
+
+- `board_tools.client_pack_source` — FAILS only when the published client pack is an older
+  release's, its client is older than this checkout's, and this release carries a pack: run
+  `php artisan bridge:client-pack:install`. A release that shipped without a pack is recorded by
+  that command and is a warn naming the maintainer's re-run; it does not stop the update.
+- `board_tools.client_fleet` — a seat `OFF THE UPDATE PATH` or `NEEDS BOOTSTRAP` is printed
+  with the exact `--bootstrap-client` command to run on it.
+- `github.webhook_subscription` — every repo this install receives should read OK with no warn
+  beside it. UNVALIDATED is not a pass: the leg is unmeasured for that repo; grant the token
+  `admin:repo_hook` on it to measure it. [`writeback.md`](writeback.md) § *4. The repo
+  webhook* owns what it checks.
+- `github.delivery_history` — warns on a repo that delivers here with no agent subscribed, which
+  `ci_await` refuses as `repo_not_received`.
+- `ci_await.awaits` — every repo this install receives reads OK while any agent is served the CI
+  tools. A FAIL names a repo GitHub answers `404` for, or one with no read token, which `ci_await`
+  refuses as `repo_unreadable`, with the token's source and file and the fix (card#11600 /
+  DL-468). A single `401` or `403` is UNVALIDATED until a read a minute later confirms it: re-run.
+  UNVALIDATED is not a pass: the read did not measure that repo.
+
 ## Not automated, and why
 
 - **The bridge may not read the seat's files (DL-229).** An account may only read its own,
