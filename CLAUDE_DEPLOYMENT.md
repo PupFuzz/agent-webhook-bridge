@@ -570,6 +570,13 @@ php artisan bridge:github-owed [--fix] [--repo=owner/repo] [--limit=50]       # 
                                                       #   write only when a person asks. --fix exits NON-ZERO while anything
                                                       #   in scope is still owed; either mode exits NON-ZERO on a record it
                                                       #   cannot read. Run as the receiver's user (the record is 0600). docs/writeback.md
+php artisan bridge:writeback-exposure                 # is THIS install exposed to the one-repo-one-board writeback defect
+                                                      # (card#9850 / DL-404)? Reads each mapping's repo's recently merged PRs,
+                                                      # probes every cited card#  against that mapping's OWN declared boards
+                                                      # (board-scoped, never an unscoped read of an author-supplied id), and
+                                                      # states its population: `N mappings reachable on this box, N evaluated,
+                                                      # N exposed, N unreachable. Fleet-wide: not derivable.` Non-zero exit
+                                                      # whenever anything was unreachable — docs/writeback.md § boards
 php artisan bridge:standup [--dry-run]                # PM standup digest (DL-306); --dry-run prints it as JSON and pushes nothing
 php artisan bridge:jobs [list|add|remove|enable|disable|run] [name] [--json] [--assert-tick]   # the periodic-job registry (DL-325)
 php artisan bridge:tick                               # one bounded pass over that registry — the opt-in crontab ingress (DL-325)

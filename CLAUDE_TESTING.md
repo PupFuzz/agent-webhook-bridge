@@ -469,6 +469,48 @@ DB_CONNECTION=mysql DB_HOST=127.0.0.1 DB_PORT=3306 \
 docker rm -f bridge-test-mariadb
 ```
 
+## Tool runs outside the suite
+
+Run by hand, each at the trigger its comment names; none is part of `vendor/bin/phpunit`.
+
+```bash
+python3 bin/coord-mirror-parity.py --corpus docs/coord-lane-parity-corpus.json
+                                                    # DO THE TWO COPIES OF ONE RULE STILL AGREE? (DL-421)
+                                                    # Runs a PUBLISHED behaviour corpus against the COORD
+                                                    # framework's own Python, imported from source — the far-end
+                                                    # half of the lockstep contract for the two mirrors in
+                                                    # app/Bridge/Writeback/ that the bridge cannot import.
+                                                    # ⛔ NOT in CI (CI has no coord plugin): run it on a coord
+                                                    # bump. 0 = agreed · 1 = DRIFTED · 2 = could not measure,
+                                                    # never read as agreement. --control shows it fail.
+                                                    # The bridge-side half IS in CI and reds BOTH ways — read
+                                                    # each corpus's own not_checked_by_this_repo for the bound
+bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit <toolkit checkout>
+                                                    # the same half for the bridge's two PORTS of the TOOLKIT's
+                                                    # owner rules (kb_url_host, the roster kanban_user_id read —
+                                                    # card#10869 / DL-439): sources that checkout's lib and runs the
+                                                    # corpus through its own functions. NOT in CI; run it on a
+                                                    # toolkit bump. Same 0 / 1 / 2 exit meaning; --control.
+git fetch origin dev && node bin/gen-client-capabilities.mjs
+                                                    # regenerate resources/client-capabilities.json after ANY change to
+                                                    # the channel server's TOOL_DEFINITIONS (DL-425). The fetch is not
+                                                    # cosmetic: the generator reads versions off refs/remotes/origin/dev,
+                                                    # and a STALE local origin/dev is not detected — it silently derives
+                                                    # from whatever that ref last pointed at (there is no cheap local
+                                                    # signal for "behind the real dev"; CI always has a live fetch, so
+                                                    # `--check` there is authoritative regardless). --check is a step of
+                                                    # the required SQLite job: 0 = current · 1 = stale · 2 = could not
+                                                    # measure (a shallow clone, a missing origin/dev, a landed commit it
+                                                    # could not evaluate, or a version LOWER than one dev already
+                                                    # introduced — versions only move forward: undo a release with a
+                                                    # forward bump, never a revert; DL-425 Decision 1a)
+python3 bin/build-client-pack.py --verify-commit HEAD
+                                                    # does this tree still build a channel-server client pack?
+                                                    # Writes nothing. A publishable pack is built only from a
+                                                    # release tag (--ref v<X.Y.Z> --out <dir>); the script's
+                                                    # docstring owns the pack format and refusals (DL-428)
+```
+
 ## What to test where
 
 | Adding... | Test it in... |
