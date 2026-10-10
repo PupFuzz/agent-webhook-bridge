@@ -3,7 +3,9 @@
 namespace Tests\Feature\CiAwait;
 
 use App\Bridge\CiAwait\CiAwaitService;
+use App\Bridge\CiAwait\CiHeadRunTracker;
 use App\Bridge\CiAwait\CiHeadSettlementLedger;
+use App\Bridge\CiAwait\HeadRuns;
 use App\Bridge\CiAwait\OverdueDeadline;
 use App\Bridge\ClientUpdate\CallerReport;
 use App\Bridge\Scheduling\Handlers\CiAwaitSweepJob;
@@ -17,12 +19,14 @@ use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\DispatchOutcome;
 use App\Models\CiAwait;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\TestCase;
@@ -172,22 +176,69 @@ class CiAwaitOverdueTest extends TestCase
     public function test_an_await_whose_head_the_aggregate_already_settled_for_the_seat_gets_no_overdue_event(): void
     {
         $this->register(['overdue_after_seconds' => 600]);
-        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, str_repeat('a', 40));
+        $this->trackSettledRun(1);
+        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, $this->currentFingerprint());
 
         $this->sweepAt('2026-10-10T10:10:00.000Z');
 
-        $this->assertSame([], $this->kinds(), 'the seat was already sent a ci_settled for this head; the await stays registered');
+        $this->assertSame([], $this->kinds(), 'the seat was already sent the head\'s current settled state; the await stays registered');
         $this->assertNull(CiAwait::query()->firstOrFail()->overdue_sent_at, 'nothing was claimed, so no stamp');
     }
 
     public function test_another_seats_settlement_of_the_head_does_not_silence_this_seats_overdue_event(): void
     {
         $this->register(['overdue_after_seconds' => 600]);
-        CiHeadSettlementLedger::claim('seat-b', self::REPO, self::SHA, str_repeat('a', 40));
+        $this->trackSettledRun(1);
+        CiHeadSettlementLedger::claim('seat-b', self::REPO, self::SHA, $this->currentFingerprint());
 
         $this->sweepAt('2026-10-10T10:10:00.000Z');
 
         $this->assertSame(['ci_await_overdue'], $this->kinds());
+    }
+
+    public function test_a_state_the_head_has_since_left_does_not_silence_the_overdue_event(): void
+    {
+        $this->register(['overdue_after_seconds' => 600]);
+        $this->trackSettledRun(1);
+        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, $this->currentFingerprint());
+        $this->trackSettledRun(2, status: 'in_progress');   // a re-run or late run: the head is open again
+
+        $this->sweepAt('2026-10-10T10:10:00.000Z');
+
+        $this->assertSame(['ci_await_overdue'], $this->kinds(), 'the ledger holds an OLD state of this head');
+    }
+
+    public function test_a_head_settled_once_and_then_re_run_gets_an_overdue_event_for_the_re_run(): void
+    {
+        $this->runStatus = 'completed';
+        $this->assertSame('settled', $this->register()->body()['result']['state']);
+        $this->assertSame(['ci_settled'], $this->kinds());
+        $this->assertSame(1, DB::table('ci_head_settlements')->count());
+
+        $this->runStatus = 'in_progress';
+        Carbon::setTestNow('2026-10-10T10:01:00.000Z');
+        $this->assertSame('waiting', $this->register(['overdue_after_seconds' => 120])->body()['result']['state']);
+        $this->sweepAt('2026-10-10T10:10:00.000Z');
+        $this->sweepAt('2026-10-10T10:20:00.000Z');
+
+        $this->assertSame(['ci_settled', 'ci_await_overdue'], $this->kinds());
+    }
+
+    public function test_a_refresh_refused_for_a_missing_column_changes_nothing(): void
+    {
+        $this->register();
+        $before = CiAwait::query()->firstOrFail()->expires_at->toIso8601String();
+        Schema::table('ci_awaits', function (Blueprint $table) {
+            $table->dropIndex(['overdue_at']);
+            $table->dropColumn(['overdue_at', 'overdue_basis', 'overdue_sent_at']);
+        });
+
+        Carbon::setTestNow('2026-10-10T12:00:00.000Z');
+        $out = $this->register();
+
+        $this->assertFalse($out->ok);
+        $this->assertSame('install_fault.ci_await_store_unavailable', $out->body()['reason']);
+        $this->assertSame($before, CiAwait::query()->firstOrFail()->expires_at->toIso8601String(), 'the refusal says nothing was stored, so the expiry did not move');
     }
 
     // ---- the deadline -----------------------------------------------------------------------
@@ -400,6 +451,23 @@ class CiAwaitOverdueTest extends TestCase
             'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}", 'pr' => null,
             'created_at' => $created, 'updated_at' => $updated,
         ]);
+    }
+
+    /** One tracked run on the awaited head, as the `workflow_run` deliveries would leave it. */
+    private function trackSettledRun(int $runId, string $status = 'completed'): void
+    {
+        DB::table('ci_head_runs')->insert([
+            'run_id' => 500 + $runId, 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA,
+            'workflow_id' => 70 + $runId, 'workflow' => "W{$runId}", 'run_number' => 1, 'run_attempt' => 1, 'event' => 'push',
+            'status' => $status, 'conclusion' => $status === 'completed' ? 'success' : null,
+            'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}", 'pr' => null,
+            'created_at' => Carbon::now(), 'updated_at' => Carbon::now(),
+        ]);
+    }
+
+    private function currentFingerprint(): string
+    {
+        return HeadRuns::of(CiHeadRunTracker::runsOf(self::REPO, self::SHA))->fingerprint();
     }
 
     /** @return list<array<string, mixed>> */

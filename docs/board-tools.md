@@ -2044,7 +2044,7 @@ in order (`overdue_basis` names which):
   read: the `workflow_run` deliveries it tracked (`ci_head_runs`, card#11667) for the repo's 50 most
   recently finished heads — every tracked run `completed` and none re-run — each head timed from the
   first run the bridge heard of to its last run's last update; the deadline is the 95th percentile
-  of those times (nearest rank) plus a quarter of it, at least 5 minutes. `App\Bridge\CiAwait\OverdueDeadline`
+  of those times (nearest rank) plus a margin of a quarter of it, at least 5 minutes. `App\Bridge\CiAwait\OverdueDeadline`
   owns the rule and its constants;
 - **`default`** — `BRIDGE_CI_AWAIT_OVERDUE_DEFAULT` (1800 s) when the repo has fewer than 5 such
   heads — a repo whose webhook does not send Workflow runs has none — or its history could not be
@@ -2056,9 +2056,11 @@ that pass reads and finds finished is settled instead. The await is **kept**: it
 `ci_await_unreadable` or `ci_await_expired` — still follows. Once per await: the send stamps
 `overdue_sent_at` in the transaction that stages the line, only where it is still null, so concurrent
 passes send one, and no refresh re-arms it. An `overdue_at` later than `expires_at` never fires;
-the expiry comes first. Nor does one for a head the per-head aggregate has already sent you a `ci_settled`
-for (it leaves your await registered, DL-470 Decision 6): you were told the head settled, and the await's
-own settle still follows. ⚠ A head timed from history can run long for reasons the bridge cannot
+the expiry comes first. Nor does one for a head whose CURRENT settled state you were already sent a
+`ci_settled` for, by the per-head aggregate or by the await's own settle (the aggregate leaves your await
+registered, DL-470 Decision 6): you were told that state, and the await's own settle still follows. A
+head that has since been re-run, or gained a run, is a new state: a re-registration on it is told when
+it is overdue. ⚠ A head timed from history can run long for reasons the bridge cannot
 see in its rows — a lost `requested` delivery starts its time late, a redelivered `completed` ends it
 late — and the percentile leaves such a head out only once there are at least 20 samples.
 
@@ -2085,7 +2087,7 @@ cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
 `ci_await_expired`, never two *from the await* — and before it, at most one `ci_await_overdue`, which ends nothing
 (its line id is `ci_await_overdue:<uuid>`, the same row uuid, not `ci_await:<uuid>`); and never two `ci_settled` for the same settled state of a head, from
 the await and the aggregate together. It is written to your inbox **at least once**, idempotent by its line id
-(its line id is `ci_await:<uuid>` for EVERY kind the await itself emits — the per-head aggregate's own `ci_settled` carries its own id, above — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
+(its line id is `ci_await:<uuid>` for EVERY terminal kind the await itself emits — the per-head aggregate's own `ci_settled` carries its own id, above — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
 written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
 it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the
 wake on each. Once every run on a head is terminal, `ci_settled` comes at the latest from the first
