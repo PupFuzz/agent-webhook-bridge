@@ -60,6 +60,9 @@ use App\Bridge\Writeback\WritebackMapping;
  *     CI/push a NON-WAKE — it flows through `impl_non_wake_disposition` rather than being
  *     dropped before the gate, so `inbox_stage` still records it. Keys on WHO, never on
  *     the conclusion: a bot run is non-actionable for an impl seat green or red.
+ *     Under `inbox_stage`, `impl_ci_delivery: aggregate` (the default, card#11667) attaches
+ *     a `ci_head_aggregate` target to every completed run and stages no per-run `impl_ci`
+ *     for one in AGGREGATED_CONCLUSIONS — the head's one `ci_settled` carries it instead.
  *
  * WAKE-EMIT INVARIANT (DL-191): every family hand-emits its `channel_push` through
  * {@see wakePush()}, which suppresses the push on a `route_intents:true` channel —

@@ -8,6 +8,21 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#11667 / DL-470** — **An agent that stages CI per run gets one `ci_settled` per settled head instead of an `impl_ci` for every finished workflow run** (rt#614). An agent whose `impl-ci-wake` family runs with `impl_non_wake_disposition: inbox_stage` was staged — and, under `route_intents: true`, woken by — one `impl_ci` per completed run, almost all of them passes.
+  - **New per-agent key `classifier.config.impl_ci_delivery`, default `aggregate`.** No per-run `impl_ci` is staged for a run that ended `success`, `skipped`, `cancelled` or `neutral`. Once the latest run of every workflow on the head is complete, the agent gets one `ci_settled`, staged and, where `impl_ci` was pushed (`route_intents: true`), pushed. A run with any other conclusion keeps its per-run `impl_ci`, and `impl_ci_failed`, `impl_provenance_ok`, `impl_push` and `impl_release_landed` are unchanged. `per_run` restores the old behaviour; any other value is refused where the agent config loads. An agent on `impl_non_wake_disposition: drop` is not affected.
+  - **Decided from the `workflow_run` deliveries the bridge receives, with no GitHub read.** Every `workflow_run` delivery (`requested`, `in_progress`, `completed`) updates its run's row in the new `ci_head_runs` table before dispatch, never moving it backwards. The latest run per workflow decides, ranked as `ci-read` ranks them: an older run with a newer run of its workflow on the head is superseded and holds nothing open, so a `cancel-in-progress` predecessor does not turn the head red, and a re-run that turns green settles it green. A run that starts after the head settled (an `on: workflow_run` follow-on, a re-run) settles it again and sends a second `ci_settled`. The same settled state is never sent to an agent twice: the new `ci_head_settlements` table records each one sent.
+  - **`ci_settled` gains `runs_verdict`, `non_success_runs` and a `superseded` flag on each run, from both senders.** `runs_verdict` is `green` when every deciding run concluded `success`, `neutral` or `skipped`, else `red` (a `cancelled` run with no newer run of its workflow is red). It reads run conclusions only, and the summary says `ci-read` stays the authoritative verdict. `non_success_runs` lists each deciding run that did not end `success` or `skipped`, with its url; a red summary names them too. The summary no longer says the event is not a verdict.
+  - **`ci_await` uses the same settled predicate**: a superseded run still in progress no longer holds an await open. When the aggregate is sent to an agent that awaits the head, it answers the await, and the await sends nothing more. An await whose head settles to a state the aggregate already sent that agent is forgotten with no second event, and a registration answers `settled`.
+  - `bridge:prune` and the retention pass delete `ci_head_runs` and `ci_head_settlements` rows older than the events window, and `bridge:prune --older-than` prints one more line for them.
+  - The reference channel server's `ci_await` description still says `ci_settled` is not a verdict; it is unchanged in this release.
+
+### Upgrade warnings
+
+- ⚠ **MIGRATION — run `php artisan migrate`** (`ci_head_runs`, `ci_head_settlements`). Until it runs, no aggregate `ci_settled` is sent, and the runs it would carry are not staged either (each `workflow_run` delivery logs a `bridge ci_head:` warning); `ci_await` cannot emit `ci_settled` and retries on later passes.
+- ⚠ **An agent on `impl_non_wake_disposition: inbox_stage` stops getting `impl_ci` for passing, skipped, cancelled and neutral runs** and gets `ci_settled` instead. Set `impl_ci_delivery: per_run` on an agent that needs the per-run events.
+
 ## [0.99.0] - 2026-10-10
 
 ### Changed

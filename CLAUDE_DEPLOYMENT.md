@@ -204,7 +204,7 @@ On the repo webhook, subscribe the **`push`** and **`workflow_run`** events (*Pu
 - a `push` to `release_branch` that is not a branch delete — intent kind `impl_release_landed`;
 - a completed `workflow_run` whose conclusion is not in `benign_conclusions` — `impl_ci_failed`, narrowable with `ci_failure_workflow_patterns` — or a successful one whose name matches `provenance_patterns` — `impl_provenance_ok`.
 
-Everything else that family receives is a **non-wake**, and follows `impl_non_wake_disposition`.
+Everything else that family receives is a **non-wake**, and follows `impl_non_wake_disposition`. Under `inbox_stage` a completed `workflow_run` is further shaped by `impl_ci_delivery` (card#11667 / DL-470): by default a run that ended `success`, `skipped`, `cancelled` or `neutral` stages no `impl_ci` of its own, and the head sends one `ci_settled` once the latest run of every workflow on it is complete — so a dispatch row for such a run reads `delivered` with nothing staged until the head settles ([`docs/config-schema.md`](docs/config-schema.md) § `classifier.config`).
 
 ⛔ **`pull_request.closed` is NOT a wake — merged or not.** `impl-ci-wake` consumes only `push` and `workflow_run` (`App\Bridge\Classifiers\CoordinationClassifier::IMPL_CI_WAKE_EVENT_TYPES`) however it is configured, and `coord-message` surfaces a pull request only as a coordination message addressed to a seat — `closed` is not among its default actions (`coord_extra_actions` is how an install would add one), and a release PR on an impl repo carries no addressing. **A merge wakes a seat through the push to the release branch it produces.** Subscribing the hook to *Pull requests* changes none of this.
 

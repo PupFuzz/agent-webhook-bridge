@@ -1962,8 +1962,11 @@ running or does not show it yet: the list API can lag the webhook, and a last ru
 would strand the wait until it expired. ⚠ **Except a later attempt:** a re-run keeps the run's id
 and raises its `run_attempt`, so when the list shows a LATER attempt than the delivery reports (a
 late delivery, or one an operator redelivered by hand from the webhook's settings), or either
-attempt is unknown, the list's row stands. When every run on the list has `status: completed`, every
-seat awaiting that head gets **one** `ci_settled` and its await is deleted. ⛔ **A list that moved
+attempt is unknown, the list's row stands. When the head is **settled** — at least one run, and the
+LATEST run of every workflow (by `workflow_id`, ranked by `run_number` then id, as `ci-read` ranks
+them) has `status: completed`; an older run of a workflow with a newer run on the head is superseded
+and holds nothing open — every seat awaiting that head gets **one** `ci_settled` and its await is
+deleted. `App\Bridge\CiAwait\HeadRuns` is that predicate, and the per-head aggregate (below) uses it too. ⛔ **A list that moved
 while it was read is not an answer:** pages are separate requests, and a run created or deleted
 between them shifts rows across a page boundary (a duplicate can fill the count while a new,
 unfinished run is never seen). Runs are keyed by id, and the read fails unless every page reported
@@ -1978,10 +1981,23 @@ The same claim decides between a settle, an unreadable repo and an expiry, so an
 ⚠ **A delivery's read settles only the awaits it loaded before reading**, so an await stored while it
 read — or one whose own registration read saw a list that still lagged — is left for the sweep.
 
-**The verdict is `ci-read`'s, never the bridge's.** `ci_settled` means only *every listed run has
-finished*. It carries each run's conclusion as data, and **it does not say green or red**: a verdict
-needs the base branch's required contexts and the latest run per workflow, which is `ci-read`'s
-definition, and the bridge does not restate it. On `ci_settled`, run `ci-read` **once** on the head.
+**The authoritative verdict is `ci-read`'s.** `ci_settled` carries a RUN-LEVEL `runs_verdict`
+(card#11667 / DL-470): `green` when every deciding run concluded `success`, `neutral` or `skipped`
+(`ci-read`'s `BENIGN_CONCLUSIONS`), else `red` — a `cancelled` run with no newer run of its workflow
+is red, and so is a conclusion GitHub adds later. It is computed from run conclusions only: `ci-read`
+also reads jobs and the base branch's required contexts, which no run list carries, so before you
+merge on it, run `ci-read` **once** on the head. A red `ci_settled` lists each deciding run that did
+not end `success` or `skipped` in `non_success_runs`, with its url.
+
+**The per-head aggregate answers an await (card#11667 / DL-470).** An agent whose `impl-ci-wake`
+family stages CI (`impl_non_wake_disposition: inbox_stage`, `impl_ci_delivery: aggregate` — the
+default) is sent one `ci_settled` per settled state of every head, decided from the `workflow_run`
+deliveries the bridge received, with no GitHub read ([`consumer-guide.md`](consumer-guide.md) §
+*Bridge-authored intents*). When it is sent to a seat that also awaits that head, it **claims the
+await** in the same transaction, so that one event answers both — its line id is the aggregate's,
+`ci_head:<agent>:<repo>@<head_sha>:<state>`, not `ci_await:<uuid>`. The reverse holds too: both
+senders record the settled state they sent per seat, so an await whose head settles to a state the
+aggregate already sent that seat is forgotten with no second event, and a registration says `settled`.
 
 **Read failures.** A read that fails — a rate limit (a 429, or a 403 with `X-RateLimit-Remaining: 0`
 or with `Retry-After`, or whose body's message names a rate limit: GitHub's secondary limit can carry
@@ -2030,8 +2046,9 @@ cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
 `bridge:tick` on a silent one. With no pass, nothing here is read or expired.
 
 **What a seat can rely on.** One terminal event per await — `ci_settled`, `ci_await_unreadable` or
-`ci_await_expired`, never two. It is written to your inbox **at least once**, idempotent by its line id
-(its line id is `ci_await:<uuid>` for EVERY kind — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
+`ci_await_expired`, never two; and never two `ci_settled` for the same settled state of a head, from
+the await and the aggregate together. It is written to your inbox **at least once**, idempotent by its line id
+(its line id is `ci_await:<uuid>` for EVERY kind the await itself emits — an await the per-head aggregate answers carries the aggregate's id instead, above — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
 written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
 it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the
 wake on each. Once every run on a head is terminal, `ci_settled` comes at the latest from the first
