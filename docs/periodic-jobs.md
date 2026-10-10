@@ -107,8 +107,8 @@ interpreter fails in exactly the silent way this whole subsystem exists to repor
 line names the interpreter the emitting process is itself running under (`PHP_BINARY`), which is
 the one answer a program here can *establish* rather than infer; ⚠ that is evidence about this
 box, not a guarantee about what the crontab account can execute. A hand-written line must supply
-the path itself. (Same reason [`writeback.md`](writeback.md) § *Running reconcile unattended*
-sets `PATH=` inside its crontab.)
+the path itself. (For the same reason the crontab in [`writeback.md`](writeback.md) § *Running
+reconcile unattended* names an absolute `php`.)
 
 ⚑ **`>`, not `>>` — the file holds the LAST tick only, so nothing has to rotate it.** An
 appended `tick.log` grows without bound: six lines an hour, forever, with no logrotate stanza

@@ -1402,22 +1402,19 @@ Without any usable source the command fails with a clear message naming the reso
 
 ### Running reconcile unattended (worked example)
 
-Reconcile is **operator maintenance** (like `bridge:prune`), *not* an agent poll — it's a periodic backstop that catches the drift a dropped webhook left behind. The one non-obvious requirement: a cron/systemd context has a **stripped environment**, and the store-native token leg spawns `git-credential-coord`, which needs `HOME` (and `COORD_CREDENTIALS` if the store isn't at `~/.config/coord/`) to find the store, plus the helper on `PATH`. Set them explicitly:
+Reconcile is **operator maintenance** (like `bridge:prune`), *not* an agent poll — it's a periodic backstop that catches the drift a dropped webhook left behind. **A cron/systemd context's stripped environment does not affect which token it resolves.** Since DL-456 the coord credential store is read in-process from `BRIDGE_COORD_CREDENTIALS_PATH`, which the install's `.env` sets. No helper is spawned, and neither `HOME` nor `COORD_CREDENTIALS` is read to find the store (the ambient `$COORD_CREDENTIALS` is never read at all). Run from the checkout, the command resolves exactly what the receiver does, plus `GH_TOKEN` as the last source when the unit exports one. Give the unit an absolute `php` (`command -v php` prints it), because cron's minimal `PATH` may not hold the one you use:
 
 ```cron
 # hourly report-only; a daily --fix pass with a circuit-breaker. Adjust to taste.
-HOME=/home/<user>
-PATH=/home/<user>/.local/bin:/usr/local/bin:/usr/bin:/bin
-BRIDGE_DIR=/home/<user>/.config/agent-webhook-bridge-prod
-17 * * * *  cd /home/<user>/agent-webhook-bridge-prod && php artisan bridge:reconcile           > "$HOME/reconcile.log" 2>&1
-23 4 * * *  cd /home/<user>/agent-webhook-bridge-prod && php artisan bridge:reconcile --fix --max-moves=20 > "$HOME/reconcile-fix.log" 2>&1
+17 * * * *  cd /home/<user>/agent-webhook-bridge-prod && /path/to/php artisan bridge:reconcile           > /home/<user>/reconcile.log 2>&1
+23 4 * * *  cd /home/<user>/agent-webhook-bridge-prod && /path/to/php artisan bridge:reconcile --fix --max-moves=20 > /home/<user>/reconcile-fix.log 2>&1
 ```
 
 ⚑ **`>` and not `>>`, and the two passes write SEPARATE files.** DL-361 Decision 5's ruling is repo-wide, not a property of `bridge:tick`: an appended log with nothing to rotate it grows without bound — 25 runs a day here, forever — and **there is no logrotate stanza anywhere in this repository**. Each file therefore holds the LAST run of its own pass, which needs no rotation at all; they are split because under `>` a shared file would be owned by whichever pass ran most recently. Nothing is lost by it: the durable account is the log entry the next paragraph describes. ⚠ Want the history instead? Use `>>` and rotate it yourself (a `logrotate` stanza, or a dated filename), knowing that nothing in this repo will do it for you.
 
 **What an applied move records.** Each move logs `bridge_reconcile: moved` with the card id, the target stage, the PR outcome and the **`card_board` + `mapped_board` pair** (card#7212) — the board the moved card was actually on, beside the one config aimed at. That record is durable and independent of where you send the command's stdout; the `MOVED` console line above it is the operator's live view, not the record.
 
-`--max-moves` is the **circuit-breaker**: a run planning MORE than the cap aborts before applying *any* move (mass movement means a bug, not drift — re-run manually with a higher cap once you've explained it). Start report-only for a few days; add the `--fix` line once the report is consistently boring. If the store-native leg is in use, first confirm the unit's env resolves the token: `HOME=… PATH=… php artisan bridge:reconcile -v` should print `github: <repo> — readable (token from store …)` per repo.
+`--max-moves` is the **circuit-breaker**: a run planning MORE than the cap aborts before applying *any* move (mass movement means a bug, not drift — re-run manually with a higher cap once you've explained it). Start report-only for a few days; add the `--fix` line once the report is consistently boring. To see which source each repo resolves, run `php artisan bridge:reconcile -v` once by hand, as the user the cron line runs as. It prints `github: <repo> — readable (token from store key <key> ([git-credential-map] <entry>) (<path>))` for a repo the store maps; for any other repo it names the single token file. The answer does not depend on that shell's `HOME` or `COORD_CREDENTIALS`. Only an exported `GH_TOKEN` can change it, and only for a repo no source above it resolves.
 
 ## Security notes
 
