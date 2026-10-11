@@ -12,7 +12,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#11711** — **A seat's channel server now updates itself at launch over an ssh door.** The launch-time `client_manifest` call had a fixed 5 s limit. An ssh door boots the bridge for every call, and at session start that boot shares the machine with every MCP server and SessionStart hook. On the kanban host a quiet round trip took about 2 s, and every launch update since 2026-10-05 failed with `bridge unreachable (no answer to client_manifest within 5000 ms)`. The seat stayed on an old client while a newer one was published. A bootstrap uses the same door with a 30 s limit, so it kept succeeding.
   - The limit is now 10 s. Every call is still capped by the launch update budget (`AWB_CLIENT_UPDATE_BUDGET_MS`, default 20 s), so a launch cannot take longer than before. Only a door that never answers now takes 10 s to give up instead of 5 s.
-  - A seat stuck this way updates at its first launch on this release. To update it sooner, re-run the bootstrap (`provision-board-tools.py --role b --bootstrap-client`).
+  - ⚠ **A seat that is already stuck needs one bootstrap.** A launch runs the updater of the release already installed, so a stuck seat keeps its 5 s limit and cannot reach this release by launching. Re-run the bootstrap once (`provision-board-tools.py --role b --bootstrap-client`, or `node <root>/versions/<installed>/client/client-update.mjs bootstrap --root <root>` with the channel's board-tools transport in the environment). Launch updates work from then on.
   - Reference channel-server snapshot `0.9.53` → `0.9.54`.
 
 - **card#11710** — **The installer is now told which `.env` keys to set, where they act.**
