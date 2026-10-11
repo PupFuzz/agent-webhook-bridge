@@ -34,6 +34,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - A tokened PR touching only `docs/`, `tests/`, `.github/pull_request_template.md`, `.github/dependabot.yml` or `CLAUDE_DECISIONS.md` owes no bullet. A PR with no card in its title that touches the old path scope must still change `[Unreleased]`.
   - Several bullets for one card pass. The gate also runs on pushes to `dev` and `main`.
   - The release-section presence check is now `release-artifacts-gate.yml`'s alone. The release-body size limit is `changelog.release_body_limit_bytes`, which the gate enforces and `auto-tag-version.yml`'s publisher reads. VERSIONING.md § What CI enforces says what each key does here.
+  - VERSIONING.md step 12 now verifies a back-merge with `git merge-base --is-ancestor v<version> origin/dev`. The old parent count of `dev`'s tip passed a rebased sync branch and failed a correct back-merge once another PR had landed.
 
 ### Upgrade warnings
 
