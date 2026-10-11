@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.100.0] - 2026-10-10
+
 ### Added
 
 - **card#11674 / DL-471** — **`ci_await` tells a seat once when CI on its head is overdue, so the seat waits for events instead of checking by hand.** Every stored await now has an overdue deadline, `overdue_at`, returned in the `ci_await` answer with `overdue_basis`. When the sweep finds an await past it, still unsettled and unexpired, the seat gets one new `ci_await_overdue` intent, and the await is kept: `ci_settled`, `ci_await_unreadable` or `ci_await_expired` still ends it. Its payload carries the head, the deadline, the last runs read and what the bridge's `workflow_run` deliveries say about each run (`docs/consumer-guide.md`).
