@@ -6,6 +6,8 @@ use App\Bridge\Support\ClassifierResolver;
 use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\File;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
@@ -82,6 +84,33 @@ class WebhookDispatchTest extends TestCase
         $this->assertSame('e2e-delivery-1:prod-agent:0', $lines[0]['id']);
         $this->assertSame('new_card', $lines[0]['kind']);
         $this->assertStringContainsString('Ship the rewrite', $lines[0]['summary']);
+    }
+
+    public function test_a_malformed_inbox_file_mode_answers_5xx_and_stages_nothing(): void
+    {
+        config(['bridge.inbox_layout' => 'per-agent', 'bridge.inbox_file_mode' => 'abc']);
+        $errors = [];
+        Event::listen(MessageLogged::class, function (MessageLogged $m) use (&$errors): void {
+            if ($m->level === 'error') {
+                $errors[] = $m->message;
+            }
+        });
+        $body = (string) json_encode([
+            'event' => 'task.created', 'board_id' => 5, 'delivery_id' => 'bad-mode-1',
+            'user_id' => 999, 'payload' => ['name' => 'Refused'],
+        ]);
+
+        $this->call('POST', '/webhooks/kanban?b=5', [], [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_KANBAN_SIGNATURE' => 'sha256='.hash_hmac('sha256', $body, $this->secret),
+        ], $body)->assertStatus(500);
+
+        $this->assertFileDoesNotExist($this->dir.'/state/inbox-prod-agent.jsonl');
+        $this->assertFileDoesNotExist($this->dir.'/state/inbox.jsonl');
+        $event = WebhookEvent::where('delivery_id', 'bad-mode-1')->firstOrFail();
+        $dispatch = AgentDispatch::where('webhook_event_id', $event->id)->firstOrFail();
+        $this->assertNull($dispatch->processed_at);   // left for the upstream's redelivery once fixed
+        $this->assertSame(["BRIDGE_INBOX_FILE_MODE 'abc' must be an octal file mode like 0640."], $errors);
     }
 
     public function test_redelivery_does_not_duplicate(): void
