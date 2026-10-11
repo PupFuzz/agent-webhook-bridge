@@ -2853,6 +2853,8 @@ All three gates were answered by the user in one batch: **(a)** for card#5910, *
 
 ## DL-281 — An anchored predicate over `git diff --name-only` was reading git's DISPLAY form: `core.quotepath` moves to the capture, and a non-ASCII in-scope path stops exempting a PR from the CHANGELOG gate
 
+**[⚠ MECHANISM SUPERSEDED by DL-473 (card#11684):** the bash gate and its `git diff --name-only` capture are gone. The property stands in the toolkit's `bin/changelog-gate`, which applies `core.quotepath=false` in `_unit_paths` and `_delta_paths`.]**
+
 - **Date:** 2026-08-07
 - **Status:** implemented (card#6101). Closes DL-280's *Stated bound 2*, which named this defect and deliberately did not fix it.
 
@@ -6996,6 +6998,8 @@ Selection and EMISSION are separated deliberately: the kept rows are re-emitted 
 
 ## DL-411 — the PR-title gate requires the card the writeback SELECTS, and a bare DL is not a correlation token (card#10031)
 
+**[⚠ SUPERSEDED IN PART by DL-473 (card#11684):** `ChangelogGateTest` is deleted with the bash gate, so this entry's claims that it drives the fixture and asserts the job's composition are history. The PR-title rule stands.]**
+
 **Date:** 2026-09-22
 
 **Context.** The require step's accept-check asked two questions the writeback does not ask. It
@@ -8754,7 +8758,7 @@ diagnostic on the failure path.
 ## DL-473 — The CHANGELOG gate is the toolkit's `changelog-gate` action, SHA-pinned; this repo keeps its policy as `.release-pr.json` config and drops its own bash gate (card#11684)
 
 - **Date:** 2026-10-11
-- **Status:** CI only. `.github/workflows/changelog-gate.yml`, `.release-pr.json`, `.github/workflows/auto-tag-version.yml`, `bin/changelog-section.py`. No runtime code, migration, `.env` key, route or token scope changes. **Supersedes the MECHANISM of DL-276 (Decisions 3–6), DL-280, DL-282, DL-288, DL-329 and DL-423's note on this gate's branch arms**; the policy those entries ratified carries over as configuration, below.
+- **Status:** CI only. `.github/workflows/changelog-gate.yml`, `.release-pr.json`, `.github/workflows/auto-tag-version.yml`, `bin/changelog-section.py`. No runtime code, migration, `.env` key, route or token scope changes. **Supersedes the MECHANISM of DL-276 (Decisions 3–6), DL-280, DL-282, DL-288, DL-329, DL-281, DL-411's `ChangelogGateTest` claims and DL-423's note on this gate's branch arms**; the policy those entries ratified carries over as configuration, below.
 
 - **Context.** agent-board-toolkit and this repo each ran their own CHANGELOG gate, with different rules for what obliges a bullet and what discharges it, and kanban-board had none. card#11684 picked the toolkit's implementation and shipped it in agent-board-toolkit v0.46.0 as `bin/changelog-gate` and the `changelog-gate/` composite action. This entry is this repo's adoption.
 
