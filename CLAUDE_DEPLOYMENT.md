@@ -51,6 +51,9 @@ BRIDGE_COORD_CREDENTIALS_PATH=/home/kanban/.config/coord/credentials.ini
 # BRIDGE_MAX_BODY_BYTES=262144        # optional; default 256K. Keep ≤ the FPM pool's post_max_size.
 # BRIDGE_INSTALL_SUFFIX=-prod         # -prod/-dev cross-DSN safety marker
 # DB_TIMEZONE=+00:00                  # MySQL session time_zone; defaults to +00:00 and must match app.timezone (DL-346)
+# BRIDGE_CI_AWAIT_NO_CI_REPOS=your-org/coordination  # SET IT when this install receives a repo with NO CI (a
+#                                     # coordination/roundtable repo): comma-separated owner/name. Unset ⇒
+#                                     # bridge:check FAILs ci_await on that repo (card#11696 / DL-472)
 ```
 
 ⚠ **ACCEPTANCE CHANGE since card#9528 / DL-395 — a credential inside either endpoint URL must be PERCENT-ENCODED, or `bridge:check` and `bridge:provision` refuse it.** If `BRIDGE_RECEIVER_BASE_URL` or `BRIDGE_KANBAN_API_BASE_URL` carries a userinfo — the `user:password@` part in front of the host, e.g. for a reverse proxy's basic auth — and that credential contains any character RFC 3986 does not allow there unencoded, the value is now **refused** by the two commands that JUDGE it, where it used to be accepted: `bridge:check` **fails** on it, and `bridge:provision` refuses — the receiver base for the whole run in every mode except `--list`, the API base per subscription (nothing sent upstream, no secret written). ⛔ **The refusal is scoped to those config doors and nothing else.** The writeback (every card move, board tool, standup and reconcile) and the idle nudge keep accepting exactly what they accept today — such an install works, because the HTTP client percent-encodes the value itself — so this change cannot stop a running install's board from moving. Fix the value at your convenience; it is the two commands above that will keep refusing until you do. The characters allowed unencoded are the unreserved set `A-Za-z0-9-._~`, the sub-delims `!$&'()*+,;=`, `:` and `%`; a **space**, a **`"`**, a backslash, a `|`, a bracket or a control byte is not among them. **Such a value was never a valid URL** — the change is that the bridge now says so at validation time instead of carrying the credential on into error text that echoes it back to a terminal, a CI log or an agent transcript. **What to do:** percent-encode the credential in the URL (a space becomes `%20`, a `"` becomes `%22`), or — better — take the credential out of the URL entirely and give it to the proxy another way. The refusal names the field and quotes the value with the userinfo already redacted, so it is safe to paste into a ticket.
@@ -279,6 +282,11 @@ composer install --no-dev --optimize-autoloader
 # INSTALLED tree untouched. Read the ⚠/⛔ callout right below this block: it says
 # why nothing else catches that, and why the RESTART afterwards is an ASK.
 ( cd examples/channel-servers && npm ci --no-audit --no-fund )
+# .env — a release can REQUIRE a new key, and the pull cannot add it for you. For EVERY version
+# crossed, read docs/CHANGELOG.md's "### Upgrade warnings" and set each .env key they name; then
+# compare .env against .env.example for keys this install has not decided on (card#11710).
+# `optimize` below caches the result: a .env edit made AFTER it is INERT until
+# `php artisan config:cache` runs again.
 php artisan migrate --force                       # no-op if no new migrations
 php artisan optimize:clear && php artisan optimize
 php artisan bridge:client-pack:install             # publish THIS release's channel-server client pack for seats to

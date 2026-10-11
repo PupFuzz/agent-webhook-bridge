@@ -181,6 +181,7 @@ class CiAwaitsCheckTest extends TestCase
         $this->assertStringContainsString(self::REPO, $findings[0]->message);
         $this->assertStringContainsString('token source: the single GitHub token file, file '.$dir.'/github/token', $findings[0]->message);
         $this->assertStringContainsString('[git-credential-map]', $findings[0]->message);
+        $this->assertStringContainsString('BRIDGE_CI_AWAIT_NO_CI_REPOS', $findings[0]->message);
         $this->assertStringNotContainsString('gh-check-token', $findings[0]->message);
     }
 
