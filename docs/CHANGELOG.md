@@ -42,6 +42,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - ⚠ **MIGRATION — run `php artisan migrate`** (`ci_awaits.overdue_at`, `overdue_basis`, `overdue_sent_at`; card#11674). Until it runs, every `ci_await` is refused as `install_fault.ci_await_store_unavailable` (which names `php artisan migrate`), and the sweep's overdue part fails each pass while its read and expiry parts still run.
 - ⚠ **MIGRATION — run `php artisan migrate`** (`ci_head_runs`, `ci_head_settlements`). Until it runs, no aggregate `ci_settled` is sent, and the runs it would carry are not staged either (each `workflow_run` delivery logs a `bridge ci_head:` warning); `ci_await` cannot emit `ci_settled` and retries on later passes.
 - ⚠ **An agent on `impl_non_wake_disposition: inbox_stage` stops getting `impl_ci` for passing, skipped and neutral runs, and for a cancelled run a newer run supersedes** and gets `ci_settled` instead. Set `impl_ci_delivery: per_run` on an agent that needs the per-run events.
+- ⚠ **A seat on a `route_intents: true` channel with `impl_non_wake_disposition: inbox_stage` is no longer woken by a push to a branch outside `classifier.config.impl_push_wake_branches` (default `[dev, main]`; card#11676).** An install whose integration branches are not `dev` / `main` lists them (e.g. `[dev, main, registry/dev, registry/main]`); `impl_push_wake_branches: []` restores the old behaviour.
 
 ## [0.99.0] - 2026-10-10
 
