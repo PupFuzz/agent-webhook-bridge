@@ -628,6 +628,9 @@ class owns the two shapes:
   excluded by construction rather than by a regex the next spelling walks past, and the key never
   carries a LINE NUMBER — an offset pin reds on an unrelated docblock edit, and its only
   remediation ("re-derive the offsets") is the same action that absorbs a real new site.
+- **`phpFilesUnder($dir)`** — the FILE walk `appFiles()` is spelled through, for a census whose
+  population spans trees other than `app/` (`ConfigDefaultsDefinedOnceTest`'s `SCANNED_DIRS` names
+  its trees, and it feeds each file to `sites()`).
 
 ⛔ **A hand-written glob plus a STATED BOUND for everything outside it is a declaration with no
 check, and this repo has paid for it.** Two classes police the two ends of ONE tenant boundary;

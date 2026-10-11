@@ -83,7 +83,7 @@ final class WritebackSourceCoverageCheck implements Check
 
             return;
         }
-        if (config('bridge.writeback.correlation', 'ref') !== 'ref') {
+        if (config('bridge.writeback.correlation') !== 'ref') {
             yield Silence::because('correlation is scan, which does not repo-qualify the lookup, so there is no coverage gap of this shape to find');
 
             return;

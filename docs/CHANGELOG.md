@@ -20,6 +20,18 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - `CLAUDE_DEPLOYMENT.md` § *Update an existing install* gains a `.env` step for every update: read the `### Upgrade warnings` of every version crossed, set the keys they name, and compare `.env` against `.env.example`. A `.env` edit made after `optimize` is inert until `php artisan config:cache`.
   - § *Required `.env`* names `BRIDGE_CI_AWAIT_NO_CI_REPOS` for an install that receives a repo with no CI.
 
+### Changed
+
+- **card#11714** — **Each config default is now written once, in `config/*.php`, with one exception named below.** Call sites no longer repeat it as a `config('<key>', <default>)` fallback. Those copies never ran, because the config file always defines the key, so nothing noticed when one drifted from the config file. No runtime change.
+  - The fallbacks are removed for `bridge.writeback.correlation`, `bridge.inbox_file_mode`, `bridge.inbox_layout`, `bridge.jobs.min_pass_interval`, `bridge.jobs.max_per_pass`, `bridge.jobs.enabled`, `bridge.max_body_bytes` and `app.name`.
+  - A new test, `ConfigDefaultsDefinedOnceTest`, fails on a new fallback for a key whose config value is not null. A fallback for a key the config file leaves null is still allowed.
+  - `BRIDGE_INBOX_LAYOUT` set but empty now becomes `shared` in `config/bridge.php` itself, through the new `StringEnv::orDefault()`, so `BridgePaths::inboxLayout()` no longer writes `shared` a second time. Unset, empty and set values resolve as before.
+  - **Kept by operator decision (2026-10-11):** `BridgePaths::inboxFileMode()` still turns an empty `BRIDGE_INBOX_FILE_MODE` into `0640` itself. Folding that into `config/bridge.php` would stop `bridge:check` failing on an empty value, so the second copy stays.
+
+### Upgrade warnings
+
+- ⚠ **An install that sets `BRIDGE_INBOX_LAYOUT` to an empty value must rebuild the config cache (`php artisan optimize`) before serving this release (card#11714).** A cache built by an earlier release holds the empty value, and this release no longer turns it into `shared` at the read: until the cache is rebuilt, `BridgePaths::inboxLayout()` throws and intent staging answers 5xx. The update runbook already runs `optimize`. An install that leaves `BRIDGE_INBOX_LAYOUT` unset is unaffected.
+
 ## [0.100.1] - 2026-10-10
 
 ### Fixed

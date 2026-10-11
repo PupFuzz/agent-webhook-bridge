@@ -18,7 +18,7 @@ class EnvelopeSizeLimit
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $max = (int) config('bridge.max_body_bytes', 256 * 1024);
+        $max = (int) config('bridge.max_body_bytes');
 
         $contentLength = (int) $request->server('CONTENT_LENGTH', '0');
         if ($contentLength > $max) {

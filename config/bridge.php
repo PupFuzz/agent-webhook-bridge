@@ -2,6 +2,7 @@
 
 use App\Bridge\Support\BoolEnv;
 use App\Bridge\Support\CsvEnv;
+use App\Bridge\Support\StringEnv;
 
 return [
 
@@ -576,7 +577,7 @@ return [
     |
     */
 
-    'inbox_layout' => env('BRIDGE_INBOX_LAYOUT', 'shared'),
+    'inbox_layout' => StringEnv::orDefault(env('BRIDGE_INBOX_LAYOUT'), 'shared'),
 
     'default_agent' => env('BRIDGE_DEFAULT_AGENT'),
 
