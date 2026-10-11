@@ -986,7 +986,7 @@ final class CiAwaitService
      */
     public static function unreadableRemedy(string $repoName): string
     {
-        return "map {$repoName} in the coord credential store's [git-credential-map] to a key whose token can read its workflow runs, or set {$repoName}'s write_token_path in writeback.json to a file holding such a token";
+        return "map {$repoName} in the coord credential store's [git-credential-map] to a key whose token can read its workflow runs, or set {$repoName}'s write_token_path in writeback.json to a file holding such a token — or, if {$repoName} has no CI at all, list it in BRIDGE_CI_AWAIT_NO_CI_REPOS and run `php artisan config:cache`, since no token can read runs a repo does not have";
     }
 
     /**

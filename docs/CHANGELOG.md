@@ -8,6 +8,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#11710** — **The installer is now told which `.env` keys to set, where they act.**
+  - The `bridge:check` `ci_await.awaits` FAIL, the `ci_await` `repo_unreadable` refusal and the `ci_await_unreadable` event now name `BRIDGE_CI_AWAIT_NO_CI_REPOS` as the remedy for a repo with no CI. Before, they named only the token remedies, which cannot fix such a repo.
+  - `CLAUDE_DEPLOYMENT.md` § *Update an existing install* gains a `.env` step for every update: read the `### Upgrade warnings` of every version crossed, set the keys they name, and compare `.env` against `.env.example`. A `.env` edit made after `optimize` is inert until `php artisan config:cache`.
+  - § *Required `.env`* names `BRIDGE_CI_AWAIT_NO_CI_REPOS` for an install that receives a repo with no CI.
+
 ## [0.100.1] - 2026-10-10
 
 ### Fixed
