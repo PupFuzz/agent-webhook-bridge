@@ -89,6 +89,15 @@ class CiAwaitsCheckTest extends TestCase
         $this->assertStringContainsString('BRIDGE_CI_AWAIT_SWEEP_READS', $findings[0]->message);
     }
 
+    public function test_an_overdue_default_the_bridge_refuses_fails_naming_the_key(): void
+    {
+        config(['bridge.ci_await.overdue_default' => 30]);
+
+        $fails = array_values(array_filter($this->findingsOf(new CiAwaitsCheck), static fn ($f): bool => $f->severity === Severity::Fail && str_contains($f->message, 'BRIDGE_CI_AWAIT_OVERDUE_DEFAULT')));
+
+        $this->assertCount(1, $fails);
+    }
+
     public function test_an_awaited_repo_with_no_stored_workflow_run_warns_and_says_what_that_does_not_prove(): void
     {
         $this->await();

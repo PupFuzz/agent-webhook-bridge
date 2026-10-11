@@ -66,6 +66,16 @@ final class CiAwaitConfig
         return self::int('seat_reads_per_hour', 'BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR', 1, self::SEAT_READS_PER_HOUR_MAX, '60');
     }
 
+    /**
+     * How long after registration a wait on a repo with too little CI history is overdue, in
+     * seconds (card#11674): {@see OverdueDeadline} derives the deadline from the repo's own recent
+     * heads, and falls back to this. @throws ConfigException naming the value read
+     */
+    public static function overdueDefaultSeconds(): int
+    {
+        return self::int('overdue_default', 'BRIDGE_CI_AWAIT_OVERDUE_DEFAULT', self::TTL_MIN, self::TTL_MAX, '1800, 30 min');
+    }
+
     private static function int(string $key, string $env, int $min, int $max, string $default): int
     {
         $raw = config("bridge.ci_await.{$key}");

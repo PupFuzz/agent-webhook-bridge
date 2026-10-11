@@ -50,7 +50,7 @@ class IntentLog
 
     /**
      * Stage an intent the BRIDGE authored, which no stored webhook event stands behind
-     * (card#11200 / DL-452: `ci_settled`, `ci_await_expired`; card#11600: `ci_await_unreadable`). The caller supplies what
+     * (card#11200 / DL-452: `ci_settled`, `ci_await_expired`; card#11600: `ci_await_unreadable`; card#11674: `ci_await_overdue`). The caller supplies what
      * {@see stage()} derives from the event: a line `id` that is stable for this one emission —
      * `bridge:inbox` collapses duplicates on it — and its `ts`. Same files, same failure
      * contract: an IO failure propagates.
