@@ -22,7 +22,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
-- **card#11714** — **Each config default is now written once, in `config/*.php`.** Call sites no longer repeat it as a `config('<key>', <default>)` fallback. Those copies never ran, because the config file always defines the key, so nothing noticed when one drifted from the config file. No runtime change, except the `BRIDGE_INBOX_FILE_MODE` change named below.
+- **card#11714** — **Each config default is now written once, in `config/*.php`.** Call sites no longer repeat it as a `config('<key>', <default>)` fallback. Those copies never ran, because the config file always defines the key, so nothing noticed when one drifted from the config file. No runtime change; `bridge:check` no longer fails on an empty `BRIDGE_INBOX_FILE_MODE` (below).
   - The fallbacks are removed for `bridge.writeback.correlation`, `bridge.inbox_file_mode`, `bridge.inbox_layout`, `bridge.jobs.min_pass_interval`, `bridge.jobs.max_per_pass`, `bridge.jobs.enabled`, `bridge.max_body_bytes` and `app.name`.
   - A new test, `ConfigDefaultsDefinedOnceTest`, fails on a new fallback for a key whose config value is not null. A fallback for a key the config file leaves null is still allowed.
   - `BRIDGE_INBOX_LAYOUT` set but empty now becomes `shared` in `config/bridge.php` itself, through the new `StringEnv::orDefault()`, so `BridgePaths::inboxLayout()` no longer writes `shared` a second time. Unset, empty and set values resolve as before.
@@ -31,7 +31,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ### Upgrade warnings
 
 - ⚠ **An install that sets `BRIDGE_INBOX_LAYOUT` to an empty value must rebuild the config cache (`php artisan optimize`) before serving this release (card#11714).** A cache built by an earlier release holds the empty value, and this release no longer turns it into `shared` at the read: until the cache is rebuilt, `BridgePaths::inboxLayout()` throws and intent staging answers 5xx. The update runbook already runs `optimize`. An install that leaves `BRIDGE_INBOX_LAYOUT` unset is unaffected.
-- ⚠ **The same holds for an install that sets `BRIDGE_INBOX_FILE_MODE` to an empty value (card#11714).** A cache built by an earlier release holds the empty value, and this release no longer turns it into `0640` at the read: until the cache is rebuilt, each per-agent inbox file is chmodded to `0000`, and the next write to it fails. The update runbook already runs `optimize`. An install that leaves `BRIDGE_INBOX_FILE_MODE` unset is unaffected.
+- ⚠ **An install that sets `BRIDGE_INBOX_FILE_MODE` to an empty value must change it BEFORE pulling this release (card#11714).** Delete the empty line or set it to `0640`, then run `php artisan optimize` on the old release. Otherwise a cache built by the earlier release still holds the empty value, which this release reads as mode `0000`: between the `git pull` and the runbook's `optimize`, each per-agent inbox file written to is chmodded to `0000`, and every later write to it fails. Rebuilding the cache does not repair those files; fix them with `chmod 0640 <state_dir>/inbox-*.jsonl` (and `chgrp` when `BRIDGE_INBOX_GROUP` is set). An install that leaves `BRIDGE_INBOX_FILE_MODE` unset is unaffected.
 
 ## [0.100.1] - 2026-10-10
 
