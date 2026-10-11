@@ -52,7 +52,7 @@ final class CiAwaitsCheck implements Check
      */
     public function run(CheckContext $ctx): iterable
     {
-        foreach ([CiAwaitConfig::ttlSeconds(...), CiAwaitConfig::maxPerSeat(...), CiAwaitConfig::readCooldownSeconds(...), CiAwaitConfig::sweepReads(...), CiAwaitConfig::seatReadsPerHour(...)] as $read) {
+        foreach ([CiAwaitConfig::ttlSeconds(...), CiAwaitConfig::maxPerSeat(...), CiAwaitConfig::readCooldownSeconds(...), CiAwaitConfig::sweepReads(...), CiAwaitConfig::seatReadsPerHour(...), CiAwaitConfig::overdueDefaultSeconds(...)] as $read) {
             try {
                 $read();
             } catch (ConfigException $e) {
@@ -112,7 +112,7 @@ final class CiAwaitsCheck implements Check
             yield Finding::warn("ci_await: the last workflow-run read FAILED for {$failing->count()} await(s), so none of them can settle until a read answers — most recent: {$latest->repo_name}@{$latest->head_sha}: {$latest->last_error}. The ci_await sweep reads each head again, and an await expires with the error if no read answers.");
         }
         foreach ($undeliverable as $row) {
-            yield Finding::warn("ci_await: the bridge could not write ci_settled / ci_await_unreadable / ci_await_expired to the inbox of agent `{$row->agent}` for {$row->awaits} await(s) (last attempt {$row->latest}) — each is kept and retried every sweep pass, and dropped undelivered ".CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS.' s past its expiry. Look for `bridge ci_await:` warnings naming that agent: its inbox file or state directory is not writable by the bridge.');
+            yield Finding::warn("ci_await: the bridge could not write ci_settled / ci_await_unreadable / ci_await_expired / ci_await_overdue to the inbox of agent `{$row->agent}` for {$row->awaits} await(s) (last attempt {$row->latest}) — each is kept and retried every sweep pass, and dropped undelivered ".CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS.' s past its expiry. Look for `bridge ci_await:` warnings naming that agent: its inbox file or state directory is not writable by the bridge.');
         }
         foreach ($silentRepos as $repo) {
             yield Finding::warn("ci_await: an await is stored on {$repo}, and this install holds no stored workflow_run delivery from it — if that repo's webhook does not send \"Workflow runs\" to this bridge, only the ci-await-sweep's own reads settle the await, at least one sweep interval after CI finishes and only while the sweep runs. Add the event on the repo webhook. (None stored is not proof of a missing subscription: retention prunes deliveries, and a new hook has sent none yet.)");

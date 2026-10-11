@@ -25,6 +25,7 @@ use App\Bridge\Writeback\TokenSource;
 use App\Models\CiAwait;
 use App\Models\WebhookEvent;
 use DateTimeInterface;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Client\ConnectionException;
@@ -50,10 +51,11 @@ use UnexpectedValueException;
  * ({@see sweepUnsettled()}: a head none of whose awaits was read, or whose oldest read is one sweep interval old, up to
  * the per-pass cap), PROVIDED THE SWEEP RUNS — a pass needs a webhook or `bridge:tick`.
  *
- * ⭐ THE ONLY THING THE BRIDGE DECIDES IS "EVERY RUN IS `completed`". It does NOT decide green or
- * red: a verdict needs the base branch's required contexts and the latest run per workflow, which
- * is `ci-read`'s definition, and a second one here would drift from it. The payload carries each
- * run's conclusion as data; the seat runs `ci-read` once on the head for the verdict.
+ * ⭐ SETTLED, AND HOW IT ENDED, ARE {@see HeadRuns}' ANSWERS — the same predicate the per-head
+ * aggregate applies to tracked runs (card#11667): the latest run per workflow decides, and every
+ * deciding run must be `completed`. The payload carries a RUN-LEVEL `runs_verdict`; the
+ * authoritative verdict stays `ci-read`'s (jobs and the base branch's required contexts), which
+ * the summary names.
  *
  * ⭐ LEVEL-TRIGGERED: THE SWEEP CARRIES CORRECTNESS, DELIVERIES ARE ACCELERATORS. A delivery's read
  * settles only the awaits it loaded, a registration's read can see a list that lags, and a final
@@ -100,12 +102,27 @@ use UnexpectedValueException;
  *
  * Emitted intents are STAGED to the inbox and then pushed live: the await is gone once claimed, so
  * the inbox line is what carries the wake to a seat whose channel was down at the moment.
+ *
+ * ⭐ OVERDUE IS NOT TERMINAL (card#11674). Each await carries a deadline — the repo's normal CI
+ * time ({@see OverdueDeadline}) or the seat's own — and an await still stored past it gets ONE
+ * `ci_await_overdue` ({@see emitOverdue()}), claimed on `overdue_sent_at` rather than by deleting
+ * the row: the await stays, and its terminal event still follows.
  */
 final class CiAwaitService
 {
     public const SETTLED = 'ci_settled';
 
     public const EXPIRED = 'ci_await_expired';
+
+    /**
+     * Sent ONCE per await when it passes its overdue deadline still unsettled (card#11674). NOT
+     * terminal: the await stays stored, and `ci_settled`, `ci_await_unreadable` or
+     * `ci_await_expired` still follows. {@see emitOverdue()}.
+     */
+    public const OVERDUE = 'ci_await_overdue';
+
+    /** How many due awaits a pass may LOOK at per send it may make: skipped ones are not sends. */
+    private const OVERDUE_SCAN_FACTOR = 10;
 
     /** Sent instead of waiting out the expiry when GitHub will not let this install read the repo (card#11600). */
     public const UNREADABLE = 'ci_await_unreadable';
@@ -217,11 +234,16 @@ final class CiAwaitService
      * Store (or refresh) `$agent`'s await on the head and make sure the sweep exists. A database
      * failure propagates: until this returns, nothing is stored and the caller may say so.
      *
+     * The overdue deadline (card#11674) is `$overdue` from now on a NEW await. A refresh keeps the
+     * deadline it has unless `$overdue` is the caller's own ({@see OverdueDeadline::override()}) or
+     * it has none (a row stored before the column), and never moves it once its
+     * `ci_await_overdue` was sent: one per await.
+     *
      * @return bool whether an existing await was refreshed
      */
-    public function store(string $agent, string $repoName, string $headSha, ?int $pr, int $ttlSeconds): bool
+    public function store(string $agent, string $repoName, string $headSha, ?int $pr, int $ttlSeconds, OverdueDeadline $overdue): bool
     {
-        $refreshed = $this->upsert($agent, $repoName, $headSha, $pr, Carbon::now()->addSeconds($ttlSeconds));
+        $refreshed = $this->upsert($agent, $repoName, $headSha, $pr, Carbon::now()->addSeconds($ttlSeconds), $overdue);
         $this->declareSweep();
 
         return $refreshed;
@@ -250,7 +272,7 @@ final class CiAwaitService
      * `ci_await_unreadable`. A read this call skipped (cooldown, rate limit, seat budget) changes
      * nothing — the await waits, and the sweep's read of the head ends it that way instead.
      *
-     * @return array{state: string, pr: ?int, expires_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string, read_skipped: ?string, retry_not_before: ?string, unreadable: ?CiRunsReadException}
+     * @return array{state: string, pr: ?int, expires_at: ?string, overdue_at: ?string, overdue_basis: ?string, overdue_sent_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string, read_skipped: ?string, retry_not_before: ?string, unreadable: ?CiRunsReadException}
      */
     public function evaluateRegistration(string $agent, string $repoName, string $headSha, ?int $pr, int $cooldownSeconds, int $seatReadsPerHour): array
     {
@@ -279,11 +301,11 @@ final class CiAwaitService
                 'agent' => $agent, 'repo' => $repoName, 'head_sha' => $headSha,
             ] + RedactedErrorText::logContext($e));
 
-            return ['state' => 'unmeasured', 'pr' => $pr, 'expires_at' => null, 'runs_total' => null, 'runs_completed' => null,
+            return ['state' => 'unmeasured', 'pr' => $pr, 'expires_at' => null, 'overdue_at' => null, 'overdue_basis' => null, 'overdue_sent_at' => null, 'runs_total' => null, 'runs_completed' => null,
                 'read_error' => 'the await is stored, but evaluating it failed: '.RedactedErrorText::of($e), 'read_skipped' => null, 'retry_not_before' => null, 'unreadable' => null];
         }
         if ($read['unreadable'] !== null) {
-            return ['state' => 'unreadable', 'pr' => $pr, 'expires_at' => null, 'runs_total' => null, 'runs_completed' => null,
+            return ['state' => 'unreadable', 'pr' => $pr, 'expires_at' => null, 'overdue_at' => null, 'overdue_basis' => null, 'overdue_sent_at' => null, 'runs_total' => null, 'runs_completed' => null,
                 'read_error' => $read['error'], 'read_skipped' => null, 'retry_not_before' => null, 'unreadable' => $read['unreadable']];
         }
 
@@ -298,6 +320,9 @@ final class CiAwaitService
             'state' => $state,
             'pr' => $mine === null ? $pr : $mine->pr,
             'expires_at' => $mine === null ? null : self::instant($mine->expires_at),
+            'overdue_at' => $mine?->overdue_at === null ? null : self::instant($mine->overdue_at),
+            'overdue_basis' => $mine?->overdue_basis,
+            'overdue_sent_at' => $mine?->overdue_sent_at === null ? null : self::instant($mine->overdue_sent_at),
             'runs_total' => $read['runs'] === null ? null : count($read['runs']),
             'runs_completed' => $read['runs'] === null ? null : count(array_filter($read['runs'], static fn (array $r): bool => $r['status'] === 'completed')),
             'read_error' => $emitFailed
@@ -351,7 +376,7 @@ final class CiAwaitService
      * (null when the payload named no readable run id). Never throws: it runs after the response,
      * where nothing would report a throw.
      *
-     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
+     * @param  ?array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
      */
     public function onWorkflowRunCompleted(string $repo, string $headSha, ?array $deliveredRun = null): void
     {
@@ -406,6 +431,138 @@ final class CiAwaitService
         }
 
         return ['emitted' => $emitted, 'failed' => $failed, 'dropped' => $dropped];
+    }
+
+    /**
+     * Send ONE `ci_await_overdue` (card#11674) to each of up to `$limit` unexpired awaits past their
+     * overdue deadline that were not sent one yet, deadline first. The await is KEPT: it still ends
+     * in `ci_settled`, `ci_await_unreadable` or `ci_await_expired`.
+     *
+     * ⭐ ONE PER AWAIT, BY CLAIM. The send stamps `overdue_sent_at` with an UPDATE that matches only
+     * a row where it is still null, in the transaction that stages the inbox line, and stages only
+     * when that update changed the row — so two concurrent passes send one, and an await settled or
+     * cancelled meanwhile (its row gone) sends none.
+     *
+     * An inbox that cannot be written rolls the stamp back and marks `emit_failed_at`, as any emit
+     * does: that await is tried again after `$retryAfterSeconds`, and only after every never-failed
+     * due one, so one seat's broken inbox never fills the pass ahead of anyone else's. A send that
+     * reached the inbox clears the mark — that inbox takes lines again.
+     *
+     * The event carries what the bridge last saw: the await's own last runs read, and the runs the
+     * head's `workflow_run` deliveries reported ({@see CiHeadRunTracker}) — no GitHub read is made.
+     *
+     * @return array{emitted: int, failed: int}
+     */
+    public function emitOverdue(int $limit, int $retryAfterSeconds): array
+    {
+        $now = Carbon::now();
+        $due = CiAwait::query()->where('overdue_at', '<=', $now)->whereNull('overdue_sent_at')->where('expires_at', '>', $now)
+            ->where(fn ($q) => $q->whereNull('emit_failed_at')->orWhere('emit_failed_at', '<', $now->copy()->subSeconds($retryAfterSeconds)))
+            ->orderByRaw('emit_failed_at is not null')->orderBy('overdue_at')->orderBy('id')
+            ->limit($limit * self::OVERDUE_SCAN_FACTOR)->get();
+        $emitted = 0;
+        $failed = 0;
+        $attempted = 0;
+        foreach ($due as $await) {
+            $result = $this->claimOverdue($await, $now);
+            $emitted += $result === EmitResult::Emitted ? 1 : 0;
+            $failed += $result === EmitResult::Failed ? 1 : 0;
+            // A skipped await (its head's current state was already sent) costs a read, not a send.
+            $attempted += $result === EmitResult::ClaimedElsewhere ? 0 : 1;
+            if ($attempted >= $limit) {
+                break;
+            }
+        }
+
+        return ['emitted' => $emitted, 'failed' => $failed];
+    }
+
+    /**
+     * The fingerprint of the head's CURRENT settled state, from the runs its `workflow_run`
+     * deliveries reported, when that state was already sent to `$await`'s seat (`ci_head_settlements`,
+     * card#11667); null otherwise. The per-head aggregate leaves the await registered, so it can still
+     * be overdue after the seat was told the head settled; the event would send it to check CI it has
+     * just been told about. ⛔ The CURRENT state only: a head that settled once and was then re-run
+     * or gained a late run has a new fingerprint, and a hung re-run is exactly what the event is for.
+     *
+     * @param  ?list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs  {@see CiHeadRunTracker::runsOf()}, null when unreadable
+     */
+    private static function sentSettledState(CiAwait $await, ?array $runs): ?string
+    {
+        if ($runs === null) {
+            return null;
+        }
+        $head = HeadRuns::of($runs);
+        if (! $head->settled()) {
+            return null;
+        }
+        $fingerprint = $head->fingerprint();
+
+        return DB::table(CiHeadSettlementLedger::TABLE)->where('agent', $await->agent)->where('repo', $await->repo)->where('head_sha', $await->head_sha)
+            ->where('fingerprint', $fingerprint)->exists() ? $fingerprint : null;
+    }
+
+    /** {@see emitOverdue()}'s claim and send for one await. Never throws. */
+    private function claimOverdue(CiAwait $await, Carbon $now): EmitResult
+    {
+        try {
+            $runs = CiHeadRunTracker::runsOf($await->repo_name, $await->head_sha);
+        } catch (Throwable $e) {
+            Log::warning('bridge ci_await: the head\'s tracked runs could not be read, so ci_await_overdue carries none', [
+                'agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha,
+            ] + RedactedErrorText::logContext($e));
+            $runs = null;
+        }
+        if (self::sentSettledState($await, $runs) !== null) {
+            return EmitResult::ClaimedElsewhere;
+        }
+        $intent = new Intent(
+            kind: self::OVERDUE,
+            subjectId: "ci:{$await->repo_name}@{$await->head_sha}",
+            provider: 'bridge',
+            actor: new Actor(id: null),
+            summary: self::overdueSummary($await, $runs),
+            payload: self::overduePayload($await, $runs),
+        );
+
+        try {
+            $claimed = DB::transaction(function () use ($await, $intent, $now, $runs): bool {
+                if (self::sentSettledState($await, $runs) !== null
+                    || CiAwait::query()->whereKey($await->id)->whereNull('overdue_sent_at')->update(['overdue_sent_at' => $now, 'emit_failed_at' => null]) !== 1) {
+                    return false;
+                }
+                $this->intents->stageAuthored($await->agent, self::OVERDUE.":{$await->uuid}", microtime(true), $intent);
+
+                return true;
+            });
+        } catch (Throwable $e) {
+            Log::warning('bridge ci_await: ci_await_overdue could not be written to the seat\'s inbox — it is sent again on a later pass', [
+                'agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha,
+            ] + RedactedErrorText::logContext($e));
+            try {
+                CiAwait::query()->whereKey($await->id)->update(['emit_failed_at' => Carbon::now()]);
+            } catch (Throwable $mark) {
+                Log::warning('bridge ci_await: the failed emit could not be recorded on its await either', [
+                    'agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha,
+                ] + RedactedErrorText::logContext($mark));
+            }
+
+            return EmitResult::Failed;
+        }
+        if (! $claimed) {
+            return EmitResult::ClaimedElsewhere;
+        }
+
+        Log::info('bridge ci_await: ci_await_overdue emitted', ['agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha]);
+        try {
+            (new AuthoredIntentPush($this->handlers))->send($intent, $await->agent);
+        } catch (Throwable $e) {
+            Log::warning('bridge ci_await: the live push of ci_await_overdue failed — the intent is staged in the agent\'s inbox, which bridge:inbox surfaces', [
+                'agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha,
+            ] + RedactedErrorText::logContext($e));
+        }
+
+        return EmitResult::Emitted;
     }
 
     /**
@@ -481,8 +638,8 @@ final class CiAwaitService
      * registration making this read: it is removed WITHOUT an event, because that seat is answered
      * by the `repo_unreadable` refusal instead.
      *
-     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
-     * @return array{runs: ?list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, retry_not_before: ?Carbon, read: bool, emit_failed: list<int>, unreadable: ?CiRunsReadException, unconfirmed: bool}
+     * @param  ?array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
+     * @return array{runs: ?list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, retry_not_before: ?Carbon, read: bool, emit_failed: list<int>, unreadable: ?CiRunsReadException, unconfirmed: bool}
      */
     private function evaluate(string $key, string $headSha, ?array $deliveredRun, ?int $silentAwaitId = null): array
     {
@@ -529,12 +686,16 @@ final class CiAwaitService
             $runs = self::overlay($runs, $deliveredRun);
         }
 
-        // No run at all is NOT settled: CI that has not been queued yet looks exactly like this.
-        $allTerminal = $runs !== [] && array_filter($runs, static fn (array $r): bool => $r['status'] !== 'completed') === [];
+        // Settled is HeadRuns' answer — the one the per-head aggregate gives on tracked runs
+        // (card#11667): no run at all is NOT settled, and a run a newer run of its workflow
+        // supersedes does not hold the head open.
+        $head = HeadRuns::of($runs);
+        $allTerminal = $head->settled();
         $emitFailed = [];
         if ($allTerminal) {
             foreach ($awaits as $await) {
-                if ($this->claimAndEmit($await, self::SETTLED, self::settledPayload($await, $runs, $measuredAt), self::settledSummary($await, count($runs))) === EmitResult::Failed) {
+                $settled = $head->settledPayload($await->repo_name, $await->head_sha, $await->pr, $measuredAt);
+                if ($this->claimAndEmit($await, self::SETTLED, $settled, $head->settledSummary($await->repo_name, $await->head_sha, $await->pr), $head->fingerprint()) === EmitResult::Failed) {
                     $emitFailed[] = $await->id;
                 }
             }
@@ -587,9 +748,9 @@ final class CiAwaitService
      * or where either attempt is unknown, is left as listed: the delivery may be for an earlier
      * attempt of a run that has since been re-run.
      *
-     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
-     * @param  array{id: int, workflow: string, conclusion: ?string, html_url: string, run_attempt: ?int}  $delivered
-     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
+     * @param  list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
+     * @param  array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, run_attempt: ?int}  $delivered
+     * @return list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      */
     private static function overlay(array $runs, array $delivered): array
     {
@@ -620,9 +781,16 @@ final class CiAwaitService
      * else's. The row is emitted again on a later pass: the sweep reads its head again, and expiry
      * retries it ({@see expireDue()}).
      *
+     * `$settledState` is a `ci_settled`'s {@see HeadRuns::fingerprint()}: it is recorded in
+     * {@see CiHeadSettlementLedger} in the same transaction, so the per-head aggregate does not send
+     * this seat the same settled state again (card#11667). Where the ledger ALREADY holds it — the
+     * aggregate sent this seat that state before the await was stored — the await is claimed with
+     * no event and answered {@see EmitResult::ClaimedElsewhere}: the seat has the event, and a
+     * registration says `settled`.
+     *
      * @param  array<string, mixed>  $payload
      */
-    private function claimAndEmit(CiAwait $await, string $kind, array $payload, string $summary): EmitResult
+    private function claimAndEmit(CiAwait $await, string $kind, array $payload, string $summary, ?string $settledState = null): EmitResult
     {
         $intent = new Intent(
             kind: $kind,
@@ -634,9 +802,15 @@ final class CiAwaitService
         );
 
         try {
-            $claimed = DB::transaction(function () use ($await, $intent): bool {
+            $alreadySent = false;
+            $claimed = DB::transaction(function () use ($await, $intent, $settledState, &$alreadySent): bool {
                 if (CiAwait::query()->whereKey($await->id)->delete() !== 1) {
                     return false;
+                }
+                if ($settledState !== null && ! CiHeadSettlementLedger::claim($await->agent, $await->repo, $await->head_sha, $settledState)) {
+                    $alreadySent = true;
+
+                    return true;
                 }
                 $this->intents->stageAuthored($await->agent, "ci_await:{$await->uuid}", microtime(true), $intent);
 
@@ -659,6 +833,11 @@ final class CiAwaitService
         if (! $claimed) {
             return EmitResult::ClaimedElsewhere;
         }
+        if ($alreadySent) {
+            Log::info('bridge ci_await: the await is answered by the ci_settled already sent to this seat for the same settled state — nothing is sent twice', ['agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha]);
+
+            return EmitResult::ClaimedElsewhere;
+        }
 
         Log::info("bridge ci_await: {$kind} emitted", ['agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha]);
         try {
@@ -673,7 +852,7 @@ final class CiAwaitService
     }
 
     /**
-     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
+     * @return list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      *
      * @throws CiRunsReadException naming why no complete run list was read
      */
@@ -831,24 +1010,55 @@ final class CiAwaitService
         return null;
     }
 
-    private function upsert(string $agent, string $repoName, string $headSha, ?int $pr, Carbon $expiresAt): bool
+    private function upsert(string $agent, string $repoName, string $headSha, ?int $pr, Carbon $expiresAt, OverdueDeadline $overdue): bool
+    {
+        // ⛔ attempts: 2. The transaction makes a refused refresh store nothing, but its UPDATE holds a
+        // gap lock until commit, so two same-head registrations by one seat can deadlock on MariaDB
+        // (error 1213). Laravel rolls the loser back and runs this again; by then the winner's row
+        // exists, so the retry's UPDATE matches it and takes the refresh path. A second deadlock
+        // propagates and is refused as a store fault, which is what it then is.
+        return DB::transaction(fn (): bool => $this->upsertRow($agent, $repoName, $headSha, $pr, $expiresAt, $overdue), attempts: 2);
+    }
+
+    private function upsertRow(string $agent, string $repoName, string $headSha, ?int $pr, Carbon $expiresAt, OverdueDeadline $overdue): bool
     {
         $mine = CiAwait::query()->where('agent', $agent)->where('repo', self::key($repoName))->where('head_sha', $headSha);
         // A re-registration WITHOUT a pr keeps the one already recorded; one with a pr replaces it.
         $refresh = ['expires_at' => $expiresAt] + ($pr === null ? [] : ['pr' => $pr]);
+        $deadline = ['overdue_at' => Carbon::now()->addSeconds($overdue->seconds), 'overdue_basis' => $overdue->basis];
         if ($mine->clone()->update($refresh) > 0) {
+            $this->refreshDeadline($mine, $deadline, $overdue);
+
             return true;
         }
         try {
-            CiAwait::query()->create(['agent' => $agent, 'repo' => self::key($repoName), 'repo_name' => $repoName, 'head_sha' => $headSha, 'pr' => $pr, 'expires_at' => $expiresAt]);
+            CiAwait::query()->create(['agent' => $agent, 'repo' => self::key($repoName), 'repo_name' => $repoName, 'head_sha' => $headSha, 'pr' => $pr, 'expires_at' => $expiresAt] + $deadline);
 
             return false;
         } catch (UniqueConstraintViolationException) {
             // A concurrent registration of the same head by the same seat created it first.
             $mine->clone()->update($refresh);
+            $this->refreshDeadline($mine, $deadline, $overdue);
 
             return true;
         }
+    }
+
+    /**
+     * On a refresh, the caller's own deadline replaces the stored one, and a row with none gets
+     * one; a derived or default deadline never moves a stored one. ⛔ Never once the await's
+     * `ci_await_overdue` was sent — the `whereNull` is the guard, in the same statement.
+     *
+     * @param  Builder<CiAwait>  $mine
+     * @param  array{overdue_at: Carbon, overdue_basis: string}  $deadline
+     */
+    private function refreshDeadline(Builder $mine, array $deadline, OverdueDeadline $overdue): void
+    {
+        $q = $mine->clone()->whereNull('overdue_sent_at');
+        if ($overdue->basis !== OverdueDeadline::BASIS_OVERRIDE) {
+            $q->whereNull('overdue_at');
+        }
+        $q->update($deadline);
     }
 
     /**
@@ -868,28 +1078,6 @@ final class CiAwaitService
         }
     }
 
-    /**
-     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
-     * @return array<string, mixed>
-     */
-    private static function settledPayload(CiAwait $await, array $runs, Carbon $measuredAt): array
-    {
-        return [
-            'repo' => $await->repo_name,
-            'head_sha' => $await->head_sha,
-            'pr' => $await->pr,
-            'runs' => array_map(static fn (array $r): array => ['workflow' => $r['workflow'], 'conclusion' => $r['conclusion'], 'html_url' => $r['html_url']], $runs),
-            'all_terminal' => true,
-            'measured_at' => self::instant($measuredAt),
-        ];
-    }
-
-    private static function settledSummary(CiAwait $await, int $runs): string
-    {
-        return "CI settled on {$await->repo_name}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
-            .": all {$runs} workflow run(s) are terminal. This is not a verdict — run ci-read once on this head for green/red.";
-    }
-
     /** @return array<string, mixed> */
     private static function expiredPayload(CiAwait $await): array
     {
@@ -902,6 +1090,46 @@ final class CiAwaitService
             'last_read_at' => $await->last_read_at === null ? null : self::instant($await->last_read_at),
             'last_error' => $await->last_error,
         ];
+    }
+
+    /**
+     * @param  ?list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
+     * @return array<string, mixed>
+     */
+    private static function overduePayload(CiAwait $await, ?array $runs): array
+    {
+        return [
+            'repo' => $await->repo_name,
+            'head_sha' => $await->head_sha,
+            'pr' => $await->pr,
+            'registered_at' => self::instant($await->created_at),
+            'overdue_at' => $await->overdue_at === null ? null : self::instant($await->overdue_at),
+            'overdue_basis' => $await->overdue_basis,
+            'expires_at' => self::instant($await->expires_at),
+            'last_read_at' => $await->last_read_at === null ? null : self::instant($await->last_read_at),
+            'last_error' => $await->last_error,
+            'runs_seen' => $runs === null ? null : array_map(static fn (array $r): array => [
+                'workflow' => $r['workflow'], 'status' => $r['status'], 'conclusion' => $r['conclusion'], 'html_url' => $r['html_url'],
+            ], $runs),
+        ];
+    }
+
+    /** @param  ?list<array{status: string, workflow: string, html_url: string}>  $runs */
+    private static function overdueSummary(CiAwait $await, ?array $runs): string
+    {
+        $open = $runs === null ? [] : array_values(array_filter($runs, static fn (array $r): bool => $r['status'] !== 'completed'));
+        $seen = match (true) {
+            $runs === null => 'the runs its workflow_run deliveries reported could not be read',
+            $runs === [] => 'no workflow_run delivery for this head has reached the bridge',
+            $open === [] => 'every run its workflow_run deliveries reported is completed, but no read has settled the head yet',
+            default => 'by the workflow_run deliveries the bridge received, still open: '.implode(', ', array_map(static fn (array $r): string => "{$r['workflow']} ({$r['status']}, {$r['html_url']})", $open)),
+        };
+
+        return "CI on {$await->repo_name}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
+            .' is OVERDUE — past '.($await->overdue_basis === OverdueDeadline::BASIS_OVERRIDE ? 'the deadline you set' : "this repo's normal CI time")
+            .' and not yet seen finished; '.$seen
+            .($await->last_error === null ? '' : " (last runs read failed: {$await->last_error})")
+            .'. Check it once now with ci-read. The wait stays registered, and its ending event (ci_settled, ci_await_unreadable or ci_await_expired) still follows.';
     }
 
     private static function expiredSummary(CiAwait $await): string
@@ -929,7 +1157,7 @@ final class CiAwaitService
     private static function unreadableSummary(CiAwait $await, string $error): string
     {
         return "Stopped waiting for CI on {$await->repo_name}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
-            ." — this bridge's GitHub token cannot read that repo's workflow runs ({$error}), so no read would ever settle the wait. Poll with ci-read instead, and ask your operator to "
+            ." — this bridge's GitHub token cannot read that repo's workflow runs ({$error}), so no read would ever settle the wait. Tell your operator, who can "
             .self::unreadableRemedy($await->repo_name).'.';
     }
 

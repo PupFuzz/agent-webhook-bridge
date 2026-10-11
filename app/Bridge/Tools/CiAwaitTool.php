@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\CiAwait\CiAwaitConfig;
 use App\Bridge\CiAwait\CiAwaitService;
+use App\Bridge\CiAwait\OverdueDeadline;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
@@ -33,6 +34,11 @@ use Throwable;
  * a refresh, and the answer says which. A FIRST 401 or non-rate-limited 403 is not refused: it waits
  * for a confirming read — and a registration whose own read IS that confirming read (at least a
  * minute later, same status) is refused like a 404. Marked an install fault — no argument the seat sends can fix it.
+ *
+ * ⭐ OVERDUE (card#11674). Every stored await carries `overdue_at`: the repo's normal CI time from
+ * now ({@see OverdueDeadline}), or `overdue_after_seconds` when the seat sends it. Past it, still
+ * unsettled, the seat gets ONE `ci_await_overdue` and the await stays; that event — not a poll — is
+ * the seat's cue to check CI by hand.
  */
 final class CiAwaitTool implements SelfScopedTool
 {
@@ -43,7 +49,7 @@ final class CiAwaitTool implements SelfScopedTool
 
     public function acceptedArguments(): array
     {
-        return ['repo', 'head_sha', 'pr'];
+        return ['repo', 'head_sha', 'pr', 'overdue_after_seconds'];
     }
 
     public function refusedArgumentReason(string $key): ?string
@@ -68,12 +74,17 @@ final class CiAwaitTool implements SelfScopedTool
         if ($pr !== null && (! is_int($pr) || $pr < 1 || $pr > self::PR_MAX)) {
             throw new ToolRefusalException('ci_await: `pr`, when sent, must be a positive integer no larger than '.self::PR_MAX.' (the pull request number) or null. Nothing was stored.', reason: 'bad_arguments');
         }
+        $overdueAfter = $args['overdue_after_seconds'] ?? null;
+        if ($overdueAfter !== null && (! is_int($overdueAfter) || $overdueAfter < CiAwaitConfig::TTL_MIN || $overdueAfter > CiAwaitConfig::TTL_MAX)) {
+            throw new ToolRefusalException('ci_await: `overdue_after_seconds`, when sent, must be a whole number of seconds from '.CiAwaitConfig::TTL_MIN.' to '.CiAwaitConfig::TTL_MAX.' (how long after this call the wait is overdue) or null. Nothing was stored.', reason: 'bad_arguments');
+        }
 
         try {
             $ttl = CiAwaitConfig::ttlSeconds();
             $maxPerSeat = CiAwaitConfig::maxPerSeat();
             $cooldown = CiAwaitConfig::readCooldownSeconds();
             $seatReads = CiAwaitConfig::seatReadsPerHour();
+            $overdueDefault = CiAwaitConfig::overdueDefaultSeconds();
         } catch (ConfigException $e) {
             throw new ToolRefusalException('ci_await: this bridge cannot store an await — '.$e->getMessage().'. Nothing was stored. This is an INSTALL fault; tell your operator.', installFault: true, reason: 'install_fault.ci_await_config_invalid');
         }
@@ -86,7 +97,7 @@ final class CiAwaitTool implements SelfScopedTool
             throw new ToolRefusalException('ci_await: this bridge could not read its agent configs to tell whether it receives GitHub events for `'.$repo.'`. Nothing was stored. This is an INSTALL fault; tell your operator (bridge:check names the file).', installFault: true, reason: 'install_fault.agent_config_unreadable');
         }
         if ($configured === null) {
-            throw new ToolRefusalException("ci_await: this bridge receives no GitHub events for `{$repo}` — no agent on this install subscribes to it — so nothing would ever tell it the CI there finished. Nothing was stored. Poll with ci-read instead, or ask your operator to subscribe this install to that repo.", reason: 'repo_not_received');
+            throw new ToolRefusalException("ci_await: this bridge receives no GitHub events for `{$repo}` — no agent on this install subscribes to it — so nothing would ever tell it the CI there finished. Nothing was stored. Tell your operator: an agent on this install must subscribe to that repo, and the repo's webhook must send Workflow runs here.", reason: 'repo_not_received');
         }
 
         $service = app(CiAwaitService::class);
@@ -97,7 +108,8 @@ final class CiAwaitTool implements SelfScopedTool
             if (! $load['this_head'] && $load['others'] >= $maxPerSeat) {
                 throw new ToolRefusalException("ci_await: you are already awaiting {$load['others']} head(s), and this bridge allows {$maxPerSeat} per seat (BRIDGE_CI_AWAIT_MAX_PER_SEAT). Nothing was stored. Cancel a wait you no longer need with ci_await_cancel, or let one settle or expire; re-registering a head you already await is always allowed.", reason: 'too_many_awaits');
             }
-            $refreshed = $service->store($agentName, $configured, $headSha, $pr, $ttl);
+            $overdue = $overdueAfter !== null ? OverdueDeadline::override($overdueAfter) : OverdueDeadline::forRepo($configured, $overdueDefault);
+            $refreshed = $service->store($agentName, $configured, $headSha, $pr, $ttl, $overdue);
         } catch (QueryException $e) {
             Log::warning('ci_await: the await store could not be written', ['agent' => $agentName] + RedactedErrorText::logContext($e));
 
@@ -108,7 +120,7 @@ final class CiAwaitTool implements SelfScopedTool
         if ($result['unreadable'] !== null) {
             Log::warning('ci_await: refused — GitHub will not let this install read the repo', ['agent' => $agentName, 'repo' => $configured, 'head_sha' => $headSha, 'error' => $result['read_error']]);
 
-            throw new ToolRefusalException("ci_await: this bridge cannot read `{$configured}`'s workflow runs on GitHub — {$result['read_error']} — so nothing would ever tell you the CI there finished. ".($refreshed ? 'Your existing await on this head was removed.' : 'Nothing was stored.').' Poll with ci-read instead, and ask your operator to '.CiAwaitService::unreadableRemedy($configured).'.', installFault: true, reason: 'repo_unreadable');
+            throw new ToolRefusalException("ci_await: this bridge cannot read `{$configured}`'s workflow runs on GitHub — {$result['read_error']} — so nothing would ever tell you the CI there finished. ".($refreshed ? 'Your existing await on this head was removed.' : 'Nothing was stored.').' Tell your operator, who can '.CiAwaitService::unreadableRemedy($configured).'.', installFault: true, reason: 'repo_unreadable');
         }
         try {
             $deliveryKnown = CiAwaitService::hasRecordedWorkflowRun($configured);
@@ -126,6 +138,8 @@ final class CiAwaitTool implements SelfScopedTool
             'state' => $result['state'],
             'refreshed' => $refreshed,
             'expires_at' => $result['expires_at'],
+            'overdue_at' => $result['overdue_at'],
+            'overdue_basis' => $result['overdue_basis'],
             'runs_total' => $result['runs_total'],
             'runs_completed' => $result['runs_completed'],
         ];
@@ -134,6 +148,9 @@ final class CiAwaitTool implements SelfScopedTool
         }
         if ($result['read_skipped'] !== null) {
             $response['read_skipped'] = $result['read_skipped'];
+        }
+        if ($result['overdue_sent_at'] !== null) {
+            $response['overdue_sent_at'] = $result['overdue_sent_at'];
         }
         if ($result['retry_not_before'] !== null) {
             $response['retry_not_before'] = $result['retry_not_before'];

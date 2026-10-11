@@ -20,6 +20,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -2389,6 +2390,21 @@ class BridgeCommandsTest extends TestCase
         $this->assertNull(WebhookEvent::find($old->id));                 // deleted
         $this->assertSame(0, AgentDispatch::where('webhook_event_id', $old->id)->count());   // cascade
         $this->assertNotNull(WebhookEvent::find($recent->id));           // recent kept
+    }
+
+    public function test_prune_deletes_tracked_ci_runs_and_settled_head_records_older_than(): void
+    {
+        $run = ['repo' => 'octo/w', 'repo_name' => 'octo/w', 'head_sha' => str_repeat('a', 40), 'workflow' => 'CI', 'event' => 'push', 'status' => 'completed', 'html_url' => ''];
+        DB::table('ci_head_runs')->insert([$run + ['run_id' => 1, 'created_at' => now()->subDays(40), 'updated_at' => now()->subDays(40)], $run + ['run_id' => 2, 'created_at' => now()->subDays(40), 'updated_at' => now()]]);
+        $settled = ['agent' => 'a', 'repo' => 'octo/w', 'head_sha' => str_repeat('a', 40)];
+        DB::table('ci_head_settlements')->insert([$settled + ['fingerprint' => str_repeat('1', 40), 'created_at' => now()->subDays(40)], $settled + ['fingerprint' => str_repeat('2', 40), 'created_at' => now()]]);
+
+        $this->artisan('bridge:prune', ['--older-than' => '30d'])
+            ->expectsOutputToContain('tracked CI runs and settled-head records older than 30d: 2 deleted')
+            ->assertExitCode(0);
+
+        $this->assertSame([2], DB::table('ci_head_runs')->pluck('run_id')->map(fn ($v): int => (int) $v)->all(), 'a run touched inside the window is kept');
+        $this->assertSame([str_repeat('2', 40)], DB::table('ci_head_settlements')->pluck('fingerprint')->all());
     }
 
     public function test_prune_nulls_payloads_older_than_keeping_the_row(): void

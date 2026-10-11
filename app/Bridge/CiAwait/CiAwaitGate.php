@@ -49,6 +49,8 @@ final class CiAwaitGate
         $delivered = is_int($run['id'] ?? null) ? [
             'id' => $run['id'],
             'workflow' => is_string($run['name'] ?? null) ? $run['name'] : '',
+            'workflow_id' => is_int($run['workflow_id'] ?? null) ? $run['workflow_id'] : null,
+            'run_number' => is_int($run['run_number'] ?? null) ? $run['run_number'] : null,
             'conclusion' => is_string($run['conclusion'] ?? null) ? $run['conclusion'] : null,
             'html_url' => is_string($run['html_url'] ?? null) ? $run['html_url'] : '',
             'run_attempt' => is_int($run['run_attempt'] ?? null) ? $run['run_attempt'] : null,

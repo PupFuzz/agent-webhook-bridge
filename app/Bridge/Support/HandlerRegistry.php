@@ -4,6 +4,7 @@ namespace App\Bridge\Support;
 
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Handlers\ChannelPushHandler;
+use App\Bridge\Handlers\CiHeadAggregateHandler;
 use App\Bridge\Handlers\GitHubPrCorrelationCommentHandler;
 use App\Bridge\Handlers\GitHubProtocolInvalidLabelHandler;
 use App\Bridge\Handlers\KanbanBlockReasonHandler;
@@ -23,7 +24,7 @@ use App\Bridge\Writeback\ProtocolInvalidLabeler;
  * defaults (log_intent, registry_append, channel_push, kanban_move_card,
  * kanban_promote_released, kanban_dependabot_card, kanban_block_reason,
  * kanban_coord_card, kanban_coord_card_move, github_pr_correlation_comment,
- * github_protocol_invalid_label — `known()`
+ * github_protocol_invalid_label, ci_head_aggregate — `known()`
  * is the live set); the
  * highest-blast-radius spawn_detached is opt-in (DL-011)
  * — registered only when $spawnDetachedEnabled (wired from
@@ -39,7 +40,9 @@ use App\Bridge\Writeback\ProtocolInvalidLabeler;
  * unlike spawn_detached which would execute), and the classifier only emits them
  * for configured repos/opt-ins. github_protocol_invalid_label (DL-408) is always-on for
  * the same reason with its own inert state: it writes nothing for a repo absent from
- * `bridge.protocol_invalid_label.repos`, which is empty by default.
+ * `bridge.protocol_invalid_label.repos`, which is empty by default. ci_head_aggregate
+ * (card#11667) writes only to the inbox and channel of the agent it is dispatched for, and only
+ * the `impl-ci-wake` family emits it.
  */
 final class HandlerRegistry
 {
@@ -76,6 +79,7 @@ final class HandlerRegistry
             'kanban_coord_card_move' => new KanbanCoordCardMoveHandler,
             PrCorrelationComment::HANDLER => new GitHubPrCorrelationCommentHandler,
             ProtocolInvalidLabeler::HANDLER => new GitHubProtocolInvalidLabelHandler,
+            CiHeadAggregateHandler::NAME => new CiHeadAggregateHandler,
         ];
         if ($spawnDetachedEnabled) {
             $this->handlers['spawn_detached'] = new SpawnDetachedHandler;

@@ -80,6 +80,7 @@ class PruneCommand extends BridgeCommand
             $result = $this->retention->prune($days, null, $dry);
             $this->info("events older than {$days}d: {$result->eventsDeleted} deleted (+ their dispatches){$tag}");
             $this->info("inbox lines older than {$days}d: {$result->inboxLinesRemoved} removed across {$result->inboxFilesTrimmed} file(s){$tag}");
+            $this->info("tracked CI runs and settled-head records older than {$days}d: {$result->ciHeadRowsDeleted} deleted{$tag}");
         }
 
         if ($nullOlderThan !== null) {
