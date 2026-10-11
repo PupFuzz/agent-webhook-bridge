@@ -263,19 +263,12 @@ final class BridgePaths
     }
 
     /**
-     * The configured per-agent inbox file mode (octal). BRIDGE_INBOX_FILE_MODE
-     * is a string like "0640"; parsed as octal. Falls back to 0640.
-     *
-     * The 0640 here is a second copy of config/bridge.php's default, kept by operator
-     * decision (card#11714, 2026-10-11): an empty BRIDGE_INBOX_FILE_MODE reaches config as
-     * '' so that {@see validateInboxConfig()} makes `bridge:check` fail on it, while the
-     * runtime still applies 0640.
+     * The configured per-agent inbox file mode. BRIDGE_INBOX_FILE_MODE is a string like
+     * "0640", parsed as octal; config/bridge.php resolves unset or empty to its default.
      */
     public static function inboxFileMode(): int
     {
-        $mode = config('bridge.inbox_file_mode');
-
-        return is_string($mode) && $mode !== '' ? (int) octdec($mode) : 0640;
+        return (int) octdec((string) config('bridge.inbox_file_mode'));
     }
 
     /**
@@ -305,8 +298,9 @@ final class BridgePaths
     }
 
     /**
-     * Validate the inbox-surfacing config with actionable messages. Called by
-     * bridge:check (operator preflight) and the dispatch path (fail-closed).
+     * Validate the inbox-surfacing config with actionable messages. Called only by
+     * bridge:check (operator preflight): the dispatch path does not call it, and fails
+     * closed only on an invalid layout, through {@see inboxLayout()}.
      */
     public static function validateInboxConfig(): void
     {
