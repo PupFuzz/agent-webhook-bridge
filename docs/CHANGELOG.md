@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#11719** — CI: the CHANGELOG gate runs agent-board-toolkit's `changelog-gate` action at v0.46.1 (was v0.46.0). Its sync-PR remedy now says to merge the PR's base branch into the branch first (if it is not already merged in) before moving a carried entry; verdicts are unchanged.
+
 ## [0.101.0] - 2026-10-11
 
 ### Fixed
