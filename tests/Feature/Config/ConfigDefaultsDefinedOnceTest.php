@@ -31,7 +31,9 @@ use Tests\TestCase;
  * BOUNDS, stated: "non-null" is read from the test app's config, so it is the config file's
  * value under phpunit.xml's env, not under an operator's `.env`. Other spellings of the same
  * read (`Config::get('k', d)`, `config()->get('k', d)`, `config()->integer('k', d)`) are outside
- * the predicate.
+ * the predicate. It also cannot see a default re-applied AFTER the read (`?:`, `??`,
+ * `is_string($v) && $v !== '' ? … : <literal>`); `BridgePaths::inboxFileMode()` is the known
+ * instance, kept by operator decision because `bridge:check` fails on an empty value.
  */
 class ConfigDefaultsDefinedOnceTest extends TestCase
 {

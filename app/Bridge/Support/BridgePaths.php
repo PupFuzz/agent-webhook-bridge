@@ -265,6 +265,11 @@ final class BridgePaths
     /**
      * The configured per-agent inbox file mode (octal). BRIDGE_INBOX_FILE_MODE
      * is a string like "0640"; parsed as octal. Falls back to 0640.
+     *
+     * The 0640 here is a second copy of config/bridge.php's default, kept by operator
+     * decision (card#11714, 2026-10-11): an empty BRIDGE_INBOX_FILE_MODE reaches config as
+     * '' so that {@see validateInboxConfig()} makes `bridge:check` fail on it, while the
+     * runtime still applies 0640.
      */
     public static function inboxFileMode(): int
     {
