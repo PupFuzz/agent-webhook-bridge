@@ -10,6 +10,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#11711** — **A seat's channel server now updates itself at launch over an ssh door.** The launch-time `client_manifest` call had a fixed 5 s limit. An ssh door boots the bridge for every call, and at session start that boot shares the machine with every MCP server and SessionStart hook. On the kanban host a quiet round trip took about 2 s, and every launch update since 2026-10-05 failed with `bridge unreachable (no answer to client_manifest within 5000 ms)`. The seat stayed on an old client while a newer one was published. A bootstrap uses the same door with a 30 s limit, so it kept succeeding.
+  - The limit is now 10 s. Every call is still capped by the launch update budget (`AWB_CLIENT_UPDATE_BUDGET_MS`, default 20 s), so a launch cannot take longer than before. Only a door that never answers now takes 10 s to give up instead of 5 s.
+  - A seat stuck this way updates at its first launch on this release. To update it sooner, re-run the bootstrap (`provision-board-tools.py --role b --bootstrap-client`).
+  - Reference channel-server snapshot `0.9.53` → `0.9.54`.
+
 - **card#11710** — **The installer is now told which `.env` keys to set, where they act.**
   - The `bridge:check` `ci_await.awaits` FAIL, the `ci_await` `repo_unreadable` refusal and the `ci_await_unreadable` event now name `BRIDGE_CI_AWAIT_NO_CI_REPOS` as the remedy for a repo with no CI. Before, they named only the token remedies, which cannot fix such a repo.
   - `CLAUDE_DEPLOYMENT.md` § *Update an existing install* gains a `.env` step for every update: read the `### Upgrade warnings` of every version crossed, set the keys they name, and compare `.env` against `.env.example`. A `.env` edit made after `optimize` is inert until `php artisan config:cache`.
