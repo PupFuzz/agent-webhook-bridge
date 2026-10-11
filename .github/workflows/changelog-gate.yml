@@ -46,7 +46,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       # Pin maintained by dependabot's github-actions ecosystem (see .github/dependabot.yml).
-      - uses: PupFuzz/agent-board-toolkit/changelog-gate@eb47930d8a7b5f59eebc96254dbb47e04f7df120  # v0.46.0
+      - uses: PupFuzz/agent-board-toolkit/changelog-gate@d4fb1d8d7dbc5ce1276bb6533a4d3ccc6fcc65aa  # v0.46.1
         with:
           base-sha: ${{ steps.pr-base.outputs.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
