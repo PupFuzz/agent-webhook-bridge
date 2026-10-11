@@ -16,7 +16,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **The deadline is the repo's normal CI time, from data the bridge already stores, with no GitHub read**: the 95th percentile of how long the repo's recently finished heads took, from the `workflow_run` deliveries tracked in `ci_head_runs` (card#11667), plus a margin of a quarter of it, at least 5 minutes. A re-run head is left out. A repo with too little history gets the new `.env` key `BRIDGE_CI_AWAIT_OVERDUE_DEFAULT` (default 1800 s, 60..604800). `docs/board-tools.md` § *Overdue* owns the rule.
   - **New optional `ci_await` argument `overdue_after_seconds`** (60..604800) sets the seat's own deadline. On a refresh it replaces the deadline unless the await's `ci_await_overdue` was already sent; a refresh without it keeps the deadline the await has.
   - No `ci_await_overdue` is sent for a head whose current settled state that seat was already sent a `ci_settled` for (by the aggregate, which leaves the await registered, or by the await's own settle). A head re-run or given a late run is a new state, and its await is told when it is overdue.
-  - `bridge:check`'s `ci_await.config` leg also checks `BRIDGE_CI_AWAIT_OVERDUE_DEFAULT`.
+  - `bridge:check`'s `ci_await.awaits` leg also checks `BRIDGE_CI_AWAIT_OVERDUE_DEFAULT`.
   - **The docs no longer tell a seat to poll with `ci-read`** on a repo the bridge cannot cover (`repo_not_received`, `ci_await_unreadable`): the seat tells its operator, who wires the repo's webhook or makes it readable, or says it is not covered.
   - Reference channel-server snapshot **0.9.51 → 0.9.52**: `ci_await` declares `overdue_after_seconds` and its description names `ci_await_overdue`.
 
@@ -35,7 +35,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **`ci_await` uses the same settled predicate**: a superseded run still in progress no longer holds an await open. The aggregate leaves an await on the head in place, because it judges only the runs the bridge has seen and GitHub's list may hold more; it is pushed live to a seat that has one. Both senders record the state they sent, so an await whose head settles to a state the aggregate already sent that agent is forgotten with no second event, and a registration answers `settled`; one that settles to a new state sends it.
   - New handler `ci_head_aggregate` (`HandlerRegistry::known()` gains it).
   - `bridge:prune` and the retention pass delete `ci_head_runs` and `ci_head_settlements` rows older than the events window, and `bridge:prune --older-than` prints one more line for them.
-  - The reference channel server's `ci_await` description still says `ci_settled` is not a verdict; it is unchanged in this release.
+  - The reference channel server's `ci_await` description still says `ci_settled` is not a verdict; this release does not change that sentence.
 
 ### Upgrade warnings
 
@@ -43,6 +43,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - ⚠ **MIGRATION — run `php artisan migrate`** (`ci_head_runs`, `ci_head_settlements`). Until it runs, no aggregate `ci_settled` is sent, and the runs it would carry are not staged either (each `workflow_run` delivery logs a `bridge ci_head:` warning); `ci_await` cannot emit `ci_settled` and retries on later passes.
 - ⚠ **An agent on `impl_non_wake_disposition: inbox_stage` stops getting `impl_ci` for passing, skipped and neutral runs, and for a cancelled run a newer run supersedes** and gets `ci_settled` instead. Set `impl_ci_delivery: per_run` on an agent that needs the per-run events.
 - ⚠ **A seat on a `route_intents: true` channel with `impl_non_wake_disposition: inbox_stage` is no longer woken by a push to a branch outside `classifier.config.impl_push_wake_branches` (default `[dev, main]`; card#11676).** An install whose integration branches are not `dev` / `main` lists them (e.g. `[dev, main, registry/dev, registry/main]`); `impl_push_wake_branches: []` restores the old behaviour.
+- ⚠ **Run `php artisan bridge:client-pack:install`** to publish reference channel-server snapshot 0.9.52 (card#11674). Until it runs, `board_tools.client_pack_source` FAILS, so `bridge:check` exits non-zero.
 
 ## [0.99.0] - 2026-10-10
 
