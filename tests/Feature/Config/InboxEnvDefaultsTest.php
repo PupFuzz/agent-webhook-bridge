@@ -13,8 +13,8 @@ use Tests\TestCase;
  * (card#11714). Each case sets the variable in `$_SERVER`, `$_ENV` and the process environment,
  * evaluates the config file afresh, and installs the result as the running config.
  *
- * `bridge.inbox_layout`'s default lives only in the config file, so its empty case is asserted on
- * the CONFIG VALUE as well as on what the reader returns.
+ * Both defaults live only in the config file, so each empty case is asserted on the CONFIG VALUE
+ * as well as on what the reader returns.
  */
 class InboxEnvDefaultsTest extends TestCase
 {
@@ -63,8 +63,17 @@ class InboxEnvDefaultsTest extends TestCase
         return [
             'unset' => [null, 0640],
             'empty' => ['', 0640],
+            'empty literal' => ['(empty)', 0640],
             'set' => ['0600', 0600],
         ];
+    }
+
+    #[DataProvider('fileModes')]
+    public function test_the_inbox_file_mode_config_value_is_already_the_default(?string $env, int $expected): void
+    {
+        $this->setProcessEnv('BRIDGE_INBOX_FILE_MODE', $env);
+
+        $this->assertSame(sprintf('%04o', $expected), $this->loadBridgeConfig()['inbox_file_mode']);
     }
 
     #[DataProvider('fileModes')]

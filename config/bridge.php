@@ -581,7 +581,7 @@ return [
 
     'default_agent' => env('BRIDGE_DEFAULT_AGENT'),
 
-    'inbox_file_mode' => env('BRIDGE_INBOX_FILE_MODE', '0640'),
+    'inbox_file_mode' => StringEnv::orDefault(env('BRIDGE_INBOX_FILE_MODE'), '0640'),
 
     'inbox_group' => env('BRIDGE_INBOX_GROUP'),
 

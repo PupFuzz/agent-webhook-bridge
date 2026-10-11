@@ -32,8 +32,8 @@ use Tests\TestCase;
  * value under phpunit.xml's env, not under an operator's `.env`. Other spellings of the same
  * read (`Config::get('k', d)`, `config()->get('k', d)`, `config()->integer('k', d)`) are outside
  * the predicate. It also cannot see a default re-applied AFTER the read (`?:`, `??`,
- * `is_string($v) && $v !== '' ? … : <literal>`); `BridgePaths::inboxFileMode()` is the known
- * instance, kept by operator decision because `bridge:check` fails on an empty value.
+ * `is_string($v) && $v !== '' ? … : <literal>`): an empty `.env` value that needs the default
+ * gets it in the config file, through `StringEnv::orDefault()`, not at the reader.
  */
 class ConfigDefaultsDefinedOnceTest extends TestCase
 {

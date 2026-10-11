@@ -22,15 +22,16 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
-- **card#11714** — **Each config default is now written once, in `config/*.php`, with one exception named below.** Call sites no longer repeat it as a `config('<key>', <default>)` fallback. Those copies never ran, because the config file always defines the key, so nothing noticed when one drifted from the config file. No runtime change.
+- **card#11714** — **Each config default is now written once, in `config/*.php`.** Call sites no longer repeat it as a `config('<key>', <default>)` fallback. Those copies never ran, because the config file always defines the key, so nothing noticed when one drifted from the config file. No runtime change, except the `BRIDGE_INBOX_FILE_MODE` change named below.
   - The fallbacks are removed for `bridge.writeback.correlation`, `bridge.inbox_file_mode`, `bridge.inbox_layout`, `bridge.jobs.min_pass_interval`, `bridge.jobs.max_per_pass`, `bridge.jobs.enabled`, `bridge.max_body_bytes` and `app.name`.
   - A new test, `ConfigDefaultsDefinedOnceTest`, fails on a new fallback for a key whose config value is not null. A fallback for a key the config file leaves null is still allowed.
   - `BRIDGE_INBOX_LAYOUT` set but empty now becomes `shared` in `config/bridge.php` itself, through the new `StringEnv::orDefault()`, so `BridgePaths::inboxLayout()` no longer writes `shared` a second time. Unset, empty and set values resolve as before.
-  - **Kept by operator decision (2026-10-11):** `BridgePaths::inboxFileMode()` still turns an empty `BRIDGE_INBOX_FILE_MODE` into `0640` itself. Folding that into `config/bridge.php` would stop `bridge:check` failing on an empty value, so the second copy stays.
+  - ⚠ **Behaviour change: an empty `BRIDGE_INBOX_FILE_MODE` now means the default `0640` and no longer fails `bridge:check`.** `config/bridge.php` turns the empty value into `0640` through `StringEnv::orDefault()`, so `BridgePaths::inboxFileMode()` no longer writes `0640` a second time. Per-agent inbox files get `0640` as before. A non-empty value that is not an octal mode, such as `abc` or `999`, still fails `bridge:check`.
 
 ### Upgrade warnings
 
 - ⚠ **An install that sets `BRIDGE_INBOX_LAYOUT` to an empty value must rebuild the config cache (`php artisan optimize`) before serving this release (card#11714).** A cache built by an earlier release holds the empty value, and this release no longer turns it into `shared` at the read: until the cache is rebuilt, `BridgePaths::inboxLayout()` throws and intent staging answers 5xx. The update runbook already runs `optimize`. An install that leaves `BRIDGE_INBOX_LAYOUT` unset is unaffected.
+- ⚠ **The same holds for an install that sets `BRIDGE_INBOX_FILE_MODE` to an empty value (card#11714).** A cache built by an earlier release holds the empty value, and this release no longer turns it into `0640` at the read: until the cache is rebuilt, each per-agent inbox file is chmodded to `0000`, and the next write to it fails. The update runbook already runs `optimize`. An install that leaves `BRIDGE_INBOX_FILE_MODE` unset is unaffected.
 
 ## [0.100.1] - 2026-10-10
 
