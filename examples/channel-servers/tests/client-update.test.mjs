@@ -554,6 +554,15 @@ test('an updater that hangs past the budget never writes past its next signal ch
   assert.ok(!bridge.requests.some((r) => r.body.op === 'client_report'), 'no network work after the abort');
 });
 
+test('a manifest answer slower than 5 s but inside the manifest leg: the launch still installs (card#11711)', { timeout: 60000 }, async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), delayMs: { client_manifest: 6000 } });
+  const run = await launch(root, seatEnv(t, bridge));
+
+  assert.equal(run.started.release, '2.0.0');
+  assert.equal(read(root, 'state.json').state, 'current');
+});
+
 test('a bridge that holds the pack past the budget: the fetch is cancelled, nothing is reported after it', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), delayMs: { client_pack: 8000 } });

@@ -82,8 +82,14 @@ export const MAX_LINE_BYTES = 4096;
 export const REASON_MAX_BYTES = 500;
 export const SOURCE_MAX_BYTES = 255;
 
-/** Per-leg deadlines inside the budget (design §3.3): the manifest and the report; the pack gets the rest. */
-export const MANIFEST_LEG_MS = 5000;
+/**
+ * Per-leg deadlines inside the budget (design §3.3): the manifest and the report; the pack gets the rest.
+ * The manifest leg is sized for an ssh door at session start, not for a quiet box: the door boots
+ * the bridge per call, and every MCP server and SessionStart hook is starting beside it. At 5 s it
+ * timed out at every launch on a seat whose quiet round trip is ~2 s (card#11711). `ask()` clamps
+ * every leg to the budget, so a longer leg cannot lengthen the launch past it.
+ */
+export const MANIFEST_LEG_MS = 10000;
 export const REPORT_LEG_MS = 5000;
 
 const SCHEMA = 1;
