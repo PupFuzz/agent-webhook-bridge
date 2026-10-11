@@ -83,7 +83,7 @@ final class WritebackBoardStateCheck implements Check
                     yield Finding::ok("writeback: token can see board {$mapping->boardId} ({$repo}) (exact card count unavailable — kanban predates pagination meta)");
                 } else {
                     yield Finding::ok("writeback: token sees {$vis['total']} card(s) on board {$mapping->boardId} ({$repo})");
-                    if (config('bridge.writeback.correlation', 'ref') !== 'ref' && $vis['total'] > KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES) {
+                    if (config('bridge.writeback.correlation') !== 'ref' && $vis['total'] > KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES) {
                         yield Finding::warn("writeback: board {$mapping->boardId} ({$repo}) has {$vis['total']} cards, beyond the scan ceiling — correlations beyond it will be missed; switch BRIDGE_WRITEBACK_CORRELATION=ref");
                     }
                 }

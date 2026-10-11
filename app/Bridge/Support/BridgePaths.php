@@ -268,7 +268,7 @@ final class BridgePaths
      */
     public static function inboxFileMode(): int
     {
-        $mode = config('bridge.inbox_file_mode', '0640');
+        $mode = config('bridge.inbox_file_mode');
 
         return is_string($mode) && $mode !== '' ? (int) octdec($mode) : 0640;
     }
@@ -287,7 +287,7 @@ final class BridgePaths
      */
     public static function inboxLayout(): string
     {
-        $layout = config('bridge.inbox_layout', 'shared');
+        $layout = config('bridge.inbox_layout');
         $layout = is_string($layout) && $layout !== '' ? $layout : 'shared';
         if (! in_array($layout, self::INBOX_LAYOUTS, true)) {
             throw new ConfigException(sprintf(
@@ -321,7 +321,7 @@ final class BridgePaths
             );
         }
 
-        $mode = config('bridge.inbox_file_mode', '0640');
+        $mode = config('bridge.inbox_file_mode');
         if (! is_string($mode) || preg_match('/^0?[0-7]{3}$/', $mode) !== 1) {
             throw new ConfigException(sprintf(
                 "BRIDGE_INBOX_FILE_MODE '%s' must be an octal file mode like 0640.",

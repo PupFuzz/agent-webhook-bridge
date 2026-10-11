@@ -52,7 +52,7 @@ final class WritebackByRefCheck implements Check
 
             return;
         }
-        if (config('bridge.writeback.correlation', 'ref') !== 'ref') {
+        if (config('bridge.writeback.correlation') !== 'ref') {
             yield Silence::because('correlation is scan, which never calls the by-ref route, so its reachability decides nothing for this install');
 
             return;

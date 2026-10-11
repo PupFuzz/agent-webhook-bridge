@@ -183,7 +183,7 @@ final class WritebackMappingConfigCheck implements Check
                 // by-ref correlation is only correct in `ref` mode — scan mode does a bare
                 // issue-number match with NO repo/source disambiguation, so on a multi-repo
                 // board it correlates the wrong repo's issue #N.
-                if (config('bridge.writeback.correlation', 'ref') !== 'ref') {
+                if (config('bridge.writeback.correlation') !== 'ref') {
                     yield Finding::warn("writeback: issue_population=all for {$repo} but BRIDGE_WRITEBACK_CORRELATION is not `ref` — the github_issue by-ref correlation degrades to a bare issue-number scan with NO repo disambiguation, so on a multi-repo board it can correlate the wrong repo's issue #N. Set correlation=ref (the default) for the `all` population.");
                 }
                 yield from $this->issuePopulationAgreement((string) $repo, $mapping);

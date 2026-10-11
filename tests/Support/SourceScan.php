@@ -110,9 +110,21 @@ final class SourceScan
     /** @return list<string> */
     public static function appFiles(): array
     {
+        return self::phpFilesUnder('app');
+    }
+
+    /**
+     * Every `*.php` under `base_path($dir)`, sorted — `*.blade.php` included, since its
+     * extension is `php`. The one walk {@see appFiles} is spelled through, for a census whose
+     * population is a tree other than `app/`.
+     *
+     * @return list<string>
+     */
+    public static function phpFilesUnder(string $dir): array
+    {
         $paths = [];
         /** @var SplFileInfo $file */
-        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator(base_path('app'))) as $file) {
+        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator(base_path($dir))) as $file) {
             if ($file->isFile() && $file->getExtension() === 'php') {
                 $paths[] = $file->getPathname();
             }

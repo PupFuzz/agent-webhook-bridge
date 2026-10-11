@@ -50,11 +50,11 @@ final class JobsConfig
 
     public static function fromConfig(): self
     {
-        $minPassInterval = (int) config('bridge.jobs.min_pass_interval', 60);
-        $maxPerPass = (int) config('bridge.jobs.max_per_pass', 3);
+        $minPassInterval = (int) config('bridge.jobs.min_pass_interval');
+        $maxPerPass = (int) config('bridge.jobs.max_per_pass');
 
         return new self(
-            enabled: (bool) config('bridge.jobs.enabled', true),
+            enabled: (bool) config('bridge.jobs.enabled'),
             minPassInterval: $minPassInterval,
             maxPerPass: $maxPerPass,
             problem: self::problemWith($minPassInterval, $maxPerPass),

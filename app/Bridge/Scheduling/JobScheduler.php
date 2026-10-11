@@ -330,6 +330,6 @@ final class JobScheduler
      */
     private static function minPassInterval(): int
     {
-        return max(1, (int) config('bridge.jobs.min_pass_interval', 60));
+        return max(1, (int) config('bridge.jobs.min_pass_interval'));
     }
 }
