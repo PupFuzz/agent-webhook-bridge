@@ -9,7 +9,7 @@ use Tests\TestCase;
  * Executes the REAL bash out of `.github/workflows/dl-collision-gate.yml`
  * against a throwaway pair of git repositories, so the gate cannot drift from
  * what CI runs the way a re-implementation of its predicate would. Same shape
- * as {@see ChangelogGateTest} and {@see PrTitleLintTest}.
+ * as {@see PrTitleLintTest}.
  *
  * WHY A REAL ORIGIN AND NOT ONE REPOSITORY. The step's second assertion reads
  * the decision log at the LIVE tip of the target branch, which it FETCHES — the
