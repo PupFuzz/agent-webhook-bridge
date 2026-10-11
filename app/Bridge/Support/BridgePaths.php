@@ -298,9 +298,10 @@ final class BridgePaths
     }
 
     /**
-     * Validate the inbox-surfacing config with actionable messages. Called only by
-     * bridge:check (operator preflight): the dispatch path does not call it, and fails
-     * closed only on an invalid layout, through {@see inboxLayout()}.
+     * Validate the inbox-surfacing config with actionable messages. Called by
+     * bridge:check (operator preflight) and by every inbox staging, before any file is
+     * written or chmodded (IntentLog::targetPaths()), so dispatch fails closed on each
+     * setting this refuses — not only on an invalid layout.
      */
     public static function validateInboxConfig(): void
     {

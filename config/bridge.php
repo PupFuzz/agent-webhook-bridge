@@ -571,8 +571,8 @@ return [
     |
     | default_agent: when set, a bare `bridge:inbox` (no --agent) surfaces this
     | agent — for an install with one primary agent that still wants the
-    | per-agent file/cursor. file_mode + group are applied to per-agent inbox +
-    | seen files so a co-located OS-user agent in `group` can read its own inbox
+    | per-agent file/cursor. file_mode + group are applied to per-agent inbox
+    | files so a co-located OS-user agent in `group` can read its own inbox
     | (the cross-user convention; see docs/multi-agent.md).
     |
     */
