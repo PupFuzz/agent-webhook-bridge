@@ -28,6 +28,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - `BRIDGE_INBOX_LAYOUT` set but empty now becomes `shared` in `config/bridge.php` itself, through the new `StringEnv::orDefault()`, so `BridgePaths::inboxLayout()` no longer writes `shared` a second time. Unset, empty and set values resolve as before.
   - ⚠ **Behaviour change: an empty `BRIDGE_INBOX_FILE_MODE` now means the default `0640` and no longer fails `bridge:check`.** `config/bridge.php` turns the empty value into `0640` through `StringEnv::orDefault()`, so `BridgePaths::inboxFileMode()` no longer writes `0640` a second time. Per-agent inbox files get `0640` as before. A non-empty value that is not an octal mode, such as `abc` or `999`, still fails `bridge:check`.
 
+- **card#11684 / DL-473** — **The CHANGELOG gate is now agent-board-toolkit's `changelog-gate` action (v0.46.0).** `changelog-gate.yml` calls it SHA-pinned; this repo's settings moved into a `changelog` block in `.release-pr.json`. For contributors:
+  - Every card shipped since the last tag needs a bullet under `## [Unreleased]` whose **bold lead** names it: `- **card#N** — …` or `- ⚠ **… card#N …** — …`. A card named only in the bullet's prose, or a `DL-N`-only PR title, no longer counts.
+  - Every commit since the last tag is checked on every run, not only the PR's own title. A card that reached `dev` without its bullet reds later PRs until the bullet lands.
+  - A tokened PR touching only `docs/`, `tests/`, `.github/pull_request_template.md`, `.github/dependabot.yml` or `CLAUDE_DECISIONS.md` owes no bullet. A PR with no card in its title that touches the old path scope must still change `[Unreleased]`.
+  - Several bullets for one card pass. The gate also runs on pushes to `dev` and `main`.
+  - The release-section presence check is now `release-artifacts-gate.yml`'s alone. The release-body size limit is `changelog.release_body_limit_bytes`, which the gate enforces and `auto-tag-version.yml`'s publisher reads. VERSIONING.md § What CI enforces says what each key does here.
+
 ### Upgrade warnings
 
 - ⚠ **An install that sets `BRIDGE_INBOX_LAYOUT` to an empty value must rebuild the config cache (`php artisan optimize`) before serving this release (card#11714).** A cache built by an earlier release holds the empty value, and this release no longer turns it into `shared` at the read: until the cache is rebuilt, `BridgePaths::inboxLayout()` throws and intent staging answers 5xx. The update runbook already runs `optimize`. An install that leaves `BRIDGE_INBOX_LAYOUT` unset is unaffected.

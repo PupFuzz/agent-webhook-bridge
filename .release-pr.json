@@ -13,6 +13,12 @@
   "retired_artifacts": [
     "CLAUDE.md § Recent releases row"
   ],
+  "changelog": {
+    "release_body_limit_bytes": 125000,
+    "exempt_paths": ["docs/", "tests/", ".github/pull_request_template.md", ".github/dependabot.yml", "CLAUDE_DECISIONS.md"],
+    "announce_paths": ["app/", "bin/", ".github/workflows/", ".github/actions/", ".release-pr.json", "phpstan-laravel.neon", "pint.json", "phpunit.xml", "composer.json", "composer.lock", ".env.example"],
+    "announce_exempt_branches": ["dependabot/"]
+  },
   "promote": {
     "board_id": 8,
     "released_stage_id": 53,
