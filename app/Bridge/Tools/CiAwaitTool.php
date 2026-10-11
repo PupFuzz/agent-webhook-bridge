@@ -28,6 +28,10 @@ use Throwable;
  * ⛔ A REPO THIS INSTALL RECEIVES NO GITHUB EVENTS FOR IS REFUSED (`repo_not_received`): no agent
  * here subscribes to it, so no `workflow_run.completed` would ever arrive for it.
  *
+ * ⛔ A REPO THE OPERATOR DECLARED TO HAVE NO CI IS REFUSED (`repo_not_ci`, card#11696,
+ * {@see CiAwaitConfig::noCiRepos()}) before anything is stored or read — the coordination repo an
+ * install receives for its comments has no runs to wait for, and its token may not read Actions.
+ *
  * ⛔ A REPO THIS INSTALL'S TOKEN CANNOT READ IS REFUSED (`repo_unreadable`, card#11600) when the
  * registration's own read says so (a 404, no token for any reader, or a confirmed 401/403): the await was stored
  * for that read and is removed again — the seat's EARLIER await on the head too, when this call was
@@ -85,6 +89,7 @@ final class CiAwaitTool implements SelfScopedTool
             $cooldown = CiAwaitConfig::readCooldownSeconds();
             $seatReads = CiAwaitConfig::seatReadsPerHour();
             $overdueDefault = CiAwaitConfig::overdueDefaultSeconds();
+            $noCiRepos = CiAwaitConfig::noCiRepos();
         } catch (ConfigException $e) {
             throw new ToolRefusalException('ci_await: this bridge cannot store an await — '.$e->getMessage().'. Nothing was stored. This is an INSTALL fault; tell your operator.', installFault: true, reason: 'install_fault.ci_await_config_invalid');
         }
@@ -98,6 +103,9 @@ final class CiAwaitTool implements SelfScopedTool
         }
         if ($configured === null) {
             throw new ToolRefusalException("ci_await: this bridge receives no GitHub events for `{$repo}` — no agent on this install subscribes to it — so nothing would ever tell it the CI there finished. Nothing was stored. Tell your operator: an agent on this install must subscribe to that repo, and the repo's webhook must send Workflow runs here.", reason: 'repo_not_received');
+        }
+        if (in_array(CiAwaitService::key($configured), $noCiRepos, true)) {
+            throw new ToolRefusalException("ci_await: this bridge's operator declared that `{$configured}` has no CI (BRIDGE_CI_AWAIT_NO_CI_REPOS), so there is no run to wait for. Nothing was stored. Do not poll there. If that repo does run CI, tell your operator, who removes it from that list.", reason: 'repo_not_ci');
         }
 
         $service = app(CiAwaitService::class);

@@ -880,6 +880,17 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
     }
 
+    /** card#11696: a repo declared to have no CI has no workflow run to send, so its hook is not told to send one. */
+    public function test_a_hook_without_workflow_run_is_silent_on_a_repo_declared_to_have_no_ci(): void
+    {
+        $this->bootWithHooks([self::hook(true, ['issues', 'issue_comment'])]);
+        config(['bridge.ci_await.no_ci_repos' => [strtoupper(self::SCOPE)]]);
+
+        [, $doc] = $this->runJson();
+
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
     public function test_the_wildcard_event_satisfies_workflow_run(): void
     {
         $this->bootWithHooks([self::hook(true, ['*'])]);

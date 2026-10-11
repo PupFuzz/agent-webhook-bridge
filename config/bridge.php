@@ -501,9 +501,15 @@ return [
     | OverdueDeadline), and a seat can pass its own. One `ci_await_overdue`
     | event per wait; the wait stays registered.
     |
+    | no_ci_repos — the received GitHub repos that have NO CI, as `owner/name`,
+    | comma-separated (default none; card#11696). `ci_await` refuses each as
+    | `repo_not_ci` without reading GitHub, and `bridge:check` does not read
+    | its workflow runs. Matched case-insensitively.
+    |
     | A value outside its range is REFUSED, not clamped: `ci_await` refuses as
     | `install_fault.ci_await_config_invalid` and `bridge:check`
-    | (`ci_await.awaits`) fails, naming the key and the value.
+    | (`ci_await.awaits`) fails, naming the key and the value. A `no_ci_repos`
+    | entry that is not `owner/name` is refused the same way.
     |
     */
 
@@ -514,6 +520,7 @@ return [
         'sweep_reads' => env('BRIDGE_CI_AWAIT_SWEEP_READS', 10),
         'seat_reads_per_hour' => env('BRIDGE_CI_AWAIT_SEAT_READS_PER_HOUR', 60),
         'overdue_default' => env('BRIDGE_CI_AWAIT_OVERDUE_DEFAULT', 1800),
+        'no_ci_repos' => CsvEnv::parse((string) env('BRIDGE_CI_AWAIT_NO_CI_REPOS', '')),
     ],
 
     /*

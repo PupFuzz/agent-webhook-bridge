@@ -164,7 +164,9 @@ php artisan bridge:check                          # REQUIRED STEP, after the pac
                                                   # while some agent is served the CI tools): map the repo in the
                                                   # coord credential store's
                                                   # [git-credential-map] to a key that can read it, or set its
-                                                  # write_token_path in writeback.json (card#11600 / DL-468)
+                                                  # write_token_path in writeback.json (card#11600 / DL-468).
+                                                  # A received repo with NO CI (a coordination repo) is not read:
+                                                  # list it in BRIDGE_CI_AWAIT_NO_CI_REPOS (card#11696 / DL-472)
 sudo systemctl reload apache2 php8.5-fpm
 php artisan bridge:check                          # again, now the receiver is served: every github repo this install
                                                   # receives should read github.webhook_subscription OK with no warn
@@ -306,7 +308,9 @@ php artisan bridge:check                           # VALIDATE BEFORE serving —
                                                   # while some agent is served the CI tools): map the repo in the
                                                   # coord credential store's
                                                   # [git-credential-map] to a key that can read it, or set its
-                                                  # write_token_path in writeback.json (card#11600 / DL-468)
+                                                  # write_token_path in writeback.json (card#11600 / DL-468).
+                                                  # A received repo with NO CI (a coordination repo) is not read:
+                                                  # list it in BRIDGE_CI_AWAIT_NO_CI_REPOS (card#11696 / DL-472)
 sudo systemctl reload php8.5-fpm                  # recycle workers so they re-read config + agent YAMLs
 ```
 

@@ -184,6 +184,9 @@ its session starts (card#11579 / DL-466):
   tools. A FAIL names a repo GitHub answers `404` for, or one with no read token, which `ci_await`
   refuses as `repo_unreadable`, with the token's source and file and the fix (card#11600 /
   DL-468). A single `401` or `403` is UNVALIDATED until a read a minute later confirms it: re-run.
+  A repo with no CI (a coordination repo received for its comments) is not a FAIL to fix with a
+  token: list it in `BRIDGE_CI_AWAIT_NO_CI_REPOS`, and `ci_await` refuses it as `repo_not_ci`
+  ([`config-schema.md`](config-schema.md), card#11696 / DL-472).
   UNVALIDATED is not a pass: the read did not measure that repo.
 
 ## Not automated, and why

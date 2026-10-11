@@ -253,6 +253,71 @@ class CiAwaitsCheckTest extends TestCase
         Http::assertNothingSent();
     }
 
+    // ---- a repo declared to have no CI (card#11696) ----------------------------------------
+
+    /**
+     * The coordination-repo shape measured on prod: received for its comments, no Actions, and
+     * GitHub answers 404 to its runs. Declared, it is neither read nor a FAIL.
+     */
+    public function test_a_received_repo_declared_to_have_no_ci_is_ok_and_not_read(): void
+    {
+        $this->installServingCiTools();
+        config(['bridge.ci_await.no_ci_repos' => ['Octo/Widgets']]);
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['message' => 'Not Found'], 404)]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString(self::REPO.' is declared to have no CI', $findings[0]->message);
+        $this->assertStringContainsString('repo_not_ci', $findings[0]->message);
+        Http::assertNothingSent();
+    }
+
+    /** The declaration exempts the repo it names, and no other: a CI repo the token cannot read still FAILs. */
+    public function test_a_ci_repo_the_token_cannot_see_still_fails_beside_a_declared_one(): void
+    {
+        $dir = $this->installServingCiTools();
+        File::put($dir.'/seat-a.yml', "subscriptions:\n  - provider: github\n    scopes: [".self::REPO.", octo/roundtable]\nboard_tools:\n  enabled: true\n  transport: ssh\n");
+        config(['bridge.ci_await.no_ci_repos' => ['octo/roundtable']]);
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['message' => 'Not Found'], 404)]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('cannot read '.self::REPO, $findings[0]->message);
+        $this->assertSame(Severity::Ok, $findings[1]->severity);
+        $this->assertStringContainsString('octo/roundtable is declared to have no CI', $findings[1]->message);
+        Http::assertSentCount(1);
+    }
+
+    public function test_a_declared_repo_that_has_delivered_a_workflow_run_warns(): void
+    {
+        $this->installServingCiTools();
+        config(['bridge.ci_await.no_ci_repos' => [self::REPO]]);
+        $this->recordWorkflowRun();
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['message' => 'Not Found'], 404)]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('holds a workflow_run delivery from it', $findings[0]->message);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_no_ci_repo_entry_that_is_not_owner_name_fails_naming_it(): void
+    {
+        config(['bridge.ci_await.no_ci_repos' => ['octo/widgets/extra']]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString("BRIDGE_CI_AWAIT_NO_CI_REPOS lists 'octo/widgets/extra'", $findings[0]->message);
+    }
+
     /** One agent subscribed to REPO, with a placed single token file; returns the install dir. */
     private function installServingCiTools(bool $served = true): string
     {
