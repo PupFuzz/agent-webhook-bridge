@@ -287,8 +287,7 @@ final class BridgePaths
      */
     public static function inboxLayout(): string
     {
-        $layout = config('bridge.inbox_layout');
-        $layout = is_string($layout) && $layout !== '' ? $layout : 'shared';
+        $layout = (string) config('bridge.inbox_layout');
         if (! in_array($layout, self::INBOX_LAYOUTS, true)) {
             throw new ConfigException(sprintf(
                 "BRIDGE_INBOX_LAYOUT '%s' is invalid — use one of: %s",
