@@ -263,14 +263,12 @@ final class BridgePaths
     }
 
     /**
-     * The configured per-agent inbox file mode (octal). BRIDGE_INBOX_FILE_MODE
-     * is a string like "0640"; parsed as octal. Falls back to 0640.
+     * The configured per-agent inbox file mode. BRIDGE_INBOX_FILE_MODE is a string like
+     * "0640", parsed as octal; config/bridge.php resolves unset or empty to its default.
      */
     public static function inboxFileMode(): int
     {
-        $mode = config('bridge.inbox_file_mode', '0640');
-
-        return is_string($mode) && $mode !== '' ? (int) octdec($mode) : 0640;
+        return (int) octdec((string) config('bridge.inbox_file_mode'));
     }
 
     /**
@@ -287,8 +285,7 @@ final class BridgePaths
      */
     public static function inboxLayout(): string
     {
-        $layout = config('bridge.inbox_layout', 'shared');
-        $layout = is_string($layout) && $layout !== '' ? $layout : 'shared';
+        $layout = (string) config('bridge.inbox_layout');
         if (! in_array($layout, self::INBOX_LAYOUTS, true)) {
             throw new ConfigException(sprintf(
                 "BRIDGE_INBOX_LAYOUT '%s' is invalid — use one of: %s",
@@ -302,7 +299,9 @@ final class BridgePaths
 
     /**
      * Validate the inbox-surfacing config with actionable messages. Called by
-     * bridge:check (operator preflight) and the dispatch path (fail-closed).
+     * bridge:check (operator preflight) and by every inbox staging, before any file is
+     * written or chmodded (IntentLog::targetPaths()), so dispatch fails closed on each
+     * setting this refuses — not only on an invalid layout.
      */
     public static function validateInboxConfig(): void
     {
@@ -321,7 +320,7 @@ final class BridgePaths
             );
         }
 
-        $mode = config('bridge.inbox_file_mode', '0640');
+        $mode = config('bridge.inbox_file_mode');
         if (! is_string($mode) || preg_match('/^0?[0-7]{3}$/', $mode) !== 1) {
             throw new ConfigException(sprintf(
                 "BRIDGE_INBOX_FILE_MODE '%s' must be an octal file mode like 0640.",

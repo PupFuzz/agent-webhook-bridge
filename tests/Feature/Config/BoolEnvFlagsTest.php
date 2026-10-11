@@ -3,6 +3,7 @@
 namespace Tests\Feature\Config;
 
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\SetsProcessEnv;
 use Tests\TestCase;
 
 /**
@@ -17,15 +18,11 @@ use Tests\TestCase;
  */
 class BoolEnvFlagsTest extends TestCase
 {
-    /** @var array<string, array{server: mixed, env: mixed, putenv: string|false}> */
-    private array $saved = [];
+    use SetsProcessEnv;
 
     protected function tearDown(): void
     {
-        foreach ($this->saved as $key => $was) {
-            $this->restore($key, $was);
-        }
-        $this->saved = [];
+        $this->restoreProcessEnv();
         parent::tearDown();
     }
 
@@ -177,53 +174,12 @@ class BoolEnvFlagsTest extends TestCase
 
     private function setEnv(string $key, ?string $value): void
     {
-        if (! array_key_exists($key, $this->saved)) {
-            $this->saved[$key] = [
-                'server' => $_SERVER[$key] ?? null,
-                'env' => $_ENV[$key] ?? null,
-                'putenv' => getenv($key),
-            ];
-        }
-
         foreach (array_keys(self::sites()) as $other) {
-            if (! array_key_exists($other, $this->saved)) {
-                $this->saved[$other] = [
-                    'server' => $_SERVER[$other] ?? null,
-                    'env' => $_ENV[$other] ?? null,
-                    'putenv' => getenv($other),
-                ];
-                $this->clear($other);
+            if (! $this->hasTouchedProcessEnv($other)) {
+                $this->setProcessEnv($other, null);
             }
         }
 
-        $this->clear($key);
-        if ($value !== null) {
-            $_SERVER[$key] = $value;
-            $_ENV[$key] = $value;
-            putenv("{$key}={$value}");
-        }
-    }
-
-    private function clear(string $key): void
-    {
-        unset($_SERVER[$key], $_ENV[$key]);
-        putenv($key);
-    }
-
-    /**
-     * @param  array{server: mixed, env: mixed, putenv: string|false}  $was
-     */
-    private function restore(string $key, array $was): void
-    {
-        $this->clear($key);
-        if ($was['server'] !== null) {
-            $_SERVER[$key] = $was['server'];
-        }
-        if ($was['env'] !== null) {
-            $_ENV[$key] = $was['env'];
-        }
-        if ($was['putenv'] !== false) {
-            putenv("{$key}={$was['putenv']}");
-        }
+        $this->setProcessEnv($key, $value);
     }
 }

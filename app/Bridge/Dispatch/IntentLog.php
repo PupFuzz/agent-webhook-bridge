@@ -83,11 +83,15 @@ class IntentLog
 
     /**
      * The inbox files this agent's lines are written to, per BRIDGE_INBOX_LAYOUT.
+     * Validates the whole inbox config first, so a malformed mode or an
+     * unsafe group/layout throws before any file is written or chmodded.
      *
      * @return list<string>
      */
     private function targetPaths(string $agentName): array
     {
+        BridgePaths::validateInboxConfig();
+
         return match (BridgePaths::inboxLayout()) {
             'per-agent' => [BridgePaths::agentInboxPath($agentName)],
             'both' => [$this->sharedPath(), BridgePaths::agentInboxPath($agentName)],

@@ -255,7 +255,7 @@ re-implementation of the predicate in PHP would drift from what CI actually runs
 
 `tests/Feature/Workflows/DlCollisionGateTest.php` extracts the real `run:` block out of
 `.github/workflows/dl-collision-gate.yml` and drives it under `bash`, the same shape as
-`ChangelogGateTest`. What is different is the fixture: the step's second assertion reads
+`PrTitleLintTest`. What is different is the fixture: the step's second assertion reads
 `CLAUDE_DECISIONS.md` at the **live tip of the target branch**, which it fetches, so the fixture is
 an upstream repository the work tree is *cloned* from and the "the target branch moved under this
 PR" cases advance that upstream for real. A single repo with no `origin` would not exercise the
@@ -298,9 +298,9 @@ fetch at all, and a pre-computed file would assert the fixture.
 `bin/pr-base-snapshot.sh` prints the first parent of the merge commit `actions/checkout` leaves in
 the work tree, and refuses — loudly, printing no sha — when that work tree is not a two-parent
 merge whose second parent is the PR head sha the event carried. Four gates call it:
-`dl-collision-gate.yml`, both steps of `changelog-gate.yml`,
-`channel-server-supply-chain.yml`'s version-bump guard, and `release-artifacts-gate.yml` (which
-feeds the derived sha to a pinned composite action's `base-sha` input through a step output).
+`dl-collision-gate.yml`, `channel-server-supply-chain.yml`'s version-bump guard, and
+`release-artifacts-gate.yml` and `changelog-gate.yml` (each feeds the derived sha to a pinned
+composite action's `base-sha` input through a step output).
 
 `tests/Feature/Workflows/PrBaseSnapshotTest.php` exercises the script itself, because each caller's
 harness only takes the arm its own fixtures reach. **Its refusal arms are the point, not edge
@@ -325,21 +325,23 @@ two coincide.
 
 **This section is the one owner of these figures.** `CLAUDE_DECISIONS.md` (DL-295's card#8527
 amendment), `docs/CHANGELOG.md` and the workflow comments point here instead of restating a count:
-the denominator is the size of three test classes and moves with every merge, and the first copy of
-it was falsified by the very merge round that carried it. **Re-run all three before quoting any of
-them; the figures below are what the recipe printed at `abef6f0`, not a property of the design.**
+the denominator is the size of the test classes below and moves with every merge, and the first copy of
+it was falsified by the very merge round that carried it. **Re-run the recipe before quoting any
+figure; the figures below are what it printed at `abef6f0`, not a property of the design.**
 
 | mutation | apply it to | measured at `abef6f0` |
 | --- | --- | --- |
 | **the fork-point rewrite** — replace `bin/pr-base-snapshot.sh`'s last line with `git merge-base "$base_parent" "$head_parent"` | the derivation all four gates share | **8 red of 75**: `DlCollisionGateTest` 1/12, `ChangelogGateTest` 6/56, `PrBaseSnapshotTest` 1/7 |
-| **the retired pairing** — `diff --name-only "$BASE" "$HEAD"` at both `CHANGED=$(git … diff --name-only "$BASE" HEAD)` predicates in `changelog-gate.yml`, one per step | what card#8441 was filed against | **2 red of 56** in `ChangelogGateTest`: the release-step and feature-step cells, the first failing with an oversize `[1.1.0]` the branch never wrote |
-| **the branch-tip three-dot** — `diff --name-only "$BASE...$HEAD"` at the feature-step predicate | PR #642's superseded spelling | **1 red of 56** in `ChangelogGateTest`: `test_a_change_the_base_already_carries_identically_is_not_in_scope`, the only cell where that range and the merge's delta disagree |
+
+`ChangelogGateTest`'s share of that row is history: card#11684 replaced the bash changelog gate,
+and that class with it, by the toolkit's `changelog-gate` action, which this repo's harness does
+not execute. Two more mutations this table carried — at that gate's two `CHANGED=` predicates —
+left with it.
 
 Denominator: run `vendor/bin/phpunit` once per file over
-`tests/Feature/Workflows/DlCollisionGateTest.php`,
-`tests/Feature/Workflows/ChangelogGateTest.php` and
+`tests/Feature/Workflows/DlCollisionGateTest.php` and
 `tests/Feature/Workflows/PrBaseSnapshotTest.php`, and take each class's count from its own run —
-those three are the classes that execute a base-snapshot derivation, and the population is
+those are the classes that execute a base-snapshot derivation, and the population is
 re-counted, never carried. Restore the mutated file by `cp` from a
 copy taken first and `cmp` it back, not by hand.
 
@@ -628,6 +630,9 @@ class owns the two shapes:
   excluded by construction rather than by a regex the next spelling walks past, and the key never
   carries a LINE NUMBER — an offset pin reds on an unrelated docblock edit, and its only
   remediation ("re-derive the offsets") is the same action that absorbs a real new site.
+- **`phpFilesUnder($dir)`** — the FILE walk `appFiles()` is spelled through, for a census whose
+  population spans trees other than `app/` (`ConfigDefaultsDefinedOnceTest`'s `SCANNED_DIRS` names
+  its trees, and it feeds each file to `sites()`).
 
 ⛔ **A hand-written glob plus a STATED BOUND for everything outside it is a declaration with no
 check, and this repo has paid for it.** Two classes police the two ends of ONE tenant boundary;

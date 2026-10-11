@@ -88,12 +88,12 @@ jobs:
         # whose notes are this version's docs/CHANGELOG.md section, so the
         # Releases page matches the tags. Idempotent: skip if it already exists.
         #
-        # THE SECTION IS EXTRACTED BY bin/changelog-section.py, not by an awk
-        # one-liner here, because `changelog-gate.yml` asserts against the same
-        # section at PR time: two extractors that disagreed about where a
-        # section ends would let the gate certify a body this step never
-        # publishes (card#5910's class, one level down). Byte-identical to the
-        # awk it replaced for any section that fits.
+        # THE LIMIT IS `.release-pr.json`'s `changelog.release_body_limit_bytes`,
+        # the figure the toolkit's changelog gate enforces on the release PR
+        # (card#11684), so the two read one number. Passed only when set: a bare
+        # `jq .key` prints `null`, which `--max-bytes` refuses as a usage error,
+        # failing this step after the tag is minted. Unset, the extractor's own
+        # default applies.
         #
         # OVERSIZE FALLBACK (card#5972). v0.72.0's section was 134,904 bytes
         # against GitHub's 125,000 limit: steps 1-4 succeeded, so the tag
@@ -118,15 +118,18 @@ jobs:
           fi
 
           CHANGELOG_AT_TAG="https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/CHANGELOG.md"
+          limit=$(jq -r '.changelog.release_body_limit_bytes // empty' .release-pr.json)
+          limit_args=()
+          [ -n "$limit" ] && limit_args=(--max-bytes "$limit")
           rc=0
           python3 bin/changelog-section.py \
-            --changelog docs/CHANGELOG.md --section "$VERSION" \
+            --changelog docs/CHANGELOG.md --section "$VERSION" "${limit_args[@]}" \
             --fallback-url "$CHANGELOG_AT_TAG" > release-notes.md || rc=$?
 
           # FAIL-SOFT ON AN ABSENT SECTION IS BY DESIGN and must stay: failing
           # here would leave a merged release untagged. card#5910's gate answer
-          # rejected hardening it, and `changelog-gate.yml` is where a missing
-          # section is refused instead. Any OTHER non-zero exit is a real
+          # rejected hardening it, and `release-artifacts-gate.yml` is where a
+          # missing section is refused instead (a declared release artifact). Any OTHER non-zero exit is a real
           # tooling failure and stays loud.
           if [ "$rc" -eq 3 ]; then
             echo "WARNING: no docs/CHANGELOG.md section for [$VERSION]; using a generated note."

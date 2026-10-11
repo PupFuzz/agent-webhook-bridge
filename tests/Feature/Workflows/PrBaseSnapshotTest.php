@@ -7,9 +7,9 @@ use Tests\TestCase;
 /**
  * Executes the REAL `bin/pr-base-snapshot.sh` against throwaway git
  * repositories. The script is the single derivation four PR gates now share —
- * `dl-collision-gate.yml`, both steps of `changelog-gate.yml`,
- * `channel-server-supply-chain.yml`'s version-bump guard and
- * `release-artifacts-gate.yml`'s base-sha step — so one wrong answer here is
+ * `dl-collision-gate.yml`, `channel-server-supply-chain.yml`'s version-bump
+ * guard, and the base-sha steps of `release-artifacts-gate.yml` and
+ * `changelog-gate.yml` — so one wrong answer here is
  * four wrong verdicts, and the callers' own harnesses exercise only the arm
  * their fixtures happen to take.
  *

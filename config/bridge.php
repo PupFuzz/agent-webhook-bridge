@@ -2,6 +2,7 @@
 
 use App\Bridge\Support\BoolEnv;
 use App\Bridge\Support\CsvEnv;
+use App\Bridge\Support\StringEnv;
 
 return [
 
@@ -570,17 +571,17 @@ return [
     |
     | default_agent: when set, a bare `bridge:inbox` (no --agent) surfaces this
     | agent — for an install with one primary agent that still wants the
-    | per-agent file/cursor. file_mode + group are applied to per-agent inbox +
-    | seen files so a co-located OS-user agent in `group` can read its own inbox
+    | per-agent file/cursor. file_mode + group are applied to per-agent inbox
+    | files so a co-located OS-user agent in `group` can read its own inbox
     | (the cross-user convention; see docs/multi-agent.md).
     |
     */
 
-    'inbox_layout' => env('BRIDGE_INBOX_LAYOUT', 'shared'),
+    'inbox_layout' => StringEnv::orDefault(env('BRIDGE_INBOX_LAYOUT'), 'shared'),
 
     'default_agent' => env('BRIDGE_DEFAULT_AGENT'),
 
-    'inbox_file_mode' => env('BRIDGE_INBOX_FILE_MODE', '0640'),
+    'inbox_file_mode' => StringEnv::orDefault(env('BRIDGE_INBOX_FILE_MODE'), '0640'),
 
     'inbox_group' => env('BRIDGE_INBOX_GROUP'),
 

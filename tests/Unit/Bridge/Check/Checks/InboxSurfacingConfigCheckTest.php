@@ -6,6 +6,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -85,6 +86,32 @@ class InboxSurfacingConfigCheckTest extends TestCase
             $findings[0]->message,
         );
         $this->assertStringContainsString('Set BRIDGE_INBOX_LAYOUT=per-agent.', $findings[0]->message);
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function malformedModes(): array
+    {
+        return [
+            'not octal digits' => ['abc'],
+            'out of octal range' => ['999'],
+        ];
+    }
+
+    #[DataProvider('malformedModes')]
+    public function test_a_malformed_non_empty_inbox_file_mode_is_reported_under_this_checks_own_prefix(string $mode): void
+    {
+        config(['bridge.inbox_layout' => 'shared', 'bridge.inbox_file_mode' => $mode]);
+
+        $findings = $this->findings();
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertSame(
+            "inbox surfacing config: BRIDGE_INBOX_FILE_MODE '{$mode}' must be an octal file mode like 0640.",
+            $findings[0]->message,
+        );
     }
 
     /** @return list<Finding> */

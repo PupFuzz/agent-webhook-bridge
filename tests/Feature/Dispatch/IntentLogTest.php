@@ -5,6 +5,7 @@ namespace Tests\Feature\Dispatch;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\IntentLog;
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\AgentConfig;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -173,5 +174,51 @@ class IntentLogTest extends TestCase
         $lines = $this->perAgentLines();
         $this->assertCount(2, $lines);
         $this->assertSame($lines[0]['id'], $lines[1]['id']);
+    }
+
+    public function test_a_malformed_file_mode_refuses_staging_and_leaves_the_existing_inbox_file_untouched(): void
+    {
+        config(['bridge.inbox_layout' => 'per-agent', 'bridge.inbox_file_mode' => 'abc']);
+        $path = $this->dir.'/state/inbox-prod-agent.jsonl';
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, "{\"id\":\"earlier\"}\n");
+        chmod($path, 0o640);
+
+        try {
+            (new IntentLog)->stage($this->agent(), $this->event(), $this->intent('42'), 0);
+            $this->fail('staging under a malformed BRIDGE_INBOX_FILE_MODE must be refused');
+        } catch (ConfigException $e) {
+            $this->assertStringContainsString("BRIDGE_INBOX_FILE_MODE 'abc'", $e->getMessage());
+        }
+
+        clearstatcache(true, $path);
+        $this->assertSame(0o640, fileperms($path) & 0o777);   // octdec('abc') = 0 would have chmodded it to 0000
+        $this->assertSame("{\"id\":\"earlier\"}\n", File::get($path));
+    }
+
+    public function test_a_group_under_the_shared_layout_refuses_staging(): void
+    {
+        config(['bridge.inbox_layout' => 'shared', 'bridge.inbox_group' => 'agent-bridge']);
+
+        try {
+            (new IntentLog)->stage($this->agent(), $this->event(), $this->intent('42'), 0);
+            $this->fail('staging with BRIDGE_INBOX_GROUP under the shared layout must be refused');
+        } catch (ConfigException $e) {
+            $this->assertStringContainsString('BRIDGE_INBOX_GROUP is set', $e->getMessage());
+        }
+
+        $this->assertFileDoesNotExist($this->dir.'/state/inbox.jsonl');
+    }
+
+    public function test_a_valid_per_agent_config_stages_and_applies_the_configured_mode(): void
+    {
+        config(['bridge.inbox_layout' => 'per-agent', 'bridge.inbox_file_mode' => '0600']);
+
+        (new IntentLog)->stage($this->agent(), $this->event(), $this->intent('42'), 0);
+
+        $path = $this->dir.'/state/inbox-prod-agent.jsonl';
+        $this->assertCount(1, $this->perAgentLines());
+        clearstatcache(true, $path);
+        $this->assertSame(0o600, fileperms($path) & 0o777);
     }
 }
