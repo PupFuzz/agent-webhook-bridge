@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.101.0] - 2026-10-11
+
 ### Fixed
 
 - **card#11718** — **A malformed `BRIDGE_INBOX_FILE_MODE`, or `BRIDGE_INBOX_GROUP` set under a layout other than `per-agent`, now stops dispatch with the setting named, instead of locking the inbox file.** Dispatch validated only `BRIDGE_INBOX_LAYOUT`. With `BRIDGE_INBOX_FILE_MODE=abc` it appended the line and then chmodded the per-agent inbox file to `0000` (`octdec('abc')` is 0), so every later append failed; with a group under `shared`/`both` it kept staging, although `docs/config-schema.md` and DL-006 said dispatch fails closed. Inbox staging now runs the same validation `bridge:check` runs, before any file is written or chmodded, and fails the way an invalid layout already did: the webhook answers 500, the exception message naming the setting is logged, nothing is staged, and the delivery and its unprocessed dispatch row are kept. **Kanban redelivers on its own; GitHub does not (DL-183)**: once the setting is fixed, re-run a refused GitHub event with `php artisan bridge:replay <event id>` within the payload-retention window. Run `bridge:check` before upgrading: an install whose `BRIDGE_INBOX_FILE_MODE` is malformed under the `shared` layout dispatched without error before this release and is refused after it. A head's `ci_settled` that `CiHeadAggregate` would have staged for a route-only seat during the refusal is not re-emitted; a seat that called `ci_await` is still covered by its sweep.
