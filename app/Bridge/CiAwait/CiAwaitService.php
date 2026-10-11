@@ -180,9 +180,10 @@ final class CiAwaitService
     }
 
     /**
-     * Every GitHub repo this install receives events for — the repos `ci_await` accepts — once
-     * each, in the first configured spelling. `$configs` are the agent configs to read (null: load
-     * them from the config dir, which throws {@see ConfigException} on one that will not load).
+     * Every GitHub repo this install receives events for — the repos `ci_await` accepts, except one
+     * declared to have no CI ({@see CiAwaitConfig::noCiRepos()}, which the tool refuses after this
+     * lookup) — once each, in the first configured spelling. `$configs` are the agent configs to read
+     * (null: load them from the config dir, which throws {@see ConfigException} on one that will not load).
      *
      * @param  ?list<AgentConfig>  $configs
      * @return list<string>

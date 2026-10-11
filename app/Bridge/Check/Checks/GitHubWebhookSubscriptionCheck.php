@@ -6,6 +6,9 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\NextStepState;
 use App\Bridge\Check\Silence;
+use App\Bridge\CiAwait\CiAwaitConfig;
+use App\Bridge\CiAwait\CiAwaitService;
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Provision\GitHubWebhookProbe;
 use App\Bridge\Provision\GitHubWebhookProbeKind;
 use App\Bridge\Provision\GitHubWebhookProbeResult;
@@ -250,7 +253,8 @@ final class GitHubWebhookSubscriptionCheck implements Check
      *    so every delivery is refused (`invalid_envelope`);
      *  - no ACTIVE matching hook sends `workflow_run` while some agent here is served the CI
      *    tools ⇒ a seat's `ci_await` settles only through the ci-await-sweep's own reads, at
-     *    least one sweep interval late — the polling the tool exists to remove;
+     *    least one sweep interval late — the polling the tool exists to remove. Not said of a
+     *    repo declared in `BRIDGE_CI_AWAIT_NO_CI_REPOS` (card#11696): it has no runs to send;
      *  - no ACTIVE matching hook's most recent delivery got a 2xx ⇒ GitHub's own record says this
      *    receiver refused or failed it. A hook with no delivery in GitHub's 30-day window reports
      *    no code, which is an unknown and prints nothing ({@see HookDeliverySettings}).
@@ -280,6 +284,14 @@ final class GitHubWebhookSubscriptionCheck implements Check
      */
     private function workflowRunWarning(CheckContext $ctx, string $scope): iterable
     {
+        try {
+            if (in_array(CiAwaitService::key($scope), CiAwaitConfig::noCiRepos(), true)) {
+                // card#11696: declared to have no CI — no workflow run to send, and ci_await refuses it.
+                return;
+            }
+        } catch (ConfigException) {
+            // `ci_await.awaits` FAILs naming the bad entry; the warn below stays true either way.
+        }
         $served = ServedTools::make();
         foreach ($ctx->configs as $config) {
             if (in_array('ci_await', $served->namesFor($config->boardTools), true)) {

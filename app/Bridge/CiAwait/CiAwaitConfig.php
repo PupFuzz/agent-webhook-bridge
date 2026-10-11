@@ -3,6 +3,7 @@
 namespace App\Bridge\CiAwait;
 
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\Validation\ScopeId;
 
 /**
  * The one reader of `bridge.ci_await.*` (card#11200 / DL-452). A value this install cannot use is
@@ -74,6 +75,33 @@ final class CiAwaitConfig
     public static function overdueDefaultSeconds(): int
     {
         return self::int('overdue_default', 'BRIDGE_CI_AWAIT_OVERDUE_DEFAULT', self::TTL_MIN, self::TTL_MAX, '1800, 30 min');
+    }
+
+    /**
+     * The received repos declared to have NO CI (card#11696), lower-cased ({@see CiAwaitService::key()}):
+     * `ci_await` refuses them as `repo_not_ci` and `bridge:check` does not read their workflow runs.
+     * A declaration, never derived — a repo whose token cannot read its Actions looks the same as one
+     * with no Actions, and only the operator knows which it is.
+     *
+     * @return list<string>
+     *
+     * @throws ConfigException naming an entry that is not `owner/name`
+     */
+    public static function noCiRepos(): array
+    {
+        $raw = config('bridge.ci_await.no_ci_repos');
+        $entries = is_array($raw) ? $raw : [];
+        $repos = [];
+        foreach ($entries as $entry) {
+            if (! is_string($entry) || substr_count($entry, '/') !== 1 || ! ScopeId::matches($entry)) {
+                $shown = is_scalar($entry) ? var_export($entry, true) : get_debug_type($entry);
+
+                throw new ConfigException("BRIDGE_CI_AWAIT_NO_CI_REPOS lists {$shown} — each entry must be a GitHub repo as owner/name");
+            }
+            $repos[] = CiAwaitService::key($entry);
+        }
+
+        return $repos;
     }
 
     private static function int(string $key, string $env, int $min, int $max, string $default): int
