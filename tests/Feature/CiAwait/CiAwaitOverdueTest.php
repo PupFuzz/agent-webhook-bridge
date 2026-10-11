@@ -27,6 +27,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\TestCase;
@@ -226,19 +227,15 @@ class CiAwaitOverdueTest extends TestCase
 
     public function test_a_refresh_refused_for_a_missing_column_changes_nothing(): void
     {
-        $this->register();
-        $before = CiAwait::query()->firstOrFail()->expires_at->toIso8601String();
-        Schema::table('ci_awaits', function (Blueprint $table) {
-            $table->dropIndex(['overdue_at']);
-            $table->dropColumn(['overdue_at', 'overdue_basis', 'overdue_sent_at']);
+        $before = '2026-10-10T16:00:00+00:00';
+        $this->onAnInstallThatHasNotMigrated($before, function () use ($before): void {
+            Carbon::setTestNow('2026-10-10T12:00:00.000Z');
+            $out = $this->register();
+
+            $this->assertFalse($out->ok);
+            $this->assertSame('install_fault.ci_await_store_unavailable', $out->body()['reason']);
+            $this->assertSame($before, CiAwait::query()->firstOrFail()->expires_at->toIso8601String(), 'the refusal says nothing was stored, so the expiry did not move');
         });
-
-        Carbon::setTestNow('2026-10-10T12:00:00.000Z');
-        $out = $this->register();
-
-        $this->assertFalse($out->ok);
-        $this->assertSame('install_fault.ci_await_store_unavailable', $out->body()['reason']);
-        $this->assertSame($before, CiAwait::query()->firstOrFail()->expires_at->toIso8601String(), 'the refusal says nothing was stored, so the expiry did not move');
     }
 
     public function test_awaits_skipped_for_a_sent_state_do_not_use_up_the_send_cap(): void
@@ -428,6 +425,44 @@ class CiAwaitOverdueTest extends TestCase
     }
 
     // ---- helpers ------------------------------------------------------------------------------
+
+    /**
+     * Run `$body` against an `ci_awaits` that lacks the overdue columns, holding one await expiring
+     * at `$expiresAt`. Not `Schema::table()` on the default connection: on MariaDB that DDL commits
+     * RefreshDatabase's transaction, so the service's transaction finds no savepoint to roll back
+     * to (1305) and the columns stay dropped for every later test.
+     *
+     * @param  \Closure(): void  $body
+     */
+    private function onAnInstallThatHasNotMigrated(string $expiresAt, \Closure $body): void
+    {
+        $default = config('database.default');
+        config(['database.connections.unmigrated' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => ''], 'database.default' => 'unmigrated']);
+        try {
+            Schema::create('ci_awaits', function (Blueprint $table) {
+                $table->id();
+                $table->char('uuid', 36)->unique();
+                $table->string('agent', 191);
+                $table->string('repo', 128);
+                $table->string('repo_name', 128);
+                $table->char('head_sha', 40);
+                $table->unsignedInteger('pr')->nullable();
+                $table->timestamp('created_at', 3)->useCurrent();
+                $table->timestamp('updated_at', 3)->nullable();
+                $table->timestamp('expires_at', 3)->useCurrent();
+                $table->timestamp('last_read_at', 3)->nullable();
+                $table->string('last_error', 1000)->nullable();
+                $table->timestamp('retry_not_before', 3)->nullable();
+                $table->timestamp('emit_failed_at', 3)->nullable();
+                $table->unsignedSmallInteger('unconfirmed_status')->nullable();
+                $table->unique(['agent', 'repo', 'head_sha']);
+            });
+            DB::table('ci_awaits')->insert(['uuid' => (string) Str::uuid(), 'agent' => 'seat-a', 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA, 'expires_at' => Carbon::parse($expiresAt)->format('Y-m-d H:i:s.v')]);
+            $body();
+        } finally {
+            config(['database.default' => $default]);
+        }
+    }
 
     /** @param  array<string, mixed>  $extra */
     private function register(array $extra = []): DispatchOutcome
