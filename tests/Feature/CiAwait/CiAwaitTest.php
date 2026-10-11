@@ -235,6 +235,35 @@ class CiAwaitTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_a_repo_declared_to_have_no_ci_is_refused_without_a_read_and_stores_nothing(): void
+    {
+        config(['bridge.ci_await.no_ci_repos' => ['Octo/Widgets']]);
+        Http::fake();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertFalse($out->ok);
+        $this->assertSame('repo_not_ci', $out->body()['reason']);
+        $this->assertStringContainsString('BRIDGE_CI_AWAIT_NO_CI_REPOS', (string) $out->body()['error']);
+        $this->assertStringContainsString('Nothing was stored', (string) $out->body()['error']);
+        $this->assertSame(0, CiAwait::query()->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_a_no_ci_repo_entry_that_is_not_owner_name_refuses_every_call_as_an_install_fault(): void
+    {
+        config(['bridge.ci_await.no_ci_repos' => ['agent-roundtable']]);
+        Http::fake();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertFalse($out->ok);
+        $this->assertSame('install_fault.ci_await_config_invalid', $out->body()['reason']);
+        $this->assertStringContainsString("BRIDGE_CI_AWAIT_NO_CI_REPOS lists 'agent-roundtable'", (string) $out->body()['error']);
+        $this->assertSame(0, CiAwait::query()->count());
+        Http::assertNothingSent();
+    }
+
     public function test_a_seat_or_identity_argument_is_refused(): void
     {
         Http::fake();

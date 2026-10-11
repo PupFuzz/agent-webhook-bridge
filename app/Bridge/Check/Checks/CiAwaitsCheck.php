@@ -25,7 +25,9 @@ use Throwable;
  * While any agent is served the CI tools, reads each repo this install receives GitHub events for
  * once (card#11600, {@see repoReads()}): `ok` when GitHub answers, FAIL on a 404 or no token
  * (every `ci_await` there is refused `repo_unreadable`), UNVALIDATED on a single 401 or 403 and
- * when the read did not measure it.
+ * when the read did not measure it. A repo declared in `BRIDGE_CI_AWAIT_NO_CI_REPOS` is not read
+ * (card#11696, {@see declaredNoCi()}): `ok`, or a WARN when this install holds a `workflow_run`
+ * delivery from it.
  *
  * FAILs on a `BRIDGE_CI_AWAIT_*` value the bridge refuses — every `ci_await` call refuses with it.
  * WARNs when the per-agent read limiter's cache store does not answer (card#11283).
@@ -52,7 +54,7 @@ final class CiAwaitsCheck implements Check
      */
     public function run(CheckContext $ctx): iterable
     {
-        foreach ([CiAwaitConfig::ttlSeconds(...), CiAwaitConfig::maxPerSeat(...), CiAwaitConfig::readCooldownSeconds(...), CiAwaitConfig::sweepReads(...), CiAwaitConfig::seatReadsPerHour(...), CiAwaitConfig::overdueDefaultSeconds(...)] as $read) {
+        foreach ([CiAwaitConfig::ttlSeconds(...), CiAwaitConfig::maxPerSeat(...), CiAwaitConfig::readCooldownSeconds(...), CiAwaitConfig::sweepReads(...), CiAwaitConfig::seatReadsPerHour(...), CiAwaitConfig::overdueDefaultSeconds(...), CiAwaitConfig::noCiRepos(...)] as $read) {
             try {
                 $read();
             } catch (ConfigException $e) {
@@ -128,6 +130,7 @@ final class CiAwaitsCheck implements Check
      * this install receives GitHub events for, made by {@see CiAwaitService::probeRunsRead()} —
      * the token resolution and failure classes an await's own read uses — and only while some agent
      * is served the CI tools: with none, no seat can call `ci_await`, and the leg asks GitHub nothing.
+     * A repo declared to have no CI is not read ({@see declaredNoCi()}).
      *
      * A read whose failure an await would end on at once (a 404, no token for any reader) FAILS,
      * naming the repo, the token source and file, and the remedy. A 401 or a non-rate-limited 403 is
@@ -152,7 +155,19 @@ final class CiAwaitsCheck implements Check
             return;
         }
 
+        try {
+            $noCi = CiAwaitConfig::noCiRepos();
+        } catch (ConfigException) {
+            // Already a FAIL from run()'s config pass, and every ci_await refuses until it is fixed.
+            $noCi = [];
+        }
+
         foreach (CiAwaitService::receivedRepos($configs) as $repo) {
+            if (in_array(CiAwaitService::key($repo), $noCi, true)) {
+                yield from $this->declaredNoCi($repo);
+
+                continue;
+            }
             $failure = CiAwaitService::probeRunsRead($repo);
             if ($failure === null) {
                 yield Finding::ok("ci_await: GitHub lets this install read {$repo}'s workflow runs, so a ci_await there can be answered.");
@@ -164,5 +179,33 @@ final class CiAwaitsCheck implements Check
                 yield Finding::unvalidated("ci_await: whether this install can read {$repo}'s workflow runs was NOT measured — ".RedactedErrorText::of($failure).'. This is not a pass and not evidence the token is bad; ci_await keeps such an await and reads it again. Re-run bridge:check.');
             }
         }
+    }
+
+    /**
+     * A received repo the operator declared to have no CI (card#11696): its runs are not read, so
+     * whether its token could read them is not reported either way. The declaration is held against
+     * the one evidence of CI this install keeps — a stored `workflow_run` delivery from the repo —
+     * and a repo that has delivered one is a WARN: the declaration is then turning ci_await off on a
+     * repo that does run CI, which is what this leg's FAIL exists to surface. No delivery stored is
+     * not proof of no CI (a hook that does not send Workflow runs, retention), which is why this is
+     * a declaration and not derived from it.
+     *
+     * @return iterable<Finding>
+     */
+    private function declaredNoCi(string $repo): iterable
+    {
+        try {
+            $hasRuns = CiAwaitService::hasRecordedWorkflowRun($repo);
+        } catch (Throwable $e) {
+            yield Finding::unvalidated("ci_await: {$repo} is declared to have no CI (BRIDGE_CI_AWAIT_NO_CI_REPOS), so its workflow runs were not read and every ci_await there is refused as repo_not_ci — and whether this install holds a workflow_run delivery from it, which would contradict that, could NOT be read (".RedactedErrorText::of($e).').');
+
+            return;
+        }
+        if ($hasRuns) {
+            yield Finding::warn("ci_await: {$repo} is declared to have no CI (BRIDGE_CI_AWAIT_NO_CI_REPOS), but this install holds a workflow_run delivery from it — it does run CI, and every ci_await there is refused as repo_not_ci. If seats should wait on its CI, remove it from BRIDGE_CI_AWAIT_NO_CI_REPOS and re-run bridge:check, which then reads its workflow runs.");
+
+            return;
+        }
+        yield Finding::ok("ci_await: {$repo} is declared to have no CI (BRIDGE_CI_AWAIT_NO_CI_REPOS), so its workflow runs are not read and every ci_await there is refused as repo_not_ci.");
     }
 }

@@ -704,7 +704,9 @@ const TOOL_DEFINITIONS = [
       'they have already all finished, ci_settled is sent immediately (state: settled). A head ' +
       'with no runs yet keeps waiting. A repo this bridge receives no GitHub events for is ' +
       'REFUSED (reason repo_not_received) — do NOT poll there: tell your operator, who wires the ' +
-      'repo\'s webhook to this bridge or tells you the repo is not covered. A repo this bridge\'s GitHub ' +
+      'repo\'s webhook to this bridge or tells you the repo is not covered. A repo this bridge\'s ' +
+      'operator declared to have no CI is REFUSED (reason repo_not_ci) — there is nothing to wait ' +
+      'for; do not poll there. A repo this bridge\'s GitHub ' +
       'token cannot read (GitHub answers 404, or no token) is REFUSED (reason repo_unreadable; ' +
       'your wait on that head is not kept, and the message names the fix for your operator); a 401 ' +
       'or 403 is not refused on one read. If a later read finds the repo unreadable (a 401 or 403 ' +

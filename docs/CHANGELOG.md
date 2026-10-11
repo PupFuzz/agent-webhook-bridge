@@ -8,6 +8,19 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#11696 / DL-472** — **`bridge:check` no longer FAILs on a received repo that has no CI.** Since 0.99.0 (card#11600), `ci_await.awaits` reads the workflow runs of every GitHub repo the install receives and FAILs on a `404`. A coordination repo received only for its issues and comments has no Actions, so GitHub answers `404` there with any token, and `bridge:check` exited non-zero on every run.
+  - New `.env` key **`BRIDGE_CI_AWAIT_NO_CI_REPOS`** (comma-separated `owner/name`, default empty) declares the received repos that have no CI. `ci_await.awaits` does not read a listed repo: it reports it `ok`, or `warn` when the install holds a `workflow_run` delivery from it, which shows the repo does run CI. A repo that is not listed still FAILs when its runs cannot be read, as before.
+  - `ci_await` refuses a listed repo with the new reason **`repo_not_ci`**, before storing anything or reading GitHub. It used to read the repo and refuse it as `repo_unreadable`, which told the seat to have the operator fix a token. `github.webhook_subscription` no longer warns that a listed repo's hook sends no *Workflow runs*.
+  - An entry that is not `owner/name` is refused like a bad `BRIDGE_CI_AWAIT_*` value: `bridge:check` FAILs, and every `ci_await` refuses `install_fault.ci_await_config_invalid`.
+  - The list is a declaration and is never derived. A repo whose token cannot read its Actions answers GitHub the same way as a repo with none, and the FAIL exists for that case.
+  - Reference channel-server snapshot `0.9.52` → `0.9.53`: the `ci_await` description names `repo_not_ci`.
+
+### Upgrade warnings
+
+- ⚠ **To clear the FAIL on a repo with no CI, list it in `BRIDGE_CI_AWAIT_NO_CI_REPOS` (card#11696),** then run `php artisan config:cache` where config is cached. Nothing changes until you do. List only repos you know have no CI.
+
 ## [0.100.0] - 2026-10-10
 
 ### Added
