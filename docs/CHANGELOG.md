@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.100.1] - 2026-10-10
+
 ### Fixed
 
 - **card#11696 / DL-472** — **`bridge:check` no longer FAILs on a received repo that has no CI.** Since 0.99.0 (card#11600), `ci_await.awaits` reads the workflow runs of every GitHub repo the install receives and FAILs on a `404`. A coordination repo received only for its issues and comments has no Actions, and GitHub answered `404` there to every token this install holds, and `bridge:check` exited non-zero on every run.
