@@ -384,6 +384,23 @@ class ClientFleetStateTest extends TestCase
     }
 
     /**
+     * card#11763 (PR #910 review): a launch reported after an off-path call, with no install on the
+     * row, says nothing about which client the seat starts, so the call stays in charge. Before, the
+     * seat fell through to the catch-all `unverified` message.
+     */
+    public function test_a_launch_after_an_off_path_call_with_nothing_installed_leaves_it_off_the_path(): void
+    {
+        $row = [
+            'last_call_at' => '2026-09-24T09:00:00Z', 'last_call_client_version' => '0.9.27',
+            'last_launch_id' => 'L1', 'last_launch_result' => 'ok', 'last_launch_first_reported_at' => '2026-09-28T07:00:00Z',
+            'last_report_at' => '2026-09-28T07:00:00Z',
+        ];
+        $seat = $this->derive($row, $this->published());
+
+        $this->assertSame('off_update_path', $seat['state'], $seat['reason']);
+    }
+
+    /**
      * card#11761: once a report supersedes the off-path call, the running fields the seat's calls
      * last wrote are older still (a call without a launch never writes them), so they place nothing.
      */

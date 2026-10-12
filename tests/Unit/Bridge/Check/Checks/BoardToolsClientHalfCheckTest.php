@@ -4,6 +4,7 @@ namespace Tests\Unit\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
+use App\Bridge\ClientUpdate\CallerReport;
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackStore;
 use App\Bridge\ClientUpdate\SeatClientLedger;
@@ -16,6 +17,7 @@ use App\Bridge\Tools\ClientVersion;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionMethod;
@@ -148,6 +150,225 @@ class BoardToolsClientHalfCheckTest extends TestCase
         $this->assertSame(Severity::Ok, $findings[0]['severity']);
         $this->assertStringContainsString('Client version 0.9.5 is at or ahead of the 0.9.5 this bridge publishes', $findings[0]['message']);
         $this->assertStringNotContainsString('BUNDLES', $findings[0]['message']);
+    }
+
+    // ─── a call the fleet ledger says is superseded (card#11763, DL-478) ─────────────────
+
+    /** The install-log lines this seat has reported so far: the next line's seq and prev_sha256. */
+    private int $logSeq = 0;
+
+    private ?string $logPrev = null;
+
+    /**
+     * Report install-log lines through the fleet ledger's own writer, received NOW.
+     *
+     * @param  list<array<string, mixed>>  $entries
+     */
+    private function reportLog(array $entries): void
+    {
+        $lines = [];
+        foreach ($entries as $fields) {
+            $fields += ['actor' => 'launch', 'result' => 'ok'];
+            if ($fields['actor'] === 'launch') {
+                $fields += ['launch_id' => 'L1'];
+            }
+            $line = (string) json_encode(['install_id' => 'client-half-seat', 'seq' => ++$this->logSeq, 'time' => '2026-10-08T00:00:00Z'] + $fields + ['prev_sha256' => $this->logPrev], JSON_UNESCAPED_SLASHES);
+            $lines[] = $line;
+            $this->logPrev = hash('sha256', $line);
+        }
+        SeatClientLedger::report('prod-agent', 'client-half-seat', $lines);
+    }
+
+    /** @return array<string, mixed> */
+    private static function installLine(string $release = '1.0.0', ?string $clientVersion = '0.9.55', string $launch = 'L1'): array
+    {
+        return ['action' => 'install', 'from_bridge_release' => '0.99.0', 'to_bridge_release' => $release, 'client_version' => $clientVersion, 'files_json_sha256' => str_repeat('b', 64), 'launch_id' => $launch];
+    }
+
+    /** A board-tools call as the dispatcher records it in both ledgers, received NOW. */
+    private function seatCall(?string $clientVersion, mixed $caller = null): void
+    {
+        SeatClientLedger::recordCall('prod-agent', $clientVersion, CallerReport::fromCall($caller, null));
+        ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::NotSshd, $clientVersion);
+    }
+
+    /** @return array{severity: Severity, message: string} */
+    private function finding(): array
+    {
+        $findings = $this->findings();
+        $this->assertCount(1, $findings);
+
+        return $findings[0];
+    }
+
+    /**
+     * rt#624's seats: the last board-tools call came from a legacy 0.9.28 client four days ago,
+     * and the client updater then reported a launch (magento) or a bootstrap (platform) that
+     * installed the published client. The leg compared the old call and warned; the client the
+     * seat installed after it is what is compared now. The control is the same seat before the
+     * report: the call alone still warns.
+     *
+     * @param  array<string, mixed>  $line
+     */
+    #[DataProvider('updaterRuns')]
+    public function test_a_launch_or_install_reported_after_the_call_supersedes_its_version(array $line, string $what): void
+    {
+        $this->publishClient('0.9.55');
+        Carbon::setTestNow('2026-10-08T09:00:00Z');
+        $this->seatCall('0.9.28');
+        Carbon::setTestNow('2026-10-12T07:00:00Z');
+        $this->assertSame(Severity::Warn, $this->finding()['severity'], 'the control: before the report, the call is the evidence');
+
+        $this->reportLog([$line]);
+        Carbon::setTestNow('2026-10-12T12:00:00Z');
+        $finding = $this->finding();
+        Carbon::setTestNow();
+
+        $this->assertSame(Severity::Ok, $finding['severity'], $finding['message']);
+        $this->assertStringContainsString("That call came from client 0.9.28, but the client updater reported {$what} after it (5h ago), so that call no longer says which client the seat starts: it installed release 1.0.0 (client 0.9.55)", $finding['message']);
+        $this->assertStringContainsString('Client version 0.9.55 is at or ahead of the 0.9.55 this bridge publishes', $finding['message']);
+        $this->assertStringNotContainsString('IS OLDER THAN', $finding['message']);
+    }
+
+    /** @return array<string, array{0: array<string, mixed>, 1: string}> */
+    public static function updaterRuns(): array
+    {
+        return [
+            'a launch that installed (magento)' => [self::installLine(), 'a launch'],
+            'a bootstrap (platform)' => [['action' => 'bootstrap', 'actor' => 'provision', 'to_bridge_release' => '1.0.0', 'client_version' => '0.9.55', 'files_json_sha256' => str_repeat('b', 64)], 'an install'],
+        ];
+    }
+
+    /** A call received after the report speaks for the seat again — the same rule as the fleet's. */
+    public function test_a_call_after_the_report_is_compared_again(): void
+    {
+        $this->publishClient('0.9.55');
+        Carbon::setTestNow('2026-10-08T09:00:00Z');
+        $this->seatCall('0.9.28');
+        Carbon::setTestNow('2026-10-12T07:00:00Z');
+        $this->reportLog([self::installLine()]);
+        Carbon::setTestNow('2026-10-12T08:00:00Z');
+        $this->seatCall('0.9.28');
+        $finding = $this->finding();
+        Carbon::setTestNow();
+
+        $this->assertSame(Severity::Warn, $finding['severity']);
+        $this->assertStringContainsString('CLIENT VERSION 0.9.28 IS OLDER THAN THE 0.9.55', $finding['message']);
+        $this->assertStringNotContainsString('client updater reported', $finding['message']);
+    }
+
+    /**
+     * The fleet ledger never records an exempt caller as the seat, so its rule still says the seat's
+     * call is superseded; the call THIS leg reads was received after the report, so it is that call
+     * that is compared (DL-478). The control: the same seat with no later exempt call reads `ok`.
+     */
+    public function test_an_exempt_call_received_after_the_report_speaks_for_itself(): void
+    {
+        $this->publishClient('0.9.55');
+        Carbon::setTestNow('2026-10-08T09:00:00Z');
+        $this->seatCall('0.9.28');
+        Carbon::setTestNow('2026-10-12T07:00:00Z');
+        $this->reportLog([self::installLine()]);
+        $this->assertSame(Severity::Ok, $this->finding()['severity'], 'the control');
+        Carbon::setTestNow('2026-10-12T08:00:00Z');
+        $this->seatCall('0.9.30', 'script');
+        $finding = $this->finding();
+        Carbon::setTestNow();
+
+        $this->assertSame(Severity::Warn, $finding['severity']);
+        $this->assertStringContainsString('CLIENT VERSION 0.9.30 IS OLDER THAN THE 0.9.55', $finding['message']);
+    }
+
+    /**
+     * Only a SUCCESSFUL run supersedes: a launch whose update failed after the call leaves the call
+     * in charge, even with an install from before that call on the row.
+     */
+    public function test_a_launch_that_failed_after_the_call_supersedes_nothing(): void
+    {
+        $this->publishClient('0.9.55');
+        Carbon::setTestNow('2026-10-01T09:00:00Z');
+        $this->reportLog([self::installLine()]);
+        Carbon::setTestNow('2026-10-08T09:00:00Z');
+        $this->seatCall('0.9.28');
+        Carbon::setTestNow('2026-10-12T07:00:00Z');
+        $this->reportLog([['action' => 'fail', 'result' => 'failed', 'reason' => 'bridge unreachable', 'launch_id' => 'L2']]);
+        $finding = $this->finding();
+        Carbon::setTestNow();
+
+        $this->assertSame(Severity::Warn, $finding['severity'], $finding['message']);
+        $this->assertStringContainsString('CLIENT VERSION 0.9.28 IS OLDER', $finding['message']);
+        $this->assertStringNotContainsString('client updater reported', $finding['message']);
+    }
+
+    /**
+     * A launch report with no install on the row (here a `stage` line, DL-476 — a launch's line,
+     * never an install) says nothing about which client the seat starts, so it supersedes nothing.
+     */
+    public function test_a_launch_reported_with_nothing_installed_supersedes_nothing(): void
+    {
+        $this->publishClient('0.9.55');
+        Carbon::setTestNow('2026-10-08T09:00:00Z');
+        $this->seatCall('0.9.28');
+        Carbon::setTestNow('2026-10-12T07:00:00Z');
+        $this->reportLog([['action' => 'stage', 'from_bridge_release' => '0.99.0', 'to_bridge_release' => '1.0.0', 'client_version' => '0.9.55', 'files_json_sha256' => str_repeat('b', 64), 'pack_sha256' => str_repeat('c', 64), 'manifest_sha256' => str_repeat('d', 64)]]);
+        $finding = $this->finding();
+        Carbon::setTestNow();
+
+        $this->assertSame(Severity::Warn, $finding['severity'], $finding['message']);
+        $this->assertStringContainsString('CLIENT VERSION 0.9.28 IS OLDER', $finding['message']);
+        $this->assertStringNotContainsString('client updater reported', $finding['message']);
+    }
+
+    /**
+     * A `stage` line reported after the call supersedes it as the launch it belongs to, but the
+     * client compared is the one INSTALLED, never the one staged.
+     */
+    public function test_a_stage_reported_after_the_call_compares_the_installed_client_not_the_staged_one(): void
+    {
+        $this->publishClient('0.9.55');
+        Carbon::setTestNow('2026-10-01T09:00:00Z');
+        $this->reportLog([self::installLine('0.99.0', '0.9.40')]);
+        Carbon::setTestNow('2026-10-08T09:00:00Z');
+        $this->seatCall('0.9.28');
+        Carbon::setTestNow('2026-10-12T07:00:00Z');
+        $this->reportLog([['action' => 'stage', 'from_bridge_release' => '0.99.0', 'to_bridge_release' => '1.0.0', 'client_version' => '0.9.55', 'files_json_sha256' => str_repeat('b', 64), 'pack_sha256' => str_repeat('c', 64), 'manifest_sha256' => str_repeat('d', 64), 'launch_id' => 'L2']]);
+        $finding = $this->finding();
+        Carbon::setTestNow();
+
+        $this->assertSame(Severity::Warn, $finding['severity'], $finding['message']);
+        $this->assertStringContainsString('reported a launch after it', $finding['message']);
+        $this->assertStringContainsString('it installed release 0.99.0 (client 0.9.40)', $finding['message']);
+        $this->assertStringContainsString('CLIENT VERSION 0.9.40 IS OLDER THAN THE 0.9.55', $finding['message']);
+    }
+
+    public function test_a_superseding_install_that_names_no_client_version_is_not_compared(): void
+    {
+        $this->publishClient('0.9.55');
+        Carbon::setTestNow('2026-10-08T09:00:00Z');
+        $this->seatCall('0.9.28');
+        Carbon::setTestNow('2026-10-12T07:00:00Z');
+        $this->reportLog([self::installLine(clientVersion: null)]);
+        $finding = $this->finding();
+        Carbon::setTestNow();
+
+        $this->assertSame(Severity::Ok, $finding['severity']);
+        $this->assertStringContainsString('it installed release 1.0.0, and its install line names no client version, so nothing was compared.', $finding['message']);
+    }
+
+    /** A fleet ledger that will not answer is said beside the call's own warn, never read as either. */
+    public function test_an_unreadable_fleet_ledger_keeps_the_calls_warn_and_says_so(): void
+    {
+        $this->publishClient('0.9.55');
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.9.28');
+        $check = new BoardToolsClientHalfCheck($this->bundledDir(), null, null, static fn () => throw new \RuntimeException('fleet ledger down'));
+
+        $findings = $this->findingsOfFor($check, $this->agent());
+        $finding = ['severity' => $findings[0]->severity, 'message' => $findings[0]->message];
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $finding['severity']);
+        $this->assertStringContainsString('CLIENT VERSION 0.9.28 IS OLDER THAN THE 0.9.55', $finding['message']);
+        $this->assertStringContainsString('could not be read (the fleet ledger did not answer:', $finding['message']);
     }
 
     public function test_an_unreadable_published_record_is_not_compared_and_never_falls_back_to_the_bundled_copy(): void
