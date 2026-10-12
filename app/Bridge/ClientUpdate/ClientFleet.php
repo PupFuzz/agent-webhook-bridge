@@ -10,6 +10,7 @@ use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\ClientCapabilities;
 use App\Models\SeatClientState;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Throwable;
 
@@ -205,7 +206,7 @@ final class ClientFleet
         if ($running === null && $row->last_call_at === null) {
             return [FleetState::AppliesNextLaunch, "it installed release {$installed} and no launch of that client has called the bridge yet"];
         }
-        if ($superseded !== null && $installed !== null) {
+        if ($superseded !== null) {
             [$what, $at] = $superseded;
 
             return [FleetState::AppliesNextLaunch, "{$offPathCall}, but the client updater reported {$what} after it (".HumanAge::floored((int) $at->diffInSeconds($now, true))." ago), so that call no longer says which client the seat starts: it installed release {$installed} and no launch of that client has called the bridge since"];
@@ -403,24 +404,49 @@ final class ClientFleet
     }
 
     /**
+     * The fleet ledger's answer for a reader of ANOTHER ledger's call (DL-478): whether the seat's
+     * latest call is superseded ({@see self::offPathCallSupersededBy()}, the one rule) by a report
+     * received after `$callAt` too — so a call that ledger recorded after the report (an exempt
+     * caller's, which the fleet ledger never records as the seat's) keeps speaking for itself.
+     * Propagates a failed read: a caller that could not look must not report that nothing supersedes.
+     *
+     * @return array{what: string, at: Carbon, installed_release: string, installed_client_version: ?string}|null
+     */
+    public static function callSupersededFor(string $agent, CarbonInterface $callAt): ?array
+    {
+        $row = SeatClientState::query()->where('agent', $agent)->first();
+        if ($row === null) {
+            return null;
+        }
+        $superseded = self::offPathCallSupersededBy($row, SeatClientLedger::installsReportedAt($agent)[$agent] ?? null);
+        if ($superseded === null || ! $superseded[1]->gt($callAt)) {
+            return null;
+        }
+
+        return ['what' => $superseded[0], 'at' => $superseded[1], 'installed_release' => (string) $row->installed_bridge_release, 'installed_client_version' => $row->installed_client_version];
+    }
+
+    /**
      * Whether the seat's latest call — one with NO launch identity — is superseded, and by what:
      * evidence is ordered by when this bridge received it (card#11761). Only a successful run of
-     * the client updater received AFTER that call supersedes it: a launch the updater reported (it
-     * ran through `entry.mjs`; a failed one is {@see FleetState::UpdateFailed} first), or a
-     * successful bootstrap or install (a bootstrap repoints the seat at `entry.mjs` only when it
-     * succeeds). A call received after them speaks for the seat again. Null when the latest call
-     * carried a launch, there is none, or nothing newer was reported.
+     * the client updater received AFTER that call supersedes it: a launch the updater reported
+     * whose outcome is `ok` (it ran through `entry.mjs`), or a successful bootstrap or install (a
+     * bootstrap repoints the seat at `entry.mjs` only when it succeeds). A `stage`,
+     * `stage_discard` or `check` line (DL-476) is a launch's line, never an install. A call
+     * received after them speaks for the seat again. Null when the latest call carried a launch,
+     * there is none, nothing newer was reported, or no install is on the row — the report then
+     * says nothing about which client the seat starts.
      *
      * @return array{0: string, 1: Carbon}|null what superseded it, worded, and when it arrived
      */
     private static function offPathCallSupersededBy(SeatClientState $row, ?Carbon $installReportedAt): ?array
     {
         $call = $row->last_call_at;
-        if ($call === null || $row->last_call_launch_id !== null) {
+        if ($call === null || $row->last_call_launch_id !== null || $row->installed_bridge_release === null) {
             return null;
         }
         $launch = $row->last_launch_first_reported_at;
-        if ($launch !== null && $launch->gt($call)) {
+        if ($launch !== null && $row->last_launch_result === 'ok' && $launch->gt($call)) {
             return ['a launch', $launch];
         }
         if ($installReportedAt !== null && $installReportedAt->gt($call)) {

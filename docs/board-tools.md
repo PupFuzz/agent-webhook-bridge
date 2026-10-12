@@ -2735,6 +2735,14 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
     compared**, never a fallback to the bundled copy (`board_tools.client_pack_source` names its
     recovery). **With nothing published**, the arms below are exactly as they were, against the
     bundled snapshot:
+  - ⭐ **A call the client updater has since superseded is not compared (card#11763, DL-478).**
+    When the fleet ledger shows a successful launch, bootstrap or install reported AFTER the
+    recorded call — the rule `bridge:client-fleet` uses (DL-475), from the same primitive — that
+    call no longer says which client the seat starts, so the client the seat **installed** is
+    compared instead, by the arms here, and the line names the call, the report and the installed
+    release. A call recorded after the report (the seat's or an exempt caller's) is compared again.
+    A staged release is never what is compared. A fleet ledger that will not answer leaves the
+    call's own version compared, and a `warn` says so.
   - reported and **older** than the bundled snapshot ⇒ **`warn`**, naming both versions and
     the remedy: re-copy this checkout's `examples/channel-servers` over the seat's deployed
     directory, `npm ci`, and **restart that session** — the version is read when the channel
