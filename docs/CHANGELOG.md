@@ -10,6 +10,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#11741 / DL-474** — **`provision-board-tools.py --write-launcher-shim` leaves the coord framework's launcher shim in place instead of replacing it.** A seat's `~/start-claude.sh` (or either of `start-claude.bat` / `.ps1` on Windows) that carries the framework's marker line, `# coord-launcher-shim` (`REM coord-launcher-shim` in the `.bat`), near its top is the framework's; the README section below owns the exact rule. The run writes nothing, says so, and ends `launcher-shim-status: framework_shim`, exit 0. `--bootstrap-client`, `--certify-only` and `--self-cert` leave it in place the same way. A seat without that marker gets the bridge's shim as before. A missing `<root>/bin/start-claude` still refuses (exit 3 or 4), whoever wrote the shim. `examples/channel-servers/README.md` § The seat's launcher now declares the shim contract (the files, what the shim runs and sets, the marker) and shows a minimal hand-written shim.
+  - Reference channel-server snapshot `0.9.54` → `0.9.55`.
 - **card#11719** — CI: the CHANGELOG gate runs agent-board-toolkit's `changelog-gate` action at v0.46.1 (was v0.46.0). Its sync-PR remedy now says to merge the PR's base branch into the branch first (if it is not already merged in) before moving a carried entry; verdicts are unchanged.
 
 ## [0.101.0] - 2026-10-11
