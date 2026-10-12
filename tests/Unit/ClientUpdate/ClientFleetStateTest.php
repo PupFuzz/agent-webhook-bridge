@@ -76,10 +76,10 @@ class ClientFleetStateTest extends TestCase
      * @param  array<string, string>  $installedDigests
      * @return array<string, mixed>
      */
-    private function derive(array $row, ?PublishedClientPack $published, bool $approval = false, array $approved = [], array $installedDigests = [], string $transport = 'ssh', ?string $publishedError = null, ?string $installReportedAt = null): array
+    private function derive(array $row, ?PublishedClientPack $published, bool $approval = false, array $approved = [], array $installedDigests = [], string $transport = 'ssh', ?string $publishedError = null, ?string $installReportedAt = null, ?string $staged = null): array
     {
         $installsReportedAt = $installReportedAt === null ? [] : ['seat' => Carbon::parse($installReportedAt)];
-        $fleet = ClientFleet::derive(['seat' => self::bt($approval, $transport)], ['seat' => $this->row($row)], $published, $publishedError, ['seat' => $approved], ['seat' => $installedDigests], $installsReportedAt, ClientCapabilities::bundled(), $this->now);
+        $fleet = ClientFleet::derive(['seat' => self::bt($approval, $transport)], ['seat' => $this->row($row)], $published, $publishedError, ['seat' => $approved], ['seat' => $installedDigests], $installsReportedAt, $staged === null ? [] : ['seat' => $staged], ClientCapabilities::bundled(), $this->now);
         $seat = $fleet->toArray()['seats'][0];
         $seat['warns'] = $seat['warn'];
 
@@ -224,6 +224,18 @@ class ClientFleetStateTest extends TestCase
     }
 
     /** A failure stops counting once a different, later launch has been seen calling. */
+    /** card#11760: a seat that launched after publication and STAGED the release is owed a restart, not behind. */
+    public function test_a_seat_that_staged_the_published_release_applies_it_at_its_next_launch(): void
+    {
+        $staged = $this->derive($this->launched('0.90.0'), $this->published(), staged: '0.91.0');
+        $this->assertSame('applies_next_launch', $staged['state']);
+        $this->assertStringContainsString('its background update check has staged it', $staged['reason']);
+        $this->assertFalse($staged['warns']);
+
+        $this->assertSame('behind', $this->derive($this->launched('0.90.0'), $this->published(), staged: '0.90.5')['state'], 'a stage of another release is not the published one');
+        $this->assertSame('behind', $this->derive($this->launched('0.90.0'), $this->published())['state']);
+    }
+
     public function test_a_later_launch_supersedes_a_failed_one(): void
     {
         $row = $this->launched('0.91.0') + ['last_launch_id' => 'L1', 'last_launch_result' => 'failed', 'last_launch_error' => 'boom', 'last_launch_first_reported_at' => '2026-09-28T10:00:00Z'];

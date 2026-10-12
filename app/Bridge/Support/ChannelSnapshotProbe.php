@@ -172,7 +172,7 @@ final class ChannelSnapshotProbe
         }
 
         // A CLIENT ROOT (DL-434; card#10568 C2, DL-445) is a different deployment, not a stale
-        // snapshot: it updates itself from this bridge at launch, so the drift leg's question
+        // snapshot: it updates itself from this bridge (DL-476), so the drift leg's question
         // (is it behind THIS checkout?) is the wrong one for it — its currency is the fleet
         // ledger's (`board_tools.client_fleet`) — and its files live under the release its
         // pointer names, not beside the pointer. The launch disclosure below applies unchanged.

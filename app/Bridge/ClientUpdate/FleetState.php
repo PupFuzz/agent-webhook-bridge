@@ -19,7 +19,10 @@ enum FleetState: string
     /** The agent requires approval and the build it installed or runs has no approval of its content. */
     case UnapprovedInstall = 'unapproved_install';
 
-    /** The seat's most recent launch-time update failed, and no later launch has been seen. */
+    /**
+     * The seat's most recent update failed — a background check, or a launch's install of the
+     * staged release (DL-476) — and no later launch has been seen.
+     */
     case UpdateFailed = 'update_failed';
 
     /** The agent requires approval, the published pack's content is not approved for it, and it does not have that pack. */
@@ -47,13 +50,14 @@ enum FleetState: string
 
     /**
      * The seat will run the published release at its next launch: it launched before that release
-     * was published, or already installed it, or installed a release that no launch has called the
+     * was published, or already installed it, or its background check has staged it (DL-476), or
+     * installed a release that no launch has called the
      * bridge from yet — including since a launch or install reported after a call with no launch
      * identity (card#11761).
      */
     case AppliesNextLaunch = 'applies_next_launch';
 
-    /** The seat launched after the release was published and still runs an older one, with no failure or approval reported. */
+    /** The seat launched after the release was published and still runs an older one, with no stage, failure or approval reported. */
     case Behind = 'behind';
 
     /**

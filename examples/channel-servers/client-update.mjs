@@ -1,10 +1,20 @@
 #!/usr/bin/env node
-// The seat's client updater (card#10568). Two ways in, one verify-and-install path:
+// The seat's client updater (card#10568). Three ways in, one verify-and-install path:
 //
 //   runLaunchUpdate({root, budgetMs, signal, launchId, installed})
-//       what entry.mjs runs at every NEW launch, under its deadline (design §3.3): ask the
-//       bridge's client-update door what it publishes, and install a newer release before the
-//       channel server starts. Never mid-session — a running session's tool list never changes.
+//       what entry.mjs runs at every NEW launch, under its deadline: install the release a
+//       session's background check STAGED, from local files only, before the channel server
+//       starts. It makes NO call to the bridge (card#11760, DL-476: the door's round trip under
+//       a saturated host does not fit Claude Code's MCP connect window). No stage: the installed
+//       release starts as it is.
+//   runBackgroundUpdate({root, launchId})
+//       what the channel server runs once it is listening: ask the bridge's client-update door
+//       what it offers, with a generous deadline; download and verify a newer release exactly as
+//       an install does, and STAGE it under `<root>/staged-update/` without touching
+//       `current.json`. A running session never switches release — the stage is installed at
+//       the next launch, without asking the bridge again (operator decision, card#11760 comment
+//       11348). A stage the bridge no longer offers is discarded; another offered release
+//       replaces it. Then the install log is reported.
 //   node client-update.mjs bootstrap --root <root>
 //       the bootstrap (design §3.5): ask the bridge over the board-tools transport in the
 //       environment — the seat's `.mcp.json` env, which the provisioner's `--bootstrap-client`
@@ -37,6 +47,13 @@
 //   `classifyRelease`'s cheap scope (REQUIRED_CLIENT_FILES only) is what a launch pays; its full
 //   scope (every FILES.json-listed file) is what an install/bootstrap pays once, so a bootstrap
 //   repairs a file outside REQUIRED_CLIENT_FILES too.
+//
+// ⛔ THE STAGE IS VERIFIED TWICE, BY THE SAME CODE. The background check runs the pack through
+// `checkPack` (sha256 and size against the manifest, the decompressed-size cap, the ustar reader,
+// FILES.json, node_engines) before it writes the stage; the launch reads the staged manifest and
+// pack back, checks them against the stage record's digests, and installs them through
+// `installPack`, which runs `checkPack` again. A stage that fails either is refused, logged, and
+// discarded; the installed release starts.
 //
 // ⛔ THE BUDGET. `signal` is aborted by entry.mjs when its deadline wins. The pack's
 // verify-and-stage (the longest synchronous step) and every irreversible step — the rename into
@@ -83,14 +100,34 @@ export const REASON_MAX_BYTES = 500;
 export const SOURCE_MAX_BYTES = 255;
 
 /**
- * Per-leg deadlines inside the budget (design §3.3): the manifest and the report; the pack gets the rest.
- * The manifest leg is sized for an ssh door at session start, not for a quiet box: the door boots
- * the bridge per call, and every MCP server and SessionStart hook is starting beside it. At 5 s it
- * timed out at every launch on a seat whose quiet round trip is ~2 s (card#11711). `ask()` clamps
- * every leg to the budget, so a longer leg cannot lengthen the launch past it.
+ * The background check's deadlines. None of them sits inside Claude Code's MCP connect window: the
+ * check starts once the channel server is listening. The ssh door boots the bridge per call, and on
+ * a saturated host its round trip was measured at 6–8 s (card#11760 comment 11223), so the
+ * manifest leg is sized for the worst seat, not the quiet one. The pack gets what is left of the
+ * whole budget; the report gets its own leg after the stage is written. `ask()` clamps every leg to
+ * the budget.
  */
-export const MANIFEST_LEG_MS = 10000;
-export const REPORT_LEG_MS = 5000;
+export const BACKGROUND_BUDGET_MS = 10 * 60 * 1000;
+export const BACKGROUND_MANIFEST_MS = 120000;
+export const REPORT_LEG_MS = 60000;
+/**
+ * How long the background check holds the lock: only to write the stage, its log lines and its
+ * record — never across a network call — so a launch of another session on this channel is kept
+ * out for seconds, not minutes.
+ */
+export const BACKGROUND_LOCK_MS = 60000;
+
+/** Where the background check stages a verified release for the next launch to install. */
+export const STAGE_DIR = 'staged-update';
+const STAGE_RECORD = 'stage.json';
+const STAGE_MANIFEST = 'manifest.json';
+const STAGE_PACK = 'pack.tar.gz';
+/**
+ * What the last background check found: `{launch_id, checked_at, state, published, offer,
+ * approval_owed, staged, error}`, `state` one of `current`, `staged`, `approval_owed`,
+ * `update_failed`. The next launch reports it in state.json (the launch itself asks nothing).
+ */
+export const CHECK_FILE = 'update-check.json';
 
 const SCHEMA = 1;
 const KIND = 'agent-webhook-bridge-client-pack';
@@ -553,6 +590,9 @@ export function doorFromEnv(env) {
 /** One door call inside the budget: at most `legMs`, and never past the deadline or an abort. */
 async function ask(ctx, body, legMs) {
   checkBudget(ctx, `asking the bridge for ${body.op}`);
+  // A leg the budget cut short that then times out is the budget running out, not an unreachable
+  // bridge: it is an Aborted, after which nothing more is sent.
+  const clamped = ctx.deadline - Date.now() <= legMs;
   const ms = Math.max(1, Math.min(legMs, ctx.deadline - Date.now()));
   const leg = new AbortController();
   let timedOut = false;
@@ -565,7 +605,7 @@ async function ask(ctx, body, legMs) {
   try {
     return await ctx.door.call(body, leg.signal, ms);
   } catch (err) {
-    if (ctx.signal.aborted) {
+    if (ctx.signal.aborted || (timedOut && clamped)) {
       throw new Aborted(`the update budget ran out while asking the bridge for ${body.op}`);
     }
     if (timedOut) {
@@ -632,7 +672,7 @@ export function manifestFromAnswer(answer) {
   if (m.bridge_release !== p.bridge_release || m.client_version !== p.client_version || m.files_json_sha256 !== p.files_json_sha256) {
     throw new Refusal('the manifest the bridge sent disagrees with the publication its answer names');
   }
-  return { manifest: m, manifestSha256: p.manifest_sha256 };
+  return { manifest: m, manifestSha256: p.manifest_sha256, manifestBytes: bytes };
 }
 
 /**
@@ -958,7 +998,7 @@ function writePointer(root, release, fields) {
  * Move a verified, staged release into `versions/` and point `current.json` at it, logging the
  * install on the same step. Synchronous from end to end (see renameWithRetry).
  */
-function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, action }) {
+function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, action, reason }) {
   const { root } = ctx;
   const packSha = manifest.pack.sha256;
   const target = path.join(root, 'versions', release);
@@ -1035,6 +1075,7 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
     pack_sha256: packSha,
     files_json_sha256: manifest.files_json_sha256,
     manifest_sha256: manifestSha256 ?? undefined,
+    reason: reason ?? undefined,
   });
 }
 
@@ -1267,15 +1308,24 @@ function recordUnloggedInstall(ctx, release, manifest, manifestSha256) {
   });
 }
 
-/** Stage and commit a pack whose bytes are in hand. The caller has decided it may be installed. */
-async function installPack(ctx, { manifest, manifestSha256, packBytes, from, action }) {
-  // The verify-and-stage below is one synchronous stretch (the deadline timer cannot interrupt
-  // it), so it is not begun once the budget has run out.
-  checkBudget(ctx, `verifying and staging release ${manifest.bridge_release}`);
-  const { files, filesJson } = readPack(packBytes, manifest);
+/**
+ * Every check a pack's own bytes and this seat's Node can answer — the one verification both the
+ * background stage and the install run. `{files, filesJson}`, or a Refusal.
+ */
+export function checkPack(packBytes, manifest) {
+  const read = readPack(packBytes, manifest);
   if (!satisfiesEngines(manifest.node_engines, process.versions.node)) {
     throw new Refusal(`release ${manifest.bridge_release} needs node ${manifest.node_engines}; this seat runs ${process.versions.node}`);
   }
+  return read;
+}
+
+/** Stage and commit a pack whose bytes are in hand. The caller has decided it may be installed. */
+async function installPack(ctx, { manifest, manifestSha256, packBytes, from, action, reason }) {
+  // The verify-and-stage below is one synchronous stretch (the deadline timer cannot interrupt
+  // it), so it is not begun once the budget has run out.
+  checkBudget(ctx, `verifying and staging release ${manifest.bridge_release}`);
+  const { files, filesJson } = checkPack(packBytes, manifest);
   const staging = stage(ctx.root, manifest.bridge_release, files, manifest.pack.sha256, filesJson);
   crashAt(ctx, 'after-extract');
   if (ctx.env.AWB_CLIENT_CRASH_AT === 'budget-exceeded') {
@@ -1283,7 +1333,7 @@ async function installPack(ctx, { manifest, manifestSha256, packBytes, from, act
     // in front of the next irreversible step.
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, ctx.deadline - Date.now()) + 1000));
   }
-  commitInstall(ctx, { release: manifest.bridge_release, manifest, manifestSha256, staging, from, action });
+  commitInstall(ctx, { release: manifest.bridge_release, manifest, manifestSha256, staging, from, action, reason });
 }
 
 /**
@@ -1337,7 +1387,7 @@ async function report(ctx, head) {
         ctx.say('the bridge reports a break in this install\'s log (bridge:client-fleet names it)');
       }
     } catch (err) {
-      return `the install log was not reported (${err.message}); it is sent again at the next launch`;
+      return `the install log was not reported (${err.message}); the next session's background check sends it again`;
     }
   }
   return null;
@@ -1382,16 +1432,206 @@ function recoverRoot(ctx, installed) {
   logLine(ctx, { action: 'pointer_recovered', result: 'ok', to_bridge_release: installed.release, reason });
 }
 
+// ---------------------------------------------------------------------------------------------
+// The stage (card#11760, DL-476)
+//
+// `<root>/staged-update/` holds ONE release a background check verified: `manifest.json` (the
+// manifest bytes the door sent), `pack.tar.gz` (the pack bytes) and `stage.json`, the record —
+// written LAST, so a stage exists exactly when its record does, and a check killed before the
+// record leaves files no launch reads (the next check removes them).
+//
+// What the install log records for it, all `actor: launch` with the launch id of the session
+// that wrote the line:
+//   stage / ok           a background check verified and staged a release (to_bridge_release, the
+//                        pack, FILES.json and manifest digests; `reason` names a stage it replaced)
+//   stage_discard / ok   a stage was removed without being installed: the bridge no longer offers
+//                        it (withdrawn, approval now owed, another release offered and refused), the
+//                        installed release is already it or newer, or it was not intact
+//   install / ok         a launch installed the stage (`reason` names the launch that staged it)
+//   refuse / refused     a stage, or an offer, failed verification; a refused stage is discarded
+//   check / ok           a background check reached the bridge and left nothing to record, after
+//                        an earlier launch's update failed — the line that tells the bridge that
+//                        failure is behind the seat
+
+function stagePath(root, name = '') {
+  return path.join(root, STAGE_DIR, name);
+}
+
 /**
- * What entry.mjs runs at a new launch. Resolves with this launch's outcome —
- * `{state, installed, published, offer, approval_owed, error, report_error}` where `state` is
- * `current`, `approval_owed` or `update_failed` — and does not reject for anything it anticipated.
+ * The stage's record, or null when there is none. A record that exists and cannot be read as one
+ * is a Refusal: the stage is not intact.
+ */
+export function readStageRecord(root) {
+  let text;
+  try {
+    text = fs.readFileSync(stagePath(root, STAGE_RECORD), 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      return null;
+    }
+    throw new Refusal(`the staged update's record could not be read (${err && err.code ? err.code : err})`);
+  }
+  let record;
+  try {
+    record = JSON.parse(text);
+  } catch {
+    throw new Refusal('the staged update\'s record is not JSON');
+  }
+  if (!record || typeof record !== 'object' || !STRICT_RELEASE.test(String(record.bridge_release)) || !SHA256.test(String(record.manifest_sha256)) || !SHA256.test(String(record.pack_sha256))) {
+    throw new Refusal('the staged update\'s record does not name a release, a manifest sha256 and a pack sha256');
+  }
+  return record;
+}
+
+/**
+ * The stage, read back for an install: `{record, manifest, manifestSha256, packBytes}`, or null when
+ * there is none. The manifest must hash to the record's digest and name the record's release and
+ * pack; the pack bytes are checked by `checkPack` when they are installed.
+ */
+export function readStage(root) {
+  const record = readStageRecord(root);
+  if (record === null) {
+    return null;
+  }
+  const readPart = (name) => {
+    try {
+      return fs.readFileSync(stagePath(root, name));
+    } catch (err) {
+      throw new Refusal(`the staged update's ${name} could not be read (${err && err.code ? err.code : err})`);
+    }
+  };
+  const manifestBytes = readPart(STAGE_MANIFEST);
+  if (sha256(manifestBytes) !== record.manifest_sha256) {
+    throw new Refusal(`the staged update's ${STAGE_MANIFEST} does not hash to the manifest_sha256 its record names`);
+  }
+  const manifest = parseManifest(manifestBytes);
+  if (manifest.bridge_release !== record.bridge_release || manifest.pack.sha256 !== record.pack_sha256) {
+    throw new Refusal('the staged update\'s manifest names another release or pack than its record');
+  }
+  return { record, manifest, manifestSha256: record.manifest_sha256, packBytes: readPart(STAGE_PACK) };
+}
+
+function stageMatches(record, manifest, manifestSha256) {
+  return record !== null && record.bridge_release === manifest.bridge_release && record.pack_sha256 === manifest.pack.sha256 && record.manifest_sha256 === manifestSha256;
+}
+
+/** Replace whatever is staged with this verified release: the parts first, the record last. */
+function writeStage(ctx, { manifest, manifestSha256, manifestBytes, packBytes }) {
+  fs.rmSync(stagePath(ctx.root), { recursive: true, force: true });
+  fs.mkdirSync(stagePath(ctx.root), { recursive: true });
+  writeFileAtomic(stagePath(ctx.root, STAGE_MANIFEST), manifestBytes, 0o600);
+  writeFileAtomic(stagePath(ctx.root, STAGE_PACK), packBytes, 0o600);
+  writeJsonAtomic(stagePath(ctx.root, STAGE_RECORD), {
+    bridge_release: manifest.bridge_release,
+    client_version: manifest.client_version,
+    manifest_sha256: manifestSha256,
+    pack_sha256: manifest.pack.sha256,
+    files_json_sha256: manifest.files_json_sha256,
+    staged_at: new Date().toISOString(),
+    launch_id: ctx.launchId,
+    source: ctx.source,
+  });
+}
+
+/**
+ * Remove the stage. `record` is what was read of it (null: none was read — a record that could not
+ * be read is `{unreadable: true}`); `why` is logged as a `stage_discard` line when there was a stage
+ * to discard, or null to log nothing (the caller's own line says it).
+ */
+function discardStage(ctx, record, why) {
+  const existed = fs.existsSync(stagePath(ctx.root));
+  fs.rmSync(stagePath(ctx.root), { recursive: true, force: true });
+  if (!existed || why === null || record === null) {
+    return;
+  }
+  const known = record.unreadable ? {} : record;
+  logLine(ctx, {
+    action: 'stage_discard',
+    result: 'ok',
+    to_bridge_release: known.bridge_release,
+    client_version: STRICT_RELEASE.test(String(known.client_version)) ? known.client_version : undefined,
+    pack_sha256: known.pack_sha256,
+    files_json_sha256: SHA256.test(String(known.files_json_sha256)) ? known.files_json_sha256 : undefined,
+    manifest_sha256: known.manifest_sha256,
+    reason: known.bridge_release ? `staged release ${known.bridge_release} discarded: ${why}` : `the staged update discarded: ${why}`,
+  });
+}
+
+/** The last background check's record, or null when there is none or it does not parse. */
+export function readCheck(root) {
+  try {
+    const check = readJsonFile(path.join(root, CHECK_FILE));
+    return check && typeof check === 'object' && !Array.isArray(check) ? check : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What a launch with no stage reports in state.json: the last background check's finding. A failed
+ * check stays loud at every launch until a check succeeds; approval owed is said until it clears.
+ */
+function launchStateFromCheck(check) {
+  if (check === null) {
+    return { state: 'current' };
+  }
+  const published = typeof check.published === 'string' ? check.published : null;
+  const offer = typeof check.offer === 'string' ? check.offer : null;
+  if (check.state === 'update_failed') {
+    return { state: 'update_failed', published, offer, error: `${typeof check.error === 'string' ? check.error : 'no reason recorded'} (the background update check of launch ${check.launch_id}, ${check.checked_at})` };
+  }
+  if (check.state === 'approval_owed' && STRICT_RELEASE.test(String(check.approval_owed))) {
+    return { state: 'approval_owed', published, offer, approval_owed: check.approval_owed };
+  }
+  return { state: 'current', published, offer };
+}
+
+/** The `approval_owed` line, once per owed content: against the latest such line, wherever it sits in the log. */
+function logApprovalOwed(ctx, installedRelease, owed, manifest) {
+  const owedLines = ctx.log.lines.filter((l) => l.obj.action === 'approval_owed');
+  const last = owedLines.length > 0 ? owedLines[owedLines.length - 1] : null;
+  if (!(last && last.obj.to_bridge_release === owed && last.obj.files_json_sha256 === manifest.files_json_sha256)) {
+    logLine(ctx, { action: 'approval_owed', result: 'skipped', from_bridge_release: installedRelease, to_bridge_release: owed, client_version: manifest.client_version, files_json_sha256: manifest.files_json_sha256, reason: 'this seat requires approval, and the published release is not approved for it' });
+  }
+}
+
+/**
+ * The `check` line, written only when it changes what the bridge reads: the log's latest launch
+ * line belongs to ANOTHER launch whose update failed. The bridge reads a launch's outcome from its
+ * lines (SeatClientLedger), so without this line a failure reported by this session's check would
+ * stand until a later launch called — while this check had just reached the bridge cleanly.
+ */
+function logCheckIfOwed(ctx, fields) {
+  const launchLines = ctx.log.lines.filter((l) => l.obj.actor === 'launch' && typeof l.obj.launch_id === 'string');
+  if (launchLines.length === 0) {
+    return;
+  }
+  const latest = launchLines[launchLines.length - 1].obj.launch_id;
+  if (latest === ctx.launchId) {
+    return;
+  }
+  const failed = launchLines.some((l) => l.obj.launch_id === latest && (l.obj.result === 'failed' || l.obj.result === 'refused'));
+  if (failed) {
+    logLine(ctx, { action: 'check', result: 'ok', ...fields, reason: `the background update check reached the bridge; launch ${latest}'s failed update is behind this seat` });
+  }
+}
+
+function normalized(err) {
+  return err instanceof Refusal || err instanceof Failure || err instanceof Aborted ? err : new Failure(`${err && err.message ? err.message : err}`);
+}
+
+/**
+ * What entry.mjs runs at a new launch: install the staged release, if there is one, from local
+ * files only — NO call to the bridge (DL-476). Resolves with this launch's outcome —
+ * `{state, installed, published, offer, approval_owed, error}` where `state` is `current`,
+ * `approval_owed` or `update_failed` — and does not reject for anything it anticipated. With no
+ * stage the state is the last background check's finding ({@see launchStateFromCheck}).
  */
 export async function runLaunchUpdate({ root, budgetMs, signal, launchId, installed, env = process.env }) {
   const channel = env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
   const say = (text) => process.stderr.write(`[${channel}] client update: ${text}\n`);
   const ctx = { root, signal, deadline: Date.now() + budgetMs, launchId, actor: 'launch', env, source: null, door: null, log: null, say };
-  const result = { state: null, installed: installed.release, published: null, offer: null, approval_owed: null, error: null, report_error: null };
+  const result = { state: null, installed: installed.release, published: null, offer: null, approval_owed: null, error: null };
 
   let lock;
   try {
@@ -1405,14 +1645,13 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
   installed = resolveInstalled(root);
   result.installed = installed.release;
   const known = { from: installed.release, to: null, manifest: null, manifestSha256: null };
-  let head;
-  let reachable = false;
+  let stageRecord = null;
   try {
     try {
       ctx.log = InstallLog.open(root, say);
     } catch (err) {
       // Not the updater failing to run: its own record cannot be read, and nothing can be logged
-      // or reported until it can.
+      // until it can.
       return { ...result, state: 'update_failed', log_unreadable: true, error: `the install log ${path.join(root, 'install-log.jsonl')} cannot be read (${err && err.code ? err.code : err && err.message ? err.message : err})` };
     }
     try {
@@ -1425,62 +1664,77 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
       // recoverRoot no-ops when current.json already names the selected release: always safe to
       // call, and the single source of truth for whether a repoint is owed (design review rule 3).
       recoverRoot(ctx, installed);
-      ctx.door = doorFromEnv(env);
-      ctx.source = ctx.door.source;
-      const answer = await ask(ctx, { op: 'client_manifest' }, MANIFEST_LEG_MS);
-      reachable = true;
-      head = answer.log_head ?? null;
-      writeServedTools(ctx, answer);
-      const { manifest, manifestSha256 } = manifestFromAnswer(answer);
-      known.manifest = manifest;
-      known.manifestSha256 = manifestSha256;
-      result.published = manifest.bridge_release;
-
-      const { offer, owed } = offerFromAnswer(answer, manifest);
-      if (offer === null) {
-        result.state = 'approval_owed';
-        result.approval_owed = owed;
-        // Once per owed content: the latest approval_owed line, wherever it sits in the log.
-        const owedLines = ctx.log.lines.filter((l) => l.obj.action === 'approval_owed');
-        const last = owedLines.length > 0 ? owedLines[owedLines.length - 1] : null;
-        if (!(last && last.obj.to_bridge_release === owed && last.obj.files_json_sha256 === manifest.files_json_sha256)) {
-          logLine(ctx, { action: 'approval_owed', result: 'skipped', from_bridge_release: installed.release, to_bridge_release: owed, client_version: manifest.client_version, files_json_sha256: manifest.files_json_sha256, reason: 'this seat requires approval, and the published release is not approved for it' });
-        }
+      let stage;
+      try {
+        stage = readStage(root);
+      } catch (err) {
+        stageRecord = { unreadable: true };
+        throw err;
+      }
+      if (stage === null) {
+        Object.assign(result, launchStateFromCheck(readCheck(root)));
         settleRoot(ctx, installed.release);
       } else {
-        result.offer = offer;
-        known.to = offer;
-        if (refuseAgainstInstalled(installed.release, installed.packSha, manifest) === 0) {
-          result.state = 'current';
-          recordUnloggedInstall(ctx, installed.release, manifest, manifestSha256);
+        stageRecord = stage.record;
+        const release = stage.manifest.bridge_release;
+        ctx.source = typeof stageRecord.source === 'string' ? stageRecord.source : null;
+        known.to = release;
+        known.manifest = stage.manifest;
+        known.manifestSha256 = stage.manifestSha256;
+        const cmp = compareReleases(release, installed.release);
+        if (cmp < 0 || (cmp === 0 && installed.packSha === stage.manifest.pack.sha256)) {
+          // Installed since it was staged (by a bootstrap, or by a launch killed after its pointer
+          // switch and before its log line — recordUnloggedInstall writes that line now).
+          if (cmp === 0) {
+            recordUnloggedInstall(ctx, release, stage.manifest, stage.manifestSha256);
+          }
+          // The same pack already installed is the stage's own install, so only a NEWER installed
+          // release gets a discard line.
+          discardStage(ctx, stageRecord, cmp === 0 ? null : `the installed release ${installed.release} is newer`);
+          Object.assign(result, launchStateFromCheck(readCheck(root)));
           settleRoot(ctx, installed.release);
         } else {
-          const packBytes = await fetchPack(ctx, manifest, ctx.deadline - Date.now());
-          await installPack(ctx, { manifest, manifestSha256, packBytes, from: installed.release, action: 'install' });
+          refuseAgainstInstalled(installed.release, installed.packSha, stage.manifest);
+          await installPack(ctx, {
+            manifest: stage.manifest,
+            manifestSha256: stage.manifestSha256,
+            packBytes: stage.packBytes,
+            from: installed.release,
+            action: 'install',
+            reason: `installed at launch from the release launch ${stageRecord.launch_id ?? 'unknown'} staged; the bridge was not asked again`,
+          });
+          try {
+            discardStage(ctx, stageRecord, null);
+          } catch (err) {
+            // Installed; a stage left behind names the installed release and is dropped next launch.
+            say(`the installed stage could not be removed (${err && err.code ? err.code : err && err.message ? err.message : err}); the next launch removes it`);
+          }
           result.state = 'current';
-          result.installed = offer;
-          say(`installed release ${offer} (was ${installed.release})`);
-          settleRoot(ctx, offer);
+          result.installed = release;
+          result.published = release;
+          result.offer = release;
+          say(`installed release ${release} (was ${installed.release}) from the stage`);
+          settleRoot(ctx, release);
         }
       }
     } catch (err) {
-      if (!(err instanceof Refusal) && !(err instanceof Failure) && !(err instanceof Aborted)) {
-        // An unanticipated fault (a filesystem error): the same outcome, worded from the error.
-        err = new Failure(`${err && err.message ? err.message : err}`);
-      }
+      err = normalized(err);
       if (err instanceof Aborted) {
         fs.rmSync(path.join(root, 'staging'), { recursive: true, force: true });
+      }
+      if (err instanceof Refusal && stageRecord !== null) {
+        // A stage that fails verification is never retried: the next background check stages what
+        // the bridge offers then.
+        err = new Refusal(`the staged update was refused and discarded: ${err.message}`);
+        try {
+          discardStage(ctx, stageRecord, null);
+        } catch (rmErr) {
+          say(`the refused stage could not be removed (${rmErr && rmErr.code ? rmErr.code : rmErr && rmErr.message ? rmErr.message : rmErr})`);
+        }
       }
       logFailure(ctx, err, known);
       result.state = 'update_failed';
       result.error = err instanceof Refusal ? `refused: ${err.message}` : err.message;
-    }
-    if (reachable) {
-      // report() stops at an abort itself: it starts no call once the signal is set.
-      result.report_error = await report(ctx, head);
-      if (result.report_error) {
-        say(result.report_error);
-      }
     }
     return result;
   } finally {
@@ -1489,11 +1743,175 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
 }
 
 /**
+ * The background check (DL-476): what the channel server runs once it is listening, once per
+ * launch. Network work holds no lock; only the writes do, for at most BACKGROUND_LOCK_MS. Resolves
+ * with `{state, published, offer, approval_owed, staged, error, report_error}` (state as in
+ * CHECK_FILE, or `skipped` when this launch already checked) and does not reject for anything it
+ * anticipated. Never touches `current.json` or `versions/`: a running session never switches
+ * release.
+ */
+export async function runBackgroundUpdate({ root, launchId, env = process.env, budgetMs = BACKGROUND_BUDGET_MS, signal = new AbortController().signal }) {
+  const channel = env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
+  const say = (text) => process.stderr.write(`[${channel}] client update (background): ${text}\n`);
+  const ctx = { root, signal, deadline: Date.now() + budgetMs, launchId, actor: 'launch', env, source: null, door: null, log: null, say };
+  const out = { state: null, published: null, offer: null, approval_owed: null, staged: null, error: null, report_error: null };
+
+  // Once per launch: a reconnect inside the session re-imports the server, and asks nothing again.
+  const prior = readCheck(root);
+  if (prior !== null && prior.launch_id === launchId) {
+    return { ...out, state: 'skipped' };
+  }
+
+  // 1. The network, under no lock: the manifest, and the pack when a newer release is offered and
+  //    is not already staged. Everything that can go wrong is carried to step 2 as `fault`.
+  let answer = null;
+  let offered = null;
+  let packBytes = null;
+  let fault = null;
+  try {
+    ctx.door = doorFromEnv(env);
+    ctx.source = ctx.door.source;
+    answer = await ask(ctx, { op: 'client_manifest' }, BACKGROUND_MANIFEST_MS);
+    writeServedTools(ctx, answer);
+    offered = manifestFromAnswer(answer);
+    out.published = offered.manifest.bridge_release;
+    Object.assign(offered, offerFromAnswer(answer, offered.manifest));
+    const seen = resolveInstalled(root);
+    let staged = null;
+    try {
+      staged = readStageRecord(root);
+    } catch {
+      staged = null;
+    }
+    if (offered.offer !== null && seen.release !== null && compareReleases(offered.offer, seen.release) > 0 && !stageMatches(staged, offered.manifest, offered.manifestSha256)) {
+      packBytes = await fetchPack(ctx, offered.manifest, ctx.deadline - Date.now());
+      checkBudget(ctx, `verifying release ${offered.offer}`);
+      checkPack(packBytes, offered.manifest);
+    }
+  } catch (err) {
+    fault = normalized(err);
+  }
+
+  // 2. The writes, under the lock: decide against the installed release as it is NOW, stage or
+  //    discard, log, and record the finding.
+  ctx.deadline = Date.now() + BACKGROUND_LOCK_MS;
+  let lock;
+  try {
+    lock = takeLock(root, { deadline: ctx.deadline, staleAfterMs: 2 * BACKGROUND_LOCK_MS });
+  } catch (err) {
+    say(`${err.message}; nothing staged or logged by this check`);
+    return { ...out, state: 'update_failed', error: err.message };
+  }
+  try {
+    try {
+      ctx.log = InstallLog.open(root, say);
+    } catch (err) {
+      return { ...out, state: 'update_failed', error: `the install log ${path.join(root, 'install-log.jsonl')} cannot be read (${err && err.code ? err.code : err && err.message ? err.message : err})` };
+    }
+    const installed = resolveInstalled(root);
+    const known = { from: installed.release, to: offered ? (offered.offer ?? offered.owed ?? null) : null, manifest: offered ? offered.manifest : null, manifestSha256: offered ? offered.manifestSha256 : null };
+    let staged;
+    try {
+      staged = readStageRecord(root);
+    } catch {
+      staged = { unreadable: true };
+    }
+    try {
+      if (fault !== null) {
+        throw fault;
+      }
+      if (installed.release === null) {
+        throw new Failure(`no verified client release is installed under ${path.join(root, 'versions')}`);
+      }
+      const { manifest, manifestSha256, offer, owed } = offered;
+      if (offer === null) {
+        out.state = 'approval_owed';
+        out.approval_owed = owed;
+        discardStage(ctx, staged, `the bridge no longer offers it: this seat requires approval, and release ${owed} is not approved for it`);
+        logApprovalOwed(ctx, installed.release, owed, manifest);
+      } else {
+        out.offer = offer;
+        if (refuseAgainstInstalled(installed.release, installed.packSha, manifest) === 0) {
+          out.state = 'current';
+          recordUnloggedInstall(ctx, installed.release, manifest, manifestSha256);
+          discardStage(ctx, staged, `the bridge offers release ${offer}, which is installed`);
+        } else if (staged !== null && !staged.unreadable && stageMatches(staged, manifest, manifestSha256)) {
+          out.state = 'staged';
+          out.staged = offer;
+        } else if (packBytes === null) {
+          // The root changed between step 1 and the lock (another session installed or staged).
+          throw new Failure(`the client root changed while release ${offer} was being checked; the next session checks again`);
+        } else {
+          checkBudget(ctx, `staging release ${offer}`);
+          const replaced = staged === null ? null : staged.unreadable ? 'a stage that was not intact' : `staged release ${staged.bridge_release}`;
+          writeStage(ctx, { manifest, manifestSha256, manifestBytes: offered.manifestBytes, packBytes });
+          logLine(ctx, {
+            action: 'stage',
+            result: 'ok',
+            from_bridge_release: installed.release,
+            to_bridge_release: offer,
+            client_version: manifest.client_version,
+            pack_sha256: manifest.pack.sha256,
+            files_json_sha256: manifest.files_json_sha256,
+            manifest_sha256: manifestSha256,
+            reason: `verified and staged; installed at the next launch${replaced ? `, replacing ${replaced}` : ''}`,
+          });
+          out.state = 'staged';
+          out.staged = offer;
+          say(`staged release ${offer}; it is installed at the next launch`);
+        }
+      }
+      logCheckIfOwed(ctx, { from_bridge_release: installed.release, to_bridge_release: out.staged ?? undefined });
+    } catch (err) {
+      err = normalized(err);
+      if (err instanceof Refusal) {
+        // What the bridge offers now was refused, so a stage is no longer what it offers.
+        try {
+          discardStage(ctx, staged, `the bridge's current offer was refused (${err.message})`);
+        } catch (rmErr) {
+          say(`the stage could not be removed (${rmErr && rmErr.code ? rmErr.code : rmErr && rmErr.message ? rmErr.message : rmErr})`);
+        }
+      }
+      logFailure(ctx, err, known);
+      out.state = 'update_failed';
+      out.error = err instanceof Refusal ? `refused: ${err.message}` : err.message;
+      say(out.error);
+    }
+    try {
+      writeJsonAtomic(path.join(root, CHECK_FILE), {
+        launch_id: launchId,
+        checked_at: new Date().toISOString(),
+        state: out.state,
+        published: out.published,
+        offer: out.offer,
+        approval_owed: out.approval_owed,
+        staged: out.staged,
+        error: out.error,
+      });
+    } catch (err) {
+      say(`could not write ${CHECK_FILE} (${err && err.code ? err.code : err && err.message ? err.message : err}); the next launch reports the check before it`);
+    }
+  } finally {
+    releaseLock(lock);
+  }
+
+  // 3. The report, when the bridge answered and the budget did not run out.
+  if (answer !== null && !(fault instanceof Aborted)) {
+    ctx.deadline = Date.now() + REPORT_LEG_MS;
+    out.report_error = await report(ctx, answer.log_head ?? null);
+    if (out.report_error) {
+      say(out.report_error);
+    }
+  }
+  return out;
+}
+
+/**
  * `<root>/served-tools.json` from a client_manifest answer that carries `served_tools` (card#11283):
- * the cache the channel server this launch starts reads instead of asking the bridge again. An
- * answer without the key (a bridge that predates it) writes nothing and leaves an earlier cache
- * where it is. Fail-soft: a cache that cannot be written costs one served_tools call, never the
- * update.
+ * written by the background check, read by the channel server the NEXT launch starts, which asks
+ * the bridge nothing at start-up (DL-476). An answer without the key (a bridge that predates it)
+ * writes nothing and leaves an earlier cache where it is. Fail-soft: a cache that cannot be written
+ * leaves the previous one in use, and never fails the check.
  */
 function writeServedTools(ctx, answer) {
   const served = answer.served_tools;
@@ -1585,7 +2003,7 @@ export const BOOTSTRAP_MANIFEST_MS = 30000;
 
 /**
  * Bootstrap from this seat's own bridge, over the board-tools transport in `env` — the one a
- * launch uses (`doorFromEnv`), so a bootstrap proves the door the next launch will ask. It installs
+ * background check uses (`doorFromEnv`), so a bootstrap proves the door the seat's checks will ask. It installs
  * only what the bridge OFFERS (DL-433 Decision 2): with approval owed nothing is fetched, and the
  * refusal names the release and the command that clears it.
  */

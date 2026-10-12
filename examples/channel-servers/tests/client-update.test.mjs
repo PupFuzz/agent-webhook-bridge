@@ -43,10 +43,15 @@ import {
   clipBytes,
   Refusal,
   runLaunchUpdate,
+  runBackgroundUpdate,
   installFromFiles,
+  STAGE_DIR,
+  CHECK_FILE,
+  BACKGROUND_MANIFEST_MS,
 } from '../client-update.mjs';
 import { launchIdentity, clientUpdateInstruction, httpRoundTrip } from '../channel-lib.mjs';
 import http from 'node:http';
+import { pathToFileURL } from 'node:url';
 
 const UPDATER = path.join(SOURCE_DIR, 'client-update.mjs');
 const VECTORS = new URL('./fixtures/version-comparator-vectors.json', import.meta.url);
@@ -140,7 +145,63 @@ function launch(root, env, { reconnect = false } = {}) {
   });
 }
 
+/**
+ * One background update check (card#11760, DL-476), as the channel server runs it once it is
+ * listening: the INSTALLED release's own `runBackgroundUpdate`, in a child process — so a crash
+ * hook kills that process, not this suite, and the fixture bridge answers from this process's
+ * event loop. Resolves with what the check returned (`null` if it printed nothing) and its stderr.
+ */
+function background(root, env, launchId, { budgetMs } = {}) {
+  const release = resolveInstalled(root).release;
+  const updater = pathToFileURL(path.join(root, 'versions', release, 'client', 'client-update.mjs')).href;
+  const script =
+    'const m = await import(process.argv[1]);' +
+    'const r = await m.runBackgroundUpdate({ root: process.argv[2], launchId: process.argv[3], ...(process.argv[4] ? { budgetMs: Number(process.argv[4]) } : {}) });' +
+    'process.stdout.write(JSON.stringify(r));';
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script, updater, root, launchId, budgetMs ? String(budgetMs) : ''], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c) => (stdout += c));
+    child.stderr.on('data', (c) => (stderr += c));
+    child.on('close', (code) => resolve({ ...(stdout ? JSON.parse(stdout) : { state: null }), code, stderr }));
+  });
+}
+
+/**
+ * One whole session: a launch of `<root>/entry.mjs` (the stub server, which runs no check), then
+ * that session's background check under the launch's id. What one launch did before DL-476 now
+ * takes a session and the launch after it: the check stages, the next launch installs.
+ */
+async function session(root, env, opts) {
+  const run = await launch(root, env, opts);
+  const launchId = read(root, 'state.json').launch_id;
+  const check = await background(root, env, launchId);
+  return { run, check, launchId };
+}
+
+/** A session whose check stages what the bridge offers, then the launch that installs it. */
+async function updateTo(root, env) {
+  await session(root, env);
+  return launch(root, env);
+}
+
+const stageRecord = (root) => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(root, STAGE_DIR, 'stage.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+};
+
 const read = (root, name) => JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
+const readCheckOf = (root) => {
+  try {
+    return read(root, CHECK_FILE);
+  } catch {
+    return null;
+  }
+};
 const logLines = (root) => {
   try {
     return fs.readFileSync(path.join(root, 'install-log.jsonl'), 'utf8').split('\n').filter(Boolean);
@@ -243,7 +304,7 @@ test('the launcher is shimmed at the fixed <root>/bin/start-claude and runs the 
   assert.equal(out.stdout.trim(), `launcher of 1.0.0 root=${root} channel= args=--channel x`, 'pack N\'s launcher, told it runs from the client root');
 
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0', { launcherMarker: ' (changed)' }) });
-  const launched = await launch(root, seatEnv(t, bridge));
+  const launched = await updateTo(root, seatEnv(t, bridge));
   assert.equal(launched.code, 0, launched.stderr);
   assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
 
@@ -288,18 +349,20 @@ test('a release that carries no launcher leaves no launcher shim behind (card#11
   const name = process.platform === 'win32' ? 'start-claude.cmd' : 'start-claude';
   assert.ok(fs.existsSync(path.join(root, 'bin', name)), 'written for a release that carries one');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0', { omit: ['client/bin/start-claude.sh', 'client/bin/start-claude.ps1'] }) });
-  const launched = await launch(root, seatEnv(t, bridge));
+  const launched = await updateTo(root, seatEnv(t, bridge));
   assert.equal(launched.code, 0, launched.stderr);
   assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
   assert.ok(!fs.existsSync(path.join(root, 'bin', name)), 'removed: it would run a launcher the installed release does not have');
 });
 
-test('a launch on the published release starts it, writes state current, and reports the log', async (t) => {
+test('a launch on the published release starts it with NO call to the bridge; that session\'s background check reports the log (card#11760)', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
-  const run = await launch(root, seatEnv(t, bridge));
+  const env = seatEnv(t, bridge);
+  const run = await launch(root, env);
 
   assert.equal(run.code, 0, run.stderr);
+  assert.equal(bridge.requests.length, 0, 'the launch asks the bridge nothing before the server starts');
   assert.equal(run.started.release, '1.0.0');
   const state = read(root, 'state.json');
   assert.equal(state.state, 'current');
@@ -308,17 +371,60 @@ test('a launch on the published release starts it, writes state current, and rep
   assert.equal(run.started.bridge_release, '1.0.0');
   assert.equal(run.started.root, fs.realpathSync(root) === root ? root : run.started.root);
   assert.equal(read(root, 'launch.json').launch_id, state.launch_id);
+
+  const check = await background(root, env, state.launch_id);
+  assert.equal(check.state, 'current');
   assert.deepEqual(bridge.requests.map((r) => r.body.op), ['client_manifest', 'client_report'], 'no pack is fetched when current');
   assert.deepEqual(bridge.reports[0].entries, logLines(root), 'the whole log goes to a bridge that holds none of it');
+  assert.equal(read(root, CHECK_FILE).launch_id, state.launch_id, 'the check records what it found, for the next launch');
+  assert.equal(stageRecord(root), null, 'nothing staged');
 });
 
-test('a newer published release is installed at launch and runs in that same launch', async (t) => {
+test('the background check stages a newer release without touching current.json or versions/, and reports the stage (card#11760)', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const two = goodPack('2.0.0');
   const bridge = await fixtureBridge(t, { published: two });
-  const run = await launch(root, seatEnv(t, bridge));
+  const env = seatEnv(t, bridge);
+  const run = await launch(root, env);
+  assert.equal(run.started.release, '1.0.0');
+  const before = treeOf(root);
+  const launchId = read(root, 'state.json').launch_id;
+
+  const check = await background(root, env, launchId);
+
+  assert.equal(check.state, 'staged', check.stderr);
+  assert.equal(check.staged, '2.0.0');
+  assert.deepEqual(treeOf(root), before, 'a running session never switches release: versions/ and current.json are as they were');
+  assert.deepEqual(bridge.requests.map((r) => r.body.op), ['client_manifest', 'client_pack', 'client_report']);
+  const staged = stageRecord(root);
+  assert.equal(staged.bridge_release, '2.0.0');
+  assert.equal(staged.pack_sha256, two.manifest.pack.sha256);
+  assert.equal(staged.manifest_sha256, sha256(two.manifestBytes));
+  assert.equal(staged.launch_id, launchId);
+  assert.deepEqual(fs.readFileSync(path.join(root, STAGE_DIR, 'pack.tar.gz')), two.pack);
+  const line = assertChain(root).at(-1);
+  assert.deepEqual([line.action, line.result, line.actor, line.launch_id, line.from_bridge_release, line.to_bridge_release], ['stage', 'ok', 'launch', launchId, '1.0.0', '2.0.0']);
+  assert.equal(line.pack_sha256, two.manifest.pack.sha256);
+  assert.ok(bridge.reports.flatMap((r) => r.entries).includes(logLines(root).at(-1)), 'the stage is reported in the same session');
+  assert.equal(read(root, CHECK_FILE).state, 'staged');
+
+  const again = await background(root, env, launchId);
+  assert.equal(again.state, 'skipped', 'once per launch: a reconnect does not check again');
+  assert.equal(bridge.requests.length, 3, 'and asks nothing');
+});
+
+test('the next launch installs the stage from local files only — with the bridge unreachable — and runs it (card#11760)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const two = goodPack('2.0.0');
+  const bridge = await fixtureBridge(t, { published: two });
+  const { launchId: stagedBy } = await session(root, seatEnv(t, bridge));
+  const asked = bridge.requests.length;
+
+  // No bridge at all: the endpoint is a closed port. The install must not need one.
+  const run = await launch(root, seatEnv(t, null));
 
   assert.equal(run.code, 0, run.stderr);
+  assert.equal(bridge.requests.length, asked, 'the launch asked the bridge nothing');
   assert.equal(run.started.release, '2.0.0');
   assert.equal(run.started.bridge_release, '2.0.0', 'calls will name the release actually running');
   const state = read(root, 'state.json');
@@ -331,17 +437,135 @@ test('a newer published release is installed at launch and runs in that same lau
   assert.equal(install.actor, 'launch');
   assert.equal(install.launch_id, state.launch_id);
   assert.equal(install.pack_sha256, two.manifest.pack.sha256);
-  assert.equal(install.source, `bridge-http:http://127.0.0.1:${bridge.port}/agent-tools/client`);
+  assert.equal(install.source, `bridge-http:http://127.0.0.1:${bridge.port}/agent-tools/client`, 'the source is the door the stage came from');
+  assert.match(install.reason, new RegExp(`launch ${stagedBy} staged; the bridge was not asked again`));
+  assert.ok(!fs.existsSync(path.join(root, STAGE_DIR)), 'the installed stage is removed');
   assert.deepEqual(fs.readdirSync(path.join(root, 'versions')).sort(), ['1.0.0', '2.0.0'], 'the previous release is kept, never modified');
-  assert.ok(bridge.reports.flatMap((r) => r.entries).some((l) => JSON.parse(l).action === 'install'), 'the install is reported in the same launch');
+
+  await background(root, seatEnv(t, bridge), state.launch_id);
+  assert.ok(bridge.reports.flatMap((r) => r.entries).some((l) => JSON.parse(l).action === 'install'), 'the install is reported by that session\'s check');
+});
+
+// ---------------------------------------------------------------------------------------------
+// The stage: withdrawn, replaced, damaged (card#11760)
+
+for (const [name, change, why] of [
+  ['the bridge now owes an approval for it', (b) => { b.state.offer = null; b.state.owed = '2.0.0'; }, /staged release 2\.0\.0 discarded: the bridge no longer offers it: this seat requires approval/],
+  ['the bridge now offers the installed release', (b) => { b.state.published = goodPack('1.0.0'); }, /staged release 2\.0\.0 discarded: the bridge offers release 1\.0\.0, which is installed/],
+  ['the bridge now offers something this seat refuses', (b) => { b.state.published = goodPack('0.9.0'); }, /staged release 2\.0\.0 discarded: the bridge's current offer was refused \(downgrade offered/],
+]) {
+  test(`a stage the bridge no longer offers is discarded by the next check, and the next launch keeps the installed release: ${name}`, async (t) => {
+    const root = await seatWith(t, '1.0.0');
+    const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+    await session(root, seatEnv(t, bridge));
+    assert.equal(stageRecord(root).bridge_release, '2.0.0');
+    const before = treeOf(root);
+
+    change(bridge);
+    // The launch of this session installs the stage it finds — the operator's ruling: no re-check
+    // at launch. So the withdrawal is seen by a check run before that launch, as a session that
+    // was already running when the bridge changed would run it.
+    const check = await background(root, seatEnv(t, bridge), 'a-session-still-running');
+
+    assert.ok(!fs.existsSync(path.join(root, STAGE_DIR)), `the stage is gone (${check.stderr})`);
+    const discard = logObjs(root).find((l) => l.action === 'stage_discard');
+    assert.equal(discard.result, 'ok');
+    assert.equal(discard.to_bridge_release, '2.0.0');
+    assert.match(discard.reason, why);
+    assert.ok(bridge.reports.flatMap((r) => r.entries).some((l) => JSON.parse(l).action === 'stage_discard'), 'the discard is reported');
+    const run = await launch(root, seatEnv(t, null));
+    assert.equal(run.started.release, '1.0.0');
+    assert.deepEqual(treeOf(root), before);
+  });
+}
+
+test('a newer release offered over a stage replaces it, and the next launch installs the newer one', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
+  bridge.state.published = goodPack('3.0.0');
+  const check = await background(root, seatEnv(t, bridge), 'a-later-session');
+
+  assert.equal(check.state, 'staged');
+  assert.equal(stageRecord(root).bridge_release, '3.0.0');
+  const stage = logObjs(root).filter((l) => l.action === 'stage');
+  assert.deepEqual(stage.map((l) => l.to_bridge_release), ['2.0.0', '3.0.0']);
+  assert.match(stage[1].reason, /replacing staged release 2\.0\.0/);
+  const run = await launch(root, seatEnv(t, null));
+  assert.equal(run.started.release, '3.0.0');
+});
+
+test('the same offer, already staged, is neither fetched nor logged again', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
+  const lines = logLines(root).length;
+  const check = await background(root, seatEnv(t, bridge), 'another-session');
+
+  assert.equal(check.state, 'staged');
+  assert.equal(bridge.requests.filter((r) => r.body.op === 'client_pack').length, 1, 'the pack was fetched once');
+  assert.equal(logLines(root).length, lines, 'nothing new to log');
+});
+
+const corruptions = {
+  'a pack whose bytes changed on disk': [(root) => {
+    const file = path.join(root, STAGE_DIR, 'pack.tar.gz');
+    const bytes = fs.readFileSync(file);
+    bytes[bytes.length - 1] ^= 0xff;
+    fs.writeFileSync(file, bytes);
+  }, /the pack does not hash to its manifest's pack\.sha256/],
+  'a record that is not JSON': [(root) => fs.writeFileSync(path.join(root, STAGE_DIR, 'stage.json'), '{'), /the staged update's record is not JSON/],
+  'a manifest that is not the one the record names': [(root) => fs.appendFileSync(path.join(root, STAGE_DIR, 'manifest.json'), ' '), /manifest\.json does not hash to the manifest_sha256 its record names/],
+  'a missing pack': [(root) => fs.rmSync(path.join(root, STAGE_DIR, 'pack.tar.gz')), /pack\.tar\.gz could not be read \(ENOENT\)/],
+};
+
+for (const [name, [corrupt, reason]] of Object.entries(corruptions)) {
+  test(`a damaged stage is refused at launch, logged and discarded, and the installed release starts: ${name}`, async (t) => {
+    const root = await seatWith(t, '1.0.0');
+    const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+    await session(root, seatEnv(t, bridge));
+    const before = treeOf(root);
+    corrupt(root);
+
+    const run = await launch(root, seatEnv(t, null));
+
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(run.started.release, '1.0.0');
+    assert.deepEqual(treeOf(root), before, 'versions/ and current.json are unchanged');
+    assert.ok(!fs.existsSync(path.join(root, STAGE_DIR)), 'the damaged stage is discarded, never retried');
+    const state = read(root, 'state.json');
+    assert.equal(state.state, 'update_failed');
+    assert.match(state.error, /^refused: the staged update was refused and discarded: /);
+    assert.match(state.error, reason);
+    const last = assertChain(root).at(-1);
+    assert.deepEqual([last.action, last.result, last.launch_id], ['refuse', 'refused', state.launch_id]);
+
+    const again = await updateTo(root, seatEnv(t, bridge));
+    assert.equal(again.started.release, '2.0.0', 'the next check stages it again, and the launch after installs it');
+  });
+}
+
+test('a stage below a release installed since (a bootstrap) is discarded at launch, with a line saying why', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
+  assert.equal(bootstrap(t, root, goodPack('3.0.0')).status, 0);
+
+  const run = await launch(root, seatEnv(t, null));
+
+  assert.equal(run.started.release, '3.0.0');
+  assert.ok(!fs.existsSync(path.join(root, STAGE_DIR)));
+  const discard = logObjs(root).at(-1).action === 'stage_discard' ? logObjs(root).at(-1) : logObjs(root).find((l) => l.action === 'stage_discard');
+  assert.match(discard.reason, /staged release 2\.0\.0 discarded: the installed release 3\.0\.0 is newer/);
+  assert.equal(read(root, 'state.json').state, 'current');
 });
 
 test('a later release prunes all but the current and one previous release, and logs the prune', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
-  await launch(root, seatEnv(t, bridge));
+  await updateTo(root, seatEnv(t, bridge));
   bridge.state.published = goodPack('3.0.0');
-  const run = await launch(root, seatEnv(t, bridge));
+  const run = await updateTo(root, seatEnv(t, bridge));
 
   assert.equal(run.started.release, '3.0.0');
   assert.deepEqual(fs.readdirSync(path.join(root, 'versions')).sort(), ['2.0.0', '3.0.0']);
@@ -352,12 +576,12 @@ test('a later release prunes all but the current and one previous release, and l
 test('entry.mjs is replaced only when the new release carries different bytes for it', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
-  await launch(root, seatEnv(t, bridge));
+  await updateTo(root, seatEnv(t, bridge));
   assert.ok(!logObjs(root).some((l) => l.action === 'entry_replace'), 'same bytes: not replaced');
 
   const three = buildPack({ release: '3.0.0', files: clientFiles('3.0.0', { entryMarker: '\n// release 3\n' }) });
   bridge.state.published = three;
-  await launch(root, seatEnv(t, bridge));
+  await updateTo(root, seatEnv(t, bridge));
 
   const replace = logObjs(root).filter((l) => l.action === 'entry_replace');
   assert.equal(replace.length, 1);
@@ -392,81 +616,106 @@ const refusals = {
 };
 
 for (const [name, c] of Object.entries(refusals)) {
-  test(`refused, logged, reported, tree unchanged: ${name}`, async (t) => {
+  test(`refused by the background check, logged, reported, nothing staged, tree unchanged: ${name}`, async (t) => {
     const installed = c.installed ?? '1.0.0';
     const root = await seatWith(t, installed);
     const published = c.pack ? c.pack() : goodPack('2.0.0');
     const bridge = await fixtureBridge(t, { published, packBytes: c.serve ? c.serve(published) : null, manifestSha256: c.manifestSha256 });
     const before = treeOf(root);
+    const env = seatEnv(t, bridge);
 
-    const run = await launch(root, seatEnv(t, bridge));
+    const { check } = await session(root, env);
 
-    assert.equal(run.code, 0, run.stderr);
-    assert.equal(run.started.release, installed, 'the installed release still starts');
+    assert.equal(check.state, 'update_failed', check.stderr);
+    assert.match(check.error, /^refused: /);
+    assert.match(check.error, c.reason);
     assert.deepEqual(treeOf(root), before, 'versions/ and current.json are unchanged');
     assert.ok(!fs.existsSync(path.join(root, 'staging')) || fs.readdirSync(path.join(root, 'staging')).length === 0, 'no staging left behind');
-    const state = read(root, 'state.json');
-    assert.equal(state.state, 'update_failed');
-    assert.match(state.error, /^refused: /);
-    assert.match(state.error, c.reason);
+    assert.equal(stageRecord(root), null, 'nothing is staged');
     const last = assertChain(root).at(-1);
     assert.equal(last.action, 'refuse');
     assert.equal(last.result, 'refused');
     assert.match(last.reason, c.reason);
-    assert.ok(bridge.reports.flatMap((r) => r.entries).includes(logLines(root).at(-1)), 'the refusal reaches the bridge in the same launch');
+    assert.ok(bridge.reports.flatMap((r) => r.entries).includes(logLines(root).at(-1)), 'the refusal reaches the bridge in the same session');
+
+    const next = await launch(root, env);
+    assert.equal(next.code, 0, next.stderr);
+    assert.equal(next.started.release, installed, 'the installed release still starts');
+    const state = read(root, 'state.json');
+    assert.equal(state.state, 'update_failed', 'the next launch says so');
+    assert.match(state.error, /^refused: /);
+    assert.match(state.error, c.reason);
   });
 }
 
 // ---------------------------------------------------------------------------------------------
 // Failures that are not refusals
 
-test('bridge unreachable: the installed release starts, the failure is logged, and reported at the next launch', async (t) => {
+test('bridge unreachable: the check fails, the next launch says so, and the next session reports it and logs that it is behind the seat', async (t) => {
   const root = await seatWith(t, '1.0.0');
-  const run = await launch(root, seatEnv(t, null));
+  const first = await session(root, seatEnv(t, null));
 
-  assert.equal(run.started.release, '1.0.0');
-  const state = read(root, 'state.json');
-  assert.equal(state.state, 'update_failed');
-  assert.match(state.error, /^bridge unreachable/);
+  assert.equal(first.run.started.release, '1.0.0');
+  assert.equal(first.check.state, 'update_failed');
+  assert.match(first.check.error, /^bridge unreachable/);
   const fail = logObjs(root).at(-1);
   assert.equal(fail.action, 'fail');
-  assert.equal(fail.launch_id, state.launch_id);
+  assert.equal(fail.launch_id, first.launchId);
 
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
-  await launch(root, seatEnv(t, bridge));
-  assert.ok(bridge.reports.flatMap((r) => r.entries).some((l) => JSON.parse(l).launch_id === state.launch_id && JSON.parse(l).action === 'fail'), 'the backlog carries the earlier launch\'s failure');
+  const second = await session(root, seatEnv(t, bridge));
+  const state = read(root, 'state.json');
+  assert.equal(state.state, 'update_failed', 'the launch after a failed check is loud about it');
+  assert.match(state.error, new RegExp(`^bridge unreachable .*\\(the background update check of launch ${first.launchId}, `));
+  assert.equal(second.check.state, 'current');
+  const entries = bridge.reports.flatMap((r) => r.entries).map((l) => JSON.parse(l));
+  assert.ok(entries.some((l) => l.launch_id === first.launchId && l.action === 'fail'), 'the backlog carries the earlier launch\'s failure');
+  const last = entries.at(-1);
+  assert.deepEqual([last.action, last.result, last.launch_id], ['check', 'ok', second.launchId], 'a clean check after a failed launch says so, so the bridge does not keep the seat failed');
   assertChain(root);
+
+  const third = await session(root, seatEnv(t, bridge));
+  assert.equal(read(root, 'state.json').state, 'current');
+  assert.equal(logObjs(root).filter((l) => l.action === 'check').length, 1, 'the check line is written only after a failure, not every session');
+  assert.equal(third.check.state, 'current');
 });
 
 test('a bridge that publishes nothing: update_failed with the bridge\'s own words, installed release starts', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: null });
-  const run = await launch(root, seatEnv(t, bridge));
+  const { check } = await session(root, seatEnv(t, bridge));
+  assert.match(check.error, /answered client_manifest with HTTP 503: this bridge publishes no client pack yet/);
 
+  const run = await launch(root, seatEnv(t, bridge));
   assert.equal(run.started.release, '1.0.0');
   assert.match(read(root, 'state.json').error, /answered client_manifest with HTTP 503: this bridge publishes no client pack yet/);
 });
 
-test('approval owed: nothing is fetched or swapped, and the approval_owed line is not repeated launch after launch', async (t) => {
+test('approval owed: nothing is fetched, staged or swapped, the next launch says so, and the approval_owed line is not repeated', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), offer: null, owed: '2.0.0' });
   const before = treeOf(root);
-  const run = await launch(root, seatEnv(t, bridge));
+  const { run, check } = await session(root, seatEnv(t, bridge));
 
   assert.equal(run.started.release, '1.0.0');
+  assert.equal(check.state, 'approval_owed');
+  assert.equal(check.approval_owed, '2.0.0');
   assert.deepEqual(treeOf(root), before);
+  assert.equal(stageRecord(root), null);
+  assert.ok(!bridge.requests.some((r) => r.body.op === 'client_pack'), 'an unoffered pack is never fetched');
+
+  await session(root, seatEnv(t, bridge));
   const state = read(root, 'state.json');
   assert.equal(state.state, 'approval_owed');
   assert.equal(state.approval_owed, '2.0.0');
-  assert.ok(!bridge.requests.some((r) => r.body.op === 'client_pack'), 'an unoffered pack is never fetched');
-
-  await launch(root, seatEnv(t, bridge));
   assert.equal(logObjs(root).filter((l) => l.action === 'approval_owed').length, 1);
 });
 
-test('a lock held by another launch: no update, no log line, the installed release starts', async (t) => {
+test('a lock held by another launch: no install, no log line, the installed release starts; a check that cannot take it stages and logs nothing', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
+  assert.equal(stageRecord(root).bridge_release, '2.0.0');
   fs.writeFileSync(path.join(root, '.lock'), 'someone-else');
   const lines = logLines(root).length;
   const run = await launch(root, seatEnv(t, bridge));
@@ -474,12 +723,20 @@ test('a lock held by another launch: no update, no log line, the installed relea
   assert.equal(run.started.release, '1.0.0');
   assert.match(read(root, 'state.json').error, /^lock held/);
   assert.equal(logLines(root).length, lines, 'a launch without the lock writes nothing to the log');
-  assert.equal(bridge.requests.length, 0);
+  assert.equal(stageRecord(root).bridge_release, '2.0.0', 'the stage waits for a launch that holds the lock');
+
+  bridge.state.published = goodPack('3.0.0');
+  const check = await background(root, seatEnv(t, bridge), read(root, 'state.json').launch_id);
+  assert.equal(check.state, 'update_failed');
+  assert.match(check.error, /^lock held/);
+  assert.equal(logLines(root).length, lines, 'nor does a check without the lock');
+  assert.equal(stageRecord(root).bridge_release, '2.0.0', 'and it stages nothing');
 });
 
 test('a stale lock (older than twice the budget) is taken over', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
   fs.writeFileSync(path.join(root, '.lock'), 'a-dead-launch');
   const old = (Date.now() - 60000) / 1000;
   fs.utimesSync(path.join(root, '.lock'), old, old);
@@ -531,9 +788,11 @@ test('an invalid AWB_CLIENT_UPDATE_BUDGET_MS: no update attempted, said so, inst
 // ---------------------------------------------------------------------------------------------
 // The deadline and cancellation (design review r2 M-2, r3-m2, r3-M8)
 
-test('an updater that hangs past the budget never writes past its next signal check', async (t) => {
+test('an install from the stage that hangs past the budget never writes past its next signal check, and the stage is kept', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
+  const asked = bridge.requests.length;
   const before = treeOf(root);
   const started = Date.now();
   const run = await launch(root, seatEnv(t, bridge, { AWB_CLIENT_UPDATE_BUDGET_MS: '1500', AWB_CLIENT_CRASH_AT: 'budget-exceeded' }));
@@ -544,6 +803,7 @@ test('an updater that hangs past the budget never writes past its next signal ch
   assert.deepEqual(treeOf(root), before, 'no file under versions/ and no current.json change after the deadline');
   assert.ok(!fs.existsSync(path.join(root, 'staging', '2.0.0.partial')), 'staging is discarded');
   assert.ok(!fs.existsSync(path.join(root, '.lock')), 'the lock is released');
+  assert.equal(stageRecord(root).bridge_release, '2.0.0', 'the stage is kept for the next launch: running out of time is not its fault');
   const state = read(root, 'state.json');
   assert.equal(state.state, 'update_failed');
   assert.match(state.error, /1500 ms update budget ran out/);
@@ -551,28 +811,36 @@ test('an updater that hangs past the budget never writes past its next signal ch
   const last = logObjs(root).at(-1);
   assert.equal(last.action, 'fail');
   assert.match(last.reason, /budget ran out before moving release 2\.0\.0/);
-  assert.ok(!bridge.requests.some((r) => r.body.op === 'client_report'), 'no network work after the abort');
+  assert.equal(bridge.requests.length, asked, 'no network at launch');
+
+  const next = await launch(root, seatEnv(t, null));
+  assert.equal(next.started.release, '2.0.0', 'the next launch installs the kept stage');
 });
 
-test('a manifest answer slower than 5 s but inside the manifest leg: the launch still installs (card#11711)', { timeout: 60000 }, async (t) => {
+test('a manifest answer slower than the old 10 s launch leg still stages: the check is not bound by the connect window (card#11711, card#11760)', { timeout: 60000 }, async (t) => {
+  assert.ok(BACKGROUND_MANIFEST_MS >= 60000, `the background manifest leg is generous (${BACKGROUND_MANIFEST_MS} ms)`);
   const root = await seatWith(t, '1.0.0');
-  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), delayMs: { client_manifest: 6000 } });
-  const run = await launch(root, seatEnv(t, bridge));
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), delayMs: { client_manifest: 11000 } });
+  const { check } = await session(root, seatEnv(t, bridge));
+  assert.equal(check.state, 'staged', check.stderr);
 
+  const run = await launch(root, seatEnv(t, null));
   assert.equal(run.started.release, '2.0.0');
   assert.equal(read(root, 'state.json').state, 'current');
 });
 
-test('a bridge that holds the pack past the budget: the fetch is cancelled, nothing is reported after it', async (t) => {
+test('a bridge that holds the pack past the check\'s budget: the fetch is cancelled, nothing is staged or reported after it', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), delayMs: { client_pack: 8000 } });
+  await launch(root, seatEnv(t, bridge));
   const started = Date.now();
-  const run = await launch(root, seatEnv(t, bridge, { AWB_CLIENT_UPDATE_BUDGET_MS: '1500' }));
+  const check = await background(root, seatEnv(t, bridge), read(root, 'state.json').launch_id, { budgetMs: 1500 });
 
-  assert.equal(run.started.release, '1.0.0');
-  assert.ok(Date.now() - started < 7000, 'the process did not wait for the held answer');
+  assert.ok(Date.now() - started < 7000, 'the check did not wait for the held answer');
+  assert.equal(check.state, 'update_failed');
   assert.deepEqual(bridge.requests.map((r) => r.body.op), ['client_manifest', 'client_pack']);
   assert.match(logObjs(root).at(-1).reason, /budget ran out while asking the bridge for client_pack/);
+  assert.equal(stageRecord(root), null);
 });
 
 test('state.json names the release that was imported, never the one resolved before the update', () => {
@@ -613,9 +881,10 @@ test('a reconnect inside a live session does no network and no disk step, and ke
   assert.match(run.stderr, /skipped: session running/);
 });
 
-test('a launch record naming a dead parent is a new launch: a fresh id, and the update runs', async (t) => {
+test('a launch record naming a dead parent is a new launch: a fresh id, and the stage is installed', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
   const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' });
   fs.writeFileSync(path.join(root, 'launch.json'), JSON.stringify({ launch_id: 'L-old', ppid: Number(dead.stdout), pid: 1, boot_ms: bootTimeMs(), started_at: 'x' }));
 
@@ -645,10 +914,11 @@ test('decideLaunch: only a live, matching parent in this boot is a reconnect', (
 // ---------------------------------------------------------------------------------------------
 // Interrupted installs (design §3.6 crash hooks)
 
-for (const [point, startsNew] of [['after-extract', false], ['before-rename', false], ['after-rename', false], ['after-pointer', true]]) {
-  test(`killed ${point}: the next launch starts the ${startsNew ? 'new' : 'old'} release, and the one after converges`, async (t) => {
+for (const point of ['after-extract', 'before-rename', 'after-rename', 'after-pointer']) {
+  test(`killed ${point} while installing the stage: the next launch installs it, offline, and exactly one install is logged`, async (t) => {
     const root = await seatWith(t, '1.0.0');
     const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+    await session(root, seatEnv(t, bridge));
 
     const killed = await launch(root, seatEnv(t, bridge, { AWB_CLIENT_CRASH_AT: point }));
     assert.equal(killed.started, null, 'the kill happens before any server starts');
@@ -659,24 +929,25 @@ for (const [point, startsNew] of [['after-extract', false], ['before-rename', fa
       assert.ok(Number.isFinite(held.deadline_ms), 'the lock records its holder\'s deadline');
       fs.writeFileSync(path.join(root, '.lock'), JSON.stringify({ ...held, deadline_ms: Date.now() - 60000 }));
     }
+    assert.equal(stageRecord(root).bridge_release, '2.0.0', 'a killed install leaves the stage in place');
 
-    bridge.state.fail = { client_manifest: { status: 503, error: 'down for the test' } };
-    const next = await launch(root, seatEnv(t, bridge));
-    assert.equal(next.started.release, startsNew ? '2.0.0' : '1.0.0');
-
-    bridge.state.fail = {};
-    const third = await launch(root, seatEnv(t, bridge));
-    assert.equal(third.started.release, '2.0.0');
+    const next = await launch(root, seatEnv(t, null));
+    assert.equal(next.started.release, '2.0.0');
     assert.equal(read(root, 'state.json').state, 'current');
+    assert.ok(!fs.existsSync(path.join(root, STAGE_DIR)), 'the stage is gone once it is installed');
+
+    const third = await launch(root, seatEnv(t, null));
+    assert.equal(third.started.release, '2.0.0');
     const log = assertChain(root);
     assert.equal(log.filter((l) => l.action === 'install' && l.to_bridge_release === '2.0.0').length, 1, 'exactly one install of 2.0.0 is logged');
+    assert.equal(log.filter((l) => l.action === 'stage_discard').length, 0, 'an installed stage is not "discarded"');
   });
 }
 
 test('a zero-length current.json recovers to the newest verified release, and is repaired', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
-  await launch(root, seatEnv(t, bridge));
+  await updateTo(root, seatEnv(t, bridge));
   fs.writeFileSync(path.join(root, 'current.json'), '');
 
   const run = await launch(root, seatEnv(t, bridge));
@@ -717,15 +988,16 @@ test('a release whose server does not load: not started, loudly', async (t) => {
 test('the hash chain and the install id hold across successes and failures', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
-  await launch(root, seatEnv(t, null));
-  await launch(root, seatEnv(t, bridge));
+  await session(root, seatEnv(t, null));
+  await session(root, seatEnv(t, bridge));
   bridge.state.published = buildPack({ release: '2.0.0', files: clientFiles('2.0.0', { marker: '// tampered\n' }) });
-  await launch(root, seatEnv(t, bridge));
+  await session(root, seatEnv(t, bridge));
   bridge.state.published = goodPack('3.0.0');
-  await launch(root, seatEnv(t, bridge));
+  await session(root, seatEnv(t, bridge));
+  await session(root, seatEnv(t, bridge));
 
   const log = assertChain(root);
-  assert.deepEqual(log.map((l) => l.action), ['bootstrap', 'fail', 'install', 'refuse', 'install', 'prune']);
+  assert.deepEqual(log.map((l) => l.action), ['bootstrap', 'fail', 'stage', 'install', 'refuse', 'stage', 'install', 'prune']);
   // The fixture bridge holds exactly the seat's log, in order.
   assert.deepEqual([...bridge.held.keys()].sort((a, b) => a - b).map((s) => bridge.held.get(s)), logLines(root));
 });
@@ -737,7 +1009,7 @@ test('a backlog is reported in batches bounded by BOTH the entry count and the b
     log.append({ action: 'fail', result: 'failed', actor: 'provision', reason: `padding ${i} ${'é'.repeat(200)}` });
   }
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
-  await launch(root, seatEnv(t, bridge));
+  await session(root, seatEnv(t, bridge));
 
   assert.ok(bridge.reports.length >= 2);
   for (const report of bridge.reports) {
@@ -762,34 +1034,82 @@ test('reportBatches splits at whichever limit comes first', () => {
 // ---------------------------------------------------------------------------------------------
 // The loud surface and the wire, through the REAL channel server
 
-test('through the real server: the handshake, the INSTRUCTIONS line, and a call carrying the launch', async (t) => {
-  // Inside this package, so the real server's bare `@modelcontextprotocol/sdk` import resolves
-  // through ../node_modules — the pack itself carries none in this fixture.
+/** Wait until `predicate()` holds, polling; fails the test after `ms`. */
+async function eventually(predicate, what, ms = 15000) {
+  const until = Date.now() + ms;
+  while (!predicate()) {
+    if (Date.now() > until) {
+      assert.fail(`timed out waiting for ${what}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/** The real server, started through `<root>/entry.mjs` as Claude Code starts it, over stdio. */
+async function realSession(t, root, env, name) {
+  const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'entry.mjs')], env, stderr: 'ignore' });
+  const client = new Client({ name, version: '1.0.0' }, { capabilities: {} });
+  await client.connect(transport);
+  t.after(() => client.close());
+  return client;
+}
+
+/** A client root inside this package, so the real server's bare `@modelcontextprotocol/sdk` import resolves through ../node_modules. */
+function packageRoot(t) {
   const root = fs.mkdtempSync(path.join(SOURCE_DIR, 'tests', '.client-root-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+test('through the real server: the handshake, the INSTRUCTIONS line from the last check, and a call carrying the launch', async (t) => {
+  const root = packageRoot(t);
   assert.equal(bootstrap(t, root, goodPack('1.0.0', { realServer: true })).status, 0);
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), offer: null, owed: '2.0.0' });
   const env = seatEnv(t, bridge);
-  const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'entry.mjs')], env, stderr: 'ignore' });
-  const client = new Client({ name: 'cu-e2e', version: '1.0.0' }, { capabilities: {} });
-  await client.connect(transport);
-  t.after(() => client.close());
+  // An earlier session's check found approval owed; this launch says so without asking.
+  assert.equal((await background(root, env, 'an-earlier-launch')).state, 'approval_owed');
+  const client = await realSession(t, root, env, 'cu-e2e');
 
   assert.equal(client.getServerVersion().version, '0.9.29');
   assert.match(client.getInstructions(), /^CLIENT RELEASE 2\.0\.0 IS PUBLISHED by your bridge, and this seat requires PM approval/);
   await client.callTool({ name: 'board_my_cards', arguments: {} });
   const state = read(root, 'state.json');
   assert.deepEqual(bridge.calls[0].launch, { id: state.launch_id, bridge_release: '1.0.0' });
+  await eventually(() => readCheckOf(root)?.launch_id === state.launch_id, 'this session\'s background check');
 });
 
-test('card#11283: a manifest answer carrying served_tools writes this launch\'s served-tools.json', async (t) => {
+test('through the real server: once it is listening it stages a newer release in the background, keeps running its own, and the next launch runs the new one (card#11760)', async (t) => {
+  const root = packageRoot(t);
+  assert.equal(bootstrap(t, root, goodPack('1.0.0', { realServer: true })).status, 0);
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0', { realServer: true, clientVersion: '0.9.30' }) });
+  const env = seatEnv(t, bridge);
+  const client = await realSession(t, root, env, 'cu-e2e-stage');
+
+  assert.equal(client.getServerVersion().version, '0.9.29');
+  await eventually(() => stageRecord(root) !== null && readCheckOf(root)?.state === 'staged', 'the background check to stage 2.0.0');
+  assert.equal(stageRecord(root).bridge_release, '2.0.0');
+  assert.equal(read(root, 'current.json').bridge_release, '1.0.0', 'the running session never switches release');
+  assert.equal(bridge.requests[0].body.op, 'client_manifest');
+  await client.callTool({ name: 'board_my_cards', arguments: {} });
+  assert.deepEqual(bridge.calls.at(-1).launch.bridge_release, '1.0.0', 'this session still runs 1.0.0');
+  await client.close();
+
+  fs.rmSync(path.join(root, 'launch.json'), { force: true });
+  const next = await realSession(t, root, seatEnv(t, null), 'cu-e2e-next');
+  assert.equal(next.getServerVersion().version, '0.9.30', 'the next launch runs the staged release, with no bridge to ask');
+  const state = read(root, 'state.json');
+  assert.equal(state.running, '2.0.0');
+  await eventually(() => readCheckOf(root)?.launch_id === state.launch_id, 'the next session\'s background check');
+});
+
+test('card#11283: a manifest answer carrying served_tools writes served-tools.json under the checking launch\'s id', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0'), servedTools: ['ci_await', 'ci_await_cancel'] });
-  const run = await launch(root, seatEnv(t, bridge));
+  const { run, launchId } = await session(root, seatEnv(t, bridge));
 
   assert.equal(run.code, 0, run.stderr);
   const cache = read(root, 'served-tools.json');
-  assert.equal(cache.launch_id, read(root, 'state.json').launch_id, 'the cache names the launch that wrote it');
+  assert.equal(cache.launch_id, launchId, 'the cache names the launch whose check wrote it');
   assert.deepEqual(cache.served, ['ci_await', 'ci_await_cancel']);
 });
 
@@ -798,25 +1118,25 @@ test('card#11283: a manifest answer without served_tools writes nothing and leav
   const earlier = { launch_id: 'an-earlier-launch', agent: null, served: ['ci_await'], written_at: '2026-10-01T00:00:00.000Z' };
   fs.writeFileSync(path.join(root, 'served-tools.json'), JSON.stringify(earlier));
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
-  const run = await launch(root, seatEnv(t, bridge));
+  const { run, check } = await session(root, seatEnv(t, bridge));
 
   assert.equal(run.code, 0, run.stderr);
+  assert.equal(check.state, 'current');
   assert.deepEqual(read(root, 'served-tools.json'), earlier);
 });
 
-test('card#11283, through the real server: the launch\'s cache decides what is listed, and served_tools is not asked again', async (t) => {
-  const root = fs.mkdtempSync(path.join(SOURCE_DIR, 'tests', '.client-root-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+test('card#11283, through the real server: an earlier launch\'s cache decides what is listed, and served_tools is never asked at start-up (card#11760)', async (t) => {
+  const root = packageRoot(t);
   assert.equal(bootstrap(t, root, goodPack('1.0.0', { realServer: true })).status, 0);
-  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0', { realServer: true }), servedTools: ['ci_await', 'ci_await_cancel'] });
-  const env = seatEnv(t, bridge);
-  const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'entry.mjs')], env, stderr: 'ignore' });
-  const client = new Client({ name: 'cu-e2e-served', version: '1.0.0' }, { capabilities: {} });
-  await client.connect(transport);
-  t.after(() => client.close());
+  fs.writeFileSync(path.join(root, 'served-tools.json'), JSON.stringify({ launch_id: 'an-earlier-launch', agent: null, served: ['ci_await', 'ci_await_cancel'], written_at: '2026-10-01T00:00:00.000Z' }));
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0', { realServer: true }), servedTools: ['ci_await', 'ci_await_cancel', 'board_my_cards'] });
+  const client = await realSession(t, root, seatEnv(t, bridge), 'cu-e2e-served');
 
-  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ['ci_await', 'ci_await_cancel']);
+  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ['ci_await', 'ci_await_cancel'], 'the cache, not the bridge\'s current answer: the set is fixed at start-up');
+  const state = read(root, 'state.json');
+  await eventually(() => readCheckOf(root)?.launch_id === state.launch_id, 'this session\'s background check');
   assert.ok(!bridge.requests.some((r) => r.body.op === 'served_tools'), `asked: ${bridge.requests.map((r) => r.body.op).join(', ')}`);
+  assert.deepEqual(read(root, 'served-tools.json').served, ['ci_await', 'ci_await_cancel', 'board_my_cards'], 'the check refreshes the cache for the next launch');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -881,7 +1201,7 @@ test('clientUpdateInstruction: silent when current, loud otherwise, and never be
   assert.equal(
     clientUpdateInstruction({ ...base, state: 'update_failed', error: 'bridge unreachable (x)', published: '2.0.0' }, { launchId: 'L', root }),
     'CLIENT UPDATE FAILED (bridge unreachable (x)): this seat runs channel-server release 1.0.0; published release 2.0.0 was not applied. ' +
-      'Tell your operator; the install log is /r/install-log.jsonl. The update is tried again at the next launch; ' +
+      'Tell your operator; the install log is /r/install-log.jsonl. This session checks for an update again in the background, and a release it stages is installed at the next launch; ' +
       'the reason at the start of this line names the cause.',
   );
   // An updater that cannot run cannot fetch its own fix: it needs a fixed release, bootstrapped.
@@ -978,7 +1298,7 @@ test('Windows: a deep node_modules path installs (long paths)', async (t) => {
   const root = await seatWith(t, '1.0.0');
   assert.ok(path.join(root, 'versions', '2.0.0', deep).length > 260, 'the installed path is past MAX_PATH');
   const bridge = await fixtureBridge(t, { published: buildPack({ release: '2.0.0', files }) });
-  const run = await launch(root, seatEnv(t, bridge));
+  const run = await updateTo(root, seatEnv(t, bridge));
 
   assert.equal(run.started.release, '2.0.0', run.stderr);
   assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0', ...deep.split('/'))));
@@ -1011,7 +1331,7 @@ function damage(root, release, file = 'agent-webhook-bridge-channel.mjs') {
 test('power-cut damage: a zero-length required file in the current release starts the previous one, loudly, and current.json is repointed', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
-  await launch(root, seatEnv(t, bridge));
+  await updateTo(root, seatEnv(t, bridge));
   assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
   damage(root, '2.0.0');
 
@@ -1024,12 +1344,16 @@ test('power-cut damage: a zero-length required file in the current release start
   const recovered = logObjs(root).find((l) => l.action === 'pointer_recovered');
   assert.match(recovered.reason, /current\.json named release 2\.0\.0, which is not intact \(client\/agent-webhook-bridge-channel\.mjs does not match its FILES\.json line\); current\.json now names 1\.0\.0, the selected release/);
   assert.equal(read(root, 'current.json').bridge_release, '1.0.0');
-  // recoverRoot (the pointer repair) deletes NOTHING (design review rule 3): the damaged tree is
-  // still on disk, and is replaced only when commitInstall next tries to install into it.
-  assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0')), 'the damaged release is left in place, not deleted, by the pointer repair');
+  // recoverRoot (the pointer repair) deletes NOTHING (design review rule 3). Every launch now
+  // settles the root (it asks no bridge that could fail first), and the retention prune — which
+  // keeps the running release and the newest OLDER ok one — is what removes the damaged 2.0.0:
+  // its own `prune` line names it, which it could not if the pointer repair had removed it first.
+  assert.match(logObjs(root).filter((l) => l.action === 'prune').at(-1).reason, /^removed 2\.0\.0; kept 1\.0\.0$/);
 
-  const online = await launch(root, seatEnv(t, bridge));
-  assert.equal(online.started.release, '2.0.0', 'the damaged release is replaced by commitInstall and runs');
+  // The bridge still offers 2.0.0 and the seat runs 1.0.0, so a check stages it again, and the
+  // next launch installs a verified copy.
+  const online = await updateTo(root, seatEnv(t, bridge));
+  assert.equal(online.started.release, '2.0.0', 'a verified copy of the damaged release is installed and runs');
   assert.equal(read(root, 'state.json').state, 'current');
   assert.equal(read(root, 'state.json').recovered, undefined, 'nothing to say once the release runs again');
   assertChain(root);
@@ -1038,10 +1362,12 @@ test('power-cut damage: a zero-length required file in the current release start
 test('power-cut damage: a release whose .verified record is empty is never started', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
-  await launch(root, seatEnv(t, bridge));
+  await updateTo(root, seatEnv(t, bridge));
   fs.writeFileSync(path.join(root, 'versions', '2.0.0', '.verified'), '');
-  const run = await launch(root, seatEnv(t, bridge));
-  assert.equal(run.started.release, '2.0.0', 'the unverified tree is replaced by the verified pack, not reused');
+  const { run } = await session(root, seatEnv(t, bridge));
+  assert.equal(run.started.release, '1.0.0', 'the unverified tree is not started');
+  const next = await launch(root, seatEnv(t, null));
+  assert.equal(next.started.release, '2.0.0', 'the unverified tree is replaced by the verified pack, not reused');
   assert.equal(read(root, 'state.json').state, 'current');
 });
 
@@ -1117,7 +1443,7 @@ test('a damaged file outside REQUIRED_CLIENT_FILES: invisible to step 1, but a b
 test('an import failure is not started, even with an intact previous release kept — no other release is tried (DL-434 bound 4)', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: packWithExtraDep('2.0.0') });
-  await launch(root, seatEnv(t, bridge));
+  await updateTo(root, seatEnv(t, bridge));
   assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
   damage(root, '2.0.0', 'extra-dep.mjs');
 
@@ -1279,20 +1605,13 @@ test('a release current.json names that cannot be confirmed intact is repointed 
   assert.equal(read(root, 'current.json').bridge_release, '1.0.0', 'the pointer is repointed away from it, same as any other non-ok release');
   const recovered = logObjs(root).find((l) => l.action === 'pointer_recovered');
   assert.match(recovered.reason, /current\.json named release 2\.0\.0, which is not intact \(client\/package\.json could not be read \(EISDIR\)\); current\.json now names 1\.0\.0, the selected release/);
-  // Deletes nothing — the read-fault release is still on disk, untouched, for a later install to judge.
-  assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0')));
+  // The pointer repair deletes nothing; the launch's retention prune removes the read-fault release
+  // on its own policy (a `bad` release newer than the running one is not kept), and says so.
+  assert.match(logObjs(root).filter((l) => l.action === 'prune').at(-1).reason, /^removed 2\.0\.0; kept 1\.0\.0$/);
 
-  // current.json now names 1.0.0, so a launch with no bridge to consult keeps running it — step 1
-  // trusts what current.json names without re-scanning once that release classifies `ok` (cheap by
-  // design). The fault clearing on disk alone is not itself an event; the bridge re-offering 2.0.0
-  // is what recovers it, through the ordinary update path.
-  fs.rmdirSync(file);
-  fs.copyFileSync(path.join(root, 'versions', '1.0.0', 'client', 'package.json'), file);
-  const stillOne = await launch(root, seatEnv(t, null));
-  assert.equal(stillOne.started.release, '1.0.0', 'current.json still names 1.0.0; nothing re-scanned it');
-
+  // The bridge still offering 2.0.0 is what brings it back, through the ordinary update path.
   const bridge2 = await fixtureBridge(t, { published: goodPack('2.0.0') });
-  const again = await launch(root, seatEnv(t, bridge2));
+  const again = await updateTo(root, seatEnv(t, bridge2));
   assert.equal(again.code, 0, again.stderr);
   assert.equal(again.started.release, '2.0.0');
   assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
@@ -1305,19 +1624,23 @@ test('a release current.json names that cannot be confirmed intact is repointed 
 // sits behind it. Removing commitInstall's own check left the suite green before this test existed.
 test('commitInstall refuses a non-running release already on disk under a different pack (design review rule 4 — r4 M5, previously untested)', async (t) => {
   const root = await seatWith(t, '1.0.0');
+  // The bridge republishes 2.0.0 under different bytes, and a check stages it while 1.0.0 runs.
+  const bridge = await fixtureBridge(t, { published: buildPack({ release: '2.0.0', files: clientFiles('2.0.0', { marker: '// other bytes\n' }) }) });
+  await session(root, seatEnv(t, bridge));
+  assert.equal(stageRecord(root).bridge_release, '2.0.0');
+  // Meanwhile versions/2.0.0 got the ORIGINAL 2.0.0 (a bootstrap), and the pointer was rolled back
+  // to 1.0.0 by hand (an administrative repoint): versions/2.0.0 is left as the bootstrap wrote it.
   const b1 = bootstrap(t, root, goodPack('2.0.0'));
   assert.equal(b1.status, 0, b1.stderr);
   const originalBytes = fs.readFileSync(path.join(root, 'versions', '2.0.0', 'client', 'agent-webhook-bridge-channel.mjs'));
-  // Roll the pointer back to 1.0.0 by hand (an administrative repoint): versions/2.0.0 is left
-  // exactly as the bootstrap wrote it, and the bridge now republishes 2.0.0 under different bytes.
   fs.writeFileSync(path.join(root, 'current.json'), JSON.stringify({ ...read(root, 'current.json'), bridge_release: '1.0.0' }));
 
-  const bridge = await fixtureBridge(t, { published: buildPack({ release: '2.0.0', files: clientFiles('2.0.0', { marker: '// other bytes\n' }) }) });
-  const run = await launch(root, seatEnv(t, bridge));
+  const run = await launch(root, seatEnv(t, null));
   assert.equal(run.code, 0, run.stderr);
   assert.equal(run.started.release, '1.0.0', 'the refusal leaves 1.0.0 running');
   assert.equal(read(root, 'state.json').state, 'update_failed');
-  assert.match(read(root, 'state.json').error, /refused: versions\/2\.0\.0 already holds pack [0-9a-f]{64}, not the verified pack [0-9a-f]{64}; it is left as it is/);
+  assert.match(read(root, 'state.json').error, /^refused: the staged update was refused and discarded: versions\/2\.0\.0 already holds pack [0-9a-f]{64}, not the verified pack [0-9a-f]{64}; it is left as it is/);
+  assert.equal(stageRecord(root), null, 'the refused stage is discarded');
   assert.deepEqual(fs.readFileSync(path.join(root, 'versions', '2.0.0', 'client', 'agent-webhook-bridge-channel.mjs')), originalBytes, 'versions/2.0.0 is untouched');
 });
 
@@ -1401,8 +1724,13 @@ test('guard: a direct fs read under versions/ on the paths exercised here comes 
     fs.writeFileSync(cur, JSON.stringify({ ...JSON.parse(saved), bridge_release: '9.9.9' }));
     const bridge = await fixtureBridge(t, { published: goodPack('3.0.0') });
     await runLaunchUpdate({ root, budgetMs: 10000, signal: new AbortController().signal, launchId: 'guard-launch', installed: resolveInstalled(root), env: seatEnv(t, bridge) });
-    // The approval_owed path (its own settleRoot call).
-    const owed = await fixtureBridge(t, { published: goodPack('4.0.0'), offer: null, owed: '4.0.0' });
+    // The background check (card#11760): a stage, then the launch that installs it.
+    const four = await fixtureBridge(t, { published: goodPack('4.0.0') });
+    assert.equal((await runBackgroundUpdate({ root, launchId: 'guard-stage', env: seatEnv(t, four) })).state, 'staged');
+    assert.equal((await runLaunchUpdate({ root, budgetMs: 10000, signal: new AbortController().signal, launchId: 'guard-install', installed: resolveInstalled(root), env: seatEnv(t, four) })).installed, '4.0.0');
+    // The approval_owed path: the check, then the launch that reports it (its own settleRoot call).
+    const owed = await fixtureBridge(t, { published: goodPack('5.0.0'), offer: null, owed: '5.0.0' });
+    assert.equal((await runBackgroundUpdate({ root, launchId: 'guard-check-owed', env: seatEnv(t, owed) })).state, 'approval_owed');
     const owedResult = await runLaunchUpdate({ root, budgetMs: 10000, signal: new AbortController().signal, launchId: 'guard-owed', installed: resolveInstalled(root), env: seatEnv(t, owed) });
     assert.equal(owedResult.state, 'approval_owed');
   });
@@ -1439,6 +1767,7 @@ test('a bootstrap\'s lock is honoured to its own deadline, not taken over at twi
 test('a lock past its holder\'s own deadline is taken over', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
   fs.writeFileSync(path.join(root, '.lock'), JSON.stringify({ token: 'dead', pid: 1, deadline_ms: Date.now() - 60000 }));
   const run = await launch(root, seatEnv(t, bridge));
   assert.equal(run.started.release, '2.0.0');
@@ -1496,13 +1825,13 @@ test('a redirect from the bridge is refused, never followed with the bearer', as
   await assert.rejects(httpRoundTrip({ url: target.replace(elsewhere.address().port, '9'), token: 't', body: '{}' }));
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), redirectTo: target });
-  const run = await launch(root, seatEnv(t, bridge));
+  const { run, check } = await session(root, seatEnv(t, bridge));
 
   assert.equal(run.started.release, '1.0.0');
   // review r2 minor 5: `fetch`'s own message for a refused redirect is the generic "fetch
   // failed" — the actual reason is on `err.cause` and must be named too, or this is
   // indistinguishable from every other unreachable-bridge cause.
-  assert.match(read(root, 'state.json').error, /^bridge unreachable \(.*fetch failed: unexpected redirect\)/);
+  assert.match(check.error, /^bridge unreachable \(.*fetch failed: unexpected redirect\)/);
   assert.equal(followed, 0, 'the redirect target never saw a request');
 });
 
@@ -1519,11 +1848,12 @@ test('install accepts --actor provision (the design\'s bootstrap call) and refus
 test('approval_owed is logged once per owed content even with other lines in between', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), offer: null, owed: '2.0.0' });
-  await launch(root, seatEnv(t, bridge));
-  await launch(root, seatEnv(t, null));
-  await launch(root, seatEnv(t, bridge));
+  await session(root, seatEnv(t, bridge));
+  await session(root, seatEnv(t, null));
+  await session(root, seatEnv(t, bridge));
 
-  assert.deepEqual(logObjs(root).map((l) => l.action), ['bootstrap', 'approval_owed', 'fail']);
+  // The third session's check is clean after the second's failed: one `check` line says so.
+  assert.deepEqual(logObjs(root).map((l) => l.action), ['bootstrap', 'approval_owed', 'fail', 'check']);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -1549,6 +1879,7 @@ test('a prune removal that fails is logged `skipped`, never `failed`, and the up
   const root = await seatWith(t, '1.0.0');
   assert.equal(bootstrap(t, root, goodPack('2.0.0')).status, 0);
   const bridge = await fixtureBridge(t, { published: goodPack('3.0.0') });
+  assert.equal((await runBackgroundUpdate({ root, launchId: 'prune-stage', env: seatEnv(t, bridge) })).state, 'staged');
   const target = path.join(root, 'versions', '1.0.0');
   const rmSync = fs.rmSync;
   fs.rmSync = function patched(p, ...rest) {

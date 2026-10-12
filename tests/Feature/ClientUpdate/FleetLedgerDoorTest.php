@@ -466,6 +466,35 @@ class FleetLedgerDoorTest extends TestCase
     }
 
     /**
+     * The background update check's lines (card#11760, DL-476) are stored like any other: a clean
+     * `check` from a later launch supersedes an earlier launch's failure, and the newest stage or
+     * discard decides what the seat has staged.
+     */
+    public function test_the_background_checks_lines_are_accepted_and_a_clean_check_supersedes_a_failed_launch(): void
+    {
+        $stage = ['action' => 'stage', 'from_bridge_release' => '0.90.0', 'to_bridge_release' => '0.91.0', 'files_json_sha256' => str_repeat('b', 64), 'pack_sha256' => str_repeat('c', 64), 'manifest_sha256' => str_repeat('d', 64)];
+        $lines = self::log([
+            ['action' => 'fail', 'result' => 'failed', 'reason' => 'bridge unreachable', 'launch_id' => 'L1'],
+            ['action' => 'check', 'from_bridge_release' => '0.90.0', 'launch_id' => 'L2'],
+            $stage + ['launch_id' => 'L2'],
+        ]);
+
+        $http = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $lines]);
+
+        $this->assertSame(200, $http['status'], $http['raw']);
+        $this->assertSame(3, $http['body']['stored']);
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+        $this->assertSame('L2', $row->last_launch_id);
+        $this->assertSame('ok', $row->last_launch_result, 'a clean check of a later launch is that launch\'s outcome');
+        $this->assertSame(['httpseat' => '0.91.0'], SeatClientLedger::stagedReleases());
+        $this->assertNull($row->installed_bridge_release, 'a stage is not an install');
+
+        $discard = self::log([['action' => 'stage_discard', 'to_bridge_release' => '0.91.0', 'reason' => 'withdrawn', 'launch_id' => 'L3']], 4, hash('sha256', $lines[2]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $discard]);
+        $this->assertSame([], SeatClientLedger::stagedReleases(), 'a discard after the stage leaves nothing staged');
+    }
+
+    /**
      * @return array<string, array{0: array<string, mixed>, 1: string}>
      */
     public static function reportRefusals(): array

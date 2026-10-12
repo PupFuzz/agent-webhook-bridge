@@ -79,7 +79,7 @@ final class ClientFleet
             $caps = null;
         }
 
-        return self::derive($agents, $rows, $published, $publishedError, SeatClientLedger::approvals(), SeatClientLedger::installedDigests(), SeatClientLedger::installsReportedAt(), $caps, $now ?? Carbon::now());
+        return self::derive($agents, $rows, $published, $publishedError, SeatClientLedger::approvals(), SeatClientLedger::installedDigests(), SeatClientLedger::installsReportedAt(), SeatClientLedger::stagedReleases(), $caps, $now ?? Carbon::now());
     }
 
     /**
@@ -88,8 +88,9 @@ final class ClientFleet
      * @param  array<string, list<string>>  $approvals
      * @param  array<string, array<string, string>>  $installedDigests
      * @param  array<string, Carbon>  $installsReportedAt  {@see SeatClientLedger::installsReportedAt()}
+     * @param  array<string, string>  $stagedReleases  {@see SeatClientLedger::stagedReleases()}
      */
-    public static function derive(array $agents, array $rows, ?PublishedClientPack $published, ?string $publishedError, array $approvals, array $installedDigests, array $installsReportedAt, ?ClientCapabilities $caps, Carbon $now): self
+    public static function derive(array $agents, array $rows, ?PublishedClientPack $published, ?string $publishedError, array $approvals, array $installedDigests, array $installsReportedAt, array $stagedReleases, ?ClientCapabilities $caps, Carbon $now): self
     {
         $seats = [];
         foreach ($agents as $agent => $bt) {
@@ -102,7 +103,7 @@ final class ClientFleet
 
                 return $installedDigests[$agent][$release] ?? ($published !== null && $published->bridgeRelease === $release ? $published->filesJsonSha256 : null);
             };
-            [$state, $reason] = self::stateOf($agent, $bt, $row, $installsReportedAt[$agent] ?? null, $published, $publishedError, $approved, $digestOf, $now);
+            [$state, $reason] = self::stateOf($agent, $bt, $row, $installsReportedAt[$agent] ?? null, $stagedReleases[$agent] ?? null, $published, $publishedError, $approved, $digestOf, $now);
             $seats[] = self::seat($agent, $bt, $row, $state, $reason, $published, $approved, $digestOf, $caps, $now);
         }
 
@@ -114,7 +115,7 @@ final class ClientFleet
      * @param  callable(?string): ?string  $digestOf
      * @return array{0: FleetState, 1: string}
      */
-    public static function stateOf(string $agent, BoardToolsConfig $bt, SeatClientState $row, ?Carbon $installReportedAt, ?PublishedClientPack $published, ?string $publishedError, array $approved, callable $digestOf, Carbon $now): array
+    public static function stateOf(string $agent, BoardToolsConfig $bt, SeatClientState $row, ?Carbon $installReportedAt, ?string $staged, ?PublishedClientPack $published, ?string $publishedError, array $approved, callable $digestOf, Carbon $now): array
     {
         $running = $row->running_bridge_release;
         $installed = $row->installed_bridge_release;
@@ -141,7 +142,7 @@ final class ClientFleet
         }
 
         if ($row->last_launch_result === 'failed' && ! self::laterLaunchSeen($row)) {
-            return [FleetState::UpdateFailed, 'its last launch-time update failed ('.UntrustedText::forOperator((string) $row->last_launch_error).'); it keeps running what it had'.($running !== null ? " (release {$running})" : '')];
+            return [FleetState::UpdateFailed, 'its last update failed — its background check, or its launch\'s install of the staged release ('.UntrustedText::forOperator((string) $row->last_launch_error).'); it keeps running what it had'.($running !== null ? " (release {$running})" : '')];
         }
 
         if ($bt->clientUpdateApprovalRequired && $published !== null && ! in_array($published->filesJsonSha256, $approved, true) && $installed !== $published->bridgeRelease) {
@@ -186,11 +187,17 @@ final class ClientFleet
             }
             $launchSeen = self::launchFirstSeen($row);
             if ($running !== null && ChannelSnapshotManifest::compareVersions($running, $published->bridgeRelease) < 0 && $publishedAt !== null && $launchSeen !== null) {
-                if ($installed === $published->bridgeRelease || $launchSeen->lte($publishedAt)) {
-                    return [FleetState::AppliesNextLaunch, "runs release {$running}; published release {$published->bridgeRelease} reaches it at its next launch, because ".($installed === $published->bridgeRelease ? 'it is already installed' : 'the session it runs started before that release was published')];
+                if ($installed === $published->bridgeRelease) {
+                    return [FleetState::AppliesNextLaunch, "runs release {$running}; published release {$published->bridgeRelease} reaches it at its next launch, because it is already installed"];
+                }
+                if ($launchSeen->lte($publishedAt)) {
+                    return [FleetState::AppliesNextLaunch, "runs release {$running}; the session it runs started before release {$published->bridgeRelease} was published, so that session's background update check did not see it: its next session stages it and the launch after that runs it (a client older than DL-476 installs it at its next launch)"];
+                }
+                if ($staged === $published->bridgeRelease) {
+                    return [FleetState::AppliesNextLaunch, "runs release {$running}; published release {$published->bridgeRelease} reaches it at its next launch, because its background update check has staged it"];
                 }
 
-                return [FleetState::Behind, "it launched after release {$published->bridgeRelease} was published (that launch first seen ".HumanAge::floored((int) $launchSeen->diffInSeconds($now, true))." ago) and still runs release {$running}, with no failure and no approval reported — its updater did not apply the published release and did not say why"];
+                return [FleetState::Behind, "it launched after release {$published->bridgeRelease} was published (that launch first seen ".HumanAge::floored((int) $launchSeen->diffInSeconds($now, true))." ago) and still runs release {$running}, with no stage, failure or approval reported — its background update check has not reported yet, or did not stage the published release and did not say why"];
             }
         }
 
@@ -381,8 +388,9 @@ final class ClientFleet
 
     /**
      * When the launch the seat runs began, as this bridge's own clock bounds it: its first call,
-     * or the first report of that launch if that arrived earlier (the updater reports before the
-     * channel server makes its first call).
+     * or the first report of that launch if that arrived earlier (a client before DL-476 reported
+     * at launch, before its first call; one after it reports from its background check, usually
+     * after).
      */
     private static function launchFirstSeen(SeatClientState $row): ?Carbon
     {
