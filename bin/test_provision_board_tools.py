@@ -3795,6 +3795,143 @@ class LauncherShim(unittest.TestCase):
             pbt.main(["--role", "a", "--agent", "a", "--write-launcher-shim"])
         self.assertIn("--write-launcher-shim is a --role b flag", str(cm.exception))
 
+    # --- The coord framework's shim (card#11741): a seat whose launcher shim the framework wrote ---
+
+    FRAMEWORK_SH = "#!/bin/sh\n# coord-launcher-shim v1\nexec \"$HOME/.local/share/agent-webhook-bridge/client/chan/bin/start-claude\" \"$@\"\n"
+
+    def test_a_framework_shim_is_left_byte_identical_and_the_run_says_so(self):
+        self._root()
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(self.FRAMEWORK_SH)
+        before = os.stat(self.shim)
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: framework_shim"))
+        self.assertIn(f"launcher shim: {self.shim} is the coord framework's launcher shim", out)
+        self.assertIn("left in place", out)
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), self.FRAMEWORK_SH)
+        self.assertEqual(os.stat(self.shim).st_ino, before.st_ino, "not replaced")
+        self.assertEqual(self._home_files(), ["start-claude.sh"], "no backup, no second file")
+
+    def test_explicit_extra_args_do_not_overwrite_a_framework_shim(self):
+        self._root()
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(self.FRAMEWORK_SH)
+        rc, out = self._write("--claude-extra-args=--a")
+        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: framework_shim"))
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), self.FRAMEWORK_SH)
+
+    def test_a_framework_shim_still_fails_loudly_when_the_root_launcher_is_missing(self):
+        self._root(launcher=False)
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(self.FRAMEWORK_SH)
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (3, "launcher-shim-status: retry_after_launch"))
+        self.assertIn("has no launcher shim at", self.err)
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), self.FRAMEWORK_SH)
+
+    def test_the_framework_marker_on_line_six_is_not_the_framework_s_and_is_replaced(self):
+        self._root()
+        late = "#!/bin/sh\n#\n#\n#\n#\n# coord-launcher-shim\nexec claude\n"
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(late)
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: written"))
+        self.assertEqual(len([n for n in self._home_files() if n.startswith("start-claude.sh.pre-shim-")]), 1)
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertTrue(pbt.is_launcher_shim(fh.read()))
+
+    def test_the_framework_marker_predicate_is_exact(self):
+        cases = {
+            # (file, text): framework's?
+            ("start-claude.sh", "# coord-launcher-shim\n"): True,
+            ("start-claude.sh", "#!/bin/sh\n# coord-launcher-shim 1.2.0\n"): True,
+            ("start-claude.ps1", "\ufeff# coord-launcher-shim\r\n"): True,
+            ("start-claude.ps1", "<#\r\n#>\r\n\r\n\r\n# coord-launcher-shim\r\n"): True,
+            ("start-claude.bat", "@echo off\r\nREM coord-launcher-shim v2\r\n"): True,
+            ("start-claude.sh", "\n\n\n\n\n# coord-launcher-shim\n"): False,  # line 6
+            ("start-claude.sh", "#coord-launcher-shim\n"): False,
+            ("start-claude.sh", "# coord-launcher-shims\n"): False,
+            ("start-claude.sh", "# Coord-Launcher-Shim\n"): False,
+            ("start-claude.sh", " # coord-launcher-shim\n"): False,
+            ("start-claude.sh", "# coord-launcher-shim-v2\n"): False,
+            ("start-claude.sh", "echo '# coord-launcher-shim'\n"): False,
+            ("start-claude.sh", "REM coord-launcher-shim\n"): False,
+            ("start-claude.bat", "rem coord-launcher-shim\r\n"): False,
+            ("start-claude.bat", "# coord-launcher-shim\r\n"): False,
+            ("start-claude.ps1", "REM coord-launcher-shim\r\n"): False,
+            ("start-claude.sh", f"# {pbt.LAUNCHER_SHIM_MARKER}\n"): False,
+        }
+        for (name, text), want in cases.items():
+            self.assertEqual(pbt.is_framework_launcher_shim(name, text), want, (name, text))
+
+    def test_a_bridge_shim_is_never_read_as_the_framework_s(self):
+        for os_name in ("posix", "nt"):
+            for name, body in pbt.launcher_shims("chan", "/r", os_name):
+                self.assertFalse(pbt.is_framework_launcher_shim(name, body), (os_name, name))
+
+    def _windows_home(self, files):
+        home = tempfile.mkdtemp(dir=self.tmp.name)
+        for name, text in files.items():
+            with open(os.path.join(home, name), "w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+        return home
+
+    def test_windows_either_file_framework_marked_leaves_the_pair_alone(self):
+        ours = dict(pbt.launcher_shims("chan", "C:\\old", "nt"))
+        framework = {"start-claude.bat": "@echo off\r\nREM coord-launcher-shim\r\ncall x %*\r\n",
+                     "start-claude.ps1": "# coord-launcher-shim\r\n& x @args\r\n"}
+        layouts = {
+            "bat marked, no ps1": {"start-claude.bat": framework["start-claude.bat"]},
+            "ps1 marked, no bat": {"start-claude.ps1": framework["start-claude.ps1"]},
+            "both marked": dict(framework),
+            "bat marked, ps1 ours": {"start-claude.bat": framework["start-claude.bat"], "start-claude.ps1": ours["start-claude.ps1"]},
+            "ps1 marked, bat a hand file": {"start-claude.ps1": framework["start-claude.ps1"], "start-claude.bat": "@echo off\r\nclaude\r\n"},
+        }
+        for label, files in layouts.items():
+            with self.subTest(label):
+                home = self._windows_home(files)
+                status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+                self.assertEqual(status, "framework_shim")
+                self.assertTrue(any("left in place" in line for line in lines), lines)
+                self.assertEqual(sorted(os.listdir(home)), sorted(files))
+                for name, text in files.items():
+                    with open(os.path.join(home, name), encoding="utf-8", newline="") as fh:
+                        self.assertEqual(fh.read(), text, (label, name))
+
+    def test_windows_unmarked_pair_is_written_as_today(self):
+        home = self._windows_home({"start-claude.bat": "@echo off\r\nrem coord-launcher-shim\r\nclaude\r\n"})
+        status, _lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual(status, "written")
+        files = dict(pbt.launcher_shims("chan", "C:\\r", "nt"))
+        for name, body in files.items():
+            with open(os.path.join(home, name), encoding="utf-8", newline="") as fh:
+                self.assertEqual(fh.read(), body)
+        self.assertEqual(len([n for n in os.listdir(home) if n.startswith("start-claude.bat.pre-shim-")]), 1)
+
+    def test_an_onboarding_run_leaves_a_framework_shim_and_says_so(self):
+        self._root()
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(self.FRAMEWORK_SH)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": self.data}), contextlib.redirect_stdout(out):
+            pbt._offer_launcher_shim("chan")
+        self.assertIn("is the coord framework's launcher shim", out.getvalue())
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), self.FRAMEWORK_SH)
+
+    def test_the_readme_declares_the_framework_marker_the_code_reads(self):
+        # The README is the contract surface the framework builds against: it must state the very
+        # marker lines and line bound the predicate reads.
+        with open(os.path.join(pbt._bundled_snapshot_dir(), "README.md"), encoding="utf-8") as fh:
+            readme = fh.read()
+        for name in ("start-claude.sh", "start-claude.ps1", "start-claude.bat"):
+            self.assertIn(f"`{pbt.framework_shim_marker_line(name)}`", readme, name)
+        self.assertIn(f"first {pbt.FRAMEWORK_SHIM_MARKER_WITHIN_LINES} lines", readme)
+        self.assertIn("`framework_shim`", readme)
+
     def test_bootstrap_client_writes_the_shim_once_the_root_carries_the_launcher(self):
         # The stubbed bootstrap of BootstrapClientEntryPoint, with the root's launcher shim present.
         project = os.path.join(self.tmp.name, "project")

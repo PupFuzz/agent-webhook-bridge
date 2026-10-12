@@ -1287,8 +1287,15 @@ def client_root(channel_name: str, environ=None, os_name=os.name) -> str:
 # writes it (bin/test_provision_board_tools.py holds the two equal).
 CLIENT_LAUNCHER_SHIM = {"posix": "start-claude", "nt": "start-claude.cmd"}
 # The line that makes a file at the seat's launcher path OURS: present, the file is rewritten in
-# place; absent, the file is the operator's and is backed up before the shim replaces it.
+# place; absent (and not the framework's, below), the file is the operator's and is backed up before
+# the shim replaces it.
 LAUNCHER_SHIM_MARKER = "agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)"
+# The line that makes a file at the seat's launcher path the coord FRAMEWORK's shim (card#11741): the
+# framework owns the seat's entry point once it writes one, and the provisioner stands aside for it.
+# `# coord-launcher-shim` (`REM coord-launcher-shim` in a .bat), optionally followed by a space and
+# anything, as a whole line within the file's first FRAMEWORK_SHIM_MARKER_WITHIN_LINES lines.
+FRAMEWORK_SHIM_MARKER = "coord-launcher-shim"
+FRAMEWORK_SHIM_MARKER_WITHIN_LINES = 5
 # Extra `claude` arguments the seat keeps across launcher updates; the shim sets it, the launcher
 # appends it. Plain tokens only, so it is safe in sh, cmd and PowerShell quoting alike.
 EXTRA_ARGS_ENV = "BRIDGE_CLAUDE_EXTRA_ARGS"
@@ -1298,6 +1305,7 @@ _EXTRA_ARG_RE = re.compile(r"^[A-Za-z0-9_./:=@,+-]+$")
 LAUNCHER_SHIM_EXIT = {
     "written": 0,
     "up_to_date": 0,
+    "framework_shim": 0,  # the coord framework's shim is the seat's launcher: left in place, nothing written
     "retry_after_launch": 3,  # the root exists but does not carry the launcher yet
     "needs_bootstrap": 4,  # no client root: an operator runs --bootstrap-client
     "conflict": 5,  # a directory, or another channel's shim, at the shim path: an operator decides
@@ -1394,6 +1402,20 @@ def is_launcher_shim(text: str) -> bool:
     return False
 
 
+def framework_shim_marker_line(name: str) -> str:
+    """The framework's marker line for a shim file of this name: `REM …` in a .bat, `# …` otherwise."""
+    return ("REM " if name.lower().endswith(".bat") else "# ") + FRAMEWORK_SHIM_MARKER
+
+
+def is_framework_launcher_shim(name: str, text: str) -> bool:
+    """Is this file (its name and text) the coord framework's launcher shim? Exact: the marker line,
+    or it followed by a space and anything, as a whole line within the first
+    FRAMEWORK_SHIM_MARKER_WITHIN_LINES lines (a leading UTF-8 BOM is not part of line 1)."""
+    marker = framework_shim_marker_line(name)
+    lines = (text[1:] if text.startswith("\ufeff") else text).split("\n")[:FRAMEWORK_SHIM_MARKER_WITHIN_LINES]
+    return any(line.rstrip("\r") == marker or line.startswith(marker + " ") for line in lines)
+
+
 def _write_text_atomically(path: str, text: str, mode: int) -> None:
     tmp = f"{path}.tmp-{os.getpid()}"
     with open(tmp, "w", encoding="utf-8", newline="") as fh:
@@ -1481,7 +1503,11 @@ def channel_env_set_in(text: str) -> list:
 
 def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.name, extra_args=None) -> tuple:
     """Write the seat's launcher shim into `home`; idempotent. Returns `(status, lines)`: status
-    `written` or `up_to_date`, and one line per thing that happened.
+    `written`, `up_to_date` or `framework_shim`, and one line per thing that happened.
+
+    When ANY file this would write is the coord framework's shim (`is_framework_launcher_shim`), it
+    writes nothing — not even the other file of a Windows pair, which would leave a mixed pair — and
+    returns `framework_shim`: the framework owns the seat's entry point.
 
     `extra_args` None KEEPS what is there: an existing shim's own value, or the extra `claude`
     arguments a replaced hand-written launcher passed (POSIX; on Windows, and for anything it cannot
@@ -1510,6 +1536,15 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
         except (OSError, UnicodeDecodeError):
             text = None  # a dangling link, or not text: not ours
         current[name] = text
+    framework = [n for n, t in current.items() if t is not None and is_framework_launcher_shim(n, t)]
+    if framework:
+        return "framework_shim", [
+            f"launcher shim: {os.path.join(home, n)} is the coord framework's launcher shim "
+            f"(`{framework_shim_marker_line(n)}`) — the seat's launcher is the framework's; left in place, nothing written."
+            for n in framework
+        ]
+    for name, text in current.items():
+        path = os.path.join(home, name)
         if text is not None and is_launcher_shim(text):
             other = shim_channel(text)
             if other is not None and other != channel_name:
@@ -2812,7 +2847,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="[role b] write (or refresh) this seat's launcher shim — ~/start-claude.sh, or %%USERPROFILE%%\\start-claude.bat "
         "+ .ps1 on Windows — which runs the launcher of the release its client root installed; nothing else. A "
-        "non-shim file there is backed up first. Writes nothing when the channel's client root cannot serve it "
+        "non-shim file there is backed up first; a coord framework shim there is left in place (status framework_shim, "
+        "exit 0). Writes nothing when the channel's client root cannot serve it "
         "(exit 3 retry after a launch, 4 needs --bootstrap-client), the path holds something else (5) or the file "
         "system refuses (6); ends with a "
         "`launcher-shim-status: <token>` line. Needs --agent --channel-name. The --bootstrap-client / --certify-only / --self-cert runs write it too",

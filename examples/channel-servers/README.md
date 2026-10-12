@@ -296,15 +296,15 @@ The launcher is the script that starts a seat's Claude Code session with its cha
 
 | | POSIX | Windows |
 | --- | --- | --- |
-| **The seat's shim** (written by the provisioner) | `$HOME/start-claude.sh` | `%USERPROFILE%\start-claude.bat` and `%USERPROFILE%\start-claude.ps1` |
+| **The seat's shim** (written by the coord framework, or by the provisioner — [below](#the-shim-contract)) | `$HOME/start-claude.sh` | `%USERPROFILE%\start-claude.bat` and `%USERPROFILE%\start-claude.ps1` |
 | **A checkout's old launcher path** (a compatibility stub that runs the moved launcher, for hand-written launchers that exec it) | `<checkout>/examples/start-channel-session.sh` | `<checkout>\examples\start-claude.ps1` / `.bat` |
 | **What it runs** | `<root>/bin/start-claude` | `<root>\bin\start-claude.cmd` |
 | **What that runs** (written by the client updater at every pack install, resolving `<root>/current.json` each time it runs) | `bash <root>/versions/<release>/client/bin/start-claude.sh` | `powershell -ExecutionPolicy Bypass -File <root>\versions\<release>\client\bin\start-claude.ps1` |
 
 `<root>` is the channel's client root: `${XDG_DATA_HOME:-~/.local/share}/agent-webhook-bridge/client/<channel>`, or `%LOCALAPPDATA%\agent-webhook-bridge\client\<channel>` on Windows.
 
-- **The writer:** `provision-board-tools.py --role b --write-launcher-shim --agent <agent> --channel-name <channel> [--claude-extra-args=<args>]`, run on the seat as its own OS user from a bridge checkout. It writes the shim and nothing else — no certification, no bootstrap, no `.mcp.json` read. `--bootstrap-client`, `--certify-only` and `--self-cert` write it too, after their own work, when the root can serve it (otherwise they print why it was not written and carry on).
-- **The marker line.** Every shim file carries one comment line holding exactly `agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)` (`# …` in `.sh` / `.ps1`, `rem …` in `.bat`). A file at a shim path with that line is the provisioner's and is rewritten in place; an up-to-date one is left untouched, so a re-run changes nothing. A file without it is the operator's: it is **renamed to `<name>.pre-shim-<UTC stamp>`** beside it (nothing deleted), the run says so, and the shim is written. Edits to a shim are lost at the next run — keep settings in the environment. One home holds one shim: a shim that sets ANOTHER channel is refused rather than retargeted, so a seat running two channels as one OS user starts the second with `~/start-claude.sh --channel <other>` (`start-claude.bat -Channel <other>` on Windows — the PowerShell launcher's parameter is `-Channel`).
+- **The writer:** `provision-board-tools.py --role b --write-launcher-shim --agent <agent> --channel-name <channel> [--claude-extra-args=<args>]`, run on the seat as its own OS user from a bridge checkout. It writes the shim — unless the coord framework's shim is already there ([§ *The shim contract*](#the-shim-contract)) — and nothing else — no certification, no bootstrap, no `.mcp.json` read. `--bootstrap-client`, `--certify-only` and `--self-cert` write it too, after their own work, when the root can serve it (otherwise they print why it was not written and carry on).
+- **The marker line.** Every shim file carries one comment line holding exactly `agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)` (`# …` in `.sh` / `.ps1`, `rem …` in `.bat`). A file at a shim path with that line is the provisioner's and is rewritten in place; an up-to-date one is left untouched, so a re-run changes nothing. A file carrying the coord framework's marker instead is the framework's and is left alone ([§ *The shim contract*](#the-shim-contract)). Any other file is the operator's: it is **renamed to `<name>.pre-shim-<UTC stamp>`** beside it (nothing deleted), the run says so, and the shim is written. Edits to a shim are lost at the next run — keep settings in the environment. One home holds one shim: a shim that sets ANOTHER channel is refused rather than retargeted, so a seat running two channels as one OS user starts the second with `~/start-claude.sh --channel <other>` (`start-claude.bat -Channel <other>` on Windows — the PowerShell launcher's parameter is `-Channel`).
 - **The env it sets:** `BRIDGE_CHANNEL_NAME=<channel>`, the launcher's identity input; it wins over `settings.local.json` and `COORD_CONFIG` + `COORD_AGENT`. And, when the seat has any, **`BRIDGE_CLAUDE_EXTRA_ARGS`**: extra `claude` arguments (e.g. `--dangerously-skip-permissions`) that the launcher passes after `server:<channel>` and before the shim's own arguments. Whitespace-separated plain tokens (`[A-Za-z0-9_./:=@,+-]`), no quoting. A re-run keeps the value a shim already has; `--claude-extra-args=<args>` replaces it (`--claude-extra-args=` clears it). When the shim replaces a hand-written POSIX launcher, the arguments its first line running a launcher (with or without `exec`, directly or through `bash`/`sh`) or `claude … server:<channel>` passed after the launcher path (or after `server:<channel>`) are carried over, up to the first shell operator (`;`, `|`, `&&`, `>`, …), and the run says so. **If any of those arguments cannot be carried** (a `$VAR`, a quoted string with spaces — anything not a plain token), **none are**, since carrying the rest would change what they mean. That case, a file with no such line, and any replaced Windows file each get a ⚠ line naming the backup and `--claude-extra-args`; `BRIDGE_CHANNEL_*` assignments in the replaced file other than the name are named on a ⚠ line too, since the shim does not set them. The shim always sets the variable — empty (`''`, or `$null` in the `.ps1`) when there are none — so it is the only source. Everything else the launcher reads (`BRIDGE_CHANNEL_TRANSPORT`, `BRIDGE_CHANNEL_PORT`, `BRIDGE_CHANNEL_SOCKET`; on Windows `TUNNEL_HOST` — required, the launcher exits 1 without it — `SSH_KEY`, `REMOTE_PORT`, `LOCAL_PORT`) comes from the environment or `settings.local.json` `.env`, as the header of each launcher says. Arguments pass through to the launcher (`--channel <name>` on POSIX, `-Channel <name>` on Windows, then `claude`'s own). The root's shim sets `AWB_LAUNCHER_CLIENT_ROOT=<root>` for the launcher, which unsets it before it runs `claude`.
 - **What a run reports.** Every `--write-launcher-shim` run ends with ONE line on stdout, `launcher-shim-status: <token>`, and the matching exit code; a refusal writes nothing and puts its reason on stderr. **A shim is never written over a target that does not exist.**
 
@@ -312,12 +312,50 @@ The launcher is the script that starts a seat's Claude Code session with its cha
   | --- | --- | --- | --- |
   | `written` | 0 | a shim file was written or rewritten | — |
   | `up_to_date` | 0 | the shim was already exactly this | — |
+  | `framework_shim` | 0 | the seat's launcher is the coord framework's shim; it was left in place and nothing was written | — |
   | `retry_after_launch` | 3 | the client root exists but has no `bin/start-claude` (`.cmd`) yet — its release is older than 0.9.48, or no updater that knows the launcher has settled it | retry after the seat's next launch (two when updating from an older client), or run `--role b --bootstrap-client`, which settles it at once |
   | `needs_bootstrap` | 4 | the channel has no client root (no `<root>/entry.mjs`) | an operator runs `--role b --bootstrap-client` |
   | `conflict` | 5 | a shim path is a directory, or holds another channel's shim | an operator decides; nothing was touched |
   | `io_error` | 6 | the file system refused a read, rename or write (permissions, a full disk, a read-only home); the error and its path are on stderr | an operator fixes it, then re-runs (safe) |
 
   Exit 1 is a usage refusal (a bad `--agent`, a missing `--channel-name`, a transport flag, `--claude-extra-args` that is not plain tokens) and 2 is argparse's own usage error; neither prints a status line. A shim whose target disappears later exits 2 naming `--bootstrap-client`, rather than starting a session with no guards.
+- <a id="the-shim-contract"></a>**The shim contract — what any writer of the seat's shim (the coord framework's included) builds to** (card#11741, DL-474). The coord framework owns the seat's entry point; this bridge owns the launcher it runs, and keeps writing the shim itself only where the framework has not.
+  - **The file:** `$HOME/start-claude.sh` on POSIX; `%USERPROFILE%\start-claude.bat` and `%USERPROFILE%\start-claude.ps1` on Windows (the table above).
+  - **What it runs:** the client root's launcher, `<root>/bin/start-claude` (`<root>\bin\start-claude.cmd` on Windows), with the shim's own arguments passed through unchanged. `<root>` is the rule stated under the table above. When that file is missing a shim should exit non-zero naming `--bootstrap-client`, as the provisioner's does (exit 2), rather than start a session without the launcher's guards.
+  - **What the launcher reads from it:** `BRIDGE_CHANNEL_NAME` (the channel; the launcher's `--channel <name>` first argument, or `-Channel <name>` on Windows, overrides it), and optionally `BRIDGE_CLAUDE_EXTRA_ARGS` (plain-token `claude` arguments). The *env it sets* bullet above owns both. Everything else the launcher reads comes from the environment or `settings.local.json`, not the shim.
+  - **The framework's marker:** a line that is exactly `# coord-launcher-shim` in a `.sh` or `.ps1`, or `REM coord-launcher-shim` in a `.bat`, within the file's first 5 lines. It may be followed by a space and anything (a version, say). Any other spelling, case or position is not the marker. A UTF-8 byte-order mark before line 1 is ignored. `FRAMEWORK_SHIM_MARKER` and `is_framework_launcher_shim` in `bin/provision-board-tools.py` own the rule; a test in `bin/test_provision_board_tools.py` reds when the marker spellings, the line bound or the `framework_shim` token written here stop matching them.
+  - **The provisioner stands aside.** When any file it would write carries the framework's marker, `--write-launcher-shim` writes nothing, prints a line per marked file saying the framework's shim was left in place, and ends `launcher-shim-status: framework_shim`, exit 0. On Windows that means **either file of the pair**: if one is marked, the other is left as it is too, even when it is missing or is the provisioner's own. Writing only half would leave a pair from two writers. The onboarding entry points (`--bootstrap-client`, `--certify-only`, `--self-cert`) stand aside the same way and print the same line. A framework shim does not vouch for what it runs: `--write-launcher-shim` checks the client root first, so a root with no `bin/start-claude` (`.cmd`) still ends `retry_after_launch` (no root at all, `needs_bootstrap`), whoever wrote the shim.
+  - **Without the framework, by hand.** A seat that uses neither writer can run its own shim. The minimum is what the provisioner writes, with `<root>` written out as the absolute path the rule under the table gives, and without the provisioner's marker (so a later `--write-launcher-shim` backs it up and replaces it — add the framework's marker only if the framework manages it). POSIX, `~/start-claude.sh`, executable:
+
+    ```sh
+    #!/bin/sh
+    BRIDGE_CHANNEL_NAME='<channel>'; export BRIDGE_CHANNEL_NAME
+    launcher='<root>/bin/start-claude'
+    [ -x "$launcher" ] || { echo "$launcher is missing: run provision-board-tools.py --role b --bootstrap-client" >&2; exit 2; }
+    exec "$launcher" "$@"
+    ```
+
+    Windows, `%USERPROFILE%\start-claude.bat` (run it, or `start-claude.ps1` from PowerShell):
+
+    ```bat
+    @echo off
+    setlocal
+    set "BRIDGE_CHANNEL_NAME=<channel>"
+    set "launcher=<root>\bin\start-claude.cmd"
+    if not exist "%launcher%" (echo %launcher% is missing: run provision-board-tools.py --role b --bootstrap-client 1>&2 & exit /b 2)
+    call "%launcher%" %*
+    exit /b %ERRORLEVEL%
+    ```
+
+    ```powershell
+    $env:BRIDGE_CHANNEL_NAME = '<channel>'
+    $launcher = '<root>\bin\start-claude.cmd'
+    if (-not (Test-Path -LiteralPath $launcher)) { [Console]::Error.WriteLine("$launcher is missing: run provision-board-tools.py --role b --bootstrap-client"); exit 2 }
+    & $launcher @args
+    exit $LASTEXITCODE
+    ```
+
+    Set `BRIDGE_CLAUDE_EXTRA_ARGS` the same way to pass extra `claude` arguments.
 - ⚠ **The launcher that runs is the one the PREVIOUS launch installed.** The launcher runs before `claude`, and the update runs inside the channel server `claude` starts, so a release that changes the launcher installs at one launch and runs at the next. The root's `bin/start-claude` itself is written by the updater of the release that carries it, so a seat updating to 0.9.48 from an older release gets it one launch later still — or at once, from `--bootstrap-client`.
 - **`BRIDGE_CHANNEL_SERVER_DIR` is not read on this path.** The pack carries the channel server's `node_modules`, so the launcher run from a client root installs nothing. The variable (`SERVER_DIR` on Windows) is read only when the launcher runs from anywhere else — a seat still on a copied channel server, which runs `npm ci` there once — and a seat on its client root can drop it. A check that reads the version from that directory reports a copy, not what the seat runs: read `<root>/current.json`.
 
