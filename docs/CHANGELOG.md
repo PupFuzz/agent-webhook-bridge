@@ -14,6 +14,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - Evidence is now ordered by when the bridge received it. A launch, or a successful bootstrap or install, reported after that call supersedes it: the seat reads `applies_next_launch` (restart owed) — it installed a release and no launch of it has called the bridge yet — and the reason names the call and the report. A call with no launch identity received after the report is `off_update_path` again.
   - A report that installed nothing (a failed bootstrap, a prune) supersedes nothing.
 
+### Security
+
+- **card#11766** — **GHSA-rxp7-6hxx-x8q5: `ip-address` 10.7.2 → 10.7.4 in `examples/channel-servers/`** (transitive, via `express-rate-limit` under `@modelcontextprotocol/sdk`; affected `<= 10.7.3`, medium); channel-server snapshot `0.9.55` → `0.9.56`. `Address6` strips a zone identifier with `/%.*$/` before its length limit, so a long string of `%` followed by a line terminator takes quadratic time to reject. Only the `ip-address` lockfile entry moves. **It does not reach the channel server**: the server's SDK imports (`server/index.js`, `server/stdio.js`, `types.js`) resolve no `ip-address` or `express-rate-limit` module (measured with a resolve hook: zero, against one for each when imported directly, as controls). The advisory is published only on the package's own repository, so the global feed (`osv-scanner`, `npm audit`) reports nothing on either lockfile; the repo's dependency-advisory audit finds it through its repository-advisory source on the base lockfile and is green on this one.
+
 ## [0.102.0] - 2026-10-12
 
 ### Changed
