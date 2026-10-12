@@ -310,6 +310,35 @@ final class SeatClientLedger
     }
 
     /**
+     * The release each agent's background update check has STAGED for its next launch (DL-476):
+     * the newest `stage`, `stage_discard`, `refuse` or `install` line the seat reported, when that
+     * line is a successful `stage`. Each of the others ends a stage: a discard removes it, a launch
+     * that refuses a damaged stage discards it under its `refuse` line alone, an install consumes
+     * it, and a refused offer discards whatever was staged. An agent whose newest such line is not
+     * a stage, or that reported none, is absent.
+     *
+     * @return array<string, string> agent => to_bridge_release
+     */
+    public static function stagedReleases(): array
+    {
+        $out = [];
+        $rows = SeatClientEvent::query()
+            ->where('install_id', '!=', self::BRIDGE_INSTALL_ID)
+            ->whereIn('action', ['stage', 'stage_discard', 'refuse', 'install'])
+            ->orderBy('id')->get(['agent', 'action', 'result', 'to_bridge_release']);
+        foreach ($rows as $row) {
+            $agent = (string) $row->agent;
+            if ($row->action === 'stage' && $row->result === 'ok' && $row->to_bridge_release !== null) {
+                $out[$agent] = (string) $row->to_bridge_release;
+            } else {
+                unset($out[$agent]);
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * @return array{install_id: string, seq: int, sha256: string}|null
      */
     private static function headOf(SeatClientState $row): ?array

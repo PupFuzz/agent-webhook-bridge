@@ -1884,7 +1884,7 @@ def _bootstrap_after_certify(agent: str, mcp_path: str, channel_name: str) -> bo
     entry = recorded_client_entry(text, channel_name)
     if entry is not None and (not os.path.isabs(entry) or "${" in entry or os.path.isfile(entry)):
         print(f"client: channel {channel_name} already starts from its client root ({entry}) and updates itself "
-              f"at launch — not bootstrapped again (`--bootstrap-client` repairs it).")
+              f"(staged in a session, installed at the next launch) — not bootstrapped again (`--bootstrap-client` repairs it).")
         return False
     if entry is not None:
         # Recorded, absolute and established gone (review r2): the seat cannot start as recorded, so
@@ -1959,7 +1959,8 @@ def run_role_b(args) -> int:
             existing_text = fh.read()
 
     # A seat already bootstrapped onto its client root keeps it: this run refreshes the transport,
-    # and the channel server updates itself from the bridge at launch. Deploying the legacy
+    # and the channel server updates itself from the bridge (DL-476: staged in a session,
+    # installed at the next launch). Deploying the legacy
     # snapshot and pointing `.mcp.json` back at it would take the seat off the update path
     # (design review r3-M1).
     client_entry = recorded_client_entry(existing_text, args.channel_name)
@@ -2859,7 +2860,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="[role b] install this seat's channel-server client from its bridge's published pack, over the "
         "transport (ssh or HTTP) its .mcp.json records, then point .mcp.json at it; after that the client "
-        "updates itself at each launch. Needs --agent --project-dir --channel-name; transport flags are refused",
+        "updates itself (a session stages a newer release, the next launch installs it). Needs --agent --project-dir --channel-name; transport flags are refused",
     )
     cert.add_argument(
         "--write-launcher-shim",

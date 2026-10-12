@@ -14,7 +14,10 @@ use JsonException;
  *   install_id   the seat's install id (the report's own)
  *   seq          1, 2, 3 … within that install
  *   action       bootstrap | install | refuse | approval_owed | fail | skip | pointer_recovered
- *                | entry_replace | prune
+ *                | entry_replace | prune | stage | stage_discard | check
+ *                (the last three are the background update check's, DL-476: a release verified and
+ *                staged for the next launch, a stage removed uninstalled, and a clean check written
+ *                only after an earlier launch's update failed)
  *   result       ok | refused | failed | skipped
  *   actor        launch | provision
  *   prev_sha256  sha256 of the previous line's bytes; null on seq 1
@@ -32,7 +35,7 @@ use JsonException;
  */
 final class InstallLogEntry
 {
-    public const ACTIONS = ['bootstrap', 'install', 'refuse', 'approval_owed', 'fail', 'skip', 'pointer_recovered', 'entry_replace', 'prune'];
+    public const ACTIONS = ['bootstrap', 'install', 'refuse', 'approval_owed', 'fail', 'skip', 'pointer_recovered', 'entry_replace', 'prune', 'stage', 'stage_discard', 'check'];
 
     public const RESULTS = ['ok', 'refused', 'failed', 'skipped'];
 

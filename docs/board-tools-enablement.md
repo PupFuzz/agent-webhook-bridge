@@ -63,7 +63,7 @@ nothing for a person to adjudicate there, and the packet does not ask them to.
   certified. **STEP 4's `--certify-only` then bootstraps the self-updating client** (DL-445):
   once the round-trip succeeds it installs the client pack this bridge publishes and points
   the args at the seat's client root (`…/agent-webhook-bridge/client/<channel>/entry.mjs`),
-  which updates itself at each launch — or, when the bridge offers none (nothing published,
+  which updates itself (a session stages a newer release, the next launch installs it — DL-476) — or, when the bridge offers none (nothing published,
   a 5xx, a bridge older than the client-update door, approval owed), keeps STEP 1's copy and prints `CLIENT NOT BOOTSTRAPPED`.
   On a seat whose client root carries the launcher, the same run then writes the seat's
   launcher shim, `~/start-claude.sh` (`start-claude.bat` + `.ps1` on Windows), backing up a

@@ -355,12 +355,12 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
                         $approve = "`php artisan bridge:client-approve {$agent} {$published->bridgeRelease} --reason=…`";
 
                         return [true, $behind.($approved === false
-                            ? " This agent requires approval and release {$published->bridgeRelease}'s client is not approved for it, so the bridge offers it nothing: approve it ({$approve}), then restart that session — it updates at launch (a seat still on a copied snapshot bootstraps instead: {$bootstrap})."
+                            ? " This agent requires approval and release {$published->bridgeRelease}'s client is not approved for it, so the bridge offers it nothing: approve it ({$approve}); a session of that seat then stages it in the background and the launch after installs it (a seat still on a copied snapshot bootstraps instead: {$bootstrap})."
                             : " This agent requires approval, and whether release {$published->bridgeRelease}'s client is approved for it could not be read (the fleet ledger did not answer): if it is not, approve it ({$approve}); a seat is offered nothing until then. bridge:client-fleet names the seat's state.")];
                     }
                 }
 
-                return [true, $behind." A seat on its client root updates itself at its next launch: RESTART that session (bridge:client-fleet shows whether an update is owed or failed). A seat still on a copied snapshot does not: bootstrap it onto the published client ({$bootstrap}), then restart that session. The version is read when the channel server starts, so neither changes what this line reports until the restart."];
+                return [true, $behind." A seat on its client root stages the published release in the background of a session and installs it at the launch after (DL-476): RESTART that session once bridge:client-fleet shows it `restart owed` (it also shows an update that failed). A seat still on a copied snapshot does not: bootstrap it onto the published client ({$bootstrap}), then restart that session. The version is read when the channel server starts, so neither changes what this line reports until the restart."];
             }
 
             return [false, "Client version {$reported} is at or ahead of the {$published->clientVersion} this bridge publishes."];
