@@ -116,6 +116,11 @@ export const REPORT_LEG_MS = 60000;
  * out for seconds, not minutes.
  */
 export const BACKGROUND_LOCK_MS = 60000;
+/**
+ * What a launch keeps of its own budget for installing a stage when it runs the check itself
+ * (`previousLaunchDidNotStart`): the check gets the rest.
+ */
+export const LAUNCH_INSTALL_RESERVE_MS = 5000;
 
 /** Where the background check stages a verified release for the next launch to install. */
 export const STAGE_DIR = 'staged-update';
@@ -1621,8 +1626,24 @@ function normalized(err) {
 }
 
 /**
+ * Whether the launch before this one did not start a channel server (entry.mjs wrote `not_started`
+ * to state.json, which still holds that launch's state while this one runs its update). Such a seat
+ * never ran a background check — the check runs only once a server listens — so a release that
+ * cannot start would otherwise never be replaced by the fix its bridge publishes (DL-434 bound 4).
+ */
+function previousLaunchDidNotStart(root) {
+  try {
+    return readJsonFile(path.join(root, 'state.json')).state === 'not_started';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * What entry.mjs runs at a new launch: install the staged release, if there is one, from local
- * files only — NO call to the bridge (DL-476). Resolves with this launch's outcome —
+ * files only — NO call to the bridge (DL-476). The one exception: with no stage, after a launch
+ * that did not start a server, this launch runs the background check itself, inside its own
+ * budget, and then installs what it staged. Resolves with this launch's outcome —
  * `{state, installed, published, offer, approval_owed, error}` where `state` is `current`,
  * `approval_owed` or `update_failed` — and does not reject for anything it anticipated. With no
  * stage the state is the last background check's finding ({@see launchStateFromCheck}).
@@ -1632,6 +1653,11 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
   const say = (text) => process.stderr.write(`[${channel}] client update: ${text}\n`);
   const ctx = { root, signal, deadline: Date.now() + budgetMs, launchId, actor: 'launch', env, source: null, door: null, log: null, say };
   const result = { state: null, installed: installed.release, published: null, offer: null, approval_owed: null, error: null };
+
+  if (!fs.existsSync(stagePath(root, STAGE_RECORD)) && previousLaunchDidNotStart(root)) {
+    say('the previous launch did not start a channel server, so no update check ran: checking now, at launch');
+    await runBackgroundUpdate({ root, launchId, env, signal, budgetMs: Math.max(1, budgetMs - LAUNCH_INSTALL_RESERVE_MS) });
+  }
 
   let lock;
   try {
@@ -1753,7 +1779,8 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
 export async function runBackgroundUpdate({ root, launchId, env = process.env, budgetMs = BACKGROUND_BUDGET_MS, signal = new AbortController().signal }) {
   const channel = env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
   const say = (text) => process.stderr.write(`[${channel}] client update (background): ${text}\n`);
-  const ctx = { root, signal, deadline: Date.now() + budgetMs, launchId, actor: 'launch', env, source: null, door: null, log: null, say };
+  const end = Date.now() + budgetMs;
+  const ctx = { root, signal, deadline: end, launchId, actor: 'launch', env, source: null, door: null, log: null, say };
   const out = { state: null, published: null, offer: null, approval_owed: null, staged: null, error: null, report_error: null };
 
   // Once per launch: a reconnect inside the session re-imports the server, and asks nothing again.
@@ -1794,7 +1821,8 @@ export async function runBackgroundUpdate({ root, launchId, env = process.env, b
 
   // 2. The writes, under the lock: decide against the installed release as it is NOW, stage or
   //    discard, log, and record the finding.
-  ctx.deadline = Date.now() + BACKGROUND_LOCK_MS;
+  // Never past the check's own budget: run by a launch, that budget is the launch's.
+  ctx.deadline = Math.min(end, Date.now() + BACKGROUND_LOCK_MS);
   let lock;
   try {
     lock = takeLock(root, { deadline: ctx.deadline, staleAfterMs: 2 * BACKGROUND_LOCK_MS });
@@ -1896,8 +1924,8 @@ export async function runBackgroundUpdate({ root, launchId, env = process.env, b
   }
 
   // 3. The report, when the bridge answered and the budget did not run out.
-  if (answer !== null && !(fault instanceof Aborted)) {
-    ctx.deadline = Date.now() + REPORT_LEG_MS;
+  if (answer !== null && !(fault instanceof Aborted) && !signal.aborted) {
+    ctx.deadline = Math.min(end, Date.now() + REPORT_LEG_MS);
     out.report_error = await report(ctx, answer.log_head ?? null);
     if (out.report_error) {
       say(out.report_error);
@@ -1926,7 +1954,7 @@ function writeServedTools(ctx, answer) {
       written_at: new Date().toISOString(),
     });
   } catch (err) {
-    ctx.say(`could not write ${SERVED_TOOLS_FILE} (${err && err.code ? err.code : err && err.message ? err.message : err}); the channel server asks the bridge instead`);
+    ctx.say(`could not write ${SERVED_TOOLS_FILE} (${err && err.code ? err.code : err && err.message ? err.message : err}); the previous cache, or the env rule, is used`);
   }
 }
 

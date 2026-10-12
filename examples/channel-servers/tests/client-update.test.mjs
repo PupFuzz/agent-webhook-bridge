@@ -176,7 +176,9 @@ function background(root, env, launchId, { budgetMs } = {}) {
 async function session(root, env, opts) {
   const run = await launch(root, env, opts);
   const launchId = read(root, 'state.json').launch_id;
-  const check = await background(root, env, launchId);
+  // The real server runs its check only once it is listening: a launch that did not start one
+  // runs no check.
+  const check = run.started ? await background(root, env, launchId) : { state: null };
   return { run, check, launchId };
 }
 
@@ -974,6 +976,31 @@ test('nothing installed: not started — exit 2, the .FAILED marker, and state.j
   assert.equal(run.started, null);
   assert.equal(read(root, 'state.json').state, 'not_started');
   assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /no verified client release is installed/);
+});
+
+test('a seat whose installed release cannot start still reaches a fixed release: the launch after a not-started one asks the bridge itself (review of card#11760)', async (t) => {
+  const root = await seatWith(t, '1.0.0', { pack: buildPack({ release: '1.0.0', files: clientFiles('1.0.0', { serverData: Buffer.from('this is not javascript\n') }) }) });
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  const env = seatEnv(t, bridge);
+
+  // No server ever listens on 1.0.0, so no background check ever runs (session() runs none after a
+  // launch that did not start one).
+  const first = await session(root, env);
+  assert.equal(first.run.code, 2, 'nothing tells the first launch its release cannot start');
+  assert.equal(read(root, 'state.json').state, 'not_started');
+  assert.equal(bridge.requests.length, 0);
+
+  const second = await launch(root, env);
+  assert.equal(second.code, 0, second.stderr);
+  assert.equal(second.started.release, '2.0.0', 'the launch after a not-started one fetched, staged and installed the fix');
+  assert.deepEqual(bridge.requests.map((r) => r.body.op).slice(0, 2), ['client_manifest', 'client_pack']);
+  assert.equal(read(root, 'state.json').state, 'current');
+  const log = assertChain(root);
+  assert.ok(log.some((l) => l.action === 'stage' && l.to_bridge_release === '2.0.0'));
+  assert.ok(log.some((l) => l.action === 'install' && l.to_bridge_release === '2.0.0'));
+
+  const third = await launch(root, env);
+  assert.equal(third.started.release, '2.0.0');
 });
 
 test('a release whose server does not load: not started, loudly', async (t) => {
