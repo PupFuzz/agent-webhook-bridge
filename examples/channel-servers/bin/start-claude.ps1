@@ -6,7 +6,8 @@
   WHERE IT RUNS FROM (card#11328): the client pack ships this file, and a bootstrapped seat
   runs it through <client root>\bin\start-claude.cmd -- a shim the client updater rewrites at
   every pack install (it bypasses ExecutionPolicy for this invocation only). The seat's own
-  %USERPROFILE%\start-claude.bat / .ps1 are stable shims the provisioner writes
+  %USERPROFILE%\start-claude.bat / .ps1 are stable shims: the coord framework's where
+  the seat has them (the provisioner then stands aside), else the provisioner's
   (--write-launcher-shim). Never copy or edit this file on a seat: a copy does not update.
   examples/channel-servers/README.md, section "The seat's launcher", owns that contract.
 

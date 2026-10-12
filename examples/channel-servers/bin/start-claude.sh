@@ -15,8 +15,9 @@
 # WHERE IT RUNS FROM (card#11328): the client pack ships this file, and a bootstrapped seat
 # runs it through `<client root>/bin/start-claude` — a shim the client updater rewrites at every
 # pack install, which runs the copy of the release `current.json` names. The seat's own
-# `~/start-claude.sh` is a stable shim the provisioner writes (`--write-launcher-shim`) that sets
-# the channel identity and execs that. Never copy this file to a seat: a copy does not update.
+# `~/start-claude.sh` is a stable shim that sets the channel identity and execs that: the coord
+# framework's shim where the seat has one (the provisioner then stands aside), else the one the
+# provisioner writes (`--write-launcher-shim`). Never copy this file to a seat: a copy does not update.
 # `examples/channel-servers/README.md` § The seat's launcher owns that contract.
 #
 # Channels are a research-preview feature: `--dangerously-load-development-channels` MUST
