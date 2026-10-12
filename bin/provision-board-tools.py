@@ -1407,12 +1407,26 @@ def framework_shim_marker_line(name: str) -> str:
     return ("REM " if name.lower().endswith(".bat") else "# ") + FRAMEWORK_SHIM_MARKER
 
 
-def is_framework_launcher_shim(name: str, text: str) -> bool:
-    """Is this file (its name and text) the coord framework's launcher shim? Exact: the marker line,
-    or it followed by a space and anything, as a whole line within the first
-    FRAMEWORK_SHIM_MARKER_WITHIN_LINES lines (a leading UTF-8 BOM is not part of line 1)."""
+def _framework_scan_text(data: bytes) -> str:
+    """`data` decoded only far enough to find the ASCII marker in it: UTF-16 by its BOM, else Latin-1,
+    which maps every byte to one character, so ASCII lines of UTF-8 or any single-byte code page
+    (cp1252, an OEM page) survive intact and a non-ASCII byte elsewhere never fails the read."""
+    if data[:2] == b"\xff\xfe":
+        return data[2:].decode("utf-16-le", errors="replace")
+    if data[:2] == b"\xfe\xff":
+        return data[2:].decode("utf-16-be", errors="replace")
+    if data[:3] == b"\xef\xbb\xbf":
+        data = data[3:]
+    return data.decode("latin-1")
+
+
+def is_framework_launcher_shim(name: str, data: bytes) -> bool:
+    """Is this file (its name and raw bytes) the coord framework's launcher shim? Exact: the marker
+    line, or it followed by a space and anything, as a whole line within the first
+    FRAMEWORK_SHIM_MARKER_WITHIN_LINES lines. Encoding-tolerant (`_framework_scan_text`): a framework
+    shim a Windows tool saved as UTF-16 or in a code page is still the framework's."""
     marker = framework_shim_marker_line(name)
-    lines = (text[1:] if text.startswith("\ufeff") else text).split("\n")[:FRAMEWORK_SHIM_MARKER_WITHIN_LINES]
+    lines = _framework_scan_text(data).split("\n")[:FRAMEWORK_SHIM_MARKER_WITHIN_LINES]
     return any(line.rstrip("\r") == marker or line.startswith(marker + " ") for line in lines)
 
 
@@ -1524,6 +1538,7 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
     names = [name for name, _ in launcher_shims(channel_name, root, os_name)]
     retarget = "-Channel" if os_name == "nt" else "--channel"
     current = {}
+    raw = {}
     for name in names:
         path = os.path.join(home, name)
         if not os.path.lexists(path):
@@ -1531,12 +1546,16 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
         if os.path.isdir(path) and not os.path.islink(path):
             raise LauncherShimRefused("conflict", f"{path} is a directory, so the launcher shim cannot be written there — move it, then re-run")
         try:
-            with open(path, encoding="utf-8", newline="") as fh:
-                text = fh.read()
-        except (OSError, UnicodeDecodeError):
-            text = None  # a dangling link, or not text: not ours
+            with open(path, "rb") as fh:
+                raw[name] = fh.read()
+        except OSError:
+            raw[name] = None  # a dangling link: not ours
+        try:
+            text = None if raw[name] is None else raw[name].decode("utf-8")
+        except UnicodeDecodeError:
+            text = None  # not UTF-8 text: not ours (unless it is the framework's, below)
         current[name] = text
-    framework = [n for n, t in current.items() if t is not None and is_framework_launcher_shim(n, t)]
+    framework = [n for n, b in raw.items() if b is not None and is_framework_launcher_shim(n, b)]
     if framework:
         return "framework_shim", [
             f"launcher shim: {os.path.join(home, n)} is the coord framework's launcher shim "

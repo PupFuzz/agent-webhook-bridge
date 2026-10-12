@@ -1056,8 +1056,8 @@ function writeFileAtomic(file, bytes, mode) {
 
 /**
  * The channel launcher a release carries (card#11328): `client/bin/<file>`, shimmed at the FIXED
- * path `<root>/bin/<name>` for this platform. The seat's `~/start-claude.sh` (or its Windows pair),
- * written by the provisioner, execs that shim, so every pack install moves the launcher with the
+ * path `<root>/bin/<name>` for this platform. The seat's `~/start-claude.sh` (or its Windows pair) —
+ * the coord framework's shim where present, else the provisioner's — execs that shim, so every pack install moves the launcher with the
  * channel server it guards. `examples/channel-servers/README.md` § The seat's launcher declares it.
  */
 export const LAUNCHER = {

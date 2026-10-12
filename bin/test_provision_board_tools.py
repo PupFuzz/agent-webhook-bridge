@@ -3865,12 +3865,12 @@ class LauncherShim(unittest.TestCase):
             ("start-claude.sh", f"# {pbt.LAUNCHER_SHIM_MARKER}\n"): False,
         }
         for (name, text), want in cases.items():
-            self.assertEqual(pbt.is_framework_launcher_shim(name, text), want, (name, text))
+            self.assertEqual(pbt.is_framework_launcher_shim(name, text.encode("utf-8")), want, (name, text))
 
     def test_a_bridge_shim_is_never_read_as_the_framework_s(self):
         for os_name in ("posix", "nt"):
             for name, body in pbt.launcher_shims("chan", "/r", os_name):
-                self.assertFalse(pbt.is_framework_launcher_shim(name, body), (os_name, name))
+                self.assertFalse(pbt.is_framework_launcher_shim(name, body.encode("utf-8")), (os_name, name))
 
     def _windows_home(self, files):
         home = tempfile.mkdtemp(dir=self.tmp.name)
@@ -3900,6 +3900,61 @@ class LauncherShim(unittest.TestCase):
                 for name, text in files.items():
                     with open(os.path.join(home, name), encoding="utf-8", newline="") as fh:
                         self.assertEqual(fh.read(), text, (label, name))
+
+    def _windows_home_bytes(self, files):
+        home = tempfile.mkdtemp(dir=self.tmp.name)
+        for name, data in files.items():
+            with open(os.path.join(home, name), "wb") as fh:
+                fh.write(data)
+        return home
+
+    def test_the_framework_marker_is_found_in_every_encoding_the_contract_names(self):
+        ps1 = "# coord-launcher-shim 1.0\r\n& 'C:\\Users\\José\\x\\start-claude.cmd' @args\r\n"
+        bat = "@echo off\r\nREM coord-launcher-shim\r\ncall \"C:\\Users\\José\\x\\start-claude.cmd\" %*\r\n"
+        cases = {
+            "utf-8": ("start-claude.ps1", ps1.encode("utf-8")),
+            "utf-8 + BOM": ("start-claude.ps1", b"\xef\xbb\xbf" + ps1.encode("utf-8")),
+            "utf-16le + BOM": ("start-claude.ps1", b"\xff\xfe" + ps1.encode("utf-16-le")),
+            "utf-16be + BOM": ("start-claude.ps1", b"\xfe\xff" + ps1.encode("utf-16-be")),
+            "cp1252 bat": ("start-claude.bat", bat.encode("cp1252")),
+            "cp850 (OEM) bat": ("start-claude.bat", bat.encode("cp850")),
+        }
+        for label, (name, data) in cases.items():
+            with self.subTest(label):
+                self.assertTrue(pbt.is_framework_launcher_shim(name, data))
+                self.assertFalse(pbt.is_framework_launcher_shim(name, data.replace(b"coord", b"cxord").replace(
+                    "coord".encode("utf-16-le"), "cxord".encode("utf-16-le")).replace("coord".encode("utf-16-be"), "cxord".encode("utf-16-be"))))
+
+    def test_utf16_without_a_bom_is_not_recognised(self):
+        self.assertFalse(pbt.is_framework_launcher_shim("start-claude.ps1", "# coord-launcher-shim\r\n".encode("utf-16-le")))
+
+    def test_a_framework_shim_not_in_utf8_is_left_in_place(self):
+        layouts = {
+            "utf-16le + BOM ps1 (PowerShell 5.1 Out-File)": {
+                "start-claude.ps1": b"\xff\xfe" + "# coord-launcher-shim\r\n& 'C:\\Users\\José\\x' @args\r\n".encode("utf-16-le")},
+            "cp1252 bat, marker on line 2, non-ASCII path": {
+                "start-claude.bat": "@echo off\r\nREM coord-launcher-shim\r\ncall \"C:\\Users\\José\\x\\start-claude.cmd\" %*\r\n".encode("cp1252")},
+        }
+        for label, files in layouts.items():
+            with self.subTest(label):
+                home = self._windows_home_bytes(files)
+                status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+                self.assertEqual(status, "framework_shim")
+                self.assertTrue(any("left in place" in line for line in lines), lines)
+                self.assertEqual(sorted(os.listdir(home)), sorted(files))
+                for name, data in files.items():
+                    with open(os.path.join(home, name), "rb") as fh:
+                        self.assertEqual(fh.read(), data, (label, name))
+
+    def test_a_utf16_file_without_the_marker_is_handled_as_today(self):
+        data = b"\xff\xfe" + "# my own launcher\r\n& claude @args\r\n".encode("utf-16-le")
+        home = self._windows_home_bytes({"start-claude.ps1": data})
+        status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual(status, "written")
+        backups = [n for n in os.listdir(home) if n.startswith("start-claude.ps1.pre-shim-")]
+        self.assertEqual(len(backups), 1, os.listdir(home))
+        with open(os.path.join(home, backups[0]), "rb") as fh:
+            self.assertEqual(fh.read(), data)
 
     def test_windows_unmarked_pair_is_written_as_today(self):
         home = self._windows_home({"start-claude.bat": "@echo off\r\nrem coord-launcher-shim\r\nclaude\r\n"})
