@@ -292,12 +292,13 @@ final class SeatClientLedger
      * This bridge's clock, so it orders against `last_call_at` (card#11761). A late line that fills
      * a gap is stamped when it arrived, not where it sits in the log.
      *
-     * @return array<string, Carbon> agent => received_at
+     * @return array<string, Carbon> agent => received_at; only `$agent`'s when one is named
      */
-    public static function installsReportedAt(): array
+    public static function installsReportedAt(?string $agent = null): array
     {
         $out = [];
         $rows = SeatClientEvent::query()
+            ->when($agent !== null, static fn ($q) => $q->where('agent', $agent))
             ->where('install_id', '!=', self::BRIDGE_INSTALL_ID)
             ->whereIn('action', ['bootstrap', 'install'])->where('result', 'ok')
             ->whereNotNull('to_bridge_release')
