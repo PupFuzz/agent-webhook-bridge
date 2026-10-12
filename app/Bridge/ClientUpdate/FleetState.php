@@ -25,7 +25,11 @@ enum FleetState: string
     /** The agent requires approval, the published pack's content is not approved for it, and it does not have that pack. */
     case ApprovalOwed = 'approval_owed';
 
-    /** The seat's latest board-tools call carried no launch identity: a client not started by the updater. */
+    /**
+     * The seat's latest board-tools call carried no launch identity — a client not started by the
+     * updater — and no launch or successful install was reported after it (card#11761: evidence
+     * is ordered by when the bridge received it).
+     */
     case OffUpdatePath = 'off_update_path';
 
     /**
@@ -41,7 +45,12 @@ enum FleetState: string
     /** The launch the seat runs is the published release. */
     case Current = 'current';
 
-    /** The seat will run the published release at its next launch: it launched before that release was published, or already installed it. */
+    /**
+     * The seat will run the published release at its next launch: it launched before that release
+     * was published, or already installed it, or installed a release that no launch has called the
+     * bridge from yet — including since a launch or install reported after a call with no launch
+     * identity (card#11761).
+     */
     case AppliesNextLaunch = 'applies_next_launch';
 
     /** The seat launched after the release was published and still runs an older one, with no failure or approval reported. */
