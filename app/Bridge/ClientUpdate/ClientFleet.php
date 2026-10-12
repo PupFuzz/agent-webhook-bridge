@@ -79,7 +79,7 @@ final class ClientFleet
             $caps = null;
         }
 
-        return self::derive($agents, $rows, $published, $publishedError, SeatClientLedger::approvals(), SeatClientLedger::installedDigests(), $caps, $now ?? Carbon::now());
+        return self::derive($agents, $rows, $published, $publishedError, SeatClientLedger::approvals(), SeatClientLedger::installedDigests(), SeatClientLedger::installsReportedAt(), $caps, $now ?? Carbon::now());
     }
 
     /**
@@ -87,8 +87,9 @@ final class ClientFleet
      * @param  array<string, SeatClientState>  $rows
      * @param  array<string, list<string>>  $approvals
      * @param  array<string, array<string, string>>  $installedDigests
+     * @param  array<string, Carbon>  $installsReportedAt  {@see SeatClientLedger::installsReportedAt()}
      */
-    public static function derive(array $agents, array $rows, ?PublishedClientPack $published, ?string $publishedError, array $approvals, array $installedDigests, ?ClientCapabilities $caps, Carbon $now): self
+    public static function derive(array $agents, array $rows, ?PublishedClientPack $published, ?string $publishedError, array $approvals, array $installedDigests, array $installsReportedAt, ?ClientCapabilities $caps, Carbon $now): self
     {
         $seats = [];
         foreach ($agents as $agent => $bt) {
@@ -101,7 +102,7 @@ final class ClientFleet
 
                 return $installedDigests[$agent][$release] ?? ($published !== null && $published->bridgeRelease === $release ? $published->filesJsonSha256 : null);
             };
-            [$state, $reason] = self::stateOf($agent, $bt, $row, $published, $publishedError, $approved, $digestOf, $now);
+            [$state, $reason] = self::stateOf($agent, $bt, $row, $installsReportedAt[$agent] ?? null, $published, $publishedError, $approved, $digestOf, $now);
             $seats[] = self::seat($agent, $bt, $row, $state, $reason, $published, $approved, $digestOf, $caps, $now);
         }
 
@@ -113,7 +114,7 @@ final class ClientFleet
      * @param  callable(?string): ?string  $digestOf
      * @return array{0: FleetState, 1: string}
      */
-    public static function stateOf(string $agent, BoardToolsConfig $bt, SeatClientState $row, ?PublishedClientPack $published, ?string $publishedError, array $approved, callable $digestOf, Carbon $now): array
+    public static function stateOf(string $agent, BoardToolsConfig $bt, SeatClientState $row, ?Carbon $installReportedAt, ?PublishedClientPack $published, ?string $publishedError, array $approved, callable $digestOf, Carbon $now): array
     {
         $running = $row->running_bridge_release;
         $installed = $row->installed_bridge_release;
@@ -147,10 +148,19 @@ final class ClientFleet
             return [FleetState::ApprovalOwed, "it requires approval and published release {$published->bridgeRelease} (content ".substr($published->filesJsonSha256, 0, 12).') is not approved for it, so the update door offers it nothing. Approve it with `php artisan bridge:client-approve '.$agent.' '.$published->bridgeRelease.' --reason="…"`, or leave the seat where it is'];
         }
 
+        $offPathCall = null;
         if ($row->last_call_at !== null && $row->last_call_launch_id === null) {
             $version = $row->last_call_client_version !== null ? "client {$row->last_call_client_version}" : 'a client that reports no version';
-
-            return [FleetState::OffUpdatePath, 'its latest board-tools call ('.HumanAge::floored((int) $row->last_call_at->diffInSeconds($now, true))." ago) came from {$version} with no launch identity — a channel server not started by the client updater, so it will not update itself until its client is bootstrapped from this bridge's published pack: ".self::bootstrapRemedy($agent)];
+            $offPathCall = 'its latest board-tools call ('.HumanAge::floored((int) $row->last_call_at->diffInSeconds($now, true))." ago) came from {$version} with no launch identity";
+        }
+        $superseded = self::offPathCallSupersededBy($row, $installReportedAt);
+        if ($offPathCall !== null && $superseded === null) {
+            return [FleetState::OffUpdatePath, $offPathCall." — a channel server not started by the client updater, so it will not update itself until its client is bootstrapped from this bridge's published pack: ".self::bootstrapRemedy($agent)];
+        }
+        if ($superseded !== null) {
+            // The running fields are older than the off-path call (a call without a launch never
+            // writes them), so the report that superseded that call supersedes them too.
+            $running = null;
         }
 
         if ($row->last_call_at === null && $installed === null) {
@@ -187,6 +197,11 @@ final class ClientFleet
         // No launch has called yet: the needs_bootstrap branch above already took the seat with no install.
         if ($running === null && $row->last_call_at === null) {
             return [FleetState::AppliesNextLaunch, "it installed release {$installed} and no launch of that client has called the bridge yet"];
+        }
+        if ($superseded !== null && $installed !== null) {
+            [$what, $at] = $superseded;
+
+            return [FleetState::AppliesNextLaunch, "{$offPathCall}, but the client updater reported {$what} after it (".HumanAge::floored((int) $at->diffInSeconds($now, true))." ago), so that call no longer says which client the seat starts: it installed release {$installed} and no launch of that client has called the bridge since"];
         }
 
         if ($running !== null && $published === null) {
@@ -377,6 +392,34 @@ final class ClientFleet
         }
 
         return $first;
+    }
+
+    /**
+     * Whether the seat's latest call — one with NO launch identity — is superseded, and by what:
+     * evidence is ordered by when this bridge received it (card#11761). Only a successful run of
+     * the client updater received AFTER that call supersedes it: a launch the updater reported (it
+     * ran through `entry.mjs`; a failed one is {@see FleetState::UpdateFailed} first), or a
+     * successful bootstrap or install (a bootstrap repoints the seat at `entry.mjs` only when it
+     * succeeds). A call received after them speaks for the seat again. Null when the latest call
+     * carried a launch, there is none, or nothing newer was reported.
+     *
+     * @return array{0: string, 1: Carbon}|null what superseded it, worded, and when it arrived
+     */
+    private static function offPathCallSupersededBy(SeatClientState $row, ?Carbon $installReportedAt): ?array
+    {
+        $call = $row->last_call_at;
+        if ($call === null || $row->last_call_launch_id !== null) {
+            return null;
+        }
+        $launch = $row->last_launch_first_reported_at;
+        if ($launch !== null && $launch->gt($call)) {
+            return ['a launch', $launch];
+        }
+        if ($installReportedAt !== null && $installReportedAt->gt($call)) {
+            return ['an install', $installReportedAt];
+        }
+
+        return null;
     }
 
     /** A failed launch is superseded once a DIFFERENT launch has been seen calling after its report. */

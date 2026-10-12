@@ -287,6 +287,29 @@ final class SeatClientLedger
     }
 
     /**
+     * When this bridge last received a successful bootstrap or install line from each agent's own
+     * install log — the lines {@see self::applyEntry()} takes the row's installed release from.
+     * This bridge's clock, so it orders against `last_call_at` (card#11761). A late line that fills
+     * a gap is stamped when it arrived, not where it sits in the log.
+     *
+     * @return array<string, Carbon> agent => received_at
+     */
+    public static function installsReportedAt(): array
+    {
+        $out = [];
+        $rows = SeatClientEvent::query()
+            ->where('install_id', '!=', self::BRIDGE_INSTALL_ID)
+            ->whereIn('action', ['bootstrap', 'install'])->where('result', 'ok')
+            ->whereNotNull('to_bridge_release')
+            ->groupBy('agent')->selectRaw('agent, max(received_at) as reported_at')->get();
+        foreach ($rows as $row) {
+            $out[(string) $row->agent] = Carbon::parse((string) $row->getAttribute('reported_at'));
+        }
+
+        return $out;
+    }
+
+    /**
      * @return array{install_id: string, seq: int, sha256: string}|null
      */
     private static function headOf(SeatClientState $row): ?array

@@ -696,6 +696,86 @@ class FleetLedgerDoorTest extends TestCase
         Carbon::setTestNow();
     }
 
+    /**
+     * @return array<string, array{0: array<string, mixed>}>
+     */
+    public static function updaterRuns(): array
+    {
+        return [
+            'a launch that installed' => [self::install()],
+            'a bootstrap (a provision line, no launch)' => [['action' => 'bootstrap', 'actor' => 'provision', 'to_bridge_release' => '0.91.0', 'client_version' => '0.9.28', 'files_json_sha256' => str_repeat('b', 64)]],
+        ];
+    }
+
+    /**
+     * card#11761 through the real ledger writes: evidence is ordered by when the bridge received it.
+     * A call from a legacy client, then a successful updater run reported, reads as installed and
+     * not yet called — and a legacy call after that report is off the path again.
+     *
+     * @param  array<string, mixed>  $line
+     */
+    #[DataProvider('updaterRuns')]
+    public function test_an_updater_run_reported_after_a_legacy_call_supersedes_it_until_the_next_call(array $line): void
+    {
+        $this->publish(new ClientPackFixture);
+        $state = function (): string {
+            $seats = array_column($this->ssh(['op' => 'client_fleet'], 'sshpm')['body']['seats'], null, 'agent');
+
+            return $seats['httpseat']['state'];
+        };
+
+        Carbon::setTestNow('2026-09-24T09:00:00Z');
+        $this->http('/agent-tools/call', ['tool' => 'no_such_tool', 'client_version' => '0.9.27']);
+        Carbon::setTestNow('2026-09-28T07:00:00Z');
+        $this->report(self::INSTALL, self::log([$line]));
+        Carbon::setTestNow('2026-09-28T12:00:00Z');
+        $this->assertSame('applies_next_launch', $state());
+
+        Carbon::setTestNow('2026-09-28T12:05:00Z');
+        $this->http('/agent-tools/call', ['tool' => 'no_such_tool', 'client_version' => '0.9.27']);
+        $this->assertSame('off_update_path', $state());
+        Carbon::setTestNow();
+    }
+
+    /**
+     * @return array<string, array{0: array<string, mixed>}>
+     */
+    public static function runsThatInstallNothing(): array
+    {
+        return [
+            'a failed bootstrap' => [['action' => 'bootstrap', 'actor' => 'provision', 'result' => 'failed', 'to_bridge_release' => '0.91.0', 'reason' => 'pack digest mismatch']],
+            'an ok provision line that is not an install' => [['action' => 'prune', 'actor' => 'provision', 'to_bridge_release' => '0.91.0']],
+        ];
+    }
+
+    /**
+     * card#11761: a provision run reported after a legacy call that installed nothing supersedes
+     * nothing — a bootstrap repoints `.mcp.json` only when it succeeds — even when an install from
+     * BEFORE that call is on the row.
+     *
+     * @param  array<string, mixed>  $line
+     */
+    #[DataProvider('runsThatInstallNothing')]
+    public function test_a_provision_run_that_installs_nothing_leaves_a_legacy_call_in_charge(array $line): void
+    {
+        $this->publish(new ClientPackFixture);
+        $bootstrap = ['action' => 'bootstrap', 'actor' => 'provision', 'to_bridge_release' => '0.91.0', 'client_version' => '0.9.28', 'files_json_sha256' => str_repeat('b', 64)];
+        $lines = self::log([$bootstrap, $line]);
+
+        Carbon::setTestNow('2026-09-24T09:00:00Z');
+        $this->report(self::INSTALL, [$lines[0]]);
+        Carbon::setTestNow('2026-09-25T09:00:00Z');
+        $this->http('/agent-tools/call', ['tool' => 'no_such_tool', 'client_version' => '0.9.27']);
+        Carbon::setTestNow('2026-09-28T07:00:00Z');
+        $this->report(self::INSTALL, [$lines[1]]);
+        Carbon::setTestNow('2026-09-28T12:00:00Z');
+
+        $seats = array_column($this->ssh(['op' => 'client_fleet'], 'sshpm')['body']['seats'], null, 'agent');
+        $this->assertSame('0.91.0', $seats['httpseat']['installed']['bridge_release']);
+        $this->assertSame('off_update_path', $seats['httpseat']['state'], $seats['httpseat']['reason']);
+        Carbon::setTestNow();
+    }
+
     // ───────────────────────── caller / launch on a tool call ─────────────────────────
 
     /**

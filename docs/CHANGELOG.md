@@ -8,6 +8,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#11761 / DL-475** — **`bridge:client-fleet` and `bridge:check` no longer report a seat `off_update_path` after its client updater has run.** The state was read off the seat's latest board-tools call alone. A seat whose last call came from a legacy client, and which was then bootstrapped or launched through the updater, stayed `OFF THE UPDATE PATH` (a WARN) until it made another board-tools call, however long that took.
+  - Evidence is now ordered by when the bridge received it. A launch, or a successful bootstrap or install, reported after that call supersedes it: the seat reads `applies_next_launch` (restart owed) — it installed a release and no launch of it has called the bridge yet — and the reason names the call and the report. A call with no launch identity received after the report is `off_update_path` again.
+  - A report that installed nothing (a failed bootstrap, a prune) supersedes nothing.
+
 ## [0.102.0] - 2026-10-12
 
 ### Changed
