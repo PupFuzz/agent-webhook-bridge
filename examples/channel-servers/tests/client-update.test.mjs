@@ -1003,6 +1003,48 @@ test('a seat whose installed release cannot start still reaches a fixed release:
   assert.equal(third.started.release, '2.0.0');
 });
 
+test('a seat whose release imports and then crashes before its check completes still reaches a fixed release (review r2 of card#11760)', async (t) => {
+  // Through the real entry.mjs: the server imports fine (state.json says `current`), then dies.
+  const crashing = Buffer.from(`${stubServer('1.0.0')}setTimeout(() => { throw new Error('boom after import'); }, 5);\n`);
+  const root = await seatWith(t, '1.0.0', { pack: buildPack({ release: '1.0.0', files: clientFiles('1.0.0', { serverData: crashing }) }) });
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  const env = seatEnv(t, bridge);
+
+  const first = await launch(root, env);
+  assert.equal(first.started.release, '1.0.0');
+  assert.notEqual(first.code, 0, 'the server crashed after import');
+  assert.equal(read(root, 'state.json').state, 'current', 'entry.mjs wrote state.json before the import');
+  assert.equal(bridge.requests.length, 0, 'no check ran: no server listened');
+
+  const second = await launch(root, env);
+  assert.equal(second.started.release, '2.0.0', 'the launch after one that completed no check runs the check itself and installs the fix');
+  assert.deepEqual(bridge.requests.map((r) => r.body.op), ['client_manifest', 'client_pack'], 'and spends no connect-window time on the report');
+});
+
+test('a launch that runs the check itself sends no report, so a bridge that holds client_report cannot stall it (review r2 of card#11760)', { timeout: 60000 }, async (t) => {
+  const root = await seatWith(t, '1.0.0', { pack: buildPack({ release: '1.0.0', files: clientFiles('1.0.0', { serverData: Buffer.from('this is not javascript\n') }) }) });
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), delayMs: { client_report: 60000 } });
+  const env = seatEnv(t, bridge);
+  assert.equal((await launch(root, env)).code, 2);
+
+  const started = Date.now();
+  const second = await launch(root, env);
+  assert.equal(second.code, 0, second.stderr);
+  assert.equal(second.started.release, '2.0.0');
+  assert.ok(Date.now() - started < 15000, `the launch was not held by the report (${Date.now() - started} ms)`);
+  assert.ok(!bridge.requests.some((r) => r.body.op === 'client_report'));
+});
+
+test('a launch whose previous session completed its check makes no call to the bridge, even with nothing staged', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
+  await session(root, seatEnv(t, bridge));
+  const asked = bridge.requests.length;
+  const run = await launch(root, seatEnv(t, bridge));
+  assert.equal(run.started.release, '1.0.0');
+  assert.equal(bridge.requests.length, asked);
+});
+
 test('a release whose server does not load: not started, loudly', async (t) => {
   const root = await seatWith(t, '1.0.0', { pack: buildPack({ release: '1.0.0', files: clientFiles('1.0.0', { serverData: Buffer.from('this is not javascript\n') }) }) });
   const env = seatEnv(t, null);
@@ -1396,6 +1438,9 @@ test('power-cut damage: a release whose .verified record is empty is never start
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
   await updateTo(root, seatEnv(t, bridge));
+  // That launch's server listens and completes its check, as a real one would (else the next
+  // launch would run the check itself — DL-476 Decision 7).
+  await background(root, seatEnv(t, bridge), read(root, 'state.json').launch_id);
   fs.writeFileSync(path.join(root, 'versions', '2.0.0', '.verified'), '');
   const { run } = await session(root, seatEnv(t, bridge));
   assert.equal(run.started.release, '1.0.0', 'the unverified tree is not started');

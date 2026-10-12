@@ -6,7 +6,10 @@
 //       session's background check STAGED, from local files only, before the channel server
 //       starts. It makes NO call to the bridge (card#11760, DL-476: the door's round trip under
 //       a saturated host does not fit Claude Code's MCP connect window). No stage: the installed
-//       release starts as it is.
+//       release starts as it is — unless the previous launch completed no background check (its
+//       server failed to import, or crashed before the check finished); then this launch runs the
+//       check itself inside its budget, without the report, and installs what it staged
+//       (DL-476 Decision 7).
 //   runBackgroundUpdate({root, launchId})
 //       what the channel server runs once it is listening: ask the bridge's client-update door
 //       what it offers, with a generous deadline; download and verify a newer release exactly as
@@ -118,7 +121,7 @@ export const REPORT_LEG_MS = 60000;
 export const BACKGROUND_LOCK_MS = 60000;
 /**
  * What a launch keeps of its own budget for installing a stage when it runs the check itself
- * (`previousLaunchDidNotStart`): the check gets the rest.
+ * (`previousLaunchCompletedNoCheck`): the check gets the rest.
  */
 export const LAUNCH_INSTALL_RESERVE_MS = 5000;
 
@@ -1626,17 +1629,22 @@ function normalized(err) {
 }
 
 /**
- * Whether the launch before this one did not start a channel server (entry.mjs wrote `not_started`
- * to state.json, which still holds that launch's state while this one runs its update). Such a seat
- * never ran a background check — the check runs only once a server listens — so a release that
- * cannot start would otherwise never be replaced by the fix its bridge publishes (DL-434 bound 4).
+ * Whether the launch before this one completed no background check: `state.json` (still the
+ * previous launch's while this one updates) names a launch that `update-check.json` does not. The
+ * check runs only once a server listens and takes the door's round trip to finish, so a release
+ * that fails to import, crashes before listening, or crashes before its check completes never
+ * runs one — and without this, it would never be replaced by the fix its bridge publishes
+ * (DL-434 bound 4). No `state.json` is a seat that has not launched since its bootstrap, which
+ * just installed what the bridge offers: nothing to make up for.
  */
-function previousLaunchDidNotStart(root) {
+function previousLaunchCompletedNoCheck(root) {
+  let previous;
   try {
-    return readJsonFile(path.join(root, 'state.json')).state === 'not_started';
+    previous = readJsonFile(path.join(root, 'state.json')).launch_id;
   } catch {
     return false;
   }
+  return typeof previous === 'string' && readCheck(root)?.launch_id !== previous;
 }
 
 /**
@@ -1654,9 +1662,9 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
   const ctx = { root, signal, deadline: Date.now() + budgetMs, launchId, actor: 'launch', env, source: null, door: null, log: null, say };
   const result = { state: null, installed: installed.release, published: null, offer: null, approval_owed: null, error: null };
 
-  if (!fs.existsSync(stagePath(root, STAGE_RECORD)) && previousLaunchDidNotStart(root)) {
-    say('the previous launch did not start a channel server, so no update check ran: checking now, at launch');
-    await runBackgroundUpdate({ root, launchId, env, signal, budgetMs: Math.max(1, budgetMs - LAUNCH_INSTALL_RESERVE_MS) });
+  if (!fs.existsSync(stagePath(root, STAGE_RECORD)) && previousLaunchCompletedNoCheck(root)) {
+    say('the previous launch completed no update check (its server did not start, or stopped first): checking now, at launch');
+    await runBackgroundUpdate({ root, launchId, env, signal, budgetMs: Math.max(1, budgetMs - LAUNCH_INSTALL_RESERVE_MS), report: false });
   }
 
   let lock;
@@ -1776,7 +1784,7 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
  * anticipated. Never touches `current.json` or `versions/`: a running session never switches
  * release.
  */
-export async function runBackgroundUpdate({ root, launchId, env = process.env, budgetMs = BACKGROUND_BUDGET_MS, signal = new AbortController().signal }) {
+export async function runBackgroundUpdate({ root, launchId, env = process.env, budgetMs = BACKGROUND_BUDGET_MS, signal = new AbortController().signal, report: sendReport = true }) {
   const channel = env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
   const say = (text) => process.stderr.write(`[${channel}] client update (background): ${text}\n`);
   const end = Date.now() + budgetMs;
@@ -1923,8 +1931,9 @@ export async function runBackgroundUpdate({ root, launchId, env = process.env, b
     releaseLock(lock);
   }
 
-  // 3. The report, when the bridge answered and the budget did not run out.
-  if (answer !== null && !(fault instanceof Aborted) && !signal.aborted) {
+  // 3. The report, when the bridge answered and the budget did not run out — and not when a
+  //    launch runs this check: the connect window is not spent on what the next check sends.
+  if (sendReport && answer !== null && !(fault instanceof Aborted)) {
     ctx.deadline = Math.min(end, Date.now() + REPORT_LEG_MS);
     out.report_error = await report(ctx, answer.log_head ?? null);
     if (out.report_error) {
