@@ -322,7 +322,13 @@ test('Windows: start-claude.cmd runs the release current.json names through powe
   assert.equal(out.stdout.trim(), `launcher of 1.0.0 root=${root} args=--x`);
 
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0', { launcherMarker: ' (changed)' }) });
-  const launched = await launch(root, seatEnv(t, bridge));
+  // DL-476: a session's background check stages pack N+1; the running release does not switch...
+  const { check } = await session(root, seatEnv(t, bridge));
+  assert.equal(check.state, 'staged', check.stderr);
+  out = run();
+  assert.equal(out.stdout.trim(), `launcher of 1.0.0 root=${root} args=--x`, 'staged, not yet installed');
+  // ...and the NEXT launch installs it, so the same .cmd path now runs pack N+1's launcher.
+  const launched = await launch(root, seatEnv(t, null));
   assert.equal(launched.code, 0, launched.stderr);
   out = run();
   assert.equal(out.stdout.trim(), `launcher of 2.0.0 (changed) root=${root} args=--x`);
