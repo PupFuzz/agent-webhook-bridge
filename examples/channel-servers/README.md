@@ -412,10 +412,10 @@ describe CI tools and no board tool. The set is resolved ONCE, at start-up, befo
 handshake, from the first of:
 
 1. **The served-tools cache**, `<client root>/served-tools.json` — this launch's or an earlier
-   one's — written by a background update check from its `client_manifest` answer (only when
-   that answer carries `served_tools`).
-2. **The env rule**: every tool, as before 0.9.45 — on a seat no check has written a cache for
-   yet (its first launch after a bootstrap).
+   one's — written by a background update check, or a bootstrap from the door, from its
+   `client_manifest` answer (only when that answer carries `served_tools`).
+2. **The env rule**: every tool, as before 0.9.45 — on a seat nothing has written a cache for
+   yet (a bootstrap from the door writes one; a bootstrap from a pack on disk does not).
 
 **The bridge is not asked at start-up** (client 0.9.57, card#11760, DL-476): a door that is slow
 under a saturated host must never hold Claude Code's MCP connect window open. So a change to what

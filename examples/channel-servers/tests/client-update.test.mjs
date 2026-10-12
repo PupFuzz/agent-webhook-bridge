@@ -2039,6 +2039,18 @@ test('bootstrap from the door installs the offered release, logs it with the doo
   assert.equal(read(root, 'state.json').state, 'current');
 });
 
+test('bootstrap from the door writes the served-tools cache, so the first launch lists what the bridge serves rather than the env rule (review of card#11760)', async (t) => {
+  const root = newRoot(t);
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0'), servedTools: ['ci_await', 'ci_await_cancel'] });
+
+  const r = await bootstrapFromDoor(root, seatEnv(t, bridge));
+
+  assert.equal(r.status, 0, r.stderr);
+  const cache = read(root, 'served-tools.json');
+  assert.deepEqual(cache.served, ['ci_await', 'ci_await_cancel']);
+  assert.equal(cache.launch_id, 'bootstrap', 'it names no launch, so every launch reads it as the last good cache');
+});
+
 test('bootstrap from the door with approval owed fetches nothing, installs nothing, and names the release and the approve command', async (t) => {
   const root = newRoot(t);
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0'), offer: null, owed: '1.0.0' });

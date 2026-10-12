@@ -1948,7 +1948,8 @@ function writeServedTools(ctx, answer) {
   }
   try {
     writeJsonAtomic(path.join(ctx.root, SERVED_TOOLS_FILE), {
-      launch_id: ctx.launchId,
+      // A bootstrap is no launch: its cache is read by every launch as the last good one.
+      launch_id: ctx.launchId ?? 'bootstrap',
       agent: typeof answer.agent === 'string' ? answer.agent : null,
       served,
       written_at: new Date().toISOString(),
@@ -2046,6 +2047,9 @@ export async function installFromDoor({ root, env = process.env, budgetMs, agent
         ctx.door = doorFromEnv(env);
         ctx.source = ctx.door.source;
         const answer = await ask(ctx, { op: 'client_manifest' }, BOOTSTRAP_MANIFEST_MS);
+        // The first launch after a bootstrap asks nothing at start-up (DL-476), so it lists
+        // what this answer says the bridge serves, not the env rule's every tool.
+        writeServedTools(ctx, answer);
         const { manifest, manifestSha256 } = manifestFromAnswer(answer);
         const { offer, owed } = offerFromAnswer(answer, manifest);
         if (offer === null) {

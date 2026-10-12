@@ -311,10 +311,11 @@ final class SeatClientLedger
 
     /**
      * The release each agent's background update check has STAGED for its next launch (DL-476):
-     * the newest `stage` or `stage_discard` line the seat reported, when that line is a successful
-     * `stage`. An agent whose newest such line is a discard, or that reported neither, is absent.
-     * A stage the seat has since installed stays named here; the fleet reads it only for a seat
-     * that does not yet run the published release.
+     * the newest `stage`, `stage_discard`, `refuse` or `install` line the seat reported, when that
+     * line is a successful `stage`. Each of the others ends a stage: a discard removes it, a launch
+     * that refuses a damaged stage discards it under its `refuse` line alone, an install consumes
+     * it, and a refused offer discards whatever was staged. An agent whose newest such line is not
+     * a stage, or that reported none, is absent.
      *
      * @return array<string, string> agent => to_bridge_release
      */
@@ -323,7 +324,7 @@ final class SeatClientLedger
         $out = [];
         $rows = SeatClientEvent::query()
             ->where('install_id', '!=', self::BRIDGE_INSTALL_ID)
-            ->whereIn('action', ['stage', 'stage_discard'])
+            ->whereIn('action', ['stage', 'stage_discard', 'refuse', 'install'])
             ->orderBy('id')->get(['agent', 'action', 'result', 'to_bridge_release']);
         foreach ($rows as $row) {
             $agent = (string) $row->agent;

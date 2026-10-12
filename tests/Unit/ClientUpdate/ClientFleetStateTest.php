@@ -223,7 +223,6 @@ class ClientFleetStateTest extends TestCase
         $this->assertSame($before['last_seen'], $after['last_seen'], 'a probe is not the seat being seen');
     }
 
-    /** A failure stops counting once a different, later launch has been seen calling. */
     /** card#11760: a seat that launched after publication and STAGED the release is owed a restart, not behind. */
     public function test_a_seat_that_staged_the_published_release_applies_it_at_its_next_launch(): void
     {
@@ -236,6 +235,7 @@ class ClientFleetStateTest extends TestCase
         $this->assertSame('behind', $this->derive($this->launched('0.90.0'), $this->published())['state']);
     }
 
+    /** A failure stops counting once a different, later launch has been seen calling. */
     public function test_a_later_launch_supersedes_a_failed_one(): void
     {
         $row = $this->launched('0.91.0') + ['last_launch_id' => 'L1', 'last_launch_result' => 'failed', 'last_launch_error' => 'boom', 'last_launch_first_reported_at' => '2026-09-28T10:00:00Z'];

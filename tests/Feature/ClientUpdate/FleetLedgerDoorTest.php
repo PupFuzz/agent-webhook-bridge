@@ -492,6 +492,16 @@ class FleetLedgerDoorTest extends TestCase
         $discard = self::log([['action' => 'stage_discard', 'to_bridge_release' => '0.91.0', 'reason' => 'withdrawn', 'launch_id' => 'L3']], 4, hash('sha256', $lines[2]));
         $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $discard]);
         $this->assertSame([], SeatClientLedger::stagedReleases(), 'a discard after the stage leaves nothing staged');
+
+        // A launch that refuses a damaged stage discards it with no stage_discard line (its refuse
+        // line says it), and a launch that installs a stage consumes it: neither leaves it staged.
+        $restage = self::log([$stage + ['launch_id' => 'L4'], ['action' => 'refuse', 'result' => 'refused', 'to_bridge_release' => '0.91.0', 'reason' => 'the staged update was refused and discarded', 'launch_id' => 'L5']], 5, hash('sha256', $discard[0]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $restage]);
+        $this->assertSame([], SeatClientLedger::stagedReleases(), 'a refusal after the stage leaves nothing staged');
+
+        $installed = self::log([$stage + ['launch_id' => 'L6'], self::install('0.91.0', 'L7')], 7, hash('sha256', $restage[1]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $installed]);
+        $this->assertSame([], SeatClientLedger::stagedReleases(), 'an install after the stage consumed it');
     }
 
     /**
