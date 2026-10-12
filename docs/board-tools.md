@@ -2723,6 +2723,15 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   snapshot never advertised — was reported *"absent from my surface"*, and it was
   attributed to the **BRIDGE**, because nothing compared the two numbers. The line now
   prints both.
+  - ⭐ **A call the client updater has since superseded is not compared (card#11763, DL-478).**
+    When the fleet ledger shows a successful launch, bootstrap or install reported AFTER the
+    recorded call — the rule `bridge:client-fleet` uses (DL-475), from the same primitive — that
+    call no longer says which client the seat starts, so the client the seat **installed** is
+    compared instead, by the arms below (against the published client, or the bundled snapshot
+    when nothing is published), and the line names the call, the report and the installed
+    release. A call recorded after the report (the seat's or an exempt caller's) is compared again.
+    A staged release is never what is compared. A fleet ledger that will not answer leaves the
+    call's own version compared, and, when that comparison warns, the line says so.
   - ⭐ **Which version it is compared with (card#10568 comment 7177, DL-445).** Once this
     bridge PUBLISHES a client pack, the reported version is compared with the **published
     client**, never this checkout's bundled copy — seats take their client from the pack now.
@@ -2735,14 +2744,6 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
     compared**, never a fallback to the bundled copy (`board_tools.client_pack_source` names its
     recovery). **With nothing published**, the arms below are exactly as they were, against the
     bundled snapshot:
-  - ⭐ **A call the client updater has since superseded is not compared (card#11763, DL-478).**
-    When the fleet ledger shows a successful launch, bootstrap or install reported AFTER the
-    recorded call — the rule `bridge:client-fleet` uses (DL-475), from the same primitive — that
-    call no longer says which client the seat starts, so the client the seat **installed** is
-    compared instead, by the arms here, and the line names the call, the report and the installed
-    release. A call recorded after the report (the seat's or an exempt caller's) is compared again.
-    A staged release is never what is compared. A fleet ledger that will not answer leaves the
-    call's own version compared, and a `warn` says so.
   - reported and **older** than the bundled snapshot ⇒ **`warn`**, naming both versions and
     the remedy: re-copy this checkout's `examples/channel-servers` over the seat's deployed
     directory, `npm ci`, and **restart that session** — the version is read when the channel
