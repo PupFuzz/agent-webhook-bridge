@@ -1021,6 +1021,38 @@ test('a seat whose release imports and then crashes before its check completes s
   assert.deepEqual(bridge.requests.map((r) => r.body.op), ['client_manifest', 'client_pack'], 'and spends no connect-window time on the report');
 });
 
+test('a launch-run check that fails does not count as a completed check: the next launch checks again (card#11785)', async (t) => {
+  const crashing = Buffer.from(`${stubServer('1.0.0')}setTimeout(() => { throw new Error('boom after import'); }, 5);\n`);
+  const root = await seatWith(t, '1.0.0', { pack: buildPack({ release: '1.0.0', files: clientFiles('1.0.0', { serverData: crashing }) }) });
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), fail: { client_manifest: { status: 500, error: 'the bridge is failing' } } });
+  const env = seatEnv(t, bridge);
+
+  assert.equal((await launch(root, env)).started.release, '1.0.0', 'launch 1 starts the crashing release, which completes no check');
+  const second = await launch(root, env);
+  assert.equal(second.started.release, '1.0.0', 'launch 2 checks at launch, and the bridge fails');
+  assert.deepEqual(bridge.requests.map((r) => r.body.op), ['client_manifest']);
+  assert.equal(readCheckOf(root).state, 'update_failed');
+
+  bridge.state.fail = {};
+  const third = await launch(root, env);
+  assert.equal(third.started.release, '2.0.0', 'launch 3 checks again and installs the fix — not launch 4');
+});
+
+test('a launch-run check that runs out of budget does not make the session skip its own check (card#11785)', { timeout: 60000 }, async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), delayMs: { client_manifest: 8000 } });
+  // Launch 1 starts the stub server, which runs no check, so launch 2 runs the check itself.
+  await launch(root, seatEnv(t, bridge));
+  await launch(root, seatEnv(t, bridge, { AWB_CLIENT_UPDATE_BUDGET_MS: '7000' }));
+  const launchId = read(root, 'state.json').launch_id;
+  assert.equal(readCheckOf(root).launch_id, launchId);
+  assert.equal(readCheckOf(root).state, 'update_failed', 'the launch-run check ran out of its budget');
+
+  const check = await background(root, seatEnv(t, bridge), launchId);
+  assert.equal(check.state, 'staged', `the session's own check still ran: ${check.stderr}`);
+  assert.equal((await background(root, seatEnv(t, bridge), launchId)).state, 'skipped', 'and runs once per launch');
+});
+
 test('a launch that runs the check itself sends no report, so a bridge that holds client_report cannot stall it (review r2 of card#11760)', { timeout: 60000 }, async (t) => {
   const root = await seatWith(t, '1.0.0', { pack: buildPack({ release: '1.0.0', files: clientFiles('1.0.0', { serverData: Buffer.from('this is not javascript\n') }) }) });
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), delayMs: { client_report: 60000 } });
