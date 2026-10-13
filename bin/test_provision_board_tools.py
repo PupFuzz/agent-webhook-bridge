@@ -3687,7 +3687,9 @@ class LauncherShim(unittest.TestCase):
              mock.patch.object(pbt, "install_launcher_shims", side_effect=PermissionError(13, "Permission denied")), \
              contextlib.redirect_stdout(out):
             pbt._offer_launcher_shim("chan")
-        self.assertIn("launcher shim: not written — [Errno 13] Permission denied", out.getvalue())
+        said = out.getvalue().strip().splitlines()
+        self.assertTrue(said[0].startswith("⚠ launcher shim: NOT written — [Errno 13] Permission denied"), said)
+        self.assertEqual(said[-1], "launcher-shim-status: io_error")
 
     def test_transport_flags_are_refused(self):
         with self.assertRaises(SystemExit) as cm:
@@ -4267,17 +4269,24 @@ class LauncherShim(unittest.TestCase):
                         self.assertEqual(fh.read(), body, name)
 
 
-    def test_a_windows_pair_of_ours_that_disagrees_is_kept(self):
+    def test_a_windows_pair_of_ours_that_disagrees_is_kept_unless_the_run_names_the_arguments(self):
         a = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--a"))
         b = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--b"))
         files = {"start-claude.bat": a["start-claude.bat"], "start-claude.ps1": b["start-claude.ps1"]}
-        for given in ({}, {"extra_args": "--a"}):
+        home, refusal, lines = self._install_nt(files, {"TUNNEL_HOST": "a@b"})
+        self.assertIsInstance(refusal, pbt.LauncherShimRefused, lines)
+        self.assertEqual(refusal.status, "launcher_kept")
+        self.assertIn("but they set different claude arguments", str(refusal))
+        self.assertIn("Re-run with --claude-extra-args=<args>", str(refusal))
+        self._assert_untouched(home, files)
+        # An explicit value replaces the arguments of both files, so the disagreement is settled by it.
+        for given in ("--a", "--c", ""):
             with self.subTest(given):
-                home, refusal, lines = self._install_nt(files, {"TUNNEL_HOST": "a@b"}, **given)
-                self.assertIsInstance(refusal, pbt.LauncherShimRefused, lines)
-                self.assertEqual(refusal.status, "launcher_kept")
-                self.assertIn("but they set different claude arguments", str(refusal))
-                self._assert_untouched(home, files)
+                home, status, lines = self._install_nt(files, {"TUNNEL_HOST": "a@b"}, extra_args=given)
+                self.assertEqual(status, "written", lines)
+                for name, body in pbt.launcher_shims("chan", "C:\\r", "nt", given):
+                    with open(os.path.join(home, name), encoding="utf-8-sig", newline="") as fh:
+                        self.assertEqual(fh.read(), body, name)
 
     def test_a_windows_shim_of_ours_edited_by_hand_is_kept(self):
         ours = dict(pbt.launcher_shims("chan", "C:\\r", "nt"))
@@ -4293,11 +4302,32 @@ class LauncherShim(unittest.TestCase):
 
     def test_one_windows_shim_of_ours_completes_the_pair_with_its_extra_args(self):
         ours = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--a"))
-        # No TUNNEL_HOST anywhere: a launcher is already there, so the no-launcher check does not apply.
-        home, status, lines = self._install_nt({"start-claude.bat": ours["start-claude.bat"]})
+        home, status, lines = self._install_nt({"start-claude.bat": ours["start-claude.bat"]}, {"TUNNEL_HOST": "seat@bridge"})
         self.assertEqual(status, "written", lines)
         with open(os.path.join(home, "start-claude.ps1"), encoding="utf-8-sig", newline="") as fh:
             self.assertEqual(fh.read(), ours["start-claude.ps1"])
+
+    def test_the_missing_half_of_a_windows_pair_needs_tunnel_host_too(self):
+        # The reported sequence: an operator's .bat beside a shim .ps1 of ours is kept; the operator
+        # renames the .bat aside and re-runs. The .bat written now runs a launcher that exits without
+        # TUNNEL_HOST, which the renamed file may have been the one setting.
+        ours = dict(pbt.launcher_shims("chan", "C:\\r", "nt"))
+        files = {"start-claude.bat": self.HAND_BAT, "start-claude.ps1": ours["start-claude.ps1"]}
+        home, refusal, lines = self._install_nt(files, {"TUNNEL_HOST": "seat@bridge"})
+        self.assertEqual(refusal.status, "launcher_kept", lines)
+        for name in files:
+            self.assertIn(f"rename {os.path.join(home, name)} to {name}.mine", str(refusal), "on Windows, both files aside")
+        os.rename(os.path.join(home, "start-claude.bat"), os.path.join(home, "start-claude.bat.mine"))
+        for persisted in ({}, {"TUNNEL_HOST": pbt.TUNNEL_HOST_PLACEHOLDER}):
+            with self.subTest(persisted), mock.patch.dict(os.environ, persisted, clear=True):
+                with self.assertRaises(pbt.LauncherShimRefused) as cm:
+                    pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+                self.assertEqual(cm.exception.status, "needs_setting")
+                self.assertEqual(sorted(os.listdir(home)), ["start-claude.bat.mine", "start-claude.ps1"], "nothing written")
+        with mock.patch.dict(os.environ, {"TUNNEL_HOST": "seat@bridge"}, clear=True):
+            status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual(status, "written", lines)
+        self.assertEqual(sorted(os.listdir(home)), ["start-claude.bat", "start-claude.bat.mine", "start-claude.ps1"])
 
     def test_the_windows_ps1_shim_carries_a_utf8_bom_and_a_bomless_one_is_rewritten_once(self):
         home, status, _lines = self._install_nt({}, {"TUNNEL_HOST": "a@b"})
@@ -4407,6 +4437,36 @@ class LauncherShim(unittest.TestCase):
             with open(os.path.join(home, name), encoding="utf-8-sig", newline="") as fh:
                 self.assertEqual(fh.read(), body, name)
 
+    def test_a_partial_swap_that_changed_the_arguments_is_completed_by_a_re_run_with_them(self):
+        files = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--a"))
+        home = self._windows_home(files)
+        with mock.patch.dict(os.environ, {}, clear=True), self._fail_nth_replace(2):
+            with self.assertRaises(pbt.LauncherShimRefused) as cm:
+                pbt.install_launcher_shims("chan", "C:\\r", home, "nt", extra_args="--b")
+        self.assertEqual((cm.exception.status, cm.exception.partly), ("io_error", True))
+        self.assertIn('re-run with the same --claude-extra-args="--b"', str(cm.exception))
+        b = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--b"))
+        with open(os.path.join(home, "start-claude.bat"), encoding="utf-8", newline="") as fh:
+            self.assertEqual(fh.read(), b["start-claude.bat"])
+        # Without the value the pair disagrees and is kept, as the message says.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(pbt.LauncherShimRefused) as kept:
+                pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual(kept.exception.status, "launcher_kept")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt", extra_args="--b")
+        self.assertEqual(status, "written", lines)
+        for name, body in b.items():
+            with open(os.path.join(home, name), encoding="utf-8-sig", newline="") as fh:
+                self.assertEqual(fh.read(), body, name)
+
+    def test_a_partial_swap_that_kept_the_arguments_says_a_plain_re_run_completes_it(self):
+        home = self._windows_home(dict(pbt.launcher_shims("chan", "C:\\old", "nt", "--a")))
+        with mock.patch.dict(os.environ, {}, clear=True), self._fail_nth_replace(2):
+            with self.assertRaises(pbt.LauncherShimRefused) as cm:
+                pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertIn("re-run (no --claude-extra-args needed)", str(cm.exception))
+
     def test_a_failed_write_leaves_every_file_as_it_was(self):
         files = dict(pbt.launcher_shims("chan", "C:\\old", "nt"))
         home = self._windows_home(files)
@@ -4435,6 +4495,21 @@ class LauncherShim(unittest.TestCase):
         said = out.getvalue().strip().splitlines()
         self.assertTrue(said[0].startswith("⚠ launcher shim: PARTLY written — "), said)
         self.assertEqual(said[-1], "launcher-shim-status: io_error")
+
+    def test_an_onboarding_run_says_a_failed_first_swap_wrote_nothing_with_its_status(self):
+        files = dict(pbt.launcher_shims("chan", "C:\\old", "nt"))
+        home = self._windows_home(files)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"TUNNEL_HOST": "a@b"}, clear=True), self._fail_nth_replace(1), \
+             mock.patch.object(pbt, "_launcher_shim_unavailable", return_value=("C:\\r", None, None)), \
+             mock.patch.object(pbt, "_host_b_home", return_value=home), \
+             mock.patch.object(pbt, "install_launcher_shims", functools.partial(pbt.install_launcher_shims, os_name="nt")), \
+             contextlib.redirect_stdout(out):
+            pbt._offer_launcher_shim("chan")
+        said = out.getvalue().strip().splitlines()
+        self.assertTrue(said[0].startswith("⚠ launcher shim: NOT written — [Errno 13] Permission denied"), said)
+        self.assertEqual(said[-1], "launcher-shim-status: io_error")
+        self._assert_untouched(home, files)
 
     def test_an_onboarding_run_on_a_windows_seat_without_tunnel_host_says_so_with_its_status(self):
         home = self._windows_home({})

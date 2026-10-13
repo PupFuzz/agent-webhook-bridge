@@ -2588,8 +2588,9 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   before the marker and recognised by content (card#11822): then it writes nothing and ends
   `framework_shim`, exit 0. It writes over nothing it did not generate (DL-480): any other
   launcher there, or a shim of its own with a line it does not generate, is left untouched
-  and the run ends `launcher_kept`, exit 7; with no launcher there, a Windows seat whose
-  persisted environment does not set `TUNNEL_HOST` gets nothing and `needs_setting`, exit 8. It
+  and the run ends `launcher_kept`, exit 7; where a Windows shim file would be written where none
+  is, a seat whose persisted environment does not set `TUNNEL_HOST` gets nothing and
+  `needs_setting`, exit 8. It
   needs `--agent --channel-name`, refuses the transport flags, and writes nothing when the
   channel's client root does not yet carry the launcher (exit 3), when there is no client root
   (exit 4), when the shim path holds a directory or another channel's shim (exit 5), or when the
