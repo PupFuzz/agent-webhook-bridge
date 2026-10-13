@@ -235,6 +235,23 @@ class ClientFleetStateTest extends TestCase
         $this->assertSame('behind', $this->derive($this->launched('0.90.0'), $this->published())['state']);
     }
 
+    /**
+     * card#11787: a session that started before publication and whose periodic re-check STAGED the
+     * release says so, not that its next session stages it.
+     */
+    public function test_a_session_that_began_before_publication_and_staged_it_by_a_re_check_reads_staged(): void
+    {
+        $before = $this->launched('0.90.0', null, '2026-09-27T00:00:00Z');
+
+        $staged = $this->derive($before, $this->published(), staged: '0.91.0');
+        $this->assertSame('applies_next_launch', $staged['state']);
+        $this->assertStringContainsString('its background update check has staged it', $staged['reason']);
+
+        $notYet = $this->derive($before, $this->published());
+        $this->assertSame('applies_next_launch', $notYet['state']);
+        $this->assertStringContainsString('stages it at its next periodic re-check', $notYet['reason']);
+    }
+
     /** A failure stops counting once a different, later launch has been seen calling. */
     public function test_a_later_launch_supersedes_a_failed_one(): void
     {

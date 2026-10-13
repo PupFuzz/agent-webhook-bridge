@@ -1320,11 +1320,13 @@ const server = http.createServer((req, res) => {
 // the launcher's stale-socket guard + the marker backstop are for (DL-154/155/157).
 let cleanedUp = false;
 let bound = false; // true once WE own the socket (set in the unix listen callback)
+let updateChecks = null; // startUpdateChecks' handle, once the updater has loaded
 function shutdown(code) {
   if (cleanedUp) {
     return;
   }
   cleanedUp = true;
+  updateChecks?.stop();
   try {
     server.close();
   } catch {
@@ -1347,17 +1349,27 @@ function shutdown(code) {
 }
 
 // The background update check (card#11760, DL-476): once this server is listening, ask the bridge
-// what it offers and STAGE a newer release for the next launch to install. It runs outside the MCP
-// connect window, and it never switches the release this session runs. Only for a server entry.mjs
-// started (the client root and a launch identity are set); a check that cannot run is said on
-// stderr and costs this session nothing.
+// what it offers and STAGE a newer release for the next launch to install — and again every
+// AWB_CLIENT_RECHECK_HOURS while it runs (card#11787), so a release published mid-session is
+// staged and one restart runs it. It runs outside the MCP connect window, one check at a time, and
+// it never switches the release this session runs. Only for a server entry.mjs started (the client
+// root and a launch identity are set); a check that cannot run is said on stderr and costs this
+// session nothing.
 function startBackgroundUpdate() {
   const root = process.env.AWB_CLIENT_ROOT;
   if (!root || launchIdentity(process.env) === null) {
     return;
   }
   import('./client-update.mjs')
-    .then((updater) => updater.runBackgroundUpdate({ root, launchId: process.env.AWB_LAUNCH_ID, env: process.env }))
+    .then((updater) => {
+      const interval = updater.recheckIntervalMs(process.env);
+      if (interval.error !== null) {
+        console.error(`[${SERVER_NAME}] client update (background): ${interval.error}`);
+      }
+      if (!cleanedUp) {
+        updateChecks = updater.startUpdateChecks({ root, launchId: process.env.AWB_LAUNCH_ID, env: process.env, intervalMs: interval.ms });
+      }
+    })
     .catch((err) => console.error(`[${SERVER_NAME}] client update (background): the check could not run: ${err && err.message ? err.message : err}`));
 }
 

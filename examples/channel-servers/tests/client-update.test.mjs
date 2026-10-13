@@ -44,6 +44,9 @@ import {
   Refusal,
   runLaunchUpdate,
   runBackgroundUpdate,
+  startUpdateChecks,
+  recheckIntervalMs,
+  RECHECK_HOURS_DEFAULT,
   installFromFiles,
   STAGE_DIR,
   CHECK_FILE,
@@ -151,15 +154,15 @@ function launch(root, env, { reconnect = false } = {}) {
  * hook kills that process, not this suite, and the fixture bridge answers from this process's
  * event loop. Resolves with what the check returned (`null` if it printed nothing) and its stderr.
  */
-function background(root, env, launchId, { budgetMs } = {}) {
+function background(root, env, launchId, { budgetMs, periodic = false } = {}) {
   const release = resolveInstalled(root).release;
   const updater = pathToFileURL(path.join(root, 'versions', release, 'client', 'client-update.mjs')).href;
   const script =
     'const m = await import(process.argv[1]);' +
-    'const r = await m.runBackgroundUpdate({ root: process.argv[2], launchId: process.argv[3], ...(process.argv[4] ? { budgetMs: Number(process.argv[4]) } : {}) });' +
+    'const r = await m.runBackgroundUpdate({ root: process.argv[2], launchId: process.argv[3], periodic: process.argv[5] === "1", ...(process.argv[4] ? { budgetMs: Number(process.argv[4]) } : {}) });' +
     'process.stdout.write(JSON.stringify(r));';
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ['--input-type=module', '-e', script, updater, root, launchId, budgetMs ? String(budgetMs) : ''], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script, updater, root, launchId, budgetMs ? String(budgetMs) : '', periodic ? '1' : '0'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (c) => (stdout += c));
@@ -1077,6 +1080,188 @@ test('a launch whose previous session completed its check makes no call to the b
   assert.equal(bridge.requests.length, asked);
 });
 
+// ---------------------------------------------------------------------------------------------
+// The periodic re-check in a long session (card#11787)
+
+/** A clock the suite drives: `setTimeout` records each timer; `fire()` runs the one pending. */
+function fakeTimers() {
+  const pending = [];
+  return {
+    pending,
+    setTimeout(fn, ms) {
+      const handle = { fn, ms, refed: true, cleared: false, unref() { this.refed = false; return this; } };
+      pending.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      handle.cleared = true;
+    },
+    live() {
+      return pending.filter((h) => !h.cleared && !h.fired);
+    },
+    fire() {
+      const live = this.live();
+      assert.equal(live.length, 1, `exactly one timer is pending, got ${live.length}`);
+      live[0].fired = true;
+      live[0].fn();
+    },
+  };
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test('startUpdateChecks: the listen-time check first, then a periodic one an interval after each check ENDS — never two at once (card#11787)', async () => {
+  const timers = fakeTimers();
+  const calls = [];
+  let finish = null;
+  const check = (args) => {
+    calls.push(args);
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  };
+  const handle = startUpdateChecks({ root: '/r', launchId: 'L1', env: {}, intervalMs: 5000, check, timers });
+
+  await settle();
+  assert.deepEqual(calls.map((c) => [c.launchId, c.periodic]), [['L1', false]], 'the listen-time check runs at once, and is no periodic one');
+  assert.equal(timers.live().length, 0, 'no re-check is scheduled while a check runs');
+
+  finish({ state: 'current' });
+  await settle();
+  assert.equal(timers.live().length, 1);
+  assert.equal(timers.live()[0].ms, 5000);
+  assert.equal(timers.live()[0].refed, false, 'the timer never keeps the server alive on its own');
+
+  timers.fire();
+  await settle();
+  assert.deepEqual(calls.map((c) => c.periodic), [false, true]);
+  assert.equal(timers.live().length, 0, 'a check still running holds the next one back, however long it takes');
+
+  finish({ state: 'staged' });
+  await settle();
+  timers.fire();
+  await settle();
+  assert.deepEqual(calls.map((c) => c.periodic), [false, true, true]);
+
+  handle.stop();
+  finish({ state: 'current' });
+  await settle();
+  assert.equal(timers.live().length, 0, 'nothing is scheduled after stop(), even by a check that ends after it');
+});
+
+test('startUpdateChecks: stop() clears a pending re-check; a check that throws still schedules the next; no interval runs the listen-time check alone', async () => {
+  const timers = fakeTimers();
+  let n = 0;
+  const handle = startUpdateChecks({ root: '/r', launchId: 'L1', env: {}, intervalMs: 1000, check: () => { n += 1; throw new Error('boom'); }, timers });
+  await settle();
+  assert.equal(n, 1);
+  assert.equal(timers.live().length, 1, 'a check that threw is followed by the next one');
+  handle.stop();
+  assert.equal(timers.live().length, 0, 'stop() clears the pending timer');
+
+  const off = fakeTimers();
+  let m = 0;
+  startUpdateChecks({ root: '/r', launchId: 'L1', env: {}, intervalMs: null, check: async () => { m += 1; }, timers: off });
+  await settle();
+  assert.equal(m, 1);
+  assert.equal(off.pending.length, 0, 'AWB_CLIENT_RECHECK_HOURS=0: no re-check');
+});
+
+test('recheckIntervalMs: hours, 0 for off, the default when unset, and a named error (with the default) for anything else', () => {
+  const hour = 3600000;
+  assert.deepEqual(recheckIntervalMs({}), { ms: RECHECK_HOURS_DEFAULT * hour, error: null });
+  assert.deepEqual(recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: '' }), { ms: RECHECK_HOURS_DEFAULT * hour, error: null });
+  assert.deepEqual(recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: '6' }), { ms: 6 * hour, error: null });
+  assert.deepEqual(recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: '0.5' }), { ms: hour / 2, error: null });
+  assert.deepEqual(recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: '0' }), { ms: null, error: null });
+  for (const bad of ['-1', '4h', ' 4', 'soon', '1e3', '597']) {
+    const r = recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: bad });
+    assert.equal(r.ms, RECHECK_HOURS_DEFAULT * hour, bad);
+    assert.match(r.error, /^AWB_CLIENT_RECHECK_HOURS is /, bad);
+  }
+});
+
+test('a periodic re-check stages a release published after the session\'s check, under the session\'s launch id, and ONE restart runs it (card#11787)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
+  const env = seatEnv(t, bridge);
+  const { launchId, check } = await session(root, env);
+  assert.equal(check.state, 'current');
+
+  bridge.state.published = goodPack('2.0.0');
+  assert.equal((await background(root, env, launchId)).state, 'skipped', 'the listen-time check still runs once per launch');
+  const periodic = await background(root, env, launchId, { periodic: true });
+
+  assert.equal(periodic.state, 'staged', periodic.stderr);
+  assert.equal(stageRecord(root).bridge_release, '2.0.0');
+  const record = readCheckOf(root);
+  assert.deepEqual([record.launch_id, record.at_launch, record.periodic, record.state, record.refused], [launchId, false, true, 'staged', false], 'the record still names the session\'s launch');
+  const stage = assertChain(root).at(-1);
+  assert.deepEqual([stage.action, stage.launch_id, stage.to_bridge_release], ['stage', launchId, '2.0.0']);
+  assert.ok(bridge.reports.at(-1).entries.includes(logLines(root).at(-1)), 'the stage is reported, so the fleet view reads restart owed');
+
+  const asked = bridge.requests.length;
+  const run = await launch(root, env);
+  assert.equal(run.started.release, '2.0.0', 'one restart installs it');
+  assert.equal(bridge.requests.length, asked, 'the launch asked nothing: the session completed a check');
+});
+
+test('a periodic re-check decides against the stage it finds: a newer offer replaces it, a withdrawn one discards it (card#11787)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  const env = seatEnv(t, bridge);
+  const { launchId } = await session(root, env);
+  assert.equal(stageRecord(root).bridge_release, '2.0.0');
+
+  bridge.state.published = goodPack('3.0.0');
+  assert.equal((await background(root, env, launchId, { periodic: true })).state, 'staged');
+  assert.equal(stageRecord(root).bridge_release, '3.0.0');
+  assert.match(logObjs(root).at(-1).reason, /replacing staged release 2\.0\.0/);
+
+  bridge.state.published = goodPack('1.0.0');
+  assert.equal((await background(root, env, launchId, { periodic: true })).state, 'current');
+  assert.equal(stageRecord(root), null, 'the bridge offers the installed release again: the stage is gone');
+  assert.match(logObjs(root).at(-1).reason, /staged release 3\.0\.0 discarded: the bridge offers release 1\.0\.0, which is installed/);
+  assert.equal((await launch(root, seatEnv(t, null))).started.release, '1.0.0');
+});
+
+test('a re-check that succeeds after one of the same session failed logs a check line under that launch, so the fleet does not read update_failed over its stage (card#11787)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const first = await session(root, seatEnv(t, null));
+  assert.equal(first.check.state, 'update_failed');
+
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  const again = await background(root, seatEnv(t, bridge), first.launchId, { periodic: true });
+  assert.equal(again.state, 'staged', again.stderr);
+  const lines = assertChain(root).filter((l) => l.launch_id === first.launchId).map((l) => [l.action, l.result]);
+  assert.deepEqual(lines, [['fail', 'failed'], ['stage', 'ok'], ['check', 'ok']]);
+  assert.match(logObjs(root).at(-1).reason, /this session's check of .* failed, and is behind this seat/);
+  assert.deepEqual(bridge.reports.flatMap((r) => r.entries).map((l) => JSON.parse(l).action).slice(-3), ['fail', 'stage', 'check'], 'the bridge receives the failure and what supersedes it, in order');
+
+  const lines2 = logLines(root).length;
+  assert.equal((await background(root, seatEnv(t, bridge), first.launchId, { periodic: true })).state, 'staged');
+  assert.equal(logLines(root).length, lines2, 'after a clean check, the next clean one owes no line');
+});
+
+test('a launch-run check that REFUSES the offer is a completed check: the session does not fetch it again, nor does the next launch (card#11787, PR #914 review)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const published = goodPack('2.0.0');
+  const bridge = await fixtureBridge(t, { published, packBytes: Buffer.concat([Buffer.from([published.pack[0] ^ 0xff]), published.pack.subarray(1)]) });
+  const env = seatEnv(t, bridge);
+  // Launch 1 starts the stub server, which runs no check, so launch 2 runs it itself.
+  await launch(root, env);
+  await launch(root, env);
+  const launchId = read(root, 'state.json').launch_id;
+  const record = readCheckOf(root);
+  assert.deepEqual([record.launch_id, record.at_launch, record.state, record.refused], [launchId, true, 'update_failed', true]);
+  assert.equal(bridge.requests.filter((r) => r.body.op === 'client_pack').length, 1);
+
+  assert.equal((await background(root, env, launchId)).state, 'skipped', 'the session does not re-fetch a pack it just refused');
+  await launch(root, env);
+  assert.equal(bridge.requests.filter((r) => r.body.op === 'client_pack').length, 1, 'nor does the next launch');
+  assert.match(read(root, 'state.json').error, /^refused: .*does not hash to its manifest's pack\.sha256/, 'the refusal stays loud');
+});
+
 test('a release whose server does not load: not started, loudly', async (t) => {
   const root = await seatWith(t, '1.0.0', { pack: buildPack({ release: '1.0.0', files: clientFiles('1.0.0', { serverData: Buffer.from('this is not javascript\n') }) }) });
   const env = seatEnv(t, null);
@@ -1207,6 +1392,31 @@ test('through the real server: once it is listening it stages a newer release in
   const state = read(root, 'state.json');
   assert.equal(state.running, '2.0.0');
   await eventually(() => readCheckOf(root)?.launch_id === state.launch_id, 'the next session\'s background check');
+});
+
+test('through the real server: a release published mid-session is staged by the periodic re-check, and one restart runs it (card#11787)', { timeout: 60000 }, async (t) => {
+  const root = packageRoot(t);
+  assert.equal(bootstrap(t, root, goodPack('1.0.0', { realServer: true })).status, 0);
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0', { realServer: true }) });
+  // 0.0002 h is 720 ms: the real config path, at a test's scale.
+  const env = seatEnv(t, bridge, { AWB_CLIENT_RECHECK_HOURS: '0.0002' });
+  const client = await realSession(t, root, env, 'cu-e2e-recheck');
+  const launchId = read(root, 'state.json').launch_id;
+  await eventually(() => readCheckOf(root)?.launch_id === launchId, 'the listen-time check');
+  assert.equal(readCheckOf(root).state, 'current');
+
+  bridge.state.published = goodPack('2.0.0', { realServer: true, clientVersion: '0.9.30' });
+  await eventually(() => stageRecord(root)?.bridge_release === '2.0.0' && readCheckOf(root)?.state === 'staged', 'a periodic re-check to stage 2.0.0');
+  const record = readCheckOf(root);
+  assert.deepEqual([record.launch_id, record.periodic], [launchId, true]);
+  assert.equal(read(root, 'current.json').bridge_release, '1.0.0', 'the running session never switches release');
+  const manifests = bridge.requests.filter((r) => r.body.op === 'client_manifest').length;
+  assert.ok(manifests >= 2, `the server asked again on its own (${manifests} manifest calls)`);
+  await client.close();
+
+  fs.rmSync(path.join(root, 'launch.json'), { force: true });
+  const next = await realSession(t, root, seatEnv(t, null), 'cu-e2e-recheck-next');
+  assert.equal(next.getServerVersion().version, '0.9.30', 'one restart runs the release published mid-session');
 });
 
 test('card#11283: a manifest answer carrying served_tools writes served-tools.json under the checking launch\'s id', async (t) => {

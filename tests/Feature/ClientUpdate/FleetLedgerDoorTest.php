@@ -466,6 +466,34 @@ class FleetLedgerDoorTest extends TestCase
     }
 
     /**
+     * card#11787: a running server re-checks, and a `check` line of the SAME launch — written when a
+     * later check of that session succeeded after an earlier one failed — clears its failure, so the
+     * seat reads its stage (restart owed) rather than `update_failed` for the rest of the session.
+     */
+    public function test_a_clean_check_of_the_same_launch_clears_that_launchs_failure(): void
+    {
+        $stage = ['action' => 'stage', 'from_bridge_release' => '0.90.0', 'to_bridge_release' => '0.91.0', 'files_json_sha256' => str_repeat('b', 64), 'pack_sha256' => str_repeat('c', 64), 'manifest_sha256' => str_repeat('d', 64)];
+        $lines = self::log([
+            ['action' => 'fail', 'result' => 'failed', 'reason' => 'bridge unreachable', 'launch_id' => 'L1'],
+            $stage + ['launch_id' => 'L1'],
+        ]);
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $lines]);
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+        $this->assertSame('failed', $row->last_launch_result, 'a stage line alone does not clear the failure');
+
+        $check = self::log([['action' => 'check', 'from_bridge_release' => '0.90.0', 'to_bridge_release' => '0.91.0', 'launch_id' => 'L1']], 3, hash('sha256', $lines[1]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $check]);
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+        $this->assertSame(['L1', 'ok', null], [$row->last_launch_id, $row->last_launch_result, $row->last_launch_error]);
+        $this->assertSame(['httpseat' => '0.91.0'], SeatClientLedger::stagedReleases());
+
+        $again = self::log([['action' => 'fail', 'result' => 'failed', 'reason' => 'bridge unreachable again', 'launch_id' => 'L1']], 4, hash('sha256', $check[0]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $again]);
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+        $this->assertSame(['failed', 'bridge unreachable again'], [$row->last_launch_result, $row->last_launch_error], 'a failure after the check counts again');
+    }
+
+    /**
      * The background update check's lines (card#11760, DL-476) are stored like any other: a clean
      * `check` from a later launch supersedes an earlier launch's failure, and the newest stage or
      * discard decides what the seat has staged.
