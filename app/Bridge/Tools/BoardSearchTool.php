@@ -346,9 +346,11 @@ final class BoardSearchTool implements Tool
     {
         $kept = [];
         foreach ($rows as $row) {
-            $readable = array_key_exists('assigned_user_id', $row) && ($row['assigned_user_id'] === null || is_int($row['assigned_user_id']))
-                && array_key_exists('swimlane_id', $row) && ($row['swimlane_id'] === null || is_int($row['swimlane_id']));
-            $home = $readable && $row['swimlane_id'] !== null && in_array($row['swimlane_id'], $homeLanes, true);
+            $holder = $row['assigned_user_id'] ?? null;
+            $lane = $row['swimlane_id'] ?? null;
+            $readable = array_key_exists('assigned_user_id', $row) && ($holder === null || is_int($holder))
+                && array_key_exists('swimlane_id', $row) && ($lane === null || is_int($lane));
+            $home = $readable && $lane !== null && in_array($lane, $homeLanes, true);
             if (! $readable || $home) {
                 Log::warning('board_search: `lane: unrouted` dropped a row that is in a home lane or whose assignee or lane could not be read', [
                     'agent' => $agentName, 'board_id' => $boardId, 'card_id' => $row['id'] ?? null,
@@ -357,7 +359,7 @@ final class BoardSearchTool implements Tool
 
                 continue;
             }
-            if ($row['assigned_user_id'] === null) {
+            if ($holder === null) {
                 $kept[] = $row;
             }
         }
