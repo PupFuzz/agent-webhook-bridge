@@ -3692,6 +3692,7 @@ class BoardCallLinkFromTheBootstrap(unittest.TestCase):
         ok = next(i for i, line in enumerate(lines) if line.startswith("--bootstrap-client: OK"))
         self.assertLess(ok, lines.index("board-call-status: linked"), "after the OK line")
 
+    @unittest.skipIf(os.name == "nt", "Windows writes no link (launcher_path)")
     def test_a_kept_file_does_not_change_the_bootstraps_exit(self):
         rc, lines = self._run(kept=True)
         self.assertEqual(rc, 0)

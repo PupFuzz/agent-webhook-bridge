@@ -220,7 +220,7 @@ test('a launch from a copied launcher (no client root) leaves PATH as it was', {
 });
 
 test('start-claude.ps1 appends the client root\'s bin to the session Path before it drops AWB_LAUNCHER_CLIENT_ROOT', () => {
-  // Text only: no PowerShell runs here (the .ps1 is validated on Windows by its device agent).
+  // Text only: no PowerShell runs here (CI's Windows job parses the .ps1; a Windows device agent runs it).
   const ps1 = fs.readFileSync(path.join(HERE, '..', 'bin', 'start-claude.ps1'), 'utf8');
   const append = ps1.indexOf("$rootBin = Join-Path $env:AWB_LAUNCHER_CLIENT_ROOT 'bin'");
   assert.ok(append > 0, 'the .ps1 computes <root>\\bin');
