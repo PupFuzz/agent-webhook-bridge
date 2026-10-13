@@ -17,6 +17,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - `bridge:check` does not report this: it runs on the bridge host and does not read the seat's home. The seat's own onboarding run reports it.
   - Channel-server snapshot `0.9.61` → `0.9.62` (the launchers changed).
 
+## [0.103.1] - 2026-10-13
+
 ### Fixed
 
 - **card#11822 / DL-480** — **`provision-board-tools.py` no longer replaces a seat's working launcher with a shim that cannot start.** `--bootstrap-client` (and `--write-launcher-shim`, `--certify-only`, `--self-cert`) renamed any launcher without a marker line to `…pre-shim-<UTC>` and wrote the bridge's shim. Only plain `claude` arguments were carried, on POSIX; on Windows nothing was. A seat whose launcher set `TUNNEL_HOST`, `SSH_KEY` or `--dangerously-skip-permissions` was left with a shim that exits at the next launch (rt#627). The provisioner now writes over nothing it did not generate:
