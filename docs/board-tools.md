@@ -2586,9 +2586,10 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   — `~/start-claude.sh`, or `%USERPROFILE%\start-claude.bat` + `.ps1` — and nothing else,
   unless the coord framework's launcher is already there — marked (card#11741), or written
   before the marker and recognised by content (card#11822): then it writes nothing and ends
-  `framework_shim`, exit 0. Any other launcher there is replaced only when everything it sets
-  can be carried into the shim; otherwise it is left untouched and the run ends
-  `launcher_kept`, exit 7 (DL-480). It
+  `framework_shim`, exit 0. It writes over nothing it did not generate (DL-480): any other
+  launcher there, or a shim of its own with a line it does not generate, is left untouched
+  and the run ends `launcher_kept`, exit 7; with no launcher there, a Windows seat whose
+  persisted environment does not set `TUNNEL_HOST` gets nothing and `needs_setting`, exit 8. It
   needs `--agent --channel-name`, refuses the transport flags, and writes nothing when the
   channel's client root does not yet carry the launcher (exit 3), when there is no client root
   (exit 4), when the shim path holds a directory or another channel's shim (exit 5), or when the
@@ -2597,9 +2598,10 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   extra `claude` arguments the shim keeps (`BRIDGE_CLAUDE_EXTRA_ARGS`).
   `--bootstrap-client`, `--certify-only` and `--self-cert` write the same shim after their
   own work when the root carries the launcher and the file already there is one it may
-  write over, and otherwise say why not and carry on with their own exit code.
+  write over, and otherwise say why not — with the `launcher-shim-status:` line when the
+  shim step itself refused — and carry on with their own exit code.
   [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0948-and-later)
-  owns the paths, env, marker lines, the stand-aside rule and the carry-or-refuse rule.
+  owns the paths, env, marker lines, the stand-aside rule and what the writer does to a file already there.
   For a bootstrapped seat, point `channel.server_path` at its client root (or leave it
   unset across hosts, as for any seat): `bridge:check`'s snapshot legs check the release its
   `current.json` names (DL-445; `docs/config-schema.md` owns the verdicts).

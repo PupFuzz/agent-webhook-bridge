@@ -1287,8 +1287,8 @@ def client_root(channel_name: str, environ=None, os_name=os.name) -> str:
 # writes it (bin/test_provision_board_tools.py holds the two equal).
 CLIENT_LAUNCHER_SHIM = {"posix": "start-claude", "nt": "start-claude.cmd"}
 # The line that makes a file at the seat's launcher path OURS: present, the file is rewritten in
-# place; absent (and not the framework's, below), the file is the operator's: it is backed up and
-# replaced only when everything it sets can be carried into the shim, and is otherwise left as it is.
+# place when it is exactly what this tool generates; absent (and not the framework's, below), the
+# file is the operator's and is left as it is.
 LAUNCHER_SHIM_MARKER = "agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)"
 # The line that makes a file at the seat's launcher path the coord FRAMEWORK's shim (card#11741): the
 # framework owns the seat's entry point once it writes one, and the provisioner stands aside for it.
@@ -1310,7 +1310,8 @@ LAUNCHER_SHIM_EXIT = {
     "needs_bootstrap": 4,  # no client root: an operator runs --bootstrap-client
     "conflict": 5,  # a directory, or another channel's shim, at the shim path: an operator decides
     "io_error": 6,  # the file system refused a read, rename or write: an operator fixes it, then re-runs
-    "launcher_kept": 7,  # a launcher that is not a shim, and cannot be replaced without loss: left untouched
+    "launcher_kept": 7,  # a launcher this tool did not write, or its own shim edited by hand: left untouched
+    "needs_setting": 8,  # Windows, no launcher yet: the persisted environment does not set TUNNEL_HOST
 }
 
 
@@ -1345,21 +1346,20 @@ def parse_claude_extra_args(value: str) -> str:
     return " ".join(tokens)
 
 
-def launcher_shims(channel_name: str, root: str, os_name=os.name, extra_args: str = "", env=None) -> list:
+# A seat's shim is rewritten only when it is exactly what this generates (`_read_own_shim`): a change
+# to the template must keep the forms already on seats readable, or every one of them is kept.
+# bin/test_provision_board_tools.py RELEASED_SHIMS holds the released form.
+def launcher_shims(channel_name: str, root: str, os_name=os.name, extra_args: str = "") -> list:
     """`[(file name, body)]` the seat's launcher shim is made of, for one channel. Pure.
 
     Every body carries `LAUNCHER_SHIM_MARKER` on a line of its own, sets BRIDGE_CHANNEL_NAME (the
-    launcher's identity input, which wins over settings.local.json), the extra `claude` arguments
-    and `env` (what a replaced launcher set: `{name: value}`, values `_CARRIED_VALUE_RE` accepts), and runs the client root's launcher shim with the arguments it was given;
-    when that shim is gone it exits 2 naming the bootstrap, rather than starting an unguarded session.
+    launcher's identity input, which wins over settings.local.json) and the extra `claude`
+    arguments, and runs the client root's launcher shim with the arguments it was given; when that
+    shim is gone it exits 2 naming the bootstrap, rather than starting an unguarded session.
     """
     if not _CHANNEL_RE.fullmatch(channel_name or ""):
         raise ValueError(f"channel name {channel_name!r} must match ^[a-z0-9_-]+$")
     extra_args = parse_claude_extra_args(extra_args)
-    env = dict(sorted((env or {}).items()))
-    bad = [k for k, v in env.items() if not _ENV_NAME_RE.fullmatch(k) or not _CARRIED_VALUE_RE.fullmatch(v)]
-    if bad:
-        raise ValueError(f"the shim cannot hold the environment setting(s) {bad}")
     target = client_launcher_shim(root, os_name)
     missing = (f"{target} is missing: this seat's channel client is not installed, or predates the launcher it "
                f"ships. Run provision-board-tools.py --role b --bootstrap-client for channel {channel_name}.")
@@ -1371,7 +1371,6 @@ def launcher_shims(channel_name: str, root: str, os_name=os.name, extra_args: st
             "setlocal\r\n"
             f'set "BRIDGE_CHANNEL_NAME={channel_name}"\r\n'
             + f'set "{EXTRA_ARGS_ENV}={extra_args}"\r\n'
-            + "".join(f'set "{k}={v}"\r\n' for k, v in env.items())
             + f'if not exist "{target}" (echo {missing} 1>&2 & exit /b 2)\r\n'
             f'call "{target}" %*\r\n'
             "exit /b %ERRORLEVEL%\r\n"
@@ -1382,7 +1381,6 @@ def launcher_shims(channel_name: str, root: str, os_name=os.name, extra_args: st
             "# Runs the channel launcher of the release this seat's client root has installed.\r\n"
             f"$env:BRIDGE_CHANNEL_NAME = '{channel_name}'\r\n"
             + (f"$env:{EXTRA_ARGS_ENV} = '{extra_args}'\r\n" if extra_args else f"$env:{EXTRA_ARGS_ENV} = $null\r\n")
-            + "".join(f"$env:{k} = '{v}'\r\n" for k, v in env.items())
             + f"$launcher = '{quoted}'\r\n"
             f"if (-not (Test-Path -LiteralPath $launcher)) {{ [Console]::Error.WriteLine('{missing.replace(chr(39), chr(39) * 2)}'); exit 2 }}\r\n"
             "& $launcher @args\r\n"
@@ -1395,7 +1393,6 @@ def launcher_shims(channel_name: str, root: str, os_name=os.name, extra_args: st
         "# Runs the channel launcher of the release this seat's client root has installed; rewritten, never edited.\n"
         f"BRIDGE_CHANNEL_NAME={_sh_quote(channel_name)}; export BRIDGE_CHANNEL_NAME\n"
         + f"{EXTRA_ARGS_ENV}={_sh_quote(extra_args)}; export {EXTRA_ARGS_ENV}\n"
-        + "".join(f"{k}='{v}'; export {k}\n" for k, v in env.items())
         + f"launcher={_sh_quote(target)}\n"
         f'[ -x "$launcher" ] || {{ echo {_sh_quote(missing)} >&2; exit 2; }}\n'
         'exec "$launcher" "$@"\n'
@@ -1441,45 +1438,23 @@ def is_framework_launcher_shim(name: str, data: bytes) -> bool:
     return any(line.rstrip("\r") == marker or line.startswith(marker + " ") for line in lines)
 
 
-def _write_new_file(path: str, data: bytes, mode: int) -> None:
-    """`data` written and synced to `path`, which must not exist, created with `mode` from the start
-    — never wider first: the file can hold a launcher's settings. Removed again on failure."""
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), mode)
+def _stage_text(path: str, data: bytes, mode: int) -> str:
+    """`data` written and synced to a new temporary file beside `path`, created with `mode` from the
+    start; returns its path. The file is removed again on failure."""
+    tmp = f"{path}.tmp-{os.getpid()}"
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), mode)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.chmod(path, mode)
+        os.chmod(tmp, mode)
     except BaseException:
-        os.remove(path)
-        raise
-
-
-def _stage_text(path: str, data: bytes, mode: int) -> str:
-    """`data` in a temporary file beside `path` (`_write_new_file`); returns its path."""
-    tmp = f"{path}.tmp-{os.getpid()}"
-    if os.path.lexists(tmp):
         os.remove(tmp)
-    _write_new_file(tmp, data, mode)
-    return tmp
-
-
-def _copy_launcher_to_backup(path: str, backup: str) -> None:
-    """A copy of the launcher at `path` at `backup`, with its mode and times, never more readable
-    than it while it is written (shutil.copy2 creates the copy with the umask's mode, then narrows
-    it). A symbolic link is copied as the link."""
-    if os.path.islink(path):
-        shutil.copy2(path, backup, follow_symlinks=False)
-        return
-    with open(path, "rb") as fh:
-        data = fh.read()
-    _write_new_file(backup, data, stat.S_IMODE(os.stat(path).st_mode))
-    try:
-        shutil.copystat(path, backup)
-    except BaseException:
-        os.remove(backup)
         raise
+    return tmp
 
 
 def _shim_bytes(name: str, body: str) -> bytes:
@@ -1503,340 +1478,23 @@ def shim_channel(text: str):
     return _shim_value(text, "BRIDGE_CHANNEL_NAME")
 
 
-_SHELL_OPERATOR_CHARS = set("();<>|&")
-
 # --------------------------------------------------------------------------- #
-# Replacing a launcher that is not ours (card#11822): carry, or refuse. A file at the seat's launcher
-# path that is neither this tool's shim nor the framework's is replaced ONLY when every line of it
-# is a form the readers below understand; what it sets is then written into the shim. Any other
-# line refuses the replacement and the file stays exactly as it is.
+# What the writer does to a file already at a shim path (card#11822, DL-480): it writes over nothing
+# it did not generate. Its own shim is rewritten only when it is exactly what this tool generates; the
+# coord framework's launcher, and any other launcher, are left as they are. Settings belong in the
+# environment the launcher reads, never in the shim.
 # --------------------------------------------------------------------------- #
-# What the pack launcher exits without and reads from the environment ALONE (no settings.local.json
-# fallback, no default): the names a replacement must be able to account for. Read from
-# examples/channel-servers/bin/start-claude.ps1 (`"<NAME> is not set -- …"; exit 1`); start-claude.sh
-# has none — every input it insists on also falls back to settings.local.json, which a replacement
-# does not touch. bin/test_provision_board_tools.py reds when the .ps1's `"<NAME> is not set` refusals
-# and this table disagree; for the .sh it checks only that each `[ -n "$VAR" ] || {` refusal mentions
-# settings.local.json.
-LAUNCHER_ENV_WITHOUT_DEFAULT = {"posix": (), "nt": ("TUNNEL_HOST",)}
-# A value the shim can hold in sh, cmd and PowerShell quoting alike, and read back unchanged.
-_CARRIED_VALUE_RE = re.compile(r"[^'\"%!^`$\r\n\x00]*")
-_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_CLAUDE_CHANNEL_FLAG = "--dangerously-load-development-channels"
+# What start-claude.ps1 puts in place of an unset TUNNEL_HOST and then refuses, compared as PowerShell's
+# `-eq` compares (case-insensitively). bin/test_provision_board_tools.py reads it from that file.
+TUNNEL_HOST_PLACEHOLDER = "<agent>@<bridge-host>"
 
 
-class _NotCarriable(Exception):
-    """Why one launcher file cannot be replaced with certainty; the message is the operator's reason.
-    It names a line by NUMBER and never quotes it: a launcher's line may hold a secret."""
-
-
-# Nothing a launcher does after its launch line reaches the process it launched (after `exec`, or a
-# `call` that returns, it runs once that process has exited): only a line with no effect may follow.
-_AFTER_LAUNCH = "it comes after the launch line, where only a comment, a blank line, `cd` or `exit` may stand: a setting there never reaches what was launched"
-
-
-def _nt_name(name: str, spelled: dict) -> str:
-    """`name` as cmd and PowerShell key it — case-insensitively, folded to upper case. `spelled` maps
-    each folded name to the spelling first seen; a second spelling of one name is refused rather
-    than resolved, so no reading of the file depends on which assignment wins."""
-    key = name.upper()
-    if spelled.setdefault(key, name) != name:
-        raise _NotCarriable(f"it sets {key} in two letter cases, which cmd and PowerShell read as one name")
-    return key
-
-
-def _path_base(path: str) -> str:
-    return re.split(r"[\\/]", path)[-1].lower()
-
-
-def _read_launch(tokens: list, channel_name: str, passthrough: set, os_name: str) -> tuple:
-    """`(target, claude arguments)` of one launch command's unquoted tokens, or _NotCarriable.
-
-    Two targets are understood: `claude` itself, started for THIS channel, and a launcher script
-    (`start-claude*`, `start-channel-session*`). The arguments are what is left once the channel
-    selection and the pass-through token (`"$@"`, `%*`, `@args`) are dropped, and must be plain."""
-    head, base = tokens[0], _path_base(tokens[0])
-    if base in ("claude", "claude.exe", "claude.cmd"):
-        rest = tokens[1:]
-        at = next((i for i, t in enumerate(rest) if t == _CLAUDE_CHANNEL_FLAG), None)
-        if at is None or rest[at + 1:at + 2] != [f"server:{channel_name}"]:
-            raise _NotCarriable(f"it runs `claude` without `{_CLAUDE_CHANNEL_FLAG} server:{channel_name}` written out")
-        args, script = rest[:at] + rest[at + 2:], False
-    elif base.startswith("start-claude") or "start-channel-session" in base:
-        args, script = tokens[1:], True
-        if args[:1] and args[0].lower() in ("--channel", "-channel"):
-            if args[1:2] != [channel_name]:
-                raise _NotCarriable(f"it starts channel {' '.join(args[1:2]) or '(none)'}, not {channel_name}")
-            args = args[2:]
-    else:
-        raise _NotCarriable(f"it runs `{head}`, which is not a launcher this tool knows")
-    args = [a for a in args if a not in passthrough]
-    if not all(_EXTRA_ARG_RE.fullmatch(a) for a in args):
-        raise _NotCarriable(f"it passes an argument that is not a plain token ({_EXTRA_ARG_RE.pattern}): a variable, or a quoted string")
-    if script and os_name == "nt":
-        params = [a for a in args if re.fullmatch(r"-[A-Za-z]\w*", a)]
-        if params:
-            raise _NotCarriable(f"it passes {params}, which PowerShell may bind as launcher parameters rather than pass to claude")
-    return head, args
-
-
-def _after_powershell_file(tokens: list) -> list:
-    """`powershell [-NoProfile …] -File <script> …` reduced to `<script> …`; other commands unchanged."""
-    if _path_base(tokens[0]) not in ("powershell", "powershell.exe", "pwsh", "pwsh.exe"):
-        return tokens
-    i = 1
-    while i < len(tokens):
-        flag = tokens[i].lower()
-        if flag in ("-noprofile", "-nologo", "-noninteractive"):
-            i += 1
-        elif flag == "-executionpolicy":
-            i += 2
-        elif flag == "-file" and i + 1 < len(tokens):
-            return tokens[i + 1:]
-        else:
-            break
-    raise _NotCarriable("it runs PowerShell in a form other than `[-NoProfile] [-ExecutionPolicy <p>] -File <script> …`")
-
-
-_SH_NO_EFFECT_RE = re.compile(r'set -(?:[eu]+|o pipefail|[eu]*o pipefail)|cd(?: (?:~|\$HOME|"\$HOME"))?(?: \|\| exit(?: [0-9]+)?)?')
-_SH_EXIT_RE = re.compile(r'exit(?: [0-9]+| "?\$\?"?)?')
-_SH_GUARD_RE = re.compile(r'\[ -[efx] "\$(\w+)" \] \|\| \{ echo [^;&|]* >&2; exit [0-9]+; \}')
-_SH_ASSIGN_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
-_SH_VAR_RE = re.compile(r"\$\{?(\w+)\}?")
-_SH_UNQUOTED_SPECIAL = set("~*?[")
-
-
-def _sh_literal(name: str, value: str) -> str:
-    """`value` when it is certainly what the shell assigns to `name` (shlex has removed the quotes,
-    so a character the shell would expand unquoted is refused whether or not it was quoted)."""
-    if _SH_UNQUOTED_SPECIAL & set(value) or not _CARRIED_VALUE_RE.fullmatch(value):
-        raise _NotCarriable(f"it sets {name} to something other than a plain literal value")
-    return value
-
-
-def _sh_strip_comment(line: str) -> str:
-    """`line` up to an unquoted `#` that starts a word (bash's comment). _NotCarriable on an unquoted
-    `#` inside a word, which bash keeps literally, and on an unquoted `{` or `}`, which bash may
-    brace-expand or read as a group — shlex reads neither the way bash does."""
-    quote = None
-    for i, ch in enumerate(line):
-        if quote:
-            quote = None if ch == quote else quote
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "#":
-            if i == 0 or line[i - 1] in " \t":
-                return line[:i].rstrip()
-            raise _NotCarriable("it has a `#` inside a word, which the shell keeps as part of the word")
-        elif ch in "{}":
-            raise _NotCarriable("it has an unquoted `{` or `}`, which the shell may expand")
-    return line
-
-
-def _read_sh_launcher(text: str, channel_name: str) -> dict:
-    import shlex
-
-    env, shell_vars, used, launch = {}, {}, set(), None
-    for number, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#") or _SH_NO_EFFECT_RE.fullmatch(line):
-            continue
-        if launch is not None and _SH_EXIT_RE.fullmatch(line):
-            continue
-        guard = _SH_GUARD_RE.fullmatch(line)
-        if launch is None and guard and guard.group(1) in shell_vars:
-            used.add(guard.group(1))
-            continue
-        try:
-            if launch is not None:
-                raise _NotCarriable(_AFTER_LAUNCH)
-            if "\\" in line or "`" in line:
-                raise _NotCarriable("it uses a backslash or a backquote")
-            line = _sh_strip_comment(line)
-            try:
-                lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
-                lexer.whitespace_split = True
-                lexer.commenters = ""
-                tokens = list(lexer)
-            except ValueError as e:
-                raise _NotCarriable(f"its quoting does not close ({e})")
-            commands = [[]]
-            for tok in tokens:
-                if tok == ";":
-                    commands.append([])
-                elif tok and set(tok) <= _SHELL_OPERATOR_CHARS:
-                    raise _NotCarriable(f"it uses the shell operator `{tok}`")
-                else:
-                    commands[-1].append(tok)
-            for cmd in commands:
-                if launch is not None and cmd:
-                    raise _NotCarriable(_AFTER_LAUNCH)
-                assigned = []
-                while cmd and _SH_ASSIGN_RE.fullmatch(cmd[0]):
-                    assigned.append(_SH_ASSIGN_RE.fullmatch(cmd.pop(0)).groups())
-                for name, value in assigned:
-                    _sh_literal(name, value)
-                if not cmd:
-                    shell_vars.update(assigned)
-                elif cmd[0] == "export" and not assigned:
-                    for tok in cmd[1:]:
-                        m = _SH_ASSIGN_RE.fullmatch(tok)
-                        if m:
-                            env[m.group(1)] = _sh_literal(*m.groups())
-                        elif tok in shell_vars:
-                            env[tok] = shell_vars.pop(tok)
-                        else:
-                            raise _NotCarriable(f"it exports `{tok}`, which it does not set")
-                else:
-                    env.update(assigned)
-                    if cmd[0] == "exec":
-                        cmd = cmd[1:]
-                    if cmd and _path_base(cmd[0]) in ("bash", "sh"):
-                        cmd = cmd[1:]
-                    if not cmd:
-                        raise _NotCarriable("it runs nothing")
-                    var = _SH_VAR_RE.fullmatch(cmd[0])
-                    if var and var.group(1) in shell_vars:
-                        used.add(var.group(1))
-                        cmd = [shell_vars[var.group(1)]] + cmd[1:]
-                    launch = _read_launch(cmd, channel_name, {"$@"}, "posix")
-        except _NotCarriable as e:
-            raise _NotCarriable(f"line {number}: {e}") from None
-    loose = sorted(set(shell_vars) - used)
-    if loose:
-        raise _NotCarriable(f"it sets {', '.join(loose)} without exporting or running it, so what it is for is not known")
-    return {"env": env, "launch": launch}
-
-
-_BAT_NO_EFFECT_RE = re.compile(r'rem(?:\s.*)?|::.*|echo off|setlocal|cd(?: /d)? (?:%USERPROFILE%|"%USERPROFILE%")', re.IGNORECASE)
-# No effect once the launch has run; before it, `exit` skips the launch and `endlocal` undoes the `set`s.
-_BAT_EXIT_RE = re.compile(r"exit(?: /b(?: %ERRORLEVEL%| [0-9]+)?)?|endlocal", re.IGNORECASE)
-_BAT_GUARD_RE = re.compile(r'if not exist "%(\w+)%" \(echo [^&|<>^]* 1>&2 & exit /b [0-9]+\)', re.IGNORECASE)
-_BAT_SET_RE = re.compile(r'set (?:"([A-Za-z_][A-Za-z0-9_]*)=([^"]*)"|([A-Za-z_][A-Za-z0-9_]*)=([^"]*))', re.IGNORECASE)
-_BAT_VAR_RE = re.compile(r"%(\w+)%")
-_BAT_OPERATOR_CHARS = set("&|<>^!")
-
-
-def _read_bat_launcher(text: str, channel_name: str) -> dict:
-    env, spelled, used, launch = {}, {}, set(), None
-    for number, raw in enumerate(text.lstrip("﻿").splitlines(), 1):
-        line = raw.strip()
-        line = line[1:].lstrip() if line.startswith("@") else line
-        if not line or _BAT_NO_EFFECT_RE.fullmatch(line):
-            continue
-        guard = _BAT_GUARD_RE.fullmatch(line)
-        if launch is None and guard and guard.group(1).upper() in env:
-            used.add(guard.group(1).upper())
-            continue
-        try:
-            if _BAT_EXIT_RE.fullmatch(line):
-                if launch is None:
-                    raise _NotCarriable("it exits, or ends its `setlocal`, before its launch line")
-                continue
-            if launch is not None:
-                raise _NotCarriable(_AFTER_LAUNCH)
-            assign = _BAT_SET_RE.fullmatch(line)
-            if assign:
-                if assign.group(3) is not None and raw.rstrip("\r\n") != raw.rstrip():
-                    raise _NotCarriable(f"an unquoted `set {assign.group(3)}=` with trailing spaces, which cmd makes part of the value")
-                if assign.group(3) is not None and _BAT_OPERATOR_CHARS & set(assign.group(4)):
-                    raise _NotCarriable(f"an unquoted `set {assign.group(3)}=` holding a cmd operator")
-                env[_nt_name(assign.group(1) or assign.group(3), spelled)] = assign.group(2) if assign.group(1) else assign.group(4)
-                continue
-            if _BAT_OPERATOR_CHARS & set(line):
-                raise _NotCarriable("it uses a cmd operator, a block or delayed expansion")
-            tokens = [t[1:-1] if t.startswith('"') else t for t in re.findall(r'"[^"]*"|\S+', line)]
-            if tokens[0].lower() == "call":
-                tokens = tokens[1:]
-            if not tokens:
-                raise _NotCarriable("it runs nothing")
-            tokens = _after_powershell_file(tokens)
-            tokens[0] = re.sub(r"^%~dp0", "", tokens[0], flags=re.IGNORECASE)  # the directory this .bat is in
-            var = _BAT_VAR_RE.fullmatch(tokens[0])
-            if var and var.group(1).upper() in env:
-                used.add(var.group(1).upper())
-                tokens = [env[var.group(1).upper()]] + tokens[1:]
-            launch = _read_launch(tokens, channel_name, {"%*"}, "nt")
-        except _NotCarriable as e:
-            raise _NotCarriable(f"line {number}: {e}") from None
-    return {"env": {k: v for k, v in env.items() if k not in used}, "launch": launch}
-
-
-_PS1_NO_EFFECT_RE = re.compile(r"#.*|(?:Set-Location|cd) \$env:USERPROFILE", re.IGNORECASE)
-_PS1_EXIT_RE = re.compile(r"exit(?: \$LASTEXITCODE| [0-9]+)?", re.IGNORECASE)
-_PS1_GUARD_RE = re.compile(r"if \(-not \(Test-Path (?:-LiteralPath )?\$(\w+)\)\) \{ .*; exit [0-9]+ \}", re.IGNORECASE)
-_PS1_SET_RE = re.compile(r"\$(env:)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']*)'|\"([^\"`$]*)\")", re.IGNORECASE)
-_PS1_VAR_RE = re.compile(r"\$(\w+)")
-_PS1_OPERATOR_CHARS = set(";|`<>")
-
-
-def _read_ps1_launcher(text: str, channel_name: str) -> dict:
-    env, variables, env_spelled, var_spelled, used, launch = {}, {}, {}, {}, set(), None
-    for number, raw in enumerate(text.lstrip("﻿").splitlines(), 1):
-        line = raw.strip()
-        if not line or _PS1_NO_EFFECT_RE.fullmatch(line):
-            continue
-        guard = _PS1_GUARD_RE.fullmatch(line)
-        if launch is None and guard and guard.group(1).upper() in variables:
-            used.add(guard.group(1).upper())
-            continue
-        try:
-            if _PS1_EXIT_RE.fullmatch(line):
-                if launch is None:
-                    raise _NotCarriable("it exits before its launch line")
-                continue
-            if launch is not None:
-                raise _NotCarriable(_AFTER_LAUNCH)
-            assign = _PS1_SET_RE.fullmatch(line)
-            if assign:
-                value = assign.group(3) if assign.group(3) is not None else assign.group(4)
-                if assign.group(1):
-                    env[_nt_name(assign.group(2), env_spelled)] = value
-                else:
-                    variables[_nt_name(assign.group(2), var_spelled)] = value
-                continue
-            if _PS1_OPERATOR_CHARS & set(line):
-                raise _NotCarriable("it uses a PowerShell operator, a block or a subexpression")
-            tokens = [t[1:-1] if t[0] in "'\"" and len(t) > 1 else t for t in re.findall(r"'[^']*'|\"[^\"]*\"|\S+", line)]
-            if tokens[0] == "&":
-                tokens = tokens[1:]
-            if not tokens:
-                raise _NotCarriable("it runs nothing")
-            tokens = _after_powershell_file(tokens)
-            var = _PS1_VAR_RE.fullmatch(tokens[0])
-            if var and var.group(1).upper() in variables:
-                used.add(var.group(1).upper())
-                tokens = [variables[var.group(1).upper()]] + tokens[1:]
-            launch = _read_launch(tokens, channel_name, {"@args", "$args"}, "nt")
-        except _NotCarriable as e:
-            raise _NotCarriable(f"line {number}: {e}") from None
-    loose = sorted(set(variables) - used)
-    if loose:
-        raise _NotCarriable(f"it sets {', '.join('$' + n for n in loose)} without running it, so what it is for is not known")
-    return {"env": env, "launch": launch}
-
-
-def read_foreign_launcher(name: str, text: str, channel_name: str) -> dict:
-    """What a launcher that is not ours establishes: `{"env": {name: value}, "launch": (target, [claude
-    arguments]) or None}`. Raises _NotCarriable naming the first line that is not one of the forms
-    understood — comments, literal environment assignments, a `cd` home, one launch of a known
-    launcher (or of `claude` for this channel), and the existence guard the README's hand-written
-    shim carries — and, after the launch line, only comments, `cd` and `exit`. Every other form is a
-    refusal, never an approximation: a variable reference, an operator, a block, anything else after
-    the launch (an `exit`, or a `.bat`'s `endlocal`, before it), on Windows one name set in two letter cases, and — in sh — a
-    `#` inside a word or an unquoted brace, which a tokenizer and bash read differently. On Windows
-    the names come back folded to upper case, as cmd and PowerShell key them. Pure."""
-    lower = name.lower()
-    reader = _read_bat_launcher if lower.endswith(".bat") else _read_ps1_launcher if lower.endswith(".ps1") else _read_sh_launcher
-    return reader(text, channel_name)
-
-
-def _launch_environment(os_name: str, winreg=None) -> dict:
-    """The environment a NEW terminal starts the seat's launcher with, as far as it can be read. On
-    Windows that is the persisted machine and user environment (HKLM, then HKCU over it), not this
-    process's: a `set` in the terminal running this tool does not reach the next one. Elsewhere,
-    this process's environment. `winreg` is a test seam."""
-    if os_name != "nt" or (winreg is None and os.name != "nt"):
+def _launch_environment(winreg=None) -> dict:
+    """The environment a NEW Windows terminal starts the seat's launcher with: the persisted machine
+    and user environment (HKLM, then HKCU over it), not this process's — a `set` in the terminal
+    running this tool does not reach the next one. `winreg` is a test seam; off Windows, with none
+    given (the Windows path exercised on another OS), this process's environment stands in."""
+    if winreg is None and os.name != "nt":
         return dict(os.environ)
     if winreg is None:
         import winreg
@@ -1858,57 +1516,40 @@ def _launch_environment(os_name: str, winreg=None) -> dict:
     return env
 
 
-def carried_settings(reads: dict, channel_name: str, os_name: str, environ) -> tuple:
-    """`(env, claude arguments, targets)` the files of one seat's launcher establish together, from
-    `{file name: read_foreign_launcher result}`; _NotCarriable when they cannot all be kept. Pure."""
-    env, arg_lists, targets = {}, [], []
-    for name, read in reads.items():
-        for key, value in read["env"].items():
-            if env.get(key, value) != value:
-                raise _NotCarriable(f"the files set {key} to different values")
-            env[key] = value
-        if read["launch"] is not None:
-            target, args = read["launch"]
-            targets.append(target)
-            sibling = _path_base(target) in reads and _path_base(target) != name
-            if args or not sibling:
-                arg_lists.append(args)
-    if any(a != arg_lists[0] for a in arg_lists):
-        raise _NotCarriable("the files pass different claude arguments, and one shim pair passes one set")
-    args = list(arg_lists[0]) if arg_lists else []
-    other = env.pop("BRIDGE_CHANNEL_NAME", channel_name)
-    if other != channel_name:
-        raise _NotCarriable(f"it sets BRIDGE_CHANNEL_NAME to {other}, not {channel_name}")
-    if EXTRA_ARGS_ENV in env:
-        try:
-            args = parse_claude_extra_args(env.pop(EXTRA_ARGS_ENV)).split() + args
-        except ValueError:
-            raise _NotCarriable(f"it sets {EXTRA_ARGS_ENV} to something other than plain tokens") from None
-    for key, value in env.items():
-        if not _CARRIED_VALUE_RE.fullmatch(value) or value != value.strip():
-            raise _NotCarriable(f"it sets {key} to a value built from another variable, or one the shim cannot hold "
-                                f"(a quote, `%`, `!`, `^`, `$`, a backquote, or leading/trailing space)")
+def _settings_belong(os_name: str) -> str:
+    """Where a seat's launcher settings belong, as the launcher the shim runs reads them."""
     if os_name == "nt":
-        wide = sorted(k for k, v in env.items() if not v.isascii())
-        if wide:
-            # The .bat is read in the console's code page, not UTF-8: a non-ASCII value would change.
-            raise _NotCarriable(f"it sets {', '.join(wide)} to a value with non-ASCII characters, which cmd would read in its own code page")
-    if os_name == "nt":
-        # cmd and PowerShell key the environment case-insensitively and hold no empty variable
-        # (`set NAME=` and `$env:NAME = ''` remove it); an empty persisted value is not counted as
-        # set either, since the launcher's own check refuses an empty one all the same.
-        effective = {**{k.upper(): v for k, v in environ.items()}, **env}
-        have = {k for k, v in effective.items() if v}
-    else:
-        have = set(env) | set(environ)
-    # With no file read (a dangling link) there was no working launcher, so nothing can be lost.
-    missing = [n for n in LAUNCHER_ENV_WITHOUT_DEFAULT[os_name] if n not in have] if reads else []
-    if missing:
-        raise _NotCarriable(f"the launcher the shim runs exits without {', '.join(missing)}, which neither this file nor the "
-                            f"environment of this run sets — the old launcher gets it somewhere this tool cannot read. Set it "
-                            f"in the user environment (`setx {missing[0]} <value>` — a `set` reaches only this terminal), then "
-                            f"re-run from a new terminal")
-    return env, args, targets
+        return ("the user environment (`setx NAME value`, then a new terminal — the launcher reads TUNNEL_HOST, SSH_KEY, "
+                "REMOTE_PORT and LOCAL_PORT from it)")
+    return ("the environment the launcher is started with (exported from your shell profile — or, for "
+            "BRIDGE_CHANNEL_TRANSPORT, BRIDGE_CHANNEL_PORT and BRIDGE_CHANNEL_SOCKET, `.env` in ~/.claude/settings.local.json)")
+
+
+def _launch_line(name: str, target: str) -> str:
+    """The launch line a hand-written launcher of this file kind needs to run the client root's launcher."""
+    lower = name.lower()
+    if lower.endswith(".bat"):
+        return f'call "{target}" %*'
+    if lower.endswith(".ps1"):
+        return "& '" + target.replace("'", "''") + "' @args"
+    return f'exec {_sh_quote(target)} "$@"'
+
+
+def _kept_launcher_message(home: str, foreign: list, root: str, os_name: str) -> str:
+    """The refusal for launchers this tool did not write: what was left, and what an operator does."""
+    paths = " and ".join(os.path.join(home, n) for n in foreign)
+    target = client_launcher_shim(root, os_name)
+    aside = "; ".join(f"rename {os.path.join(home, n)} to {n}.mine" for n in foreign)
+    keep = "; ".join(f"in {n}, `{_launch_line(n, target)}`" for n in foreign)
+    return (
+        f"{paths} {'is a launcher' if len(foreign) == 1 else 'are a launcher'} this tool did not write. It was LEFT IN "
+        f"PLACE, byte for byte, and nothing was written: the shim is written only where no launcher is, or over a shim "
+        f"this tool generated, so nothing a hand-written launcher sets is lost. The seat still starts through it. To "
+        f"move this seat to the shim: put each setting it makes in {_settings_belong(os_name)}; pass its own `claude` "
+        f"arguments with --claude-extra-args=<args>; make sure `claude` is on PATH (the launcher runs it from there); "
+        f"{aside}; then re-run. Or keep it, and make its launch line run this seat's launcher, which updates with the "
+        f"client — {keep} — and every later run reports it as kept."
+    )
 
 
 # The coord framework's launcher as written BEFORE its marker existed (card#11822): recognised by
@@ -1968,83 +1609,82 @@ def unmarked_framework_launcher(name: str, data: bytes):
     return None
 
 
-def shim_carried_env(text: str) -> dict:
-    """The environment one of our shims sets beyond the channel name and the extra arguments (any
-    platform's form): what a replaced launcher handed over, kept across every rewrite. Pure."""
-    found = re.findall(
-        r"^(?:([A-Za-z_][A-Za-z0-9_]*)='([^'\n]*)'; export \1|set \"([A-Za-z_][A-Za-z0-9_]*)=([^\"\r\n]*)\""
-        r"|\$env:([A-Za-z_][A-Za-z0-9_]*) = '([^'\r\n]*)')\r?$",
-        text, re.MULTILINE,
-    )
-    pairs = [(a or c or e, b or d or f) for a, b, c, d, e, f in found]
-    return {name: value for name, value in pairs if name not in ("BRIDGE_CHANNEL_NAME", EXTRA_ARGS_ENV)}
+def _generated_target(name: str, text: str):
+    """The client-root launcher one of our shims names on its launch line, unquoted, or None."""
+    lower = name.lower()
+    if lower.endswith(".bat"):
+        pattern, quote = r'^call "(.*)" %\*$', None
+    elif lower.endswith(".ps1"):
+        pattern, quote = r"^\$launcher = '(.*)'$", "''"
+    else:
+        pattern, quote = r"^launcher='(.*)'$", "'\\''"
+    m = re.search(pattern, text.replace("\r\n", "\n"), re.MULTILINE)
+    if m is None:
+        return None
+    return m.group(1) if quote is None else m.group(1).replace(quote, "'")
 
 
-def _our_shim_settings(path: str, text: str, os_name: str) -> tuple:
-    """`(env, extra args)` one of our shims at `path` carries — LauncherShimRefused('launcher_kept')
-    naming the line when a hand edit gave it a value the shim cannot hold, which a rewrite would
-    otherwise drop or fail on. On Windows a name is folded to upper case, as cmd keys it."""
-    env, extra = {}, None
-    for number, line in enumerate(text.splitlines(), 1):
-        found = shim_carried_env(line)
-        args = _shim_value(line, EXTRA_ARGS_ENV)
-        try:
-            if any(not _CARRIED_VALUE_RE.fullmatch(v) for v in found.values()):
-                raise ValueError
-            if args:
-                parse_claude_extra_args(args)
-        except ValueError:
-            raise LauncherShimRefused(
-                "launcher_kept",
-                f"{path} is this channel's launcher shim, but line {number} sets a value the shim cannot hold (a quote, `%`, "
-                f"`!`, `^`, `$`, a backquote, or claude arguments that are not plain tokens) — edited by hand, so a "
-                f"rewrite would lose it. It was LEFT IN PLACE, byte for byte, and nothing was written. Put that setting "
-                f"in the environment or settings.local.json .env, delete the line, then re-run.",
-            ) from None
-        for key, value in found.items():
-            env.setdefault(key.upper() if os_name == "nt" else key, value)
-        extra = extra if extra is not None else args
-    return env, extra
-
-
-def _shim_mode(path: str, os_name: str) -> int:
-    """The mode a shim written at `path` gets: 0755 (0644 on Windows), but never more open to group
-    and others than the file already there — a replaced launcher's settings move into the shim."""
-    if os_name == "nt":
-        return 0o644
+def _read_own_shim(home: str, name: str, text: str, channel_name: str, root: str, os_name: str) -> str:
+    """The extra `claude` arguments one of our shims was generated with. The read is closed: the file
+    must be EXACTLY what `launcher_shims` generates for this channel, the extra arguments its
+    BRIDGE_CLAUDE_EXTRA_ARGS line holds and the client root its launch line names — every line a
+    template line or a setting line in the generated form, each once. Anything else is
+    LauncherShimRefused('launcher_kept') naming the first line that differs, by number (a line can
+    hold a secret, so it is never quoted)."""
+    extra = _shim_value(text, EXTRA_ARGS_ENV) or ""
     try:
-        return 0o700 | (os.stat(path).st_mode & 0o055)
-    except OSError:
-        return 0o755
+        extra = parse_claude_extra_args(extra)
+    except ValueError:
+        extra = ""
+    target = _generated_target(name, text)
+    if target is not None:
+        import ntpath
+        import posixpath
+
+        paths = ntpath if os_name == "nt" else posixpath
+        root = paths.dirname(paths.dirname(target))
+    want = dict(launcher_shims(channel_name, root, os_name, extra))[name].splitlines(keepends=True)
+    have = text.splitlines(keepends=True)
+    differs = next((i for i, (a, b) in enumerate(zip(have, want)) if a != b), None)
+    if differs is None and len(have) != len(want):
+        differs = min(len(have), len(want))
+    if differs is None:
+        return extra
+    path = os.path.join(home, name)
+    raise LauncherShimRefused(
+        "launcher_kept",
+        f"{path} is this channel's launcher shim, but line {differs + 1} is not the line this tool generates there "
+        f"(edited by hand, or a setting added or repeated). It was LEFT IN PLACE, byte for byte, and nothing was "
+        f"written. The shim is generated, never edited: put the setting in {_settings_belong(os_name)}, pass claude "
+        f"arguments with --claude-extra-args=<args>, then delete {path} and re-run.",
+    )
 
 
 def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.name, extra_args=None) -> tuple:
     """Write the seat's launcher shim into `home`; idempotent. Returns `(status, lines)`: status
     `written`, `up_to_date` or `framework_shim`, and one line per thing that happened.
 
-    When ANY file this would write is the coord framework's launcher — by its marker
-    (`is_framework_launcher_shim`) or, for one written before the marker existed, by content
-    (`unmarked_framework_launcher`) — it writes nothing, not even the other file of a Windows pair,
-    which would leave a mixed pair, and returns `framework_shim`: the framework owns the seat's entry point.
+    It writes over nothing it did not generate (card#11822, DL-480). By what is at the shim paths:
+     - nothing: the shim is written. On Windows only when the persisted user or machine environment
+       sets TUNNEL_HOST to something other than empty or the launcher's placeholder — the launcher
+       the shim runs exits without it — else LauncherShimRefused('needs_setting').
+     - this tool's shim, exactly as generated (`_read_own_shim`): rewritten for the current client
+       root, keeping its extra arguments. Any other line, a repeated setting, or a Windows pair that
+       disagrees: LauncherShimRefused('launcher_kept'), nothing written.
+     - the coord framework's launcher in EITHER file — by its marker (`is_framework_launcher_shim`)
+       or, written before the marker existed, by content (`unmarked_framework_launcher`): nothing
+       written, not even the other file of a Windows pair; status `framework_shim`.
+     - any other launcher, in either file: LauncherShimRefused('launcher_kept'), nothing written.
+    LauncherShimRefused('conflict') when a shim path is a directory or holds the shim of ANOTHER
+    channel: one home has one `start-claude`, and a seat running two channels as one OS user must not
+    have the first silently retargeted.
 
-    Any other file at a shim path that is not our shim is replaced only when everything it sets can
-    be carried into the shim (`read_foreign_launcher`, `carried_settings`): it is then copied to
-    `<name>.pre-shim-<UTC>` and the shim swapped in over it, and the lines say what was carried.
-    Otherwise NOTHING is copied or written and LauncherShimRefused('launcher_kept') says which line
-    stopped it. Every shim file is written to a temporary file before any launcher is touched, so a
-    fault leaves each shim path holding its old file or the new shim.
-
-    `extra_args` None KEEPS what is there: an existing shim's own value, or the `claude` arguments a
-    replaced launcher passed. A string replaces it ('' clears it). Environment a shim already
-    carries is kept on every rewrite.
-
-    Raises LauncherShimRefused('conflict'), writing nothing, when a shim path is a directory or holds
-    the shim of ANOTHER channel: one home has one `start-claude`, and a seat running two channels as
-    one OS user must not have the first silently retargeted.
+    `extra_args` None keeps the shim's own value; a string replaces it ('' clears it). Every shim file
+    is written to a temporary file before any is swapped in, so a fault leaves each shim path holding
+    its old file or the new shim.
 
     The caller has already established that the client root's launcher shim exists.
     """
-    explicit = extra_args is not None
     names = [name for name, _ in launcher_shims(channel_name, root, os_name)]
     retarget = "-Channel" if os_name == "nt" else "--channel"
     current = {}
@@ -2061,9 +1701,11 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
         except OSError:
             raw[name] = None  # a dangling link: not ours
         try:
-            text = None if raw[name] is None else raw[name].decode("utf-8").removeprefix("\ufeff")
+            text = None if raw[name] is None else raw[name].decode("utf-8")
         except UnicodeDecodeError:
             text = None  # not UTF-8 text: not ours (unless it is the framework's, below)
+        if text is not None and name.lower().endswith(".ps1"):
+            text = text.removeprefix("﻿")
         current[name] = text
     framework = [n for n, b in raw.items() if b is not None and is_framework_launcher_shim(n, b)]
     if framework:
@@ -2091,83 +1733,48 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
                 f"{path} is the launcher shim for channel {other}, not {channel_name} — one home holds one; "
                 f"remove it (or start channel {channel_name} with `{path} {retarget} {channel_name}`) and re-run",
             )
-    report = []
-    env, kept_args = {}, []
-    for name, text in ours.items():
-        shim_env, shim_args = _our_shim_settings(os.path.join(home, name), text, os_name)
-        for key, value in shim_env.items():
-            env.setdefault(key, value)
-        kept_args.append(shim_args)
-    if extra_args is None:
-        extra_args = next((k for k in kept_args if k), "")
     foreign = [n for n in names if n in current and n not in ours]
-    backups = {}
     if foreign:
-        paths = ", ".join(os.path.join(home, n) for n in foreign)
-        try:
-            reads = {}
-            for name in foreign:
-                if raw[name] is None:
-                    continue  # a dangling link starts nothing, so there is nothing of it to keep
-                if current[name] is None:
-                    raise _NotCarriable(f"{name} is not UTF-8 text, so it cannot be read")
-                try:
-                    reads[name] = read_foreign_launcher(name, current[name], channel_name)
-                except _NotCarriable as e:
-                    raise _NotCarriable(f"{name}, {e}") from None
-            carried_env, carried_args, targets = carried_settings(reads, channel_name, os_name, {**_launch_environment(os_name), **env})
-            clash = sorted(k for k, v in carried_env.items() if env.get(k, v) != v)
-            if clash:
-                raise _NotCarriable(f"it sets {', '.join(clash)} to a value other than the one the shim beside it already carries")
-        except _NotCarriable as e:
+        raise LauncherShimRefused("launcher_kept", _kept_launcher_message(home, foreign, root, os_name))
+    kept_args = {n: _read_own_shim(home, n, t, channel_name, root, os_name) for n, t in ours.items()}
+    if len(set(kept_args.values())) > 1:
+        raise LauncherShimRefused(
+            "launcher_kept",
+            f"{' and '.join(os.path.join(home, n) for n in kept_args)} are this channel's launcher shim, but they set "
+            f"different claude arguments, so what the seat runs depends on which one starts it. They were LEFT IN PLACE, "
+            f"byte for byte, and nothing was written. Delete both, then re-run (with --claude-extra-args=<args> for the "
+            f"arguments you want).",
+        )
+    if not current and os_name == "nt":
+        persisted = {k.upper(): v for k, v in _launch_environment().items()}
+        host = persisted.get("TUNNEL_HOST", "")
+        if not host or host.lower() == TUNNEL_HOST_PLACEHOLDER.lower():
             raise LauncherShimRefused(
-                "launcher_kept",
-                f"{paths} is not a launcher shim, and replacing it could leave this seat unable to start: {e}. It was LEFT "
-                f"IN PLACE, byte for byte (no rename), and nothing was written — the seat still starts through it. To move "
-                f"to the shim: put what it sets in the environment or settings.local.json .env, reduce it to literal "
-                f"`set`/`export` lines and one launch line, or move it aside yourself, then re-run.",
-            ) from None
-        for name in foreign:
-            backup = f"{os.path.join(home, name)}.pre-shim-{_utc_stamp()}"
-            backups[name] = f"{backup}-{os.getpid()}" if os.path.lexists(backup) else backup
-        new_env = sorted(k for k in carried_env if k not in env)
-        same_env = sorted(k for k in carried_env if k in env)
-        env = {**carried_env, **env}
-        said = [f"environment {', '.join(new_env)} (values not printed)"] if new_env else []
-        if same_env:
-            said.append(f"environment {', '.join(same_env)}, which the shim beside it already sets to the same value")
-        dropped = []
-        if carried_args and not explicit and not extra_args:
-            extra_args = " ".join(carried_args)
-            said.append(f"the claude arguments `{extra_args}` into {EXTRA_ARGS_ENV}")
-        elif carried_args and " ".join(carried_args) != extra_args:
-            dropped.append(f"its claude arguments `{' '.join(carried_args)}` ("
-                           + ("--claude-extra-args was given and replaces them" if explicit else "the other shim file's are kept") + ")")
-        elif carried_args:
-            said.append(f"the claude arguments `{extra_args}`, which the shim already passes")
-        report.append(f"launcher shim: carried from {paths} into the shim: {'; '.join(said) if said else 'nothing — it set nothing'}.")
-        report.append(f"launcher shim: NOT carried from {paths}: " + ("; ".join(dropped) if dropped else "nothing it sets")
-                      + ". Every line of it was read."
-                      + (f" It ran {', '.join(targets)}; what THAT file sets inside itself was not read." if targets else ""))
-    # Every file is staged before any launcher is touched, and an old launcher is COPIED to its
-    # backup, never moved: whatever fails, each shim path holds either its old file or the new shim.
-    staged, copied = [], []
+                "needs_setting",
+                f"the launcher the shim runs exits at once without TUNNEL_HOST, and the user and machine environment a new "
+                f"terminal starts with does not set it (or sets the placeholder `{TUNNEL_HOST_PLACEHOLDER}`) — a `set` in "
+                f"this terminal does not count. Nothing was written. Run `setx TUNNEL_HOST <agent>@<bridge-host>` with this "
+                f"seat's values, open a new terminal, and re-run.",
+            )
+    if extra_args is None:
+        extra_args = next(iter(kept_args.values()), "")
+    report = []
+    mode = 0o644 if os_name == "nt" else 0o755
+    # Every file is staged before any is swapped in: whatever fails, each shim path holds either its
+    # old file or the new shim.
+    staged = []
     try:
-        for name, body in launcher_shims(channel_name, root, os_name, extra_args, env):
+        for name, body in launcher_shims(channel_name, root, os_name, extra_args):
             path = os.path.join(home, name)
             data = _shim_bytes(name, body)
             if name in ours and raw[name] == data:
                 report.append(f"launcher shim: {path} is up to date.")
                 continue
-            staged.append((name, path, _stage_text(path, data, _shim_mode(path, os_name))))
-        for name, path, _tmp in staged:
-            if name in backups:
-                _copy_launcher_to_backup(path, backups[name])
-                copied.append(backups[name])
+            staged.append((name, path, _stage_text(path, data, mode)))
     except BaseException:
-        for leftover in [tmp for _name, _path, tmp in staged] + copied:
-            if os.path.lexists(leftover):
-                os.remove(leftover)
+        for _name, _path, tmp in staged:
+            if os.path.lexists(tmp):
+                os.remove(tmp)
         raise
     swapped = 0
     try:
@@ -2176,16 +1783,13 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
             swapped += 1
     except BaseException as e:
         # A rename is atomic: each path not yet swapped still holds its old file, so its temporary
-        # file and the backup copy made for it are removed — neither is needed, and the temporary
-        # file holds the carried settings.
-        for name, _path, tmp in staged[swapped:]:
-            for leftover in (tmp, backups.get(name)):
-                if leftover is not None and os.path.lexists(leftover):
-                    os.remove(leftover)
+        # file is removed.
+        for _name, _path, tmp in staged[swapped:]:
+            if os.path.lexists(tmp):
+                os.remove(tmp)
         if not swapped or not isinstance(e, OSError):
             raise
-        done = "; ".join(f"{path} holds the new shim" + (f" (its old file is backed up at {backups[name]})" if name in backups else "")
-                         for name, path, _tmp in staged[:swapped])
+        done = "; ".join(f"{path} holds the new shim" for _name, path, _tmp in staged[:swapped])
         left = ", ".join(path for _name, path, _tmp in staged[swapped:])
         raise LauncherShimRefused(
             "io_error",
@@ -2197,12 +1801,8 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
         if name in ours:
             report.append(f"launcher shim: {path} rewritten.")
             continue
-        if name in backups:
-            report.append(f"launcher shim: {path} was not a launcher shim — BACKED UP to {backups[name]} (nothing "
-                          f"deleted); the shim's own `set`/`export` lines are kept on every later run.")
         report.append(f"launcher shim: wrote {path} — it runs {client_launcher_shim(root, os_name)} as channel {channel_name}"
-                      + (f", with {EXTRA_ARGS_ENV}='{extra_args}'" if extra_args else "")
-                      + (f", setting {', '.join(sorted(env))}." if env else "."))
+                      + (f", with {EXTRA_ARGS_ENV}='{extra_args}'." if extra_args else "."))
     return ("written" if staged else "up_to_date"), report
 
 
@@ -2235,16 +1835,11 @@ def _offer_launcher_shim(channel_name: str, extra_args=None) -> None:
         if why is None:
             _status, lines = install_launcher_shims(channel_name, root, _host_b_home(), extra_args=extra_args)
     except LauncherShimRefused as e:
-        if e.partly:
-            print(f"⚠ launcher shim: PARTLY written — {e}")
-            return
-        if e.status == "launcher_kept":
-            # Loud, and with the token a caller greps: the run's own work is done, but the seat is
-            # still on a launcher this tool did not write.
-            print(f"⚠ launcher shim: NOT written — {e}")
-            print("launcher-shim-status: launcher_kept")
-            return
-        why = str(e)
+        # Loud, and with the token a caller greps: the run's own work is done, but the seat's
+        # launcher is not the one this tool would write.
+        print(f"⚠ launcher shim: {'PARTLY' if e.partly else 'NOT'} written — {e}")
+        print(f"launcher-shim-status: {e.status}")
+        return
     except (OSError, ValueError) as e:
         why = str(e)
     if why is not None:
@@ -3456,13 +3051,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="[role b] write (or refresh) this seat's launcher shim — ~/start-claude.sh, or %%USERPROFILE%%\\start-claude.bat "
         "+ .ps1 on Windows — which runs the launcher of the release its client root installed; nothing else. A "
-        "file already there is handled by what it is. This tool's own shim: rewritten in place. The coord framework's "
+        "file already there is handled by what it is, and only this tool's own shim is ever written over. This "
+        "tool's shim, exactly as it generates it: rewritten in place, keeping its extra arguments; with any other "
+        "line, a repeated setting, or a .bat and .ps1 that disagree, it is left untouched (status launcher_kept, "
+        "exit 7) — settings belong in the environment the launcher reads, not in the shim. The coord framework's "
         "launcher — one carrying the framework's marker line, or one written before the marker existed and recognised "
         "by content (it runs the coord plugin's templates/bridge/start-claude.*, or is a copy of that template): left "
-        "in place (status framework_shim, exit 0). Any other launcher: replaced ONLY when every line of it is "
-        "understood and what it sets (literal environment assignments, plain claude arguments) is carried into the "
-        "shim — it is then copied to <name>.pre-shim-<UTC>, the shim takes its place, and the run says what was carried; otherwise it is left "
-        "untouched and nothing is written (status launcher_kept, exit 7). Writes nothing when the channel's client "
+        "in place (status framework_shim, exit 0). Any other launcher: left untouched, nothing written (status "
+        "launcher_kept, exit 7), and the message says how to move the seat to the shim. With no launcher there, on "
+        "Windows the shim is written only when the persisted user or machine environment sets TUNNEL_HOST (status "
+        "needs_setting, exit 8). Writes nothing when the channel's client "
         "root cannot serve it (exit 3 retry after a launch, 4 needs --bootstrap-client), the path holds a directory "
         "or another channel's shim (5) or the file system refuses (6); ends with a "
         "`launcher-shim-status: <token>` line. Needs --agent --channel-name. The --bootstrap-client / --certify-only / --self-cert runs write it too",
@@ -3472,8 +3070,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ARGS",
         help="[role b] extra `claude` arguments the launcher shim keeps (BRIDGE_CLAUDE_EXTRA_ARGS), whitespace-"
         "separated plain tokens, e.g. '--dangerously-skip-permissions'; '' clears them. Omitted, a shim keeps "
-        "what it had, and a replaced hand-written launcher's own extra arguments are carried over (given, it replaces "
-        "them, and the run says they were not carried)",
+        "what it had",
     )
     return p
 

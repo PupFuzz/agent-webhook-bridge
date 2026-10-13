@@ -391,7 +391,7 @@ final class ClientFleet
 
     private static function bootstrapRemedy(string $agent): string
     {
-        return 'on the seat, as its own OS user, from a bridge checkout at this bridge\'s release tag, run `'.self::bootstrapCommand($agent).'`, then restart its session. That run leaves the seat\'s own launcher (`~/start-claude.sh`, or `start-claude.bat` + `.ps1` on Windows) as it is unless it can carry everything that launcher sets: if it prints `launcher-shim-status: launcher_kept`, the seat still starts through its old launcher';
+        return 'on the seat, as its own OS user, from a bridge checkout at this bridge\'s release tag, run `'.self::bootstrapCommand($agent).'`, then restart its session. That run leaves the seat\'s own launcher (`~/start-claude.sh`, or `start-claude.bat` + `.ps1` on Windows) as it is when the provisioner did not write it: if it prints `launcher-shim-status: launcher_kept`, the seat still starts through its old launcher, and the line before it says how to move the seat to the shim';
     }
 
     /** The seat's own evidence: its latest call or report — never a probe's. */
