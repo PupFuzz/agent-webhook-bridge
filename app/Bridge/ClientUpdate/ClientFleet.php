@@ -195,7 +195,7 @@ final class ClientFleet
                     return [FleetState::AppliesNextLaunch, "runs release {$running}; published release {$published->bridgeRelease} reaches it at its next launch, because its background update check has staged it"];
                 }
                 if ($launchSeen->lte($publishedAt)) {
-                    return [FleetState::AppliesNextLaunch, "runs release {$running}; the session it runs started before release {$published->bridgeRelease} was published, so that session's first background update check did not see it: a client from 0.9.59 stages it at its next periodic re-check (every few hours by default), an older one in its next session, and the launch after the stage runs it (a client older than DL-476 installs it at its next launch)"];
+                    return [FleetState::AppliesNextLaunch, "runs release {$running}; the session it runs started before release {$published->bridgeRelease} was published, so that session's first background update check did not see it: a client from 0.9.59 stages it at its next periodic re-check (every few hours by default; never, if the seat set AWB_CLIENT_RECHECK_HOURS=0), an older one, or one whose re-check is off, in its next session, and the launch after the stage runs it (a client older than DL-476 installs it at its next launch)"];
                 }
 
                 return [FleetState::Behind, "it launched after release {$published->bridgeRelease} was published (that launch first seen ".HumanAge::floored((int) $launchSeen->diffInSeconds($now, true))." ago) and still runs release {$running}, with no stage, failure or approval reported — its background update check has not reported yet, or did not stage the published release and did not say why"];

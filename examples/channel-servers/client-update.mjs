@@ -135,6 +135,12 @@ export const LAUNCH_INSTALL_RESERVE_MS = 5000;
 export const RECHECK_HOURS_DEFAULT = 4;
 /** The longest delay a Node timer holds: a longer one fires at once (TimeoutOverflowWarning). */
 const MAX_TIMER_MS = 2 ** 31 - 1;
+/**
+ * The shortest re-check interval `AWB_CLIENT_RECHECK_HOURS` may set: every failed check writes an
+ * install-log line, so against a bridge that refuses connections at once, a tiny interval would
+ * grow the log without bound.
+ */
+export const RECHECK_MIN_MS = 60000;
 
 /** Where the background check stages a verified release for the next launch to install. */
 export const STAGE_DIR = 'staged-update';
@@ -143,10 +149,13 @@ const STAGE_MANIFEST = 'manifest.json';
 const STAGE_PACK = 'pack.tar.gz';
 /**
  * What the last background check found: `{launch_id, at_launch, periodic, checked_at, state,
- * published, offer, approval_owed, staged, error, refused}`, `state` one of `current`, `staged`,
+ * published, offer, approval_owed, staged, error, refused, failed_line_sha256}`, `state` one of `current`, `staged`,
  * `approval_owed`, `update_failed`; `at_launch` is true when a launch ran the check itself
- * (DL-476 Decision 7), `periodic` when a running server re-ran it (card#11787), and `refused`
- * when it failed because this seat refused what the bridge offers. `launch_id` is always the
+ * (DL-476 Decision 7), `periodic` when a running server re-ran it (card#11787), `refused`
+ * when it failed because this seat refused what the bridge offers, and `failed_line_sha256` (on a
+ * failed check) the sha256 of the FIRST install-log line of this session's run of failed checks —
+ * carried forward while they keep failing, so a later clean check can tell that run from any other
+ * failure of the launch ({@see logCheckIfOwed}). `launch_id` is always the
  * session's launch, whichever of its checks wrote the record last. The next launch reports it in
  * state.json, and asks the bridge nothing unless the previous launch completed no check
  * (`previousLaunchCompletedNoCheck`).
@@ -1626,8 +1635,10 @@ function logApprovalOwed(ctx, installedRelease, owed, manifest) {
  *   - the log's latest launch line belongs to ANOTHER launch whose update failed; or
  *   - an earlier check of THIS session failed (`prior`, the record it wrote): with a running
  *     server re-checking every few hours (card#11787), one unreachable moment would otherwise read
- *     `update_failed` for the rest of the session, over the stage a later check wrote. A failure
- *     of this launch's own install of a stage is not superseded this way: no check records it.
+ *     `update_failed` for the rest of the session, over the stage a later check wrote. Only when
+ *     the launch's first failed line since its latest `check` line IS the first line of that run
+ *     of failed checks (`failed_line_sha256`): a failure of the launch's own install of a stage is
+ *     written before any check of the session, so it is never superseded this way.
  */
 function logCheckIfOwed(ctx, fields, prior) {
   const launchLines = ctx.log.lines.filter((l) => l.obj.actor === 'launch' && typeof l.obj.launch_id === 'string');
@@ -1636,7 +1647,7 @@ function logCheckIfOwed(ctx, fields, prior) {
   }
   const latest = launchLines[launchLines.length - 1].obj.launch_id;
   if (latest === ctx.launchId) {
-    if (prior !== null && prior.launch_id === ctx.launchId && prior.state === 'update_failed') {
+    if (prior !== null && prior.launch_id === ctx.launchId && prior.state === 'update_failed' && firstFailureSinceCheck(launchLines, ctx.launchId) === prior.failed_line_sha256) {
       logLine(ctx, { action: 'check', result: 'ok', ...fields, reason: `the background update check reached the bridge; this session's check of ${prior.checked_at} failed, and is behind this seat` });
     }
     return;
@@ -1645,6 +1656,19 @@ function logCheckIfOwed(ctx, fields, prior) {
   if (failed) {
     logLine(ctx, { action: 'check', result: 'ok', ...fields, reason: `the background update check reached the bridge; launch ${latest}'s failed update is behind this seat` });
   }
+}
+
+/** The sha256 of `launchId`'s first failed or refused line after its latest `check` / `ok` line, or null. */
+function firstFailureSinceCheck(launchLines, launchId) {
+  const own = launchLines.filter((l) => l.obj.launch_id === launchId);
+  let since = 0;
+  own.forEach((l, i) => {
+    if (l.obj.action === 'check' && l.obj.result === 'ok') {
+      since = i + 1;
+    }
+  });
+  const first = own.slice(since).find((l) => l.obj.result === 'failed' || l.obj.result === 'refused');
+  return first ? sha256(Buffer.from(first.text, 'utf8')) : null;
 }
 
 function normalized(err) {
@@ -1844,9 +1868,19 @@ export async function runBackgroundUpdate({ root, launchId, env = process.env, b
   // is no completed check (card#11785). The periodic re-check runs regardless (card#11787).
   const prior = readCheck(root);
   if (!periodic && prior !== null && prior.launch_id === launchId && !failedLaunchCheck(prior)) {
+    // A check the launch ran itself sent no report (the connect window is not spent on it), and a
+    // refusal it reached is a completed check (failedLaunchCheck): send that report now, or the
+    // bridge hears of it only at the next re-check (card#11787 review). No pack is fetched.
+    if (prior.at_launch === true) {
+      out.report_error = await reportOnly(ctx);
+      if (out.report_error) {
+        say(out.report_error);
+      }
+    }
     return { ...out, state: 'skipped' };
   }
   let refused = false;
+  let failedLine = null;
 
   // 1. The network, under no lock: the manifest, and the pack when a newer release is offered and
   //    is not already staged. Everything that can go wrong is carried to step 2 as `fault`.
@@ -1960,7 +1994,15 @@ export async function runBackgroundUpdate({ root, launchId, env = process.env, b
           say(`the stage could not be removed (${rmErr && rmErr.code ? rmErr.code : rmErr && rmErr.message ? rmErr.message : rmErr})`);
         }
       }
+      const before = ctx.log.lines.length;
       logFailure(ctx, err, known);
+      // The run of this session's failed checks is named by its first line (logCheckIfOwed).
+      failedLine =
+        prior !== null && prior.launch_id === launchId && prior.state === 'update_failed' && typeof prior.failed_line_sha256 === 'string'
+          ? prior.failed_line_sha256
+          : ctx.log.lines.length > before
+            ? sha256(Buffer.from(ctx.log.lines[ctx.log.lines.length - 1].text, 'utf8'))
+            : null;
       out.state = 'update_failed';
       out.error = err instanceof Refusal ? `refused: ${err.message}` : err.message;
       say(out.error);
@@ -1978,6 +2020,7 @@ export async function runBackgroundUpdate({ root, launchId, env = process.env, b
         staged: out.staged,
         error: out.error,
         refused,
+        failed_line_sha256: failedLine,
       });
     } catch (err) {
       say(`could not write ${CHECK_FILE} (${err && err.code ? err.code : err && err.message ? err.message : err}); the next launch reports the check before it`);
@@ -1999,12 +2042,49 @@ export async function runBackgroundUpdate({ root, launchId, env = process.env, b
 }
 
 /**
+ * The report alone, for a listen-time check that skips after a check the launch ran itself: ask
+ * `client_manifest` for the bridge's log head, then send what it lacks. The log is read under the
+ * lock, as the check reads it, and the report is sent after it is released. Resolves with the
+ * report's error, or null.
+ */
+async function reportOnly(ctx) {
+  let answer;
+  try {
+    ctx.door = doorFromEnv(ctx.env);
+    ctx.source = ctx.door.source;
+    answer = await ask(ctx, { op: 'client_manifest' }, BACKGROUND_MANIFEST_MS);
+  } catch (err) {
+    return `the install log was not reported: ${normalized(err).message}`;
+  }
+  ctx.deadline = Math.min(ctx.deadline, Date.now() + BACKGROUND_LOCK_MS);
+  let lock;
+  try {
+    lock = takeLock(ctx.root, { deadline: ctx.deadline, staleAfterMs: 2 * BACKGROUND_LOCK_MS });
+  } catch (err) {
+    return `the install log was not reported: ${err.message}`;
+  }
+  try {
+    ctx.log = InstallLog.open(ctx.root, ctx.say);
+  } catch (err) {
+    return `the install log was not reported: it cannot be read (${err && err.code ? err.code : err && err.message ? err.message : err})`;
+  } finally {
+    releaseLock(lock);
+  }
+  ctx.deadline = Date.now() + REPORT_LEG_MS;
+  return report(ctx, answer.log_head ?? null);
+}
+
+/**
  * The re-check interval from `AWB_CLIENT_RECHECK_HOURS`: `{ms, error}`. Unset or empty is
  * RECHECK_HOURS_DEFAULT; `0` turns the re-check off (`ms: null`); any other value must be a
- * plain decimal number of hours whose milliseconds a Node timer can hold. A value that is not is
+ * plain decimal number of hours from RECHECK_MIN_MS to what a Node timer can hold. A value that is not is
  * named in `error` and the default is used: a typo must not stop a seat updating.
  */
 export function recheckIntervalMs(env = process.env) {
+  // The suite's seam, below the floor: only the real-server case sets it. Not a seat setting.
+  if (/^\d+$/.test(env.AWB_CLIENT_RECHECK_TEST_MS ?? '')) {
+    return { ms: Number(env.AWB_CLIENT_RECHECK_TEST_MS), error: null };
+  }
   const fallback = RECHECK_HOURS_DEFAULT * 3600000;
   const raw = env.AWB_CLIENT_RECHECK_HOURS;
   if (raw === undefined || raw === '') {
@@ -2015,8 +2095,8 @@ export function recheckIntervalMs(env = process.env) {
     return { ms: null, error: null };
   }
   const ms = Math.round(hours * 3600000);
-  if (!(ms >= 1 && ms <= MAX_TIMER_MS)) {
-    return { ms: fallback, error: `AWB_CLIENT_RECHECK_HOURS is ${JSON.stringify(raw)}, not a number of hours from above 0 to ${Math.floor(MAX_TIMER_MS / 3600000)} (or 0 for off); re-checking every ${RECHECK_HOURS_DEFAULT} h` };
+  if (!(ms >= RECHECK_MIN_MS && ms <= MAX_TIMER_MS)) {
+    return { ms: fallback, error: `AWB_CLIENT_RECHECK_HOURS is ${JSON.stringify(raw)}, not a number of hours from ${RECHECK_MIN_MS / 1000} seconds' worth to ${Math.floor(MAX_TIMER_MS / 3600000)} (or 0 for off); re-checking every ${RECHECK_HOURS_DEFAULT} h` };
   }
   return { ms, error: null };
 }

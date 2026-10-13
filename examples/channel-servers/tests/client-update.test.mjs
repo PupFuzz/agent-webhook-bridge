@@ -1174,7 +1174,8 @@ test('recheckIntervalMs: hours, 0 for off, the default when unset, and a named e
   assert.deepEqual(recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: '6' }), { ms: 6 * hour, error: null });
   assert.deepEqual(recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: '0.5' }), { ms: hour / 2, error: null });
   assert.deepEqual(recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: '0' }), { ms: null, error: null });
-  for (const bad of ['-1', '4h', ' 4', 'soon', '1e3', '597']) {
+  assert.deepEqual(recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: '0.02' }), { ms: 72000, error: null }, 'above the 60 s floor');
+  for (const bad of ['-1', '4h', ' 4', 'soon', '1e3', '597', '0.01', '0.0002']) {
     const r = recheckIntervalMs({ AWB_CLIENT_RECHECK_HOURS: bad });
     assert.equal(r.ms, RECHECK_HOURS_DEFAULT * hour, bad);
     assert.match(r.error, /^AWB_CLIENT_RECHECK_HOURS is /, bad);
@@ -1229,18 +1230,43 @@ test('a re-check that succeeds after one of the same session failed logs a check
   const root = await seatWith(t, '1.0.0');
   const first = await session(root, seatEnv(t, null));
   assert.equal(first.check.state, 'update_failed');
+  const firstFail = readCheckOf(root).failed_line_sha256;
+  assert.equal(firstFail, sha256(Buffer.from(logLines(root).at(-1))), 'the record names the failure line it wrote');
+  assert.equal((await background(root, seatEnv(t, null), first.launchId, { periodic: true })).state, 'update_failed');
+  assert.equal(readCheckOf(root).failed_line_sha256, firstFail, 'a run of failed checks keeps naming its first line');
 
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
   const again = await background(root, seatEnv(t, bridge), first.launchId, { periodic: true });
   assert.equal(again.state, 'staged', again.stderr);
   const lines = assertChain(root).filter((l) => l.launch_id === first.launchId).map((l) => [l.action, l.result]);
-  assert.deepEqual(lines, [['fail', 'failed'], ['stage', 'ok'], ['check', 'ok']]);
+  assert.deepEqual(lines, [['fail', 'failed'], ['fail', 'failed'], ['stage', 'ok'], ['check', 'ok']]);
   assert.match(logObjs(root).at(-1).reason, /this session's check of .* failed, and is behind this seat/);
-  assert.deepEqual(bridge.reports.flatMap((r) => r.entries).map((l) => JSON.parse(l).action).slice(-3), ['fail', 'stage', 'check'], 'the bridge receives the failure and what supersedes it, in order');
+  assert.deepEqual(bridge.reports.flatMap((r) => r.entries).map((l) => JSON.parse(l).action).slice(-4), ['fail', 'fail', 'stage', 'check'], 'the bridge receives the failures and what supersedes them, in order');
 
   const lines2 = logLines(root).length;
   assert.equal((await background(root, seatEnv(t, bridge), first.launchId, { periodic: true })).state, 'staged');
   assert.equal(logLines(root).length, lines2, 'after a clean check, the next clean one owes no line');
+});
+
+test('a failed INSTALL of the stage at launch is never superseded by a clean check of that session, even after a failed one (card#11787 review)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
+  const file = path.join(root, STAGE_DIR, 'pack.tar.gz');
+  const bytes = fs.readFileSync(file);
+  bytes[bytes.length - 1] ^= 0xff;
+  fs.writeFileSync(file, bytes);
+  await launch(root, seatEnv(t, null));
+  const launchId = read(root, 'state.json').launch_id;
+  assert.equal(read(root, 'state.json').state, 'update_failed', 'the damaged stage was refused at install');
+
+  assert.equal((await background(root, seatEnv(t, null), launchId)).state, 'update_failed');
+  assert.equal((await background(root, seatEnv(t, null), launchId, { periodic: true })).state, 'update_failed');
+  const clean = await background(root, seatEnv(t, bridge), launchId, { periodic: true });
+  assert.equal(clean.state, 'staged', clean.stderr);
+
+  const lines = assertChain(root).filter((l) => l.launch_id === launchId).map((l) => [l.action, l.result]);
+  assert.deepEqual(lines, [['refuse', 'refused'], ['fail', 'failed'], ['fail', 'failed'], ['stage', 'ok']], 'no check line: the install refusal still stands for the bridge');
 });
 
 test('a launch-run check that REFUSES the offer is a completed check: the session does not fetch it again, nor does the next launch (card#11787, PR #914 review)', async (t) => {
@@ -1256,7 +1282,11 @@ test('a launch-run check that REFUSES the offer is a completed check: the sessio
   assert.deepEqual([record.launch_id, record.at_launch, record.state, record.refused], [launchId, true, 'update_failed', true]);
   assert.equal(bridge.requests.filter((r) => r.body.op === 'client_pack').length, 1);
 
-  assert.equal((await background(root, env, launchId)).state, 'skipped', 'the session does not re-fetch a pack it just refused');
+  const listen = await background(root, env, launchId);
+  assert.equal(listen.state, 'skipped', 'the session does not re-fetch a pack it just refused');
+  assert.equal(bridge.requests.filter((r) => r.body.op === 'client_pack').length, 1);
+  const sent = bridge.reports.flatMap((r) => r.entries).map((l) => JSON.parse(l));
+  assert.ok(sent.some((l) => l.launch_id === launchId && l.action === 'refuse'), 'but it reports the refusal the launch-run check could not (card#11787 review)');
   await launch(root, env);
   assert.equal(bridge.requests.filter((r) => r.body.op === 'client_pack').length, 1, 'nor does the next launch');
   assert.match(read(root, 'state.json').error, /^refused: .*does not hash to its manifest's pack\.sha256/, 'the refusal stays loud');
@@ -1341,8 +1371,10 @@ async function eventually(predicate, what, ms = 15000) {
 async function realSession(t, root, env, name) {
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'entry.mjs')], env, stderr: 'ignore' });
   const client = new Client({ name, version: '1.0.0' }, { capabilities: {} });
-  await client.connect(transport);
+  // Registered before connect: a connect that fails or outlives the test must still end the
+  // server, or its stdio keeps this file's process alive and the run hangs.
   t.after(() => client.close());
+  await client.connect(transport);
   return client;
 }
 
@@ -1394,12 +1426,12 @@ test('through the real server: once it is listening it stages a newer release in
   await eventually(() => readCheckOf(root)?.launch_id === state.launch_id, 'the next session\'s background check');
 });
 
-test('through the real server: a release published mid-session is staged by the periodic re-check, and one restart runs it (card#11787)', { timeout: 60000 }, async (t) => {
+test('through the real server: a release published mid-session is staged by the periodic re-check, and one restart runs it (card#11787)', async (t) => {
   const root = packageRoot(t);
   assert.equal(bootstrap(t, root, goodPack('1.0.0', { realServer: true })).status, 0);
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0', { realServer: true }) });
-  // 0.0002 h is 720 ms: the real config path, at a test's scale.
-  const env = seatEnv(t, bridge, { AWB_CLIENT_RECHECK_HOURS: '0.0002' });
+  // AWB_CLIENT_RECHECK_HOURS has a 60 s floor; the suite's own seam sets 720 ms.
+  const env = seatEnv(t, bridge, { AWB_CLIENT_RECHECK_TEST_MS: '720' });
   const client = await realSession(t, root, env, 'cu-e2e-recheck');
   const launchId = read(root, 'state.json').launch_id;
   await eventually(() => readCheckOf(root)?.launch_id === launchId, 'the listen-time check');
