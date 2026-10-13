@@ -1638,7 +1638,8 @@ function logApprovalOwed(ctx, installedRelease, owed, manifest) {
  *     `update_failed` for the rest of the session, over the stage a later check wrote. Only when
  *     the launch's first failed line since its latest `check` line IS the first line of that run
  *     of failed checks (`failed_line_sha256`): a failure of the launch's own install of a stage is
- *     written before any check of the session, so it is never superseded this way.
+ *     written before any check of a session whose launch ran none itself, so it is not superseded
+ *     this way. And only when the log began before the launch did ({@see logPredatesLaunch}).
  */
 function logCheckIfOwed(ctx, fields, prior) {
   const launchLines = ctx.log.lines.filter((l) => l.obj.actor === 'launch' && typeof l.obj.launch_id === 'string');
@@ -1647,7 +1648,7 @@ function logCheckIfOwed(ctx, fields, prior) {
   }
   const latest = launchLines[launchLines.length - 1].obj.launch_id;
   if (latest === ctx.launchId) {
-    if (prior !== null && prior.launch_id === ctx.launchId && prior.state === 'update_failed' && firstFailureSinceCheck(launchLines, ctx.launchId) === prior.failed_line_sha256) {
+    if (prior !== null && prior.launch_id === ctx.launchId && prior.state === 'update_failed' && firstFailureSinceCheck(launchLines, ctx.launchId) === prior.failed_line_sha256 && logPredatesLaunch(ctx)) {
       logLine(ctx, { action: 'check', result: 'ok', ...fields, reason: `the background update check reached the bridge; this session's check of ${prior.checked_at} failed, and is behind this seat` });
     }
     return;
@@ -1656,6 +1657,22 @@ function logCheckIfOwed(ctx, fields, prior) {
   if (failed) {
     logLine(ctx, { action: 'check', result: 'ok', ...fields, reason: `the background update check reached the bridge; launch ${latest}'s failed update is behind this seat` });
   }
+}
+
+/**
+ * Whether the install log's first line is no newer than this launch's `state.json`, which the
+ * launch writes after its own install. A log that began later replaced a deleted one (readLog
+ * keeps the newest install id alone): it cannot say the launch's install did not fail, and the
+ * bridge may hold that failure from the log before it.
+ */
+function logPredatesLaunch(ctx) {
+  let state;
+  try {
+    state = readJsonFile(path.join(ctx.root, 'state.json'));
+  } catch {
+    return false;
+  }
+  return state.launch_id === ctx.launchId && typeof state.written_at === 'string' && ctx.log.lines[0].obj.time <= state.written_at;
 }
 
 /** The sha256 of `launchId`'s first failed or refused line after its latest `check` / `ok` line, or null. */
@@ -2079,14 +2096,27 @@ async function reportOnly(ctx) {
  * RECHECK_HOURS_DEFAULT; `0` turns the re-check off (`ms: null`); any other value must be a
  * plain decimal number of hours from RECHECK_MIN_MS to what a Node timer can hold. A value that is not is
  * named in `error` and the default is used: a typo must not stop a seat updating.
+ *
+ * `AWB_CLIENT_RECHECK_TEST_MS` is the suite's seam below the floor, and no seat setting: it is
+ * read only when `AWB_CLIENT_RECHECK_TEST_ROOT` names this server's own root: a deliberate second
+ * setting that names a path, not a secret. Set without that, it is named in `error` and the interval
+ * is whatever `AWB_CLIENT_RECHECK_HOURS` says. The value itself is not bounded: the suite owns it.
  */
 export function recheckIntervalMs(env = process.env) {
-  // The suite's seam, below the floor: only the real-server case sets it. Not a seat setting.
-  if (/^\d+$/.test(env.AWB_CLIENT_RECHECK_TEST_MS ?? '')) {
-    return { ms: Number(env.AWB_CLIENT_RECHECK_TEST_MS), error: null };
+  let ignored = null;
+  if (env.AWB_CLIENT_RECHECK_TEST_MS !== undefined) {
+    const own = Boolean(env.AWB_CLIENT_ROOT) && Boolean(env.AWB_CLIENT_RECHECK_TEST_ROOT) && path.resolve(env.AWB_CLIENT_RECHECK_TEST_ROOT) === path.resolve(env.AWB_CLIENT_ROOT);
+    if (own && /^\d+$/.test(env.AWB_CLIENT_RECHECK_TEST_MS)) {
+      return { ms: Number(env.AWB_CLIENT_RECHECK_TEST_MS), error: null };
+    }
+    ignored = 'AWB_CLIENT_RECHECK_TEST_MS is ignored: it is the test suite\'s setting, not a seat\'s (AWB_CLIENT_RECHECK_HOURS sets the interval)';
   }
+  const hours = recheckHoursMs(env.AWB_CLIENT_RECHECK_HOURS);
+  return { ms: hours.ms, error: [ignored, hours.error].filter((e) => e !== null).join('; ') || null };
+}
+
+function recheckHoursMs(raw) {
   const fallback = RECHECK_HOURS_DEFAULT * 3600000;
-  const raw = env.AWB_CLIENT_RECHECK_HOURS;
   if (raw === undefined || raw === '') {
     return { ms: fallback, error: null };
   }

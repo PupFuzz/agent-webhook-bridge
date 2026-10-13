@@ -1182,6 +1182,37 @@ test('recheckIntervalMs: hours, 0 for off, the default when unset, and a named e
   }
 });
 
+test('recheckIntervalMs: the suite\'s seam is honoured only with the marker naming this seat\'s own root; alone it is ignored and named (card#11806)', () => {
+  const fallback = RECHECK_HOURS_DEFAULT * 3600000;
+  assert.deepEqual(recheckIntervalMs({ AWB_CLIENT_ROOT: '/r', AWB_CLIENT_RECHECK_TEST_ROOT: '/r', AWB_CLIENT_RECHECK_TEST_MS: '720' }), { ms: 720, error: null });
+  for (const env of [
+    { AWB_CLIENT_ROOT: '/r', AWB_CLIENT_RECHECK_TEST_MS: '720' },
+    { AWB_CLIENT_ROOT: '/r', AWB_CLIENT_RECHECK_TEST_ROOT: '/another', AWB_CLIENT_RECHECK_TEST_MS: '720' },
+    { AWB_CLIENT_RECHECK_TEST_MS: '720' },
+    { AWB_CLIENT_ROOT: process.cwd(), AWB_CLIENT_RECHECK_TEST_ROOT: '', AWB_CLIENT_RECHECK_TEST_MS: '720' },
+    { AWB_CLIENT_ROOT: '/r', AWB_CLIENT_RECHECK_TEST_MS: '0' },
+    { AWB_CLIENT_ROOT: '/r', AWB_CLIENT_RECHECK_TEST_MS: '99999999999' },
+  ]) {
+    const r = recheckIntervalMs(env);
+    assert.equal(r.ms, fallback, JSON.stringify(env));
+    assert.match(r.error, /^AWB_CLIENT_RECHECK_TEST_MS is ignored/, JSON.stringify(env));
+  }
+  const both = recheckIntervalMs({ AWB_CLIENT_ROOT: '/r', AWB_CLIENT_RECHECK_TEST_MS: '0', AWB_CLIENT_RECHECK_HOURS: '6' });
+  assert.equal(both.ms, 6 * 3600000, 'the seat\'s own setting still decides');
+  assert.match(both.error, /^AWB_CLIENT_RECHECK_TEST_MS is ignored/);
+});
+
+for (const value of ['0', '99999999999']) {
+  test(`AWB_CLIENT_RECHECK_TEST_MS=${value} in a seat's environment starts no burst of re-checks (card#11806)`, async (t) => {
+    const env = { AWB_CLIENT_ROOT: '/r', AWB_CLIENT_RECHECK_TEST_MS: value };
+    let checks = 0;
+    const handle = startUpdateChecks({ root: '/r', launchId: 'L1', env, intervalMs: recheckIntervalMs(env).ms, check: async () => { checks += 1; } });
+    t.after(() => handle.stop());
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(checks, 1, 'the listen-time check alone');
+  });
+}
+
 test('a periodic re-check stages a release published after the session\'s check, under the session\'s launch id, and ONE restart runs it (card#11787)', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
@@ -1267,6 +1298,29 @@ test('a failed INSTALL of the stage at launch is never superseded by a clean che
 
   const lines = assertChain(root).filter((l) => l.launch_id === launchId).map((l) => [l.action, l.result]);
   assert.deepEqual(lines, [['refuse', 'refused'], ['fail', 'failed'], ['fail', 'failed'], ['stage', 'ok']], 'no check line: the install refusal still stands for the bridge');
+});
+
+test('an install log deleted mid-session: a clean check after a failed one writes no check line, so an install failure the bridge already holds is not cleared (card#11806)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await session(root, seatEnv(t, bridge));
+  const file = path.join(root, STAGE_DIR, 'pack.tar.gz');
+  const bytes = fs.readFileSync(file);
+  bytes[bytes.length - 1] ^= 0xff;
+  fs.writeFileSync(file, bytes);
+  await launch(root, seatEnv(t, null));
+  const launchId = read(root, 'state.json').launch_id;
+  assert.equal(read(root, 'state.json').state, 'update_failed', 'the damaged stage was refused at install');
+  assert.equal((await background(root, seatEnv(t, bridge), launchId)).state, 'staged');
+  assert.ok(bridge.reports.flatMap((r) => r.entries).map((l) => JSON.parse(l)).some((l) => l.launch_id === launchId && l.action === 'refuse'), 'the bridge holds the install refusal');
+
+  fs.rmSync(path.join(root, 'install-log.jsonl'));
+  assert.equal((await background(root, seatEnv(t, null), launchId, { periodic: true })).state, 'update_failed');
+  const clean = await background(root, seatEnv(t, bridge), launchId, { periodic: true });
+  assert.equal(clean.state, 'staged', clean.stderr);
+
+  const lines = assertChain(root).filter((l) => l.launch_id === launchId).map((l) => [l.action, l.result]);
+  assert.deepEqual(lines, [['fail', 'failed']], 'no check line: this log began after the launch, and cannot say what the launch did before it');
 });
 
 test('a launch-run check that REFUSES the offer is a completed check: the session does not fetch it again, nor does the next launch (card#11787, PR #914 review)', async (t) => {
@@ -1430,8 +1484,8 @@ test('through the real server: a release published mid-session is staged by the 
   const root = packageRoot(t);
   assert.equal(bootstrap(t, root, goodPack('1.0.0', { realServer: true })).status, 0);
   const bridge = await fixtureBridge(t, { published: goodPack('1.0.0', { realServer: true }) });
-  // AWB_CLIENT_RECHECK_HOURS has a 60 s floor; the suite's own seam sets 720 ms.
-  const env = seatEnv(t, bridge, { AWB_CLIENT_RECHECK_TEST_MS: '720' });
+  // AWB_CLIENT_RECHECK_HOURS has a 60 s floor; the suite's own seam sets 720 ms, for this root alone.
+  const env = seatEnv(t, bridge, { AWB_CLIENT_RECHECK_TEST_MS: '720', AWB_CLIENT_RECHECK_TEST_ROOT: fs.realpathSync(root) });
   const client = await realSession(t, root, env, 'cu-e2e-recheck');
   const launchId = read(root, 'state.json').launch_id;
   await eventually(() => readCheckOf(root)?.launch_id === launchId, 'the listen-time check');
