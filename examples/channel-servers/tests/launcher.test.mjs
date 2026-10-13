@@ -52,12 +52,13 @@ const channelFor = (port) => `launcher-test-${process.pid}-${port}`;
 // socket another user holds (card#11328 review M2).
 const SS_WITHOUT_PID = `#!/bin/sh\necho 'LISTEN 0 511 127.0.0.1:1 0.0.0.0:*'\n`;
 
-function runLauncher(t, port, { ss, args = [], env = {} } = {}) {
+function runLauncher(t, port, { ss, args = [], env = {}, pathBase = process.env.PATH } = {}) {
   const dir = scratch(t, 'launcher-');
   const bin = path.join(dir, 'bin');
   fs.mkdirSync(bin);
   const record = path.join(dir, 'claude-args');
-  fs.writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${record}'\n`, { mode: 0o755 });
+  // What the launched claude sees: its arguments, then its PATH and what `bridge-board-call` names.
+  fs.writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${record}'\nprintf '%s\\n' "$PATH" > '${record}.path'\ncommand -v bridge-board-call > '${record}.which' || :\n`, { mode: 0o755 });
   if (ss !== undefined) {
     fs.writeFileSync(path.join(bin, 'ss'), ss, { mode: 0o755 });
   }
@@ -65,7 +66,7 @@ function runLauncher(t, port, { ss, args = [], env = {} } = {}) {
     encoding: 'utf8',
     timeout: 30000,
     env: {
-      PATH: `${bin}:${process.env.PATH}`,
+      PATH: `${bin}:${pathBase}`,
       HOME: dir,
       XDG_RUNTIME_DIR: dir,
       CLAUDE_SETTINGS_LOCAL: path.join(dir, 'absent.json'),
@@ -75,7 +76,8 @@ function runLauncher(t, port, { ss, args = [], env = {} } = {}) {
       ...env,
     },
   });
-  return { ...out, launched: fs.existsSync(record) ? fs.readFileSync(record, 'utf8').trim().split('\n') : null };
+  const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim() : null);
+  return { ...out, launched: read(record)?.split('\n') ?? null, path: read(`${record}.path`), which: read(`${record}.which`) || null };
 }
 
 async function freePort() {
@@ -176,4 +178,52 @@ test('with no listener at all the launcher runs claude, passing BRIDGE_CLAUDE_EX
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(r.launched.slice(1), [r.launched[1], '--dangerously-skip-permissions', '--model', 'opus', '--x']);
   assert.match(r.launched[1], /^server:/);
+});
+
+// DL-481: a launch through a client root's shim (which sets AWB_LAUNCHER_CLIENT_ROOT) puts
+// `<root>/bin` on the PATH of everything the session runs, so `bridge-board-call` resolves by name in
+// hooks and the Bash tool with no file outside the root. Appended: a program of the same name
+// already on PATH keeps winning.
+function clientRoot(t) {
+  const root = path.join(scratch(t, 'root-'), 'agent-webhook-bridge', 'client', 'chan');
+  fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'bin', 'bridge-board-call'), '#!/bin/sh\n', { mode: 0o755 });
+  return root;
+}
+
+test('a launch through a client root appends <root>/bin to the session PATH, so bridge-board-call resolves by name', { skip }, async (t) => {
+  const root = clientRoot(t);
+  const r = runLauncher(t, await freePort(), { env: { AWB_LAUNCHER_CLIENT_ROOT: root } });
+
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.which, path.join(root, 'bin', 'bridge-board-call'));
+  assert.ok(r.path.endsWith(`:${root}/bin`), `appended, not prepended: ${r.path}`);
+});
+
+test('an earlier bridge-board-call on PATH keeps winning, and a nested launch does not add <root>/bin twice', { skip }, async (t) => {
+  const root = clientRoot(t);
+  const mine = scratch(t, 'mine-');
+  fs.writeFileSync(path.join(mine, 'bridge-board-call'), '#!/bin/sh\n', { mode: 0o755 });
+  const r = runLauncher(t, await freePort(), { env: { AWB_LAUNCHER_CLIENT_ROOT: root }, pathBase: `${mine}:${process.env.PATH}:${root}/bin` });
+
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.which, path.join(mine, 'bridge-board-call'));
+  assert.equal(r.path.split(':').filter((p) => p === `${root}/bin`).length, 1);
+});
+
+test('a launch from a copied launcher (no client root) leaves PATH as it was', { skip }, async (t) => {
+  const r = runLauncher(t, await freePort());
+
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.path, /agent-webhook-bridge\/client/);
+  assert.equal(r.which, null);
+});
+
+test('start-claude.ps1 appends the client root\'s bin to the session Path before it drops AWB_LAUNCHER_CLIENT_ROOT', () => {
+  // Text only: no PowerShell runs here (CI's Windows job parses the .ps1; a Windows device agent runs it).
+  const ps1 = fs.readFileSync(path.join(HERE, '..', 'bin', 'start-claude.ps1'), 'utf8');
+  const append = ps1.indexOf("$rootBin = Join-Path $env:AWB_LAUNCHER_CLIENT_ROOT 'bin'");
+  assert.ok(append > 0, 'the .ps1 computes <root>\\bin');
+  assert.match(ps1, /\$env:Path = \(@\(\$env:Path, \$rootBin\) \| Where-Object \{ \$_ \}\) -join ';'/);
+  assert.ok(append < ps1.indexOf('Remove-Item Env:AWB_LAUNCHER_CLIENT_ROOT'), 'before the variable is removed');
 });

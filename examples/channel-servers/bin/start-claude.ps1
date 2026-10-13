@@ -226,6 +226,15 @@ if (-not $env:AWB_LAUNCHER_CLIENT_ROOT) {
     } finally { Pop-Location }
   }
 }
+# A launch through a client root also puts <root>\bin on the Path of everything the session runs, so
+# bridge-board-call (bridge-board-call.cmd) and the seat tools resolve by name with no file outside
+# the root and no persisted Path edit (DL-481). Appended: a program of the same name already on Path wins.
+if ($env:AWB_LAUNCHER_CLIENT_ROOT) {
+  $rootBin = Join-Path $env:AWB_LAUNCHER_CLIENT_ROOT 'bin'
+  if (-not (@($env:Path -split ';') -contains $rootBin)) {
+    $env:Path = (@($env:Path, $rootBin) | Where-Object { $_ }) -join ';'
+  }
+}
 Remove-Item Env:AWB_LAUNCHER_CLIENT_ROOT -ErrorAction SilentlyContinue
 
 # ===== 5. bring up the reverse tunnel in a HIDDEN side process (lifecycle == session) =====

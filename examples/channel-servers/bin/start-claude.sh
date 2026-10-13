@@ -235,6 +235,15 @@ if [ -z "${AWB_LAUNCHER_CLIENT_ROOT:-}" ]; then
         ( cd "$SERVER_DIR" && { npm ci || npm install; } )
     fi
 fi
+# A launch through a client root also puts `<root>/bin` on the PATH of everything the session runs —
+# hooks, the Bash tool, the channel server — so `bridge-board-call` and the seat tools resolve by name
+# with no file outside the root (DL-481). Appended: a program of the same name already on PATH wins.
+if [ -n "${AWB_LAUNCHER_CLIENT_ROOT:-}" ]; then
+    case ":${PATH:-}:" in
+        *":${AWB_LAUNCHER_CLIENT_ROOT}/bin:"*) ;;
+        *) export PATH="${PATH:+${PATH}:}${AWB_LAUNCHER_CLIENT_ROOT}/bin" ;;
+    esac
+fi
 unset AWB_LAUNCHER_CLIENT_ROOT
 
 # ── 7. Export the resolved identity so the server binds what we just guarded ──────────

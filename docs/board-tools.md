@@ -2600,7 +2600,10 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `--bootstrap-client`, `--certify-only` and `--self-cert` write the same shim after their
   own work when the root carries the launcher and the file already there is one it may
   write over, and otherwise say why not — with the `launcher-shim-status:` line when the
-  shim step itself refused — and carry on with their own exit code.
+  shim step itself refused — and carry on with their own exit code. Before that step they link
+  `~/.local/bin/bridge-board-call` to the client root's shim on Linux and macOS and print a
+  `board-call-status: <token>` line (DL-481); the README's § Calling a board tool from a script
+  owns that rule and its tokens.
   [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0948-and-later)
   owns the paths, env, marker lines, the stand-aside rule and what the writer does to a file already there.
   For a bootstrapped seat, point `channel.server_path` at its client root (or leave it

@@ -34,6 +34,7 @@ import hmac
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -1245,7 +1246,7 @@ def run_certify_only(args) -> int:
     rc = _self_cert(str(target), key_path, port)
     if _bootstrap_after_certify(args.agent, mcp_path, args.channel_name):
         _print_activation_block(args.channel_name)
-    _offer_launcher_shim(args.channel_name, args.claude_extra_args)
+    _offer_seat_programs(args.channel_name, args.claude_extra_args)
     return rc
 
 
@@ -1865,6 +1866,122 @@ def _offer_launcher_shim(channel_name: str, extra_args=None) -> None:
         print(line)
 
 
+# --------------------------------------------------------------------------- #
+# `bridge-board-call` by name (DL-481). A session started through the client root's launcher has
+# `<root>/bin` on PATH: the launcher appends it, and no file outside the root is written for it. For
+# what the seat's OS user runs outside such a session, a POSIX onboarding run links
+# `~/.local/bin/bridge-board-call` to the root's shim, which the client updater rewrites in place at
+# every install. It writes only where nothing is, or over a dangling link of its own; anything else
+# at that name is left and reported. Windows gets no file outside the root and no persisted PATH edit.
+# --------------------------------------------------------------------------- #
+BOARD_CALL_PROGRAM = "bridge-board-call"
+BOARD_CALL_LINK_DIR = (".local", "bin")
+
+
+def _board_call_link_is_ours(target: str, root: str) -> bool:
+    """Exactly the form this tool writes: `<client base>/<channel>/bin/bridge-board-call`, absolute,
+    for any channel's root beside `root`."""
+    channel = os.path.basename(os.path.dirname(os.path.dirname(target)))
+    return bool(_CHANNEL_RE.fullmatch(channel)) and target == os.path.join(
+        os.path.dirname(root), channel, "bin", BOARD_CALL_PROGRAM)
+
+
+def _dir_on_path(directory: str, path_env: str) -> bool:
+    want = os.path.realpath(directory)
+    return any(os.path.isabs(e) and os.path.realpath(e) == want for e in path_env.split(os.pathsep))
+
+
+def link_board_call(root: str, home: str, path_env: str, os_name=os.name) -> tuple:
+    """Make `bridge-board-call` resolvable by name for this OS user outside a launched session.
+    Returns `(status, lines)`; a file-system fault is the status `io_error`, never raised."""
+    if os_name == "nt":
+        import ntpath
+
+        program = ntpath.join(root, "bin", BOARD_CALL_PROGRAM + ".cmd")
+        if not os.path.isfile(program):
+            return "no_program", [f"bridge-board-call: not on PATH — {program} does not exist (the client installed "
+                                  f"at {root} predates it, or no client is installed there)."]
+        return "launcher_path", [
+            f"bridge-board-call: on PATH in every session started through {ntpath.join(root, 'bin', 'start-claude.cmd')} "
+            f"(the launcher adds {ntpath.join(root, 'bin')} to that session's PATH); no PATH outside a session is "
+            f"changed on Windows — elsewhere run {program} by its full path."]
+    program = os.path.join(root, "bin", BOARD_CALL_PROGRAM)
+    if not os.path.isfile(program):
+        return "no_program", [f"bridge-board-call: not linked — {program} does not exist (the client installed at "
+                              f"{root} predates it, or no client is installed there)."]
+    link_dir = os.path.join(home, *BOARD_CALL_LINK_DIR)
+    link = os.path.join(link_dir, BOARD_CALL_PROGRAM)
+    in_session = f"a session started through {root}/bin/start-claude has {root}/bin on PATH"
+    if not os.path.isdir(link_dir) or not _dir_on_path(link_dir, path_env):
+        why = "does not exist" if not os.path.isdir(link_dir) else "is not on this shell's PATH"
+        status, line = "not_on_path", (
+            f"bridge-board-call: not linked — {link_dir} {why}; {in_session}. To call it by name from anywhere "
+            f"else, link it into a directory on your PATH: ln -s {shlex.quote(program)} "
+            f"<a directory on your PATH>/{BOARD_CALL_PROGRAM}")
+    else:
+        try:
+            status, line = _place_board_call_link(program, root, link)
+        except OSError as e:
+            status, line = "io_error", (f"bridge-board-call: not linked — {e}; {link} is as it was, and a re-run is "
+                                        f"safe once that is fixed")
+        if status in ("kept", "io_error"):
+            line = f"{line}; {in_session}."
+    found = shutil.which(BOARD_CALL_PROGRAM, path=path_env)
+    return status, [line, f"bridge-board-call resolves by name in this shell: {found}" if found
+                    else "bridge-board-call does not resolve by name in this shell"]
+
+
+def _place_board_call_link(program: str, root: str, link: str) -> tuple:
+    if not os.path.islink(link):
+        if os.path.lexists(link):
+            return "kept", f"bridge-board-call: not linked — {link} is already there and this tool did not write it, so it is left as it is"
+        # Atomic, and refuses (FileExistsError) rather than replaces anything created since the check.
+        os.symlink(program, link)
+        return "linked", f"bridge-board-call: linked {link} -> {program}"
+    target = os.readlink(link)
+    if not _board_call_link_is_ours(target, root):
+        return "kept", f"bridge-board-call: not linked — {link} is already there and this tool did not write it, so it is left as it is"
+    if os.path.exists(link):
+        if target == program:
+            return "already_linked", f"bridge-board-call: {link} already links to {program}"
+        channel = os.path.basename(os.path.dirname(os.path.dirname(target)))
+        return "already_linked", (f"bridge-board-call: {link} links to channel {channel}'s client root ({target}) and "
+                                  f"runs, so it is left as it is; the program is the same for every channel")
+    # A link of ours whose root is gone: staged beside it, then swapped in with one rename.
+    tmp = f"{link}.tmp-{os.getpid()}"
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    os.symlink(program, tmp)
+    try:
+        os.replace(tmp, link)
+    except BaseException:
+        os.remove(tmp)
+        raise
+    return "linked", f"bridge-board-call: linked {link} -> {program} (it linked to a client root that is gone)"
+
+
+def _offer_board_call_link(channel_name: str) -> None:
+    """The onboarding entry points' `bridge-board-call` step: say what was done and print
+    `board-call-status: <token>`. It never changes the run's exit code."""
+    try:
+        root = client_root(channel_name)
+    except ValueError as e:
+        status, lines = "no_program", [f"bridge-board-call: not linked — {e}."]
+    else:
+        status, lines = link_board_call(root, _host_b_home(), os.environ.get("PATH", ""))
+    for line in lines:
+        print(line)
+    print(f"board-call-status: {status}")
+
+
+def _offer_seat_programs(channel_name: str, extra_args=None) -> None:
+    """What every onboarding entry point does for the seat's programs after its own work: the
+    `bridge-board-call` link, then the launcher shim (last, so a launcher it had to keep is the last
+    thing the operator reads)."""
+    _offer_board_call_link(channel_name)
+    _offer_launcher_shim(channel_name, extra_args)
+
+
 def _launcher_shim_exit(status: str, message=None, partly: bool = False) -> int:
     if message is not None:
         print(f"provision-board-tools: launcher shim {'PARTLY' if partly else 'NOT'} written — {message}", file=sys.stderr)
@@ -2126,7 +2243,7 @@ def run_bootstrap_client(args) -> int:
           f"itself from the bridge: a session stages a newer release in the background, and the launch after "
           f"it installs it.")
     # After the OK line, so a launcher this run had to keep is the last thing the operator reads.
-    _offer_launcher_shim(args.channel_name, args.claude_extra_args)
+    _offer_seat_programs(args.channel_name, args.claude_extra_args)
     return 0
 
 
@@ -2255,7 +2372,7 @@ def run_role_b(args) -> int:
         # fails here until host A pins the key, and bootstrap must not ask a door that refused it.
         if _bootstrap_after_certify(args.agent, mcp_path, args.channel_name) and not activation_printed:
             _print_activation_block(args.channel_name)
-        _offer_launcher_shim(args.channel_name, args.claude_extra_args)
+        _offer_seat_programs(args.channel_name, args.claude_extra_args)
         return rc
     return 0
 
@@ -3060,7 +3177,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="[role b] install this seat's channel-server client from its bridge's published pack, over the "
         "transport (ssh or HTTP) its .mcp.json records, then point .mcp.json at it; after that the client "
-        "updates itself (a session stages a newer release, the next launch installs it). Needs --agent --project-dir --channel-name; transport flags are refused",
+        "updates itself (a session stages a newer release, the next launch installs it). On Linux and macOS it (and "
+        "--certify-only / --self-cert) also links ~/.local/bin/bridge-board-call to the client root's shim when that "
+        "directory exists and is on PATH, writing only where nothing is (or over a dangling link of its own), and "
+        "prints a `board-call-status: <token>` line; it never edits a shell rc or the Windows Path. Needs --agent "
+        "--project-dir --channel-name; transport flags are refused",
     )
     cert.add_argument(
         "--write-launcher-shim",
