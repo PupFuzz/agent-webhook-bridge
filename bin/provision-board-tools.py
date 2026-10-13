@@ -1542,8 +1542,8 @@ def _kept_launcher_message(home: str, foreign: list, root: str, os_name: str) ->
     aside = "; ".join(f"rename {os.path.join(home, n)} to {n}.mine" for n in foreign)
     keep = "; ".join(f"in {n}, `{_launch_line(n, target)}`" for n in foreign)
     return (
-        f"{paths} {'is a launcher' if len(foreign) == 1 else 'are a launcher'} this tool did not write. It was LEFT IN "
-        f"PLACE, byte for byte, and nothing was written: the shim is written only where no launcher is, or over a shim "
+        f"{paths} {'is a launcher' if len(foreign) == 1 else 'are a launcher'} this tool did not write, LEFT IN PLACE "
+        f"byte for byte; nothing was written: the shim is written only where no launcher is, or over a shim "
         f"this tool generated, so nothing a hand-written launcher sets is lost. The seat still starts through it. To "
         f"move this seat to the shim: put each setting it makes in {_settings_belong(os_name)}; pass its own `claude` "
         f"arguments with --claude-extra-args=<args>; make sure `claude` is on PATH (the launcher runs it from there); "

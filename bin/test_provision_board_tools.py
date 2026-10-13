@@ -4098,7 +4098,7 @@ class LauncherShim(unittest.TestCase):
                 before = os.stat(self.shim)
                 rc, out = self._write()
                 self.assertEqual((rc, self._status(out)), (7, "launcher-shim-status: launcher_kept"), out + self.err)
-                self.assertIn(f"{self.shim} is a launcher this tool did not write. It was LEFT IN PLACE, byte for byte", self.err)
+                self.assertIn(f"{self.shim} is a launcher this tool did not write, LEFT IN PLACE byte for byte; nothing was written", self.err)
                 target = os.path.join(self.root, "bin", "start-claude")
                 self.assertIn(f"rename {self.shim} to start-claude.sh.mine; then re-run", self.err)
                 self.assertIn(f"in start-claude.sh, `exec '{target}' \"$@\"`", self.err)
@@ -4480,7 +4480,7 @@ class LauncherShim(unittest.TestCase):
         warn = next(i for i, line in enumerate(lines) if line.startswith("⚠ launcher shim: NOT written"))
         self.assertLess(ok, warn, "the warning comes after the run's own OK line")
         self.assertEqual(lines[-1], "launcher-shim-status: launcher_kept")
-        self.assertIn("LEFT IN PLACE, byte for byte", said)
+        self.assertIn("LEFT IN PLACE byte for byte", said)
         with open(self.shim, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), hand)
         self.assertEqual(self._home_files(), ["start-claude.sh"])
