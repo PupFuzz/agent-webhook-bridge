@@ -28,7 +28,11 @@ There is **no manual staging step** and nothing for a PM to re-stage after an up
 
 ## Installing onto PATH
 
-Link the root's shims into a directory on `PATH`, with the coord plugin's `hooks/bin/install-linked-bin.sh` **in its default link arm**:
+**Inside a session, nothing to install** (client 0.9.62 and later, DL-481): a session started through the client root's launcher (`<root>/bin/start-claude`, `start-claude.cmd` on Windows) has `<root>/bin` appended to its `PATH`, so its hooks, its Bash tool and its channel server find every shim in the root by name — the seat tools and `bridge-board-call` alike. `examples/channel-servers/README.md` § *The session's `PATH`* owns that rule and its bounds.
+
+**`bridge-board-call` outside a session** is linked by the onboarding runs themselves on Linux and macOS (`~/.local/bin/bridge-board-call`, when that directory exists and is on `PATH`; never over a file the run did not write; never a shell rc edit). On Windows nothing outside the root is written. `examples/channel-servers/README.md` § *Calling a board tool from a script* owns the rule and its `board-call-status:` tokens.
+
+**A seat tool outside a session** — an operator's terminal, a cron job — still needs a link step. Link the root's shims into a directory on `PATH`, with the coord plugin's `hooks/bin/install-linked-bin.sh` **in its default link arm**:
 
 ```bash
 bash <coord-plugin>/hooks/bin/install-linked-bin.sh <root>/bin ~/.local/bin
@@ -44,9 +48,9 @@ The remedy `bridge:check` prints names the tool by its BASENAME, so this install
 
 **Unsupported, named so nobody reaches for them:**
 - **`--shape=copy` into a shared target such as `~/.local/bin`.** The installer keys its copy manifest by the TARGET directory alone, so a second source copied into a target the toolkit was already copied into overwrites the record of the first. That stays unsupported until the framework keys its manifests by target and source.
-- **A seat whose target directory probes `NOT_CAPABLE`**, i.e. it cannot hold a symlink. There is no supported PATH install for it today. It can still run the shim by its full path (`<root>/bin/check-channel-snapshot.py <deployed dir>`, or `<root>\bin\check-channel-snapshot.py.cmd <deployed dir>` on Windows).
+- **A seat whose target directory probes `NOT_CAPABLE`**, i.e. it cannot hold a symlink. There is no supported PATH install for it outside a session today. It can still run the shim by its full path (`<root>/bin/check-channel-snapshot.py <deployed dir>`, or `<root>\bin\check-channel-snapshot.py.cmd <deployed dir>` on Windows).
 
 ## Upgrades, and what each end can see
 
-- **Nothing to do per upgrade.** The seat's client updates itself from what its bridge publishes (DL-434: staged by a session's background check, installed at the launch after — DL-476), and a shim resolves `current.json` each time it runs, so a CHANGED tool needs no re-install. The launch rewrites the shims from the installed release's `FILES.json`: a tool the declaration GAINS gets a shim in `<root>/bin/`, but it reaches `PATH` only when `install-linked-bin.sh` is re-run; a tool it DROPS has its shim removed, which leaves a dangling link on `PATH` that the install does not remove, so remove it by hand.
-- **The PM sees each seat's client from the bridge**: `bridge:client-fleet` (or the `client_fleet` op for a seat with `board_tools.fleet_view`) shows the release each seat reports running and installed (DL-432). What is on a seat's `PATH` is not reported; nothing the PM runs reads the seat's home.
+- **Nothing to do per upgrade.** The seat's client updates itself from what its bridge publishes (DL-434: staged by a session's background check, installed at the launch after — DL-476), and a shim resolves `current.json` each time it runs, so a CHANGED tool needs no re-install. The launch rewrites the shims from the installed release's `FILES.json`: a tool the declaration GAINS gets a shim in `<root>/bin/`, which a launched session finds at once, but which reaches the `PATH` outside a session only when `install-linked-bin.sh` is re-run; a tool it DROPS has its shim removed, which leaves a dangling link on `PATH` that the install does not remove, so remove it by hand.
+- **The PM sees each seat's client from the bridge**: `bridge:client-fleet` (or the `client_fleet` op for a seat with `board_tools.fleet_view`) shows the release each seat reports running and installed (DL-432). What is on a seat's `PATH` is not reported: `bridge:check` and `bridge:client-fleet` run on the bridge host, and nothing the PM runs reads the seat's home. The seat's own onboarding run reports it instead (`board-call-status:` and the line saying whether `bridge-board-call` resolves by name in that shell).

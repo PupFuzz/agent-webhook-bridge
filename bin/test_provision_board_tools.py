@@ -3377,6 +3377,21 @@ class BootstrapClientEndToEnd(unittest.TestCase):
             run = subprocess.run([shim, "--x"], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
             self.assertEqual(run.stdout.strip(), f"launcher of 1.0.0 root={self.root} channel=cu-test args=--x", run.stderr)
 
+    @unittest.skipIf(os.name == "nt", "a POSIX symlink and shim")
+    def test_bridge_board_call_runs_by_name_after_the_bootstrap(self):
+        # DL-481: the real updater writes <root>/bin/bridge-board-call; the bootstrap links it into a
+        # ~/.local/bin that is on PATH, and the name runs the installed release's program.
+        info, _requests = self._bridge(release="1.0.0")
+        self._write_mcp(info)
+        link_dir = os.path.join(self.tmp.name, "home", ".local", "bin")
+        os.makedirs(link_dir)
+        path = link_dir + os.pathsep + os.environ["PATH"]
+        with mock.patch.dict(os.environ, {"HOME": os.path.join(self.tmp.name, "home"), "PATH": path}):
+            self.assertEqual(self._run(), 0)
+        run = subprocess.run(["bridge-board-call", "board_whoami"], capture_output=True, text=True, env={"PATH": path})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(run.stdout), {"bin": "client bin of 1.0.0", "argv": ["board_whoami"]})
+
     def test_approval_owed_installs_nothing_and_leaves_mcp_json_untouched(self):
         info, requests = self._bridge(release="1.0.0", offer=None, owed="1.0.0")
         before = self._write_mcp(info)
@@ -3470,6 +3485,225 @@ class CertifyOnlyBootstrapEndToEnd(unittest.TestCase):
         self.assertIn("did not complete", str(cm.exception))
         with open(self.mcp_path, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), self.before)
+
+
+class BoardCallLink(unittest.TestCase):
+    """`bridge-board-call` by name outside a launched session (DL-481): the bootstrap links
+    `~/.local/bin/bridge-board-call` to the client root's shim, writing only where nothing is or over
+    a dangling link of its own."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.join(self.tmp.name, "home")
+        self.link_dir = os.path.join(self.home, ".local", "bin")
+        os.makedirs(self.link_dir)
+        self.link = os.path.join(self.link_dir, "bridge-board-call")
+        self.base = os.path.join(self.tmp.name, "data", "agent-webhook-bridge", "client")
+        self.root = os.path.join(self.base, "chan")
+        self.program = self._program(self.root)
+        self.path = os.pathsep.join([self.link_dir, "/usr/bin", "/bin"])
+
+    def _program(self, root, body="#!/bin/sh\necho board-call-of-$0\n"):
+        os.makedirs(os.path.join(root, "bin"), exist_ok=True)
+        program = os.path.join(root, "bin", "bridge-board-call")
+        with open(program, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.chmod(program, 0o755)
+        return program
+
+    def _link(self, path=None, os_name="posix"):
+        return pbt.link_board_call(self.root, self.home, self.path if path is None else path, os_name=os_name)
+
+    def test_the_program_name_is_the_shim_the_client_updater_writes(self):
+        # Lockstep with client-update.mjs: a `client/bin/<name>.mjs` is shimmed as `<root>/bin/<name>`
+        # (`<name>.cmd` on Windows), so a rename of the program reds here.
+        self.assertTrue(os.path.isfile(os.path.join(pbt._bundled_snapshot_dir(), "bin", pbt.BOARD_CALL_PROGRAM + ".mjs")))
+        with open(os.path.join(pbt._bundled_snapshot_dir(), "client-update.mjs"), encoding="utf-8") as fh:
+            self.assertIn("name = win ? `${bare}.cmd` : bare;", fh.read())
+
+    @unittest.skipIf(os.name == "nt", "a POSIX symlink")
+    def test_nothing_there_and_on_path_links_it_and_it_runs_by_name(self):
+        status, lines = self._link()
+        self.assertEqual(status, "linked")
+        self.assertEqual(os.readlink(self.link), self.program)
+        run = subprocess.run(["bridge-board-call"], capture_output=True, text=True, env={"PATH": self.path})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("board-call-of", run.stdout)
+        self.assertIn(f"bridge-board-call resolves by name in this shell: {self.link}", "\n".join(lines))
+
+    @unittest.skipIf(os.name == "nt", "a POSIX symlink")
+    def test_a_re_run_changes_nothing(self):
+        self._link()
+        before = os.lstat(self.link)
+        status, _ = self._link()
+        self.assertEqual(status, "already_linked")
+        self.assertEqual(os.readlink(self.link), self.program)
+        self.assertEqual(os.lstat(self.link).st_ino, before.st_ino, "the link was not rewritten")
+
+    def test_no_link_dir_writes_nothing_and_names_the_one_command(self):
+        shutil.rmtree(os.path.join(self.home, ".local"))
+        status, lines = self._link()
+        self.assertEqual(status, "not_on_path")
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".local")), "no directory is created")
+        text = "\n".join(lines)
+        self.assertIn(f"ln -s {self.program} <a directory on your PATH>/bridge-board-call", text)
+        self.assertIn(f"{self.root}/bin on PATH", text, "it says the launched session has it")
+
+    def test_a_link_dir_not_on_path_writes_nothing(self):
+        status, lines = self._link(path=os.pathsep.join(["/usr/bin", "/bin", "relative/bin", ""]))
+        self.assertEqual(status, "not_on_path")
+        self.assertFalse(os.path.lexists(self.link))
+        self.assertIn("is not on this shell's PATH", "\n".join(lines))
+        self.assertIn("bridge-board-call does not resolve by name in this shell", "\n".join(lines))
+
+    @unittest.skipIf(os.name == "nt", "a POSIX symlink")
+    def test_the_link_dir_on_path_through_a_symlinked_entry_counts(self):
+        alias = os.path.join(self.tmp.name, "alias-bin")
+        os.symlink(self.link_dir, alias)
+        status, _ = self._link(path=alias)
+        self.assertEqual(status, "linked")
+
+    def test_a_file_at_the_name_is_left_byte_identical(self):
+        with open(self.link, "wb") as fh:
+            fh.write(b"#!/bin/sh\necho mine\n")
+        status, lines = self._link()
+        self.assertEqual(status, "kept")
+        with open(self.link, "rb") as fh:
+            self.assertEqual(fh.read(), b"#!/bin/sh\necho mine\n")
+        self.assertIn(f"{self.link} is already there and this tool did not write it", "\n".join(lines))
+
+    @unittest.skipIf(os.name == "nt", "a POSIX symlink")
+    def test_a_foreign_link_is_left_even_when_it_dangles(self):
+        for target in ("/opt/elsewhere/bridge-board-call", os.path.join(self.tmp.name, "gone")):
+            with self.subTest(target=target):
+                if os.path.lexists(self.link):
+                    os.remove(self.link)
+                os.symlink(target, self.link)
+                status, _ = self._link()
+                self.assertEqual(status, "kept")
+                self.assertEqual(os.readlink(self.link), target)
+
+    @unittest.skipIf(os.name == "nt", "a POSIX symlink")
+    def test_a_link_that_only_looks_like_ours_is_left(self):
+        # Not the exact form this tool writes: a relative target, a `..` in it, a channel name it
+        # would never place, or another program in an of-ours root.
+        for target in ("../chan/bin/bridge-board-call",
+                       os.path.join(self.base, "x", "..", "chan", "bin", "bridge-board-call"),
+                       os.path.join(self.base, "Not A Channel", "bin", "bridge-board-call"),
+                       os.path.join(self.base, "other", "bin", "start-claude")):
+            with self.subTest(target=target):
+                if os.path.lexists(self.link):
+                    os.remove(self.link)
+                os.symlink(target, self.link)
+                status, _ = self._link()
+                self.assertEqual(status, "kept")
+                self.assertEqual(os.readlink(self.link), target)
+
+    @unittest.skipIf(os.name == "nt", "a POSIX symlink")
+    def test_another_channels_live_link_is_kept_as_it_resolves(self):
+        other = self._program(os.path.join(self.base, "other"))
+        os.symlink(other, self.link)
+        status, lines = self._link()
+        self.assertEqual(status, "already_linked")
+        self.assertEqual(os.readlink(self.link), other, "a working link of another channel is not flipped")
+        self.assertIn("channel other", "\n".join(lines))
+
+    @unittest.skipIf(os.name == "nt", "a POSIX symlink")
+    def test_a_dangling_link_of_ours_is_replaced(self):
+        os.symlink(os.path.join(self.base, "removed", "bin", "bridge-board-call"), self.link)
+        status, _ = self._link()
+        self.assertEqual(status, "linked")
+        self.assertEqual(os.readlink(self.link), self.program)
+        self.assertEqual(sorted(os.listdir(self.link_dir)), ["bridge-board-call"], "no temporary file is left")
+
+    def test_a_root_without_the_program_writes_nothing(self):
+        os.remove(self.program)
+        status, lines = self._link()
+        self.assertEqual(status, "no_program")
+        self.assertFalse(os.path.lexists(self.link))
+        self.assertIn(f"{self.program} does not exist", "\n".join(lines))
+
+    def test_windows_writes_nothing_outside_the_root_and_names_the_full_path(self):
+        import ntpath
+        program = ntpath.join(self.root, "bin", "bridge-board-call.cmd")
+        open(program, "w").close()
+        status, lines = self._link(os_name="nt")
+        self.assertEqual(status, "launcher_path")
+        self.assertEqual(os.listdir(self.link_dir), [])
+        text = "\n".join(lines)
+        self.assertIn(program, text)
+        self.assertIn("start-claude.cmd", text)
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "needs a directory the user cannot write")
+    def test_a_file_system_refusal_is_reported_never_raised(self):
+        os.chmod(self.link_dir, 0o500)
+        self.addCleanup(os.chmod, self.link_dir, 0o700)
+        status, lines = self._link()
+        self.assertEqual(status, "io_error")
+        self.assertIn("bridge-board-call: not linked", "\n".join(lines))
+
+
+class BoardCallLinkFromTheBootstrap(unittest.TestCase):
+    """The onboarding entry points print the step and its status token, before the launcher shim's,
+    and keep their own exit code."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(self.project)
+        self.mcp_path = os.path.join(self.project, ".mcp.json")
+        self.data = os.path.join(self.tmp.name, "data")
+        self.root = os.path.join(self.data, "agent-webhook-bridge", "client", "chan")
+        self.home = os.path.join(self.tmp.name, "home")
+        self.link_dir = os.path.join(self.home, ".local", "bin")
+        os.makedirs(self.link_dir)
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"chan": {"command": "node", "args": [os.path.join(self.project, ".channel-server", pbt.CHANNEL_MJS_BASENAME)],
+                                               "env": {"BRIDGE_TOOLS_ENDPOINT": "http://127.0.0.1:9/agent-tools/call"}}}}, fh)
+
+    def _run(self, kept=False):
+        def fake_run(cmd, env=None, cwd=None, check=False):
+            os.makedirs(os.path.join(self.root, "bin"), exist_ok=True)
+            open(os.path.join(self.root, "entry.mjs"), "w").close()
+            open(os.path.join(self.root, "bin", "bridge-board-call"), "w").close()
+            return mock.Mock(returncode=0)
+
+        if kept:
+            with open(os.path.join(self.link_dir, "bridge-board-call"), "w") as fh:
+                fh.write("mine")
+        out = io.StringIO()
+        environ = {"HOME": self.home, "XDG_DATA_HOME": self.data, "PATH": self.link_dir + os.pathsep + "/usr/bin"}
+        with mock.patch.dict(os.environ, environ), mock.patch.object(pbt, "_require_node_20"), \
+             mock.patch.object(pbt.subprocess, "run", side_effect=fake_run), contextlib.redirect_stdout(out):
+            rc = pbt.main(["--role", "b", "--agent", "a", "--bootstrap-client", "--project-dir", self.project,
+                           "--channel-name", "chan"])
+        return rc, out.getvalue().splitlines()
+
+    @unittest.skipIf(os.name == "nt", "a POSIX symlink")
+    def test_bootstrap_links_it_and_prints_the_status_before_the_launcher_shim(self):
+        rc, lines = self._run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(os.readlink(os.path.join(self.link_dir, "bridge-board-call")),
+                         os.path.join(self.root, "bin", "bridge-board-call"))
+        statuses = [line for line in lines if line.startswith(("board-call-status:", "launcher shim"))]
+        self.assertEqual(statuses[0], "board-call-status: linked")
+        ok = next(i for i, line in enumerate(lines) if line.startswith("--bootstrap-client: OK"))
+        self.assertLess(ok, lines.index("board-call-status: linked"), "after the OK line")
+
+    def test_a_kept_file_does_not_change_the_bootstraps_exit(self):
+        rc, lines = self._run(kept=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("board-call-status: kept", lines)
+
+    def test_every_onboarding_entry_point_runs_the_step(self):
+        # The three entry points call one primitive; a fourth call of the launcher-shim step alone
+        # would skip the link.
+        with open(os.path.join(_HERE, "provision-board-tools.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertEqual(src.count("_offer_launcher_shim("), 2, "its definition and its one caller, _offer_seat_programs")
+        self.assertEqual(src.count("_offer_seat_programs(args.channel_name, args.claude_extra_args)"), 3)
 
 
 class LauncherShim(unittest.TestCase):
