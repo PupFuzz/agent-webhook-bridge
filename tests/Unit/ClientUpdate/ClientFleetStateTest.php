@@ -252,6 +252,45 @@ class ClientFleetStateTest extends TestCase
         $this->assertStringContainsString('stages it at its next periodic re-check', $notYet['reason']);
     }
 
+    /**
+     * card#11816: a client before 0.9.57 updates only at launch, before its first call, and sends
+     * no report when the bridge did not answer that launch's `client_manifest`. So a launch seen
+     * after the publication, still calling on such a client, did not update at that launch, and
+     * the ledger holds no failure for it: the prod-agent seat of 2026-10-12, whose earlier
+     * reported failure a later launch superseded and whose own two failed launches never arrived.
+     */
+    public function test_a_launch_time_only_client_seen_after_publication_is_told_to_bootstrap(): void
+    {
+        $command = '`'.ClientFleet::bootstrapCommand('seat').'`';
+        $onClient = fn (string $version): array => array_merge($this->launched('0.90.0'), ['last_call_client_version' => $version, 'running_client_version' => $version]);
+
+        $old = $this->derive($onClient('0.9.54') + ['last_launch_id' => 'L1', 'last_launch_result' => 'failed', 'last_launch_error' => 'bridge unreachable (no answer to client_manifest within 5000 ms)', 'last_launch_first_reported_at' => '2026-09-28T10:00:00Z'], $this->published());
+        $this->assertSame('behind', $old['state']);
+        $this->assertTrue($old['warns']);
+        $this->assertStringContainsString('client 0.9.54, which updates only at launch', $old['reason']);
+        $this->assertStringContainsString('install-log.jsonl', $old['reason']);
+        $this->assertStringContainsString($command, $old['reason']);
+        $this->assertStringNotContainsString('background update check has not reported yet', $old['reason']);
+
+        foreach ([ClientFleet::FIRST_BACKGROUND_CHECK_CLIENT, '0.9.60'] as $version) {
+            $new = $this->derive($onClient($version), $this->published());
+            $this->assertSame('behind', $new['state']);
+            $this->assertStringContainsString('its background update check has not reported yet', $new['reason'], "client {$version} checks in the background and reports there");
+            $this->assertStringNotContainsString($command, $new['reason']);
+        }
+
+        $unversioned = $this->derive(array_merge($onClient('0.9.54'), ['running_client_version' => null]), $this->published());
+        $this->assertStringNotContainsString($command, $unversioned['reason'], 'a launch that reported no client version is not read as an old client');
+
+        foreach (['v0.9.50', 'abc'] as $uncomparable) {
+            $reason = $this->derive($onClient($uncomparable), $this->published())['reason'];
+            $this->assertStringNotContainsString($command, $reason, "client {$uncomparable} does not start with digits, so its first chunk reads as 0 and it compares below 0.9.57 — which is not evidence of a client before 0.9.57");
+        }
+
+        $this->assertMatchesRegularExpression('/fail` lines.*bootstrap its client.*restart the session once/s', $old['reason'], 'the discriminator comes before the remedy is applied');
+        $this->assertStringContainsString('launcher_kept', $old['reason'], 'the bootstrap remedy warns what the run does to the seat\'s launcher');
+    }
+
     /** A failure stops counting once a different, later launch has been seen calling. */
     public function test_a_later_launch_supersedes_a_failed_one(): void
     {

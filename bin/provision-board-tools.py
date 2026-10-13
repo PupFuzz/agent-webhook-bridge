@@ -1287,8 +1287,8 @@ def client_root(channel_name: str, environ=None, os_name=os.name) -> str:
 # writes it (bin/test_provision_board_tools.py holds the two equal).
 CLIENT_LAUNCHER_SHIM = {"posix": "start-claude", "nt": "start-claude.cmd"}
 # The line that makes a file at the seat's launcher path OURS: present, the file is rewritten in
-# place; absent (and not the framework's, below), the file is the operator's and is backed up before
-# the shim replaces it.
+# place when it is exactly what this tool generates; absent (and not the framework's, below), the
+# file is the operator's and is left as it is.
 LAUNCHER_SHIM_MARKER = "agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)"
 # The line that makes a file at the seat's launcher path the coord FRAMEWORK's shim (card#11741): the
 # framework owns the seat's entry point once it writes one, and the provisioner stands aside for it.
@@ -1305,18 +1305,23 @@ _EXTRA_ARG_RE = re.compile(r"^[A-Za-z0-9_./:=@,+-]+$")
 LAUNCHER_SHIM_EXIT = {
     "written": 0,
     "up_to_date": 0,
-    "framework_shim": 0,  # the coord framework's shim is the seat's launcher: left in place, nothing written
+    "framework_shim": 0,  # the coord framework's launcher (marked, or recognised by content): left in place, nothing written
     "retry_after_launch": 3,  # the root exists but does not carry the launcher yet
     "needs_bootstrap": 4,  # no client root: an operator runs --bootstrap-client
     "conflict": 5,  # a directory, or another channel's shim, at the shim path: an operator decides
     "io_error": 6,  # the file system refused a read, rename or write: an operator fixes it, then re-runs
+    "launcher_kept": 7,  # a launcher this tool did not write, or its own shim edited by hand: left untouched
+    "needs_setting": 8,  # Windows, a shim file to write where none is: the persisted environment does not set TUNNEL_HOST
 }
 
 
 class LauncherShimRefused(Exception):
-    def __init__(self, status: str, message: str):
+    """`partly`: some shim files were written before the run stopped (a Windows pair left mixed)."""
+
+    def __init__(self, status: str, message: str, partly: bool = False):
         super().__init__(message)
         self.status = status
+        self.partly = partly
 
 
 def client_launcher_shim(root: str, os_name=os.name) -> str:
@@ -1341,13 +1346,16 @@ def parse_claude_extra_args(value: str) -> str:
     return " ".join(tokens)
 
 
+# A seat's shim is rewritten only when it is exactly what this generates (`_read_own_shim`): a change
+# to the template must keep the forms already on seats readable, or every one of them is kept.
+# bin/test_provision_board_tools.py RELEASED_SHIMS holds the released form.
 def launcher_shims(channel_name: str, root: str, os_name=os.name, extra_args: str = "") -> list:
     """`[(file name, body)]` the seat's launcher shim is made of, for one channel. Pure.
 
     Every body carries `LAUNCHER_SHIM_MARKER` on a line of its own, sets BRIDGE_CHANNEL_NAME (the
-    launcher's identity input, which wins over settings.local.json) and, when given, the extra
-    `claude` arguments, and runs the client root's launcher shim with the arguments it was given;
-    when that shim is gone it exits 2 naming the bootstrap, rather than starting an unguarded session.
+    launcher's identity input, which wins over settings.local.json) and the extra `claude`
+    arguments, and runs the client root's launcher shim with the arguments it was given; when that
+    shim is gone it exits 2 naming the bootstrap, rather than starting an unguarded session.
     """
     if not _CHANNEL_RE.fullmatch(channel_name or ""):
         raise ValueError(f"channel name {channel_name!r} must match ^[a-z0-9_-]+$")
@@ -1430,14 +1438,30 @@ def is_framework_launcher_shim(name: str, data: bytes) -> bool:
     return any(line.rstrip("\r") == marker or line.startswith(marker + " ") for line in lines)
 
 
-def _write_text_atomically(path: str, text: str, mode: int) -> None:
+def _stage_text(path: str, data: bytes, mode: int) -> str:
+    """`data` written and synced to a new temporary file beside `path`, created with `mode` from the
+    start; returns its path. The file is removed again on failure."""
     tmp = f"{path}.tmp-{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8", newline="") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), mode)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+    except BaseException:
+        os.remove(tmp)
+        raise
+    return tmp
+
+
+def _shim_bytes(name: str, body: str) -> bytes:
+    """A shim file's bytes: UTF-8, and a `.ps1` with a byte-order mark, without which Windows
+    PowerShell 5.1 reads the file in the ANSI code page. Never on the `.bat`: cmd would run the
+    mark as part of its first line."""
+    return (b"\xef\xbb\xbf" if name.lower().endswith(".ps1") else b"") + body.encode("utf-8")
 
 
 def _shim_value(text: str, name: str):
@@ -1454,87 +1478,217 @@ def shim_channel(text: str):
     return _shim_value(text, "BRIDGE_CHANNEL_NAME")
 
 
-_SHELL_OPERATOR_CHARS = set("();<>|&")
+# --------------------------------------------------------------------------- #
+# What the writer does to a file already at a shim path (card#11822, DL-480): it writes over nothing
+# it did not generate. Its own shim is rewritten only when it is exactly what this tool generates; the
+# coord framework's launcher, and any other launcher, are left as they are. Settings belong in the
+# environment the launcher reads, never in the shim.
+# --------------------------------------------------------------------------- #
+# What start-claude.ps1 puts in place of an unset TUNNEL_HOST and then refuses, compared as PowerShell's
+# `-eq` compares (case-insensitively). bin/test_provision_board_tools.py reads it from that file.
+TUNNEL_HOST_PLACEHOLDER = "<agent>@<bridge-host>"
 
 
-def carried_claude_args(text: str) -> tuple:
-    """The extra `claude` arguments a hand-written POSIX launcher passes, as `(recognised, tokens, unplain)`.
-
-    Reads the first line that runs a launcher — `…start-channel-session.sh` / `…start-claude…`, with
-    or without `exec`, directly or through `bash`/`sh` — or `claude … server:<channel>`, and takes
-    what follows the launcher (or the `server:` argument) up to the first shell operator (`|`, `;`,
-    `&&`, `>`, …), with `"$@"` and a leading `--channel <name>` pair dropped (the shim sets the
-    channel). `recognised` is False when no such line exists. `unplain` lists the tokens that are not
-    plain (`$VAR`, a quoted string with spaces, …): when it is non-empty the caller carries NOTHING,
-    because carrying the rest would change what the remaining arguments mean. Pure.
-    """
-    import shlex
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
+def _launch_environment(winreg=None) -> dict:
+    """The environment a NEW Windows terminal starts the seat's launcher with: the persisted machine
+    and user environment (HKLM, then HKCU over it), not this process's — a `set` in the terminal
+    running this tool does not reach the next one. `winreg` is a test seam; off Windows, with none
+    given (the Windows path exercised on another OS), this process's environment stands in."""
+    if winreg is None and os.name != "nt":
+        return dict(os.environ)
+    if winreg is None:
+        import winreg
+    env = {}
+    for hive, key in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                      (winreg.HKEY_CURRENT_USER, "Environment")):
         try:
-            lexer = shlex.shlex(stripped, posix=True, punctuation_chars=True)
-            lexer.whitespace_split = True
-            lexer.commenters = "#"
-            tokens = list(lexer)
-        except ValueError:
+            with winreg.OpenKey(hive, key) as handle:
+                i = 0
+                while True:
+                    try:
+                        name, value, _kind = winreg.EnumValue(handle, i)
+                    except OSError:
+                        break
+                    env[name] = value
+                    i += 1
+        except OSError:
             continue
-        if tokens[:1] == ["exec"]:
-            tokens = tokens[1:]
-        if tokens and os.path.basename(tokens[0]) in ("bash", "sh"):
-            tokens = tokens[1:]
-        if not tokens:
+    return env
+
+
+def _settings_belong(os_name: str) -> str:
+    """Where a seat's launcher settings belong, as the launcher the shim runs reads them."""
+    if os_name == "nt":
+        return ("the user environment (`setx NAME value`, then a new terminal — the launcher reads TUNNEL_HOST, SSH_KEY, "
+                "REMOTE_PORT and LOCAL_PORT from it)")
+    return ("the environment the launcher is started with (exported from your shell profile — or, for "
+            "BRIDGE_CHANNEL_TRANSPORT, BRIDGE_CHANNEL_PORT and BRIDGE_CHANNEL_SOCKET, `.env` in ~/.claude/settings.local.json)")
+
+
+def _launch_line(name: str, target: str) -> str:
+    """The launch line a hand-written launcher of this file kind needs to run the client root's launcher."""
+    lower = name.lower()
+    if lower.endswith(".bat"):
+        return f'call "{target}" %*'
+    if lower.endswith(".ps1"):
+        return "& '" + target.replace("'", "''") + "' @args"
+    return f'exec {_sh_quote(target)} "$@"'
+
+
+def _kept_launcher_message(home: str, foreign: list, present: list, root: str, os_name: str) -> str:
+    """The refusal for launchers this tool did not write: what was left, and what an operator does.
+    `present` is every shim path holding a file: on Windows the pair is one launcher, so moving the
+    seat to the shim renames aside a shim of ours beside the operator's file too."""
+    paths = " and ".join(os.path.join(home, n) for n in foreign)
+    target = client_launcher_shim(root, os_name)
+    aside = "; ".join(f"rename {os.path.join(home, n)} to {n}.mine" for n in present)
+    keep = "; ".join(f"in {n}, `{_launch_line(n, target)}`" for n in foreign)
+    return (
+        f"{paths} {'is a launcher' if len(foreign) == 1 else 'are a launcher'} this tool did not write, LEFT IN PLACE "
+        f"byte for byte; nothing was written: the shim is written only where no launcher is, or over a shim "
+        f"this tool generated, so nothing a hand-written launcher sets is lost. The seat still starts through it. To "
+        f"move this seat to the shim: put each setting it makes in {_settings_belong(os_name)}; pass its own `claude` "
+        f"arguments with --claude-extra-args=<args>; make sure `claude` is on PATH (the launcher runs it from there); "
+        f"{aside}; then re-run. Or keep it, and make its launch line run this seat's launcher, which updates with the "
+        f"client — {keep} — and every later run reports it as kept."
+    )
+
+
+# The coord framework's launcher as written BEFORE its marker existed (card#11822): recognised by
+# content, per file kind, from the framework's released templates/bridge/start-claude.* (coord
+# 0.58.0–0.66.0, whose start-claude.* files are byte-identical across those releases).
+#  - any kind: a non-comment line naming the plugin's own launcher, `templates/bridge/start-claude.<ext>`
+#    (either slash) — a seat file that resolves the coord plugin and runs the launcher inside it;
+#  - a COPY of the template itself (what `/coord:onboard-agent` § 7 installs): the header phrase
+#    within the first lines AND the template's own launch line; the .ps1 also needs the framework's
+#    default key name, since its header phrase is shared with this repo's old examples/start-claude.ps1.
+# The template .bat is not keyed on its own: it is byte-identical to this repo's old
+# examples/start-claude.bat and only runs the .ps1 beside it, so the .ps1 decides for the pair.
+_FRAMEWORK_PLUGIN_LAUNCHER_RE = re.compile(r"templates[\\/]bridge[\\/]start-claude\.(?:ps1|sh|bat)\b", re.IGNORECASE)
+FRAMEWORK_TEMPLATE_HEADER_WITHIN_LINES = 5
+FRAMEWORK_TEMPLATE_KEYS = {
+    ".sh": ("Linux launcher for coordination-bridge channel live-wake",
+            ['--dangerously-load-development-channels "server:${CHANNEL}"']),
+    ".ps1": ("start-claude.ps1 -- Windows reference launcher for agent-webhook-bridge live-wake",
+             ['--dangerously-load-development-channels "server:$Channel"', ".ssh\\coord-channel-tunnel"]),
+}
+
+
+def _code_lines(name: str, text: str) -> list:
+    """The lines of a launcher file that are not comments (`#`, `rem`/`::`, and a .ps1's `<# … #>`)."""
+    lower, out, in_block = name.lower(), [], False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if lower.endswith(".bat"):
+            bare = stripped.lstrip("@").lower()
+            if bare == "rem" or bare.startswith(("rem ", "rem\t", "::")):
+                continue
+        elif lower.endswith(".ps1"):
+            if in_block or stripped.startswith("<#"):
+                in_block = "#>" not in stripped
+                continue
+            if stripped.startswith("#"):
+                continue
+        elif stripped.startswith("#"):
             continue
-        head = tokens[0]
-        rest = None
-        if "start-channel-session" in head or os.path.basename(head).startswith("start-claude"):
-            rest = tokens[1:]
-        elif os.path.basename(head) == "claude":
-            for i, tok in enumerate(tokens):
-                if tok.startswith("server:"):
-                    rest = tokens[i + 1:]
-                    break
-        if rest is None:
-            continue
-        cut = next((i for i, t in enumerate(rest) if t and set(t) <= _SHELL_OPERATOR_CHARS), len(rest))
-        rest = [t for t in rest[:cut] if t != "$@"]
-        if rest[:1] == ["--channel"]:
-            rest = rest[2:]
-        unplain = [t for t in rest if not _EXTRA_ARG_RE.fullmatch(t)]
-        return True, ([] if unplain else rest), unplain
-    return False, [], []
+        out.append(stripped)
+    return out
 
 
-_CHANNEL_ENV_SET_RE = re.compile(r"\b(BRIDGE_CHANNEL_[A-Z_]+)\s*=")
+def unmarked_framework_launcher(name: str, data: bytes):
+    """How this file is known to be the coord framework's launcher although it carries no marker
+    line, as a phrase for the report — or None when it is not. Encoding-tolerant like the marker."""
+    text = _framework_scan_text(data)
+    code = _code_lines(name, text)
+    if any(_FRAMEWORK_PLUGIN_LAUNCHER_RE.search(line) for line in code):
+        return "it runs the coord plugin's own launcher, `templates/bridge/start-claude.*`"
+    keys = FRAMEWORK_TEMPLATE_KEYS.get(os.path.splitext(name.lower())[1])
+    if keys:
+        header, body = keys
+        if (any(header in line for line in text.split("\n")[:FRAMEWORK_TEMPLATE_HEADER_WITHIN_LINES])
+                and all(any(key in line for line in code) for key in body)):
+            return "it is a copy of the coord plugin's `templates/bridge/" + name + "`"
+    return None
 
 
-def channel_env_set_in(text: str) -> list:
-    """The `BRIDGE_CHANNEL_*` names a file assigns (any shell's spelling), sorted, unique. Pure."""
-    return sorted(set(_CHANNEL_ENV_SET_RE.findall(text)))
+def _generated_target(name: str, text: str):
+    """The client-root launcher one of our shims names on its launch line, unquoted, or None."""
+    lower = name.lower()
+    if lower.endswith(".bat"):
+        pattern, quote = r'^call "(.*)" %\*$', None
+    elif lower.endswith(".ps1"):
+        pattern, quote = r"^\$launcher = '(.*)'$", "''"
+    else:
+        pattern, quote = r"^launcher='(.*)'$", "'\\''"
+    m = re.search(pattern, text.replace("\r\n", "\n"), re.MULTILINE)
+    if m is None:
+        return None
+    return m.group(1) if quote is None else m.group(1).replace(quote, "'")
+
+
+def _read_own_shim(home: str, name: str, text: str, channel_name: str, root: str, os_name: str) -> str:
+    """The extra `claude` arguments one of our shims was generated with. The read is closed: the file
+    must be EXACTLY what `launcher_shims` generates for this channel, the extra arguments its
+    BRIDGE_CLAUDE_EXTRA_ARGS line holds and the client root its launch line names — every line a
+    template line or a setting line in the generated form, each once. Anything else is
+    LauncherShimRefused('launcher_kept') naming the first line that differs, by number (a line can
+    hold a secret, so it is never quoted)."""
+    extra = _shim_value(text, EXTRA_ARGS_ENV) or ""
+    try:
+        extra = parse_claude_extra_args(extra)
+    except ValueError:
+        extra = ""
+    target = _generated_target(name, text)
+    if target is not None:
+        import ntpath
+        import posixpath
+
+        paths = ntpath if os_name == "nt" else posixpath
+        root = paths.dirname(paths.dirname(target))
+    want = dict(launcher_shims(channel_name, root, os_name, extra))[name].splitlines(keepends=True)
+    have = text.splitlines(keepends=True)
+    differs = next((i for i, (a, b) in enumerate(zip(have, want)) if a != b), None)
+    if differs is None and len(have) != len(want):
+        differs = min(len(have), len(want))
+    if differs is None:
+        return extra
+    path = os.path.join(home, name)
+    raise LauncherShimRefused(
+        "launcher_kept",
+        f"{path} is this channel's launcher shim, but line {differs + 1} is not the line this tool generates there "
+        f"(edited by hand, or a setting added or repeated). It was LEFT IN PLACE, byte for byte, and nothing was "
+        f"written. The shim is generated, never edited: put the setting in {_settings_belong(os_name)}, pass claude "
+        f"arguments with --claude-extra-args=<args>, then delete {path} and re-run.",
+    )
 
 
 def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.name, extra_args=None) -> tuple:
     """Write the seat's launcher shim into `home`; idempotent. Returns `(status, lines)`: status
     `written`, `up_to_date` or `framework_shim`, and one line per thing that happened.
 
-    When ANY file this would write is the coord framework's shim (`is_framework_launcher_shim`), it
-    writes nothing — not even the other file of a Windows pair, which would leave a mixed pair — and
-    returns `framework_shim`: the framework owns the seat's entry point.
+    It writes over nothing it did not generate (card#11822, DL-480). By what is at the shim paths:
+     - nothing: the shim is written. On Windows a file is written where none is (both, or the missing
+       half of a pair of ours) only when the persisted user or machine environment sets TUNNEL_HOST
+       to something other than empty or the launcher's placeholder — the launcher the shim runs
+       exits without it — else LauncherShimRefused('needs_setting').
+     - this tool's shim, exactly as generated (`_read_own_shim`): rewritten for the current client
+       root, keeping its extra arguments. Any other line, a repeated setting, or — with no explicit
+       `extra_args` — a Windows pair whose extra arguments disagree: LauncherShimRefused('launcher_kept'),
+       nothing written.
+     - the coord framework's launcher in EITHER file — by its marker (`is_framework_launcher_shim`)
+       or, written before the marker existed, by content (`unmarked_framework_launcher`): nothing
+       written, not even the other file of a Windows pair; status `framework_shim`.
+     - any other launcher, in either file: LauncherShimRefused('launcher_kept'), nothing written.
+    LauncherShimRefused('conflict') when a shim path is a directory or holds the shim of ANOTHER
+    channel: one home has one `start-claude`, and a seat running two channels as one OS user must not
+    have the first silently retargeted.
 
-    `extra_args` None KEEPS what is there: an existing shim's own value, or the extra `claude`
-    arguments a replaced hand-written launcher passed (POSIX; on Windows, and for anything it cannot
-    carry, a ⚠ line says to pass `--claude-extra-args`). A string replaces it ('' clears it).
-
-    A file at a shim path that is not a shim (no marker line) is renamed to `<name>.pre-shim-<UTC>`
-    first and a line says so. Raises LauncherShimRefused('conflict'), writing nothing, when a shim
-    path is a directory or holds the shim of ANOTHER channel: one home has one `start-claude`, and
-    a seat running two channels as one OS user must not have the first silently retargeted.
+    `extra_args` None keeps the shim's own value; a string replaces it ('' clears it). Every shim file
+    is written to a temporary file before any is swapped in, so a fault leaves each shim path holding
+    its old file or the new shim.
 
     The caller has already established that the client root's launcher shim exists.
     """
-    explicit = extra_args is not None
     names = [name for name, _ in launcher_shims(channel_name, root, os_name)]
     retarget = "-Channel" if os_name == "nt" else "--channel"
     current = {}
@@ -1554,6 +1708,8 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
             text = None if raw[name] is None else raw[name].decode("utf-8")
         except UnicodeDecodeError:
             text = None  # not UTF-8 text: not ours (unless it is the framework's, below)
+        if text is not None and name.lower().endswith(".ps1"):
+            text = text.removeprefix("﻿")
         current[name] = text
     framework = [n for n, b in raw.items() if b is not None and is_framework_launcher_shim(n, b)]
     if framework:
@@ -1562,72 +1718,103 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
             f"(`{framework_shim_marker_line(n)}`) — the seat's launcher is the framework's; left in place, nothing written."
             for n in framework
         ]
-    for name, text in current.items():
+    unmarked = {n: unmarked_framework_launcher(n, b) for n, b in raw.items() if b is not None and not is_launcher_shim(current[n] or "")}
+    unmarked = {n: how for n, how in unmarked.items() if how}
+    if unmarked:
+        return "framework_shim", [
+            f"launcher shim: {os.path.join(home, n)} is the coord framework's launcher, written before its marker line existed "
+            f"({how}) — the seat's launcher is the framework's; left in place, nothing written. It is the framework's to "
+            f"update: it does not run this seat's client root launcher, so launcher fixes in a bridge release do not reach it."
+            for n, how in unmarked.items()
+        ]
+    ours = {n: t for n, t in current.items() if t is not None and is_launcher_shim(t)}
+    for name, text in ours.items():
         path = os.path.join(home, name)
-        if text is not None and is_launcher_shim(text):
-            other = shim_channel(text)
-            if other is not None and other != channel_name:
-                raise LauncherShimRefused(
-                    "conflict",
-                    f"{path} is the launcher shim for channel {other}, not {channel_name} — one home holds one; "
-                    f"remove it (or start channel {channel_name} with `{path} {retarget} {channel_name}`) and re-run",
-                )
-    report = []
+        other = shim_channel(text)
+        if other is not None and other != channel_name:
+            raise LauncherShimRefused(
+                "conflict",
+                f"{path} is the launcher shim for channel {other}, not {channel_name} — one home holds one; "
+                f"remove it (or start channel {channel_name} with `{path} {retarget} {channel_name}`) and re-run",
+            )
+    foreign = [n for n in names if n in current and n not in ours]
+    if foreign:
+        present = [n for n in names if n in current]
+        raise LauncherShimRefused("launcher_kept", _kept_launcher_message(home, foreign, present, root, os_name))
+    kept_args = {n: _read_own_shim(home, n, t, channel_name, root, os_name) for n, t in ours.items()}
+    # An explicit value replaces the arguments of every file, so a pair that disagrees is settled by it.
+    explicit = extra_args is not None
+    if not explicit and len(set(kept_args.values())) > 1:
+        raise LauncherShimRefused(
+            "launcher_kept",
+            f"{' and '.join(os.path.join(home, n) for n in kept_args)} are this channel's launcher shim, but they set "
+            f"different claude arguments, so what the seat runs depends on which one starts it. They were LEFT IN PLACE, "
+            f"byte for byte, and nothing was written. Re-run with --claude-extra-args=<args> naming the arguments the "
+            f"seat should run with: that value replaces both.",
+        )
+    # A Windows file written where none is runs a launcher that exits without TUNNEL_HOST; a rewrite of a
+    # shim of ours changes nothing the launcher reads.
+    if os_name == "nt" and any(n not in current for n in names):
+        persisted = {k.upper(): v for k, v in _launch_environment().items()}
+        host = persisted.get("TUNNEL_HOST", "")
+        if not host or host.lower() == TUNNEL_HOST_PLACEHOLDER.lower():
+            raise LauncherShimRefused(
+                "needs_setting",
+                f"the launcher the shim runs exits at once without TUNNEL_HOST, and the user and machine environment a new "
+                f"terminal starts with does not set it (or sets the placeholder `{TUNNEL_HOST_PLACEHOLDER}`) — a `set` in "
+                f"this terminal does not count. Nothing was written. Run `setx TUNNEL_HOST <agent>@<bridge-host>` with this "
+                f"seat's values, open a new terminal, and re-run.",
+            )
     if extra_args is None:
-        kept = [_shim_value(t, EXTRA_ARGS_ENV) for t in current.values() if t is not None and is_launcher_shim(t)]
-        extra_args = next((k for k in kept if k), "")
-    backups = {}
-    for name in names:
-        path = os.path.join(home, name)
-        text = current.get(name, "")
-        if name in current and not (text is not None and is_launcher_shim(text)):
-            backup = f"{path}.pre-shim-{_utc_stamp()}"
-            if os.path.lexists(backup):
-                backup = f"{backup}-{os.getpid()}"
-            backups[name] = (backup, text)
-    for name, (backup, text) in backups.items():
-        path = os.path.join(home, name)
-        others = [n for n in channel_env_set_in(text or "") if n != "BRIDGE_CHANNEL_NAME"]
-        if others:
-            report.append(f"⚠ launcher shim: {path} set {', '.join(others)}; the shim sets only BRIDGE_CHANNEL_NAME — "
-                          f"put those in the environment or settings.local.json .env (the old file is {backup}).")
-        uncarried = (f"⚠ launcher shim: {path} is being replaced; if it passed claude arguments of your own, they are "
-                     f"in {backup} and were NOT carried — set them with --claude-extra-args=<args>.")
-        if os_name == "nt" or text is None:
-            report.append(uncarried)
-            continue
-        recognised, plain, unplain = carried_claude_args(text)
-        if not recognised:
-            report.append(uncarried)
-        elif unplain:
-            report.append(f"⚠ launcher shim: {path} passes claude arguments that cannot be carried ({unplain}), so NONE "
-                          f"were carried (carrying the rest would change their meaning); they are in {backup} — set "
-                          f"them with --claude-extra-args=<args> (plain tokens only).")
-        elif plain and not explicit and not extra_args:
-            extra_args = " ".join(plain)
-            report.append(f"launcher shim: carried the claude arguments `{extra_args}` from the file it replaces into "
-                          f"{EXTRA_ARGS_ENV}.")
-    status = "up_to_date"
-    mode = 0o755 if os_name != "nt" else 0o644
-    for name, body in launcher_shims(channel_name, root, os_name, extra_args):
-        path = os.path.join(home, name)
-        if name in current and name not in backups:
-            if current[name] == body:
+        extra_args = next(iter(kept_args.values()), "")
+    report = []
+    mode = 0o644 if os_name == "nt" else 0o755
+    # Every file is staged before any is swapped in: whatever fails, each shim path holds either its
+    # old file or the new shim.
+    staged = []
+    try:
+        for name, body in launcher_shims(channel_name, root, os_name, extra_args):
+            path = os.path.join(home, name)
+            data = _shim_bytes(name, body)
+            if name in ours and raw[name] == data:
                 report.append(f"launcher shim: {path} is up to date.")
                 continue
-            _write_text_atomically(path, body, mode)
-            status = "written"
+            staged.append((name, path, _stage_text(path, data, mode)))
+    except BaseException:
+        for _name, _path, tmp in staged:
+            if os.path.lexists(tmp):
+                os.remove(tmp)
+        raise
+    swapped = 0
+    try:
+        for _name, path, tmp in staged:
+            os.replace(tmp, path)
+            swapped += 1
+    except BaseException as e:
+        # A rename is atomic: each path not yet swapped still holds its old file, so its temporary
+        # file is removed.
+        for _name, _path, tmp in staged[swapped:]:
+            if os.path.lexists(tmp):
+                os.remove(tmp)
+        if not swapped or not isinstance(e, OSError):
+            raise
+        done = "; ".join(f"{path} holds the new shim" for _name, path, _tmp in staged[:swapped])
+        left = ", ".join(path for _name, path, _tmp in staged[swapped:])
+        # A re-run without this run's explicit value would find the pair disagreeing and keep it.
+        again = f'with the same --claude-extra-args="{extra_args}"' if explicit else "(no --claude-extra-args needed)"
+        raise LauncherShimRefused(
+            "io_error",
+            f"{done}; replacing {left} failed ({e}), so it is as it was before this run. The launcher pair is MIXED "
+            f"until a re-run succeeds: fix the cause, then re-run {again}.",
+            partly=True,
+        ) from e
+    for name, path, _tmp in staged:
+        if name in ours:
             report.append(f"launcher shim: {path} rewritten.")
             continue
-        if name in backups:
-            os.rename(path, backups[name][0])
-            report.append(f"launcher shim: {path} was not a launcher shim — BACKED UP to {backups[name][0]} (nothing "
-                          f"deleted); keep settings in the environment, since the shim is rewritten on every run.")
-        _write_text_atomically(path, body, mode)
-        status = "written"
         report.append(f"launcher shim: wrote {path} — it runs {client_launcher_shim(root, os_name)} as channel {channel_name}"
                       + (f", with {EXTRA_ARGS_ENV}='{extra_args}'." if extra_args else "."))
-    return status, report
+    return ("written" if staged else "up_to_date"), report
 
 
 def _launcher_shim_unavailable(channel_name: str):
@@ -1658,7 +1845,18 @@ def _offer_launcher_shim(channel_name: str, extra_args=None) -> None:
         root, _status, why = _launcher_shim_unavailable(channel_name)
         if why is None:
             _status, lines = install_launcher_shims(channel_name, root, _host_b_home(), extra_args=extra_args)
-    except (LauncherShimRefused, OSError, ValueError) as e:
+    except LauncherShimRefused as e:
+        # Loud, and with the token a caller greps: the run's own work is done, but the seat's
+        # launcher is not the one this tool would write.
+        print(f"⚠ launcher shim: {'PARTLY' if e.partly else 'NOT'} written — {e}")
+        print(f"launcher-shim-status: {e.status}")
+        return
+    except OSError as e:
+        # Staging, or the first swap, failed: every shim path is as it was.
+        print(f"⚠ launcher shim: NOT written — {e} — check the files named; a re-run is safe once it is fixed")
+        print("launcher-shim-status: io_error")
+        return
+    except ValueError as e:
         why = str(e)
     if why is not None:
         print(f"launcher shim: not written — {why}")
@@ -1667,9 +1865,9 @@ def _offer_launcher_shim(channel_name: str, extra_args=None) -> None:
         print(line)
 
 
-def _launcher_shim_exit(status: str, message=None) -> int:
+def _launcher_shim_exit(status: str, message=None, partly: bool = False) -> int:
     if message is not None:
-        print(f"provision-board-tools: launcher shim NOT written — {message}", file=sys.stderr)
+        print(f"provision-board-tools: launcher shim {'PARTLY' if partly else 'NOT'} written — {message}", file=sys.stderr)
     print(f"launcher-shim-status: {status}")
     return LAUNCHER_SHIM_EXIT[status]
 
@@ -1702,7 +1900,7 @@ def run_write_launcher_shim(args) -> int:
     try:
         status, lines = install_launcher_shims(args.channel_name, root, _host_b_home(), extra_args=args.claude_extra_args)
     except LauncherShimRefused as e:
-        return _launcher_shim_exit(e.status, str(e))
+        return _launcher_shim_exit(e.status, str(e), e.partly)
     except OSError as e:
         # A file-system fault (permissions, a full disk, a read-only home) partway through: the
         # run says what failed and where, never a traceback — what is on disk is as the error left it.
@@ -1873,7 +2071,7 @@ def _bootstrap_after_certify(agent: str, mcp_path: str, channel_name: str) -> bo
     so a door that just refused is never asked for a pack.
 
     A seat whose `.mcp.json` already starts it from a client root is left as it is — it updates
-    itself at launch, and a re-provision or re-certify is not a request to reinstall it
+    itself (a session stages a newer release, the launch after it installs it), and a re-provision or re-certify is not a request to reinstall it
     (`--bootstrap-client` is, and repairs it) — unless the absolute entry it records is gone: that
     seat cannot start, so it is reinstalled, and nothing offered fails rather than falling back.
     Otherwise the legacy fallback applies: nothing offered keeps the seat on the snapshot
@@ -1924,9 +2122,11 @@ def run_bootstrap_client(args) -> int:
         existing_text = fh.read()
     if _bootstrap_client(mcp_path, existing_text, args.channel_name, args.agent):
         _print_activation_block(args.channel_name)
-    _offer_launcher_shim(args.channel_name, args.claude_extra_args)
     print(f"--bootstrap-client: OK — channel {args.channel_name} now starts from its client root and updates "
-          f"itself from the bridge at each launch.")
+          f"itself from the bridge: a session stages a newer release in the background, and the launch after "
+          f"it installs it.")
+    # After the OK line, so a launcher this run had to keep is the last thing the operator reads.
+    _offer_launcher_shim(args.channel_name, args.claude_extra_args)
     return 0
 
 
@@ -1979,7 +2179,7 @@ def run_role_b(args) -> int:
         mjs_path = client_entry
         snapshot_replaced = False
         print(f"channel server: this seat runs its bootstrapped client ({client_entry}), which updates "
-              f"itself from the bridge at launch — no snapshot deployed.")
+              f"itself from the bridge (a session stages a newer release, the launch after it installs it) — no snapshot deployed.")
     else:
         deploy_dir = os.path.join(os.path.abspath(args.project_dir), ".channel-server")
         mjs_path = os.path.join(deploy_dir, CHANNEL_MJS_BASENAME)
@@ -2867,10 +3067,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="[role b] write (or refresh) this seat's launcher shim — ~/start-claude.sh, or %%USERPROFILE%%\\start-claude.bat "
         "+ .ps1 on Windows — which runs the launcher of the release its client root installed; nothing else. A "
-        "non-shim file there is backed up first; a coord framework shim there is left in place (status framework_shim, "
-        "exit 0). Writes nothing when the channel's client root cannot serve it "
-        "(exit 3 retry after a launch, 4 needs --bootstrap-client), the path holds something else (5) or the file "
-        "system refuses (6); ends with a "
+        "file already there is handled by what it is, and only this tool's own shim is ever written over. This "
+        "tool's shim, exactly as it generates it: rewritten in place, keeping its extra arguments; with any other "
+        "line, a repeated setting, or a .bat and .ps1 that set different extra arguments when --claude-extra-args is not "
+        "given, it is left untouched (status launcher_kept, "
+        "exit 7) — settings belong in the environment the launcher reads, not in the shim. The coord framework's "
+        "launcher — one carrying the framework's marker line, or one written before the marker existed and recognised "
+        "by content (it runs the coord plugin's templates/bridge/start-claude.*, or is a copy of that template): left "
+        "in place (status framework_shim, exit 0). Any other launcher: left untouched, nothing written (status "
+        "launcher_kept, exit 7), and the message says how to move the seat to the shim. On Windows a shim file is written where none is only when "
+        "the persisted user or machine environment sets TUNNEL_HOST (status "
+        "needs_setting, exit 8). Writes nothing when the channel's client "
+        "root cannot serve it (exit 3 retry after a launch, 4 needs --bootstrap-client), the path holds a directory "
+        "or another channel's shim (5) or the file system refuses (6); ends with a "
         "`launcher-shim-status: <token>` line. Needs --agent --channel-name. The --bootstrap-client / --certify-only / --self-cert runs write it too",
     )
     p.add_argument(
@@ -2878,7 +3087,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ARGS",
         help="[role b] extra `claude` arguments the launcher shim keeps (BRIDGE_CLAUDE_EXTRA_ARGS), whitespace-"
         "separated plain tokens, e.g. '--dangerously-skip-permissions'; '' clears them. Omitted, a shim keeps "
-        "what it had, and a replaced hand-written launcher's own extra arguments are carried over",
+        "what it had",
     )
     return p
 
