@@ -49,8 +49,9 @@ enum FleetState: string
     case Current = 'current';
 
     /**
-     * The seat will run the published release at its next launch: it launched before that release
-     * was published, or already installed it, or its background check has staged it (DL-476), or
+     * The seat reaches the published release by a restart: it already installed it, or its
+     * background check has staged it (DL-476), or it launched before that release was published
+     * (a periodic re-check of that session, or the next session, stages it first — card#11787), or
      * installed a release that no launch has called the
      * bridge from yet — including since a launch or install reported after a call with no launch
      * identity (card#11761).

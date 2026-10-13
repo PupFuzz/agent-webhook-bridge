@@ -168,7 +168,7 @@ class ClientPackInstallCommand extends BridgeCommand
 
         $what = "release {$release} (client {$manifest->clientVersion}, pack sha256 {$manifest->packSha256}, {$manifest->packSize} bytes)";
         $this->line($published
-            ? "bridge:client-pack:install: published the client pack for {$what}. A seat stages it in the background of its next session and runs it from the launch after (a client older than DL-476 installs it at its next launch)."
+            ? "bridge:client-pack:install: published the client pack for {$what}. A seat stages it in the background — at its next session's start, or, from client 0.9.59, at the next periodic re-check of a session already running — and runs it from the launch after (a client older than DL-476 installs it at its next launch)."
             : "bridge:client-pack:install: the client pack for {$what} was already published; nothing changed.");
 
         return 0;

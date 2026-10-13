@@ -381,7 +381,7 @@ diff <(jq -r .version <copy-dir>/package.json) <(jq -r .version examples/channel
 
 #### Multi-agent channel-server distribution
 
-A seat gets its channel server from **its own bridge**. A seat bootstrapped onto its client root updates itself from the client pack this bridge publishes (DL-434): a background check in each session stages a newer release, and the next launch installs it without asking the bridge (DL-476), so nothing is copied, staged or re-synced by hand — not per seat and not per upgrade (card#10567, DL-447). What each update owes is on the bridge side:
+A seat gets its channel server from **its own bridge**. A seat bootstrapped onto its client root updates itself from the client pack this bridge publishes (DL-434): a background check in each session stages a newer release (re-run every few hours while the session lasts, from client 0.9.59 — DL-479), and the next launch installs it without asking the bridge (DL-476), so nothing is copied, staged or re-synced by hand — not per seat and not per upgrade (card#10567, DL-447). What each update owes is on the bridge side:
 
 1. **Publish** the release's pack: `php artisan bridge:client-pack:install`, in the update block above (DL-430). Until a pack is published no seat updates, and `bridge:check`'s `board_tools.client_pack_source` leg says why.
 2. **Approve** it, only for an agent whose YAML sets `board_tools.client_update.approval_required: true`: `php artisan bridge:client-approve <agent> <release> --reason=…` (DL-433). The bridge offers that seat nothing until then.

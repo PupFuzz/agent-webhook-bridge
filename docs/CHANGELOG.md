@@ -8,6 +8,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#11787 / DL-479** — **A seat's channel server checks for an update again every few hours during a long session, so one restart picks up a release published mid-session.** Before, a seat checked once per session, and a seat already running at a publication needed two restarts: one session to stage the release, one launch to install it. Client **0.9.59** re-runs the same background check `AWB_CLIENT_RECHECK_HOURS` after each check ends (default **4**, at least 60 s; `0` turns it off). Only one check runs at a time. The check only stages, never switches release mid-session, and uses the same lock, verification and stage rules against the release installed now: a newer offer replaces the stage, a withdrawn one discards it.
+  - A clean re-check after a failed one in the same session writes a `check` line under that launch. The bridge now reads that line as clearing the launch's failure, so `bridge:client-fleet` shows the seat `restart owed` once it has staged the release, not `UPDATE FAILED` for the rest of the session. A failed install of a staged release at launch is never cleared this way. `bridge:client-fleet` also reads a seat that staged the published release as staged, even when its session began before the publication.
+  - A check a launch runs itself that REFUSES the offer (a downgrade, bytes that do not check out, a Node this seat does not run) now counts as a completed check. Before, the session and the next launch fetched and refused the same pack again. The session's listen-time check still reports the refusal to the bridge.
+  - Channel-server snapshot `0.9.58` → `0.9.59`.
+
 ### Fixed
 
 - **card#11785 / DL-476** — **A failed update check run at launch no longer counts as a completed check.** When a launch runs the update check itself (its previous launch completed none — DL-476 Decision 7) and that check fails or runs out of budget, it still recorded itself as this launch's check. So that session's own background check was skipped, and a release that crashed before its check recovered one launch later than it should. Client **0.9.58** marks a check a launch ran itself (`at_launch` in `update-check.json`); a failed one counts as no check, so the session's background check still runs and the next launch checks again. A failed check run by a listening server still counts as completed. Channel-server snapshot `0.9.57` → `0.9.58`.

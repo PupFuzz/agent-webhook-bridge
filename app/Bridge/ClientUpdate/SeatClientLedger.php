@@ -441,8 +441,11 @@ final class SeatClientLedger
     /**
      * What one stored line changes on the seat's row.
      *
-     * A launch's OUTCOME is `failed` if any of its lines failed or refused, `ok` otherwise. Lines
-     * are grouped by `launch_id`, which every `actor: launch` line carries ({@see InstallLogEntry}).
+     * A launch's OUTCOME is `failed` if any of its lines failed or refused, `ok` otherwise — until a
+     * `check` / `ok` line of that launch: the seat writes one when a later check of the same
+     * session reached the bridge cleanly after an earlier one failed (card#11787), and it clears
+     * the failure the way a later launch's lines do. Lines are grouped by `launch_id`, which every
+     * `actor: launch` line carries ({@see InstallLogEntry}).
      */
     private static function applyEntry(SeatClientState $row, InstallLogEntry $entry, Carbon $now): void
     {
@@ -466,6 +469,10 @@ final class SeatClientLedger
         if ($failed && $row->last_launch_result !== 'failed') {
             $row->last_launch_result = 'failed';
             $row->last_launch_error = $entry->reason ?? $entry->action;
+        }
+        if ($entry->action === 'check' && $entry->result === 'ok') {
+            $row->last_launch_result = 'ok';
+            $row->last_launch_error = null;
         }
     }
 
