@@ -1660,8 +1660,8 @@ function logCheckIfOwed(ctx, fields, prior) {
 }
 
 /**
- * Whether the install log's first line is older than this launch's `state.json`, which the launch
- * writes after its own install. A log that began later replaced one deleted mid-session (readLog
+ * Whether the install log's first line is no newer than this launch's `state.json`, which the
+ * launch writes after its own install. A log that began later replaced a deleted one (readLog
  * keeps the newest install id alone): it cannot say the launch's install did not fail, and the
  * bridge may hold that failure from the log before it.
  */
@@ -2098,8 +2098,8 @@ async function reportOnly(ctx) {
  * named in `error` and the default is used: a typo must not stop a seat updating.
  *
  * `AWB_CLIENT_RECHECK_TEST_MS` is the suite's seam below the floor, and no seat setting: it is
- * read only when `AWB_CLIENT_RECHECK_TEST_ROOT` names this server's own root, which no line copied
- * from a doc or from another seat does. Set without that, it is named in `error` and the interval
+ * read only when `AWB_CLIENT_RECHECK_TEST_ROOT` names this server's own root: a deliberate second
+ * setting that names a path, not a secret. Set without that, it is named in `error` and the interval
  * is whatever `AWB_CLIENT_RECHECK_HOURS` says. The value itself is not bounded: the suite owns it.
  */
 export function recheckIntervalMs(env = process.env) {
