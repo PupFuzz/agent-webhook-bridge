@@ -8,6 +8,18 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#11822 / DL-480** — **`provision-board-tools.py` no longer replaces a seat's working launcher with a shim that cannot start.** `--bootstrap-client` (and `--write-launcher-shim`, `--certify-only`, `--self-cert`) renamed any launcher without a marker line to `…pre-shim-<UTC>` and wrote the bridge's shim. Only plain `claude` arguments were carried, on POSIX; on Windows nothing was. A seat whose launcher set `TUNNEL_HOST`, `SSH_KEY` or `--dangerously-skip-permissions` was left with a shim that exits at the next launch (rt#627). The changes:
+  - **The coord framework's launcher is left in place whether or not it carries the framework's marker.** No coord release up to 0.66.0 writes the marker, so the marker rule protected no seat. A launcher that runs the coord plugin's `templates/bridge/start-claude.*`, or that is a copy of that template, is now recognised by content and left as it is (`launcher-shim-status: framework_shim`, exit 0).
+  - **Any other launcher is carried whole, or left alone.** It is replaced only when every line of it is understood; its environment assignments and `claude` arguments are then written into the shim, on Windows as on POSIX, and kept by every later run. Otherwise nothing is renamed or written, and the run ends with the new status `launcher_kept` (exit 7 from `--write-launcher-shim`; the onboarding commands print the status line and keep their own exit code, so the client install stands). The run prints the names it carried, never a value.
+  - Channel-server snapshot `0.9.60` → `0.9.61` (documentation only: `examples/channel-servers/README.md` § *The seat's launcher* states what the writer does to each kind of file).
+
+### Upgrade warnings
+
+- **card#11822 — if a `provision-board-tools.py` run from v0.103.0 or earlier printed `was not a launcher shim — BACKED UP`, check that seat before its next launch.** The seat's old launcher is beside the new one as `start-claude.<ext>.pre-shim-<UTC>`. Compare the two: any `set` / `export` / `$env:` line and any `claude` argument in the old file that the new shim lacks was dropped. Restore it by copying the old file back over the shim, then re-run the provisioner from this release: it either leaves that launcher in place or carries its settings.
+- **card#11822 — `--write-launcher-shim` has a new exit, 7 (`launcher_kept`), and `--bootstrap-client` / `--certify-only` / `--self-cert` can print `launcher-shim-status: launcher_kept`.** It means the seat's own launcher was left untouched because it sets or does something the shim cannot be shown to keep; the seat still starts through it. A caller that treats every non-zero exit of `--write-launcher-shim` as a failed seat should read the status line. A launcher that earlier releases replaced silently (a hand-written one built from `$HOME` or `%USERPROFILE%`, say) now stays until its settings are moved to the environment: `examples/channel-servers/README.md` § *The seat's launcher* lists what is understood.
+
 ## [0.103.0] - 2026-10-12
 
 ### Changed

@@ -66,9 +66,12 @@ nothing for a person to adjudicate there, and the packet does not ask them to.
   which updates itself (a session stages a newer release, the next launch installs it — DL-476) — or, when the bridge offers none (nothing published,
   a 5xx, a bridge older than the client-update door, approval owed), keeps STEP 1's copy and prints `CLIENT NOT BOOTSTRAPPED`.
   On a seat whose client root carries the launcher, the same run then writes the seat's
-  launcher shim, `~/start-claude.sh` (`start-claude.bat` + `.ps1` on Windows), backing up a
-  file of the operator's that sits there (card#11328, DL-463) — or leaves the coord
-  framework's shim in place when that is what sits there (card#11741);
+  launcher shim, `~/start-claude.sh` (`start-claude.bat` + `.ps1` on Windows). The coord
+  framework's launcher there is left in place, whether it carries the framework's marker
+  (card#11741) or predates it and is recognised by content. Any other launcher is replaced
+  only when everything it sets is carried into the shim (it is then backed up beside it);
+  otherwise it is left untouched, the run prints `launcher-shim-status: launcher_kept`,
+  and the client install still stands (card#11822, DL-480);
   [`examples/channel-servers/README.md` § The seat's launcher](../examples/channel-servers/README.md#the-seats-launcher-start-claudesh-client-0948-and-later)
   owns that contract. If a
   session is **already running** on that seat, see
