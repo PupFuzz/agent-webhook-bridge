@@ -1315,9 +1315,12 @@ LAUNCHER_SHIM_EXIT = {
 
 
 class LauncherShimRefused(Exception):
-    def __init__(self, status: str, message: str):
+    """`partly`: some shim files were written before the run stopped (a Windows pair left mixed)."""
+
+    def __init__(self, status: str, message: str, partly: bool = False):
         super().__init__(message)
         self.status = status
+        self.partly = partly
 
 
 def client_launcher_shim(root: str, os_name=os.name) -> str:
@@ -1527,6 +1530,21 @@ class _NotCarriable(Exception):
     It names a line by NUMBER and never quotes it: a launcher's line may hold a secret."""
 
 
+# Nothing a launcher does after its launch line reaches the process it launched (after `exec`, or a
+# `call` that returns, it runs once that process has exited): only a line with no effect may follow.
+_AFTER_LAUNCH = "it comes after the launch line, where only a comment, a blank line, `cd` or `exit` may stand: a setting there never reaches what was launched"
+
+
+def _nt_name(name: str, spelled: dict) -> str:
+    """`name` as cmd and PowerShell key it — case-insensitively, folded to upper case. `spelled` maps
+    each folded name to the spelling first seen; a second spelling of one name is refused rather
+    than resolved, so no reading of the file depends on which assignment wins."""
+    key = name.upper()
+    if spelled.setdefault(key, name) != name:
+        raise _NotCarriable(f"it sets {key} in two letter cases, which cmd and PowerShell read as one name")
+    return key
+
+
 def _path_base(path: str) -> str:
     return re.split(r"[\\/]", path)[-1].lower()
 
@@ -1581,6 +1599,7 @@ def _after_powershell_file(tokens: list) -> list:
 
 
 _SH_NO_EFFECT_RE = re.compile(r'set -(?:[eu]+|o pipefail|[eu]*o pipefail)|cd(?: (?:~|\$HOME|"\$HOME"))?(?: \|\| exit(?: [0-9]+)?)?')
+_SH_EXIT_RE = re.compile(r'exit(?: [0-9]+| "?\$\?"?)?')
 _SH_GUARD_RE = re.compile(r'\[ -[efx] "\$(\w+)" \] \|\| \{ echo [^;&|]* >&2; exit [0-9]+; \}')
 _SH_ASSIGN_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
 _SH_VAR_RE = re.compile(r"\$\{?(\w+)\}?")
@@ -1622,11 +1641,15 @@ def _read_sh_launcher(text: str, channel_name: str) -> dict:
         line = raw.strip()
         if not line or line.startswith("#") or _SH_NO_EFFECT_RE.fullmatch(line):
             continue
+        if launch is not None and _SH_EXIT_RE.fullmatch(line):
+            continue
         guard = _SH_GUARD_RE.fullmatch(line)
-        if guard and guard.group(1) in shell_vars:
+        if launch is None and guard and guard.group(1) in shell_vars:
             used.add(guard.group(1))
             continue
         try:
+            if launch is not None:
+                raise _NotCarriable(_AFTER_LAUNCH)
             if "\\" in line or "`" in line:
                 raise _NotCarriable("it uses a backslash or a backquote")
             line = _sh_strip_comment(line)
@@ -1646,6 +1669,8 @@ def _read_sh_launcher(text: str, channel_name: str) -> dict:
                 else:
                     commands[-1].append(tok)
             for cmd in commands:
+                if launch is not None and cmd:
+                    raise _NotCarriable(_AFTER_LAUNCH)
                 assigned = []
                 while cmd and _SH_ASSIGN_RE.fullmatch(cmd[0]):
                     assigned.append(_SH_ASSIGN_RE.fullmatch(cmd.pop(0)).groups())
@@ -1663,8 +1688,6 @@ def _read_sh_launcher(text: str, channel_name: str) -> dict:
                         else:
                             raise _NotCarriable(f"it exports `{tok}`, which it does not set")
                 else:
-                    if launch is not None:
-                        raise _NotCarriable("it is a second command line, and only one launch is understood")
                     env.update(assigned)
                     if cmd[0] == "exec":
                         cmd = cmd[1:]
@@ -1685,8 +1708,9 @@ def _read_sh_launcher(text: str, channel_name: str) -> dict:
     return {"env": env, "launch": launch}
 
 
-_BAT_NO_EFFECT_RE = re.compile(r'rem(?:\s.*)?|::.*|echo off|setlocal|endlocal|cd(?: /d)? (?:%USERPROFILE%|"%USERPROFILE%")'
-                               r"|exit(?: /b(?: %ERRORLEVEL%| [0-9]+)?)?", re.IGNORECASE)
+_BAT_NO_EFFECT_RE = re.compile(r'rem(?:\s.*)?|::.*|echo off|setlocal|cd(?: /d)? (?:%USERPROFILE%|"%USERPROFILE%")', re.IGNORECASE)
+# No effect once the launch has run; before it, `exit` skips the launch and `endlocal` undoes the `set`s.
+_BAT_EXIT_RE = re.compile(r"exit(?: /b(?: %ERRORLEVEL%| [0-9]+)?)?|endlocal", re.IGNORECASE)
 _BAT_GUARD_RE = re.compile(r'if not exist "%(\w+)%" \(echo [^&|<>^]* 1>&2 & exit /b [0-9]+\)', re.IGNORECASE)
 _BAT_SET_RE = re.compile(r'set (?:"([A-Za-z_][A-Za-z0-9_]*)=([^"]*)"|([A-Za-z_][A-Za-z0-9_]*)=([^"]*))', re.IGNORECASE)
 _BAT_VAR_RE = re.compile(r"%(\w+)%")
@@ -1694,27 +1718,31 @@ _BAT_OPERATOR_CHARS = set("&|<>^!")
 
 
 def _read_bat_launcher(text: str, channel_name: str) -> dict:
-    env, used, launch = {}, set(), None
+    env, spelled, used, launch = {}, {}, set(), None
     for number, raw in enumerate(text.lstrip("﻿").splitlines(), 1):
         line = raw.strip()
         line = line[1:].lstrip() if line.startswith("@") else line
         if not line or _BAT_NO_EFFECT_RE.fullmatch(line):
             continue
         guard = _BAT_GUARD_RE.fullmatch(line)
-        if guard and guard.group(1) in env:
-            used.add(guard.group(1))
+        if launch is None and guard and guard.group(1).upper() in env:
+            used.add(guard.group(1).upper())
             continue
         try:
+            if _BAT_EXIT_RE.fullmatch(line):
+                if launch is None:
+                    raise _NotCarriable("it exits, or ends its `setlocal`, before its launch line")
+                continue
+            if launch is not None:
+                raise _NotCarriable(_AFTER_LAUNCH)
             assign = _BAT_SET_RE.fullmatch(line)
             if assign:
                 if assign.group(3) is not None and raw.rstrip("\r\n") != raw.rstrip():
                     raise _NotCarriable(f"an unquoted `set {assign.group(3)}=` with trailing spaces, which cmd makes part of the value")
                 if assign.group(3) is not None and _BAT_OPERATOR_CHARS & set(assign.group(4)):
                     raise _NotCarriable(f"an unquoted `set {assign.group(3)}=` holding a cmd operator")
-                env[assign.group(1) or assign.group(3)] = assign.group(2) if assign.group(1) else assign.group(4)
+                env[_nt_name(assign.group(1) or assign.group(3), spelled)] = assign.group(2) if assign.group(1) else assign.group(4)
                 continue
-            if launch is not None:
-                raise _NotCarriable("it is a second command line, and only one launch is understood")
             if _BAT_OPERATOR_CHARS & set(line):
                 raise _NotCarriable("it uses a cmd operator, a block or delayed expansion")
             tokens = [t[1:-1] if t.startswith('"') else t for t in re.findall(r'"[^"]*"|\S+', line)]
@@ -1725,16 +1753,17 @@ def _read_bat_launcher(text: str, channel_name: str) -> dict:
             tokens = _after_powershell_file(tokens)
             tokens[0] = re.sub(r"^%~dp0", "", tokens[0], flags=re.IGNORECASE)  # the directory this .bat is in
             var = _BAT_VAR_RE.fullmatch(tokens[0])
-            if var and var.group(1) in env:
-                used.add(var.group(1))
-                tokens = [env[var.group(1)]] + tokens[1:]
+            if var and var.group(1).upper() in env:
+                used.add(var.group(1).upper())
+                tokens = [env[var.group(1).upper()]] + tokens[1:]
             launch = _read_launch(tokens, channel_name, {"%*"}, "nt")
         except _NotCarriable as e:
             raise _NotCarriable(f"line {number}: {e}") from None
     return {"env": {k: v for k, v in env.items() if k not in used}, "launch": launch}
 
 
-_PS1_NO_EFFECT_RE = re.compile(r"#.*|(?:Set-Location|cd) \$env:USERPROFILE|exit \$LASTEXITCODE", re.IGNORECASE)
+_PS1_NO_EFFECT_RE = re.compile(r"#.*|(?:Set-Location|cd) \$env:USERPROFILE", re.IGNORECASE)
+_PS1_EXIT_RE = re.compile(r"exit(?: \$LASTEXITCODE| [0-9]+)?", re.IGNORECASE)
 _PS1_GUARD_RE = re.compile(r"if \(-not \(Test-Path (?:-LiteralPath )?\$(\w+)\)\) \{ .*; exit [0-9]+ \}", re.IGNORECASE)
 _PS1_SET_RE = re.compile(r"\$(env:)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']*)'|\"([^\"`$]*)\")", re.IGNORECASE)
 _PS1_VAR_RE = re.compile(r"\$(\w+)")
@@ -1742,23 +1771,30 @@ _PS1_OPERATOR_CHARS = set(";|`<>")
 
 
 def _read_ps1_launcher(text: str, channel_name: str) -> dict:
-    env, variables, used, launch = {}, {}, set(), None
+    env, variables, env_spelled, var_spelled, used, launch = {}, {}, {}, {}, set(), None
     for number, raw in enumerate(text.lstrip("﻿").splitlines(), 1):
         line = raw.strip()
         if not line or _PS1_NO_EFFECT_RE.fullmatch(line):
             continue
         guard = _PS1_GUARD_RE.fullmatch(line)
-        if guard and guard.group(1) in variables:
-            used.add(guard.group(1))
+        if launch is None and guard and guard.group(1).upper() in variables:
+            used.add(guard.group(1).upper())
             continue
         try:
+            if _PS1_EXIT_RE.fullmatch(line):
+                if launch is None:
+                    raise _NotCarriable("it exits before its launch line")
+                continue
+            if launch is not None:
+                raise _NotCarriable(_AFTER_LAUNCH)
             assign = _PS1_SET_RE.fullmatch(line)
             if assign:
                 value = assign.group(3) if assign.group(3) is not None else assign.group(4)
-                (env if assign.group(1) else variables)[assign.group(2)] = value
+                if assign.group(1):
+                    env[_nt_name(assign.group(2), env_spelled)] = value
+                else:
+                    variables[_nt_name(assign.group(2), var_spelled)] = value
                 continue
-            if launch is not None:
-                raise _NotCarriable("it is a second command line, and only one launch is understood")
             if _PS1_OPERATOR_CHARS & set(line):
                 raise _NotCarriable("it uses a PowerShell operator, a block or a subexpression")
             tokens = [t[1:-1] if t[0] in "'\"" and len(t) > 1 else t for t in re.findall(r"'[^']*'|\"[^\"]*\"|\S+", line)]
@@ -1768,9 +1804,9 @@ def _read_ps1_launcher(text: str, channel_name: str) -> dict:
                 raise _NotCarriable("it runs nothing")
             tokens = _after_powershell_file(tokens)
             var = _PS1_VAR_RE.fullmatch(tokens[0])
-            if var and var.group(1) in variables:
-                used.add(var.group(1))
-                tokens = [variables[var.group(1)]] + tokens[1:]
+            if var and var.group(1).upper() in variables:
+                used.add(var.group(1).upper())
+                tokens = [variables[var.group(1).upper()]] + tokens[1:]
             launch = _read_launch(tokens, channel_name, {"@args", "$args"}, "nt")
         except _NotCarriable as e:
             raise _NotCarriable(f"line {number}: {e}") from None
@@ -1785,9 +1821,11 @@ def read_foreign_launcher(name: str, text: str, channel_name: str) -> dict:
     arguments]) or None}`. Raises _NotCarriable naming the first line that is not one of the forms
     understood — comments, literal environment assignments, a `cd` home, one launch of a known
     launcher (or of `claude` for this channel), and the existence guard the README's hand-written
-    shim carries. Every other form is a refusal, never an approximation: a variable reference, an
-    operator, a block, a second command, and — in sh — a `#` inside a word or an unquoted brace,
-    which a tokenizer and bash read differently. Pure."""
+    shim carries — and, after the launch line, only comments, `cd` and `exit`. Every other form is a
+    refusal, never an approximation: a variable reference, an operator, a block, anything else after
+    the launch (an `exit`, or a `.bat`'s `endlocal`, before it), on Windows one name set in two letter cases, and — in sh — a
+    `#` inside a word or an unquoted brace, which a tokenizer and bash read differently. On Windows
+    the names come back folded to upper case, as cmd and PowerShell key them. Pure."""
     lower = name.lower()
     reader = _read_bat_launcher if lower.endswith(".bat") else _read_ps1_launcher if lower.endswith(".ps1") else _read_sh_launcher
     return reader(text, channel_name)
@@ -1855,7 +1893,14 @@ def carried_settings(reads: dict, channel_name: str, os_name: str, environ) -> t
         if wide:
             # The .bat is read in the console's code page, not UTF-8: a non-ASCII value would change.
             raise _NotCarriable(f"it sets {', '.join(wide)} to a value with non-ASCII characters, which cmd would read in its own code page")
-    have = {k.upper() for k in list(env) + list(environ)} if os_name == "nt" else set(env) | set(environ)
+    if os_name == "nt":
+        # cmd and PowerShell key the environment case-insensitively and hold no empty variable
+        # (`set NAME=` and `$env:NAME = ''` remove it); an empty persisted value is not counted as
+        # set either, since the launcher's own check refuses an empty one all the same.
+        effective = {**{k.upper(): v for k, v in environ.items()}, **env}
+        have = {k for k, v in effective.items() if v}
+    else:
+        have = set(env) | set(environ)
     # With no file read (a dangling link) there was no working launcher, so nothing can be lost.
     missing = [n for n in LAUNCHER_ENV_WITHOUT_DEFAULT[os_name] if n not in have] if reads else []
     if missing:
@@ -1933,6 +1978,33 @@ def shim_carried_env(text: str) -> dict:
     )
     pairs = [(a or c or e, b or d or f) for a, b, c, d, e, f in found]
     return {name: value for name, value in pairs if name not in ("BRIDGE_CHANNEL_NAME", EXTRA_ARGS_ENV)}
+
+
+def _our_shim_settings(path: str, text: str, os_name: str) -> tuple:
+    """`(env, extra args)` one of our shims at `path` carries — LauncherShimRefused('launcher_kept')
+    naming the line when a hand edit gave it a value the shim cannot hold, which a rewrite would
+    otherwise drop or fail on. On Windows a name is folded to upper case, as cmd keys it."""
+    env, extra = {}, None
+    for number, line in enumerate(text.splitlines(), 1):
+        found = shim_carried_env(line)
+        args = _shim_value(line, EXTRA_ARGS_ENV)
+        try:
+            if any(not _CARRIED_VALUE_RE.fullmatch(v) for v in found.values()):
+                raise ValueError
+            if args:
+                parse_claude_extra_args(args)
+        except ValueError:
+            raise LauncherShimRefused(
+                "launcher_kept",
+                f"{path} is this channel's launcher shim, but line {number} sets a value the shim cannot hold (a quote, `%`, "
+                f"`!`, `^`, `$`, a backquote, or claude arguments that are not plain tokens) — edited by hand, so a "
+                f"rewrite would lose it. It was LEFT IN PLACE, byte for byte, and nothing was written. Put that setting "
+                f"in the environment or settings.local.json .env, delete the line, then re-run.",
+            ) from None
+        for key, value in found.items():
+            env.setdefault(key.upper() if os_name == "nt" else key, value)
+        extra = extra if extra is not None else args
+    return env, extra
 
 
 def _shim_mode(path: str, os_name: str) -> int:
@@ -2020,12 +2092,14 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
                 f"remove it (or start channel {channel_name} with `{path} {retarget} {channel_name}`) and re-run",
             )
     report = []
-    env = {}
-    for text in ours.values():
-        for key, value in shim_carried_env(text).items():
+    env, kept_args = {}, []
+    for name, text in ours.items():
+        shim_env, shim_args = _our_shim_settings(os.path.join(home, name), text, os_name)
+        for key, value in shim_env.items():
             env.setdefault(key, value)
+        kept_args.append(shim_args)
     if extra_args is None:
-        extra_args = next((k for k in (_shim_value(t, EXTRA_ARGS_ENV) for t in ours.values()) if k), "")
+        extra_args = next((k for k in kept_args if k), "")
     foreign = [n for n in names if n in current and n not in ours]
     backups = {}
     if foreign:
@@ -2057,8 +2131,11 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
             backup = f"{os.path.join(home, name)}.pre-shim-{_utc_stamp()}"
             backups[name] = f"{backup}-{os.getpid()}" if os.path.lexists(backup) else backup
         new_env = sorted(k for k in carried_env if k not in env)
+        same_env = sorted(k for k in carried_env if k in env)
         env = {**carried_env, **env}
         said = [f"environment {', '.join(new_env)} (values not printed)"] if new_env else []
+        if same_env:
+            said.append(f"environment {', '.join(same_env)}, which the shim beside it already sets to the same value")
         dropped = []
         if carried_args and not explicit and not extra_args:
             extra_args = " ".join(carried_args)
@@ -2066,6 +2143,8 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
         elif carried_args and " ".join(carried_args) != extra_args:
             dropped.append(f"its claude arguments `{' '.join(carried_args)}` ("
                            + ("--claude-extra-args was given and replaces them" if explicit else "the other shim file's are kept") + ")")
+        elif carried_args:
+            said.append(f"the claude arguments `{extra_args}`, which the shim already passes")
         report.append(f"launcher shim: carried from {paths} into the shim: {'; '.join(said) if said else 'nothing — it set nothing'}.")
         report.append(f"launcher shim: NOT carried from {paths}: " + ("; ".join(dropped) if dropped else "nothing it sets")
                       + ". Every line of it was read."
@@ -2090,8 +2169,31 @@ def install_launcher_shims(channel_name: str, root: str, home: str, os_name=os.n
             if os.path.lexists(leftover):
                 os.remove(leftover)
         raise
-    for name, path, tmp in staged:
-        os.replace(tmp, path)
+    swapped = 0
+    try:
+        for _name, path, tmp in staged:
+            os.replace(tmp, path)
+            swapped += 1
+    except BaseException as e:
+        # A rename is atomic: each path not yet swapped still holds its old file, so its temporary
+        # file and the backup copy made for it are removed — neither is needed, and the temporary
+        # file holds the carried settings.
+        for name, _path, tmp in staged[swapped:]:
+            for leftover in (tmp, backups.get(name)):
+                if leftover is not None and os.path.lexists(leftover):
+                    os.remove(leftover)
+        if not swapped or not isinstance(e, OSError):
+            raise
+        done = "; ".join(f"{path} holds the new shim" + (f" (its old file is backed up at {backups[name]})" if name in backups else "")
+                         for name, path, _tmp in staged[:swapped])
+        left = ", ".join(path for _name, path, _tmp in staged[swapped:])
+        raise LauncherShimRefused(
+            "io_error",
+            f"{done}; replacing {left} failed ({e}), so it is as it was before this run. The launcher pair is MIXED "
+            f"until a re-run succeeds: fix the cause, then re-run.",
+            partly=True,
+        ) from e
+    for name, path, _tmp in staged:
         if name in ours:
             report.append(f"launcher shim: {path} rewritten.")
             continue
@@ -2133,6 +2235,9 @@ def _offer_launcher_shim(channel_name: str, extra_args=None) -> None:
         if why is None:
             _status, lines = install_launcher_shims(channel_name, root, _host_b_home(), extra_args=extra_args)
     except LauncherShimRefused as e:
+        if e.partly:
+            print(f"⚠ launcher shim: PARTLY written — {e}")
+            return
         if e.status == "launcher_kept":
             # Loud, and with the token a caller greps: the run's own work is done, but the seat is
             # still on a launcher this tool did not write.
@@ -2149,9 +2254,9 @@ def _offer_launcher_shim(channel_name: str, extra_args=None) -> None:
         print(line)
 
 
-def _launcher_shim_exit(status: str, message=None) -> int:
+def _launcher_shim_exit(status: str, message=None, partly: bool = False) -> int:
     if message is not None:
-        print(f"provision-board-tools: launcher shim NOT written — {message}", file=sys.stderr)
+        print(f"provision-board-tools: launcher shim {'PARTLY' if partly else 'NOT'} written — {message}", file=sys.stderr)
     print(f"launcher-shim-status: {status}")
     return LAUNCHER_SHIM_EXIT[status]
 
@@ -2184,7 +2289,7 @@ def run_write_launcher_shim(args) -> int:
     try:
         status, lines = install_launcher_shims(args.channel_name, root, _host_b_home(), extra_args=args.claude_extra_args)
     except LauncherShimRefused as e:
-        return _launcher_shim_exit(e.status, str(e))
+        return _launcher_shim_exit(e.status, str(e), e.partly)
     except OSError as e:
         # A file-system fault (permissions, a full disk, a read-only home) partway through: the
         # run says what failed and where, never a traceback — what is on disk is as the error left it.

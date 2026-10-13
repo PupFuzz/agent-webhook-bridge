@@ -282,9 +282,9 @@ class ClientFleetStateTest extends TestCase
         $unversioned = $this->derive(array_merge($onClient('0.9.54'), ['running_client_version' => null]), $this->published());
         $this->assertStringNotContainsString($command, $unversioned['reason'], 'a launch that reported no client version is not read as an old client');
 
-        foreach (['v0.9.60', 'abc'] as $uncomparable) {
+        foreach (['v0.9.50', 'abc'] as $uncomparable) {
             $reason = $this->derive($onClient($uncomparable), $this->published())['reason'];
-            $this->assertStringNotContainsString($command, $reason, "client {$uncomparable} compares as 0, which is not evidence of a client before 0.9.57");
+            $this->assertStringNotContainsString($command, $reason, "client {$uncomparable} does not start with digits, so its first chunk reads as 0 and it compares below 0.9.57 — which is not evidence of a client before 0.9.57");
         }
 
         $this->assertMatchesRegularExpression('/fail` lines.*bootstrap its client.*restart the session once/s', $old['reason'], 'the discriminator comes before the remedy is applied');

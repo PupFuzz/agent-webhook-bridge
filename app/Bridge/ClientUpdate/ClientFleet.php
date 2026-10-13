@@ -208,7 +208,7 @@ final class ClientFleet
 
                 $launched = "it launched after release {$published->bridgeRelease} was published (that launch first seen ".HumanAge::floored((int) $launchSeen->diffInSeconds($now, true))." ago) and still runs release {$running}";
                 $client = $row->running_client_version;
-                // A version that does not start with digits (`v0.9.60`, `abc`) compares as 0: not evidence of an old client.
+                // A version that does not start with digits (`v0.9.50`, `abc`) is not evidence of an old client: versionTuple reads its first chunk as 0, so without this guard it would compare below every release.
                 if ($client !== null && preg_match('/^[0-9]+(\.[0-9]+)*/', $client) === 1 && ChannelSnapshotManifest::compareVersions($client, self::FIRST_BACKGROUND_CHECK_CLIENT) < 0) {
                     return [FleetState::Behind, "{$launched} on client {$client}, which updates only at launch, before its first call — so that launch's update did not install the published release. This bridge holds no failure for it, because a client before ".self::FIRST_BACKGROUND_CHECK_CLIENT.' reports one only when the bridge answered that launch in time — and a launch that began before the publication and first called after it reads the same. Tell them apart on the seat first: if the last `launch` lines of `<client-root>/install-log.jsonl` are `fail` lines, its launch-time update fails, and it tries again only at each launch under the same limit, so bootstrap its client: '.self::bootstrapRemedy($agent).'. If they are not, restart the session once, and bootstrap only if it is still BEHIND after that restart'];
                 }
