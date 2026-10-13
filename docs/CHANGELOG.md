@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.104.0] - 2026-10-13
+
 ### Added
 
 - **card#11823 / DL-481** — **`bridge-board-call` resolves by name on a bootstrapped seat with no manual step.** Before, a seat got `<client root>/bin/bridge-board-call` and nothing put it on `PATH`, so a hook, script or framework tool calling it by name failed until an operator linked it by hand.
