@@ -233,10 +233,11 @@ final class BoardCreateCardTool implements Tool
      */
     private function assignOnHit(KanbanClient $client, SeatCardScope $scope, int $cardId, ?array $card, string $agentName): array
     {
+        $holder = $card['assigned_user_id'] ?? null;
         $readable = $card !== null && array_key_exists('assigned_user_id', $card)
-            && ($card['assigned_user_id'] === null || is_int($card['assigned_user_id']));
-        if ($readable && $card['assigned_user_id'] !== null) {
-            return ['assigned_user_id' => $card['assigned_user_id'], 'assignee_unset_reason' => null];
+            && ($holder === null || is_int($holder));
+        if ($readable && $holder !== null) {
+            return ['assigned_user_id' => $holder, 'assignee_unset_reason' => null];
         }
         if (! $readable) {
             Log::warning('board_create_card: the idempotency hit\'s holder could not be read, so it is not assigned — it may already be held', [
@@ -408,8 +409,9 @@ final class BoardCreateCardTool implements Tool
         // A PRESENT `swimlane_id: null` is a reading (no lane); an ABSENT key is
         // the body answering nothing about the lane. See the docblock — the whole
         // placement is unobserved when either axis is.
+        $lane = $card['swimlane_id'] ?? null;
         $laneObserved = array_key_exists('swimlane_id', $card)
-            && ($card['swimlane_id'] === null || is_numeric($card['swimlane_id']));
+            && ($lane === null || is_numeric($lane));
 
         $unusable = [];
         if ($board === null) {
@@ -426,7 +428,7 @@ final class BoardCreateCardTool implements Tool
             return $unobserved;
         }
 
-        $swimlane = $card['swimlane_id'] === null ? null : (int) $card['swimlane_id'];
+        $swimlane = $lane === null ? null : (int) $lane;
         if ($board !== (int) $cfg->boardId || $swimlane !== (int) $cfg->swimlaneId) {
             Log::warning('board_create_card: the card this call answers with is NOT where this agent is configured to write — the response reports where it actually is', [
                 'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId,
