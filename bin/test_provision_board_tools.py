@@ -8,6 +8,7 @@ Each must-fix has at least one case that goes RED if the guard is reverted:
 """
 
 import contextlib
+import functools
 import importlib.util
 import io
 import json
@@ -3572,35 +3573,11 @@ class LauncherShim(unittest.TestCase):
         self.assertEqual(os.stat(self.shim).st_ino, first_stat.st_ino, "not replaced")
         self.assertEqual(self._home_files(), ["start-claude.sh"], "no backup of our own shim")
 
-    def test_a_non_shim_file_is_backed_up_said_and_replaced(self):
-        self._root()
-        with open(self.shim, "w", encoding="utf-8") as fh:
-            fh.write("#!/bin/sh\n# my hand-copied launcher\nexec claude\n")
-        rc, out = self._write()
-        self.assertEqual(rc, 0)
-        backups = [n for n in self._home_files() if n.startswith("start-claude.sh.pre-shim-")]
-        self.assertEqual(len(backups), 1, self._home_files())
-        with open(os.path.join(self.home, backups[0]), encoding="utf-8") as fh:
-            self.assertEqual(fh.read(), "#!/bin/sh\n# my hand-copied launcher\nexec claude\n")
-        self.assertIn(f"was not a launcher shim — BACKED UP to {os.path.join(self.home, backups[0])}", out)
-        with open(self.shim, encoding="utf-8") as fh:
-            self.assertTrue(pbt.is_launcher_shim(fh.read()))
 
     def test_a_marker_quoted_inside_a_file_of_ones_own_is_not_the_marker_line(self):
         self.assertFalse(pbt.is_launcher_shim(f"echo '{pbt.LAUNCHER_SHIM_MARKER}'\n"))
         self.assertFalse(pbt.is_launcher_shim(f"# not quite: {pbt.LAUNCHER_SHIM_MARKER}\n"))
 
-    def test_a_changed_shim_of_this_channel_is_rewritten_in_place_without_a_backup(self):
-        self._root()
-        [(_, body)] = pbt.launcher_shims("chan", self.root, "posix")
-        with open(self.shim, "w", encoding="utf-8") as fh:
-            fh.write(body.replace("exec ", "exec  "))
-        rc, out = self._write()
-        self.assertEqual(rc, 0)
-        self.assertIn(f"launcher shim: {self.shim} rewritten.", out)
-        with open(self.shim, encoding="utf-8") as fh:
-            self.assertEqual(fh.read(), body)
-        self.assertEqual(self._home_files(), ["start-claude.sh"])
 
     def test_the_shim_of_another_channel_is_refused_never_retargeted(self):
         # One home, two channels as one OS user: the second must not silently take the first's launcher.
@@ -3651,29 +3628,10 @@ class LauncherShim(unittest.TestCase):
 
     def test_the_exit_codes_are_distinct_per_kind_of_refusal(self):
         codes = pbt.LAUNCHER_SHIM_EXIT
-        self.assertEqual(len({codes["retry_after_launch"], codes["needs_bootstrap"], codes["conflict"], codes["io_error"], 0, 1, 2}), 7)
+        refusals = {token: code for token, code in codes.items() if code != 0}
+        self.assertEqual(sorted(refusals), ["conflict", "io_error", "launcher_kept", "needs_bootstrap", "needs_setting", "retry_after_launch"])
+        self.assertEqual(len({*refusals.values(), 0, 1, 2}), len(refusals) + 3)
 
-    @unittest.skipIf(os.name == "nt", "runs the POSIX shim")
-    def test_a_hand_shim_s_extra_claude_args_are_carried_and_reach_the_launcher(self):
-        # This host's shape (card#11328 review S3): a hand shim baking --dangerously-skip-permissions in.
-        self._root()
-        with open(self.shim, "w", encoding="utf-8") as fh:
-            fh.write('#!/usr/bin/env bash\nexport BRIDGE_CHANNEL_NAME=chan\n'
-                     'exec "$HOME/agent-webhook-bridge-prod/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"\n')
-        rc, out = self._write()
-        self.assertEqual(rc, 0)
-        self.assertIn("carried the claude arguments `--dangerously-skip-permissions`", out)
-        with open(self.shim, encoding="utf-8") as fh:
-            self.assertIn("BRIDGE_CLAUDE_EXTRA_ARGS='--dangerously-skip-permissions'; export BRIDGE_CLAUDE_EXTRA_ARGS\n", fh.read())
-        # Kept on a re-run, and on a rewrite for a new root path.
-        rc, out = self._write()
-        self.assertIn("up to date", out)
-        # The stub launcher prints what it received in the environment.
-        path = os.path.join(self.root, "bin", "start-claude")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write('#!/bin/sh\necho "extra=$BRIDGE_CLAUDE_EXTRA_ARGS"\n')
-        run = subprocess.run([self.shim], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
-        self.assertEqual(run.stdout.strip(), "extra=--dangerously-skip-permissions")
 
     def test_explicit_extra_args_replace_and_empty_clears(self):
         self._root()
@@ -3690,65 +3648,11 @@ class LauncherShim(unittest.TestCase):
             self._write("--claude-extra-args", "--x $(id)")
         self.assertIn("plain tokens", str(cm.exception))
 
-    def test_carried_claude_args_reads_the_launcher_line_shapes(self):
-        cases = {
-            'exec "$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"': (True, ["--dangerously-skip-permissions"], []),
-            "exec ~/start-claude.sh --channel kb --model opus \"$@\"": (True, ["--model", "opus"], []),
-            'exec claude --dangerously-load-development-channels "server:${CHANNEL}" --verbose "$@"': (True, ["--verbose"], []),
-            'exec "$L" "$@"': (False, [], []),
-            # Direct, non-exec invocations of a known launcher path (review r2 SF2).
-            '"$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"': (True, ["--dangerously-skip-permissions"], []),
-            'bash /x/start-claude.sh --a "$@" > /tmp/log 2>&1': (True, ["--a"], []),
-            # ANY uncarryable token carries NOTHING (review r2 SF1): the rest would change meaning.
-            'exec /x/start-channel-session.sh --append-system-prompt "$P" --d "$@"': (True, [], ["$P"]),
-            'exec /x/start-channel-session.sh --append-system-prompt "two words" "$@"': (True, [], ["two words"]),
-            # Reading stops at the first shell operator (review r2 SF1).
-            'exec ~/x/start-channel-session.sh --e; rm -rf /': (True, ["--e"], []),
-            'exec ~/x/start-channel-session.sh --e && rm -rf / "$@"': (True, ["--e"], []),
-            'exec ~/x/start-channel-session.sh --e | tee log': (True, ["--e"], []),
-            "echo start-claude.sh is here": (False, [], []),
-            "# exec ~/x/start-channel-session.sh --commented": (False, [], []),
-        }
-        for line, want in cases.items():
-            self.assertEqual(pbt.carried_claude_args(f"#!/bin/sh\n{line}\n"), want, line)
 
-    def _replace_hand_shim(self, text):
-        self._root()
-        with open(self.shim, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        rc, out = self._write()
-        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: written"))
-        with open(self.shim, encoding="utf-8") as fh:
-            return out, pbt._shim_value(fh.read(), "BRIDGE_CLAUDE_EXTRA_ARGS")
-
-    def test_a_partly_uncarryable_hand_shim_carries_nothing_and_says_so(self):
-        out, extra = self._replace_hand_shim('#!/bin/sh\nP=x\nexec "$HOME/x/examples/start-channel-session.sh" --append-system-prompt "$P" --d "$@"\n')
-        self.assertEqual(extra, "", "never `--append-system-prompt --d`")
-        self.assertIn("cannot be carried (['$P']), so NONE were carried", out)
-        self.assertIn(".pre-shim-", out)
-
-    def test_an_operator_ends_what_is_carried(self):
-        _out, extra = self._replace_hand_shim("#!/bin/sh\nexec ~/x/start-channel-session.sh --e; rm -rf /\n")
-        self.assertEqual(extra, "--e", "never `rm -rf /`")
-
-    def test_a_non_exec_hand_shim_is_carried(self):
-        out, extra = self._replace_hand_shim('#!/bin/sh\n"$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"\n')
-        self.assertEqual(extra, "--dangerously-skip-permissions")
-        self.assertIn("carried the claude arguments", out)
-
-    def test_an_unrecognised_hand_shim_is_warned_about(self):
-        out, extra = self._replace_hand_shim('#!/bin/sh\nL="$HOME/x/run-it"\n"$L" --dangerously-skip-permissions "$@"\n')
-        self.assertEqual(extra, "")
-        self.assertIn("were NOT carried — set them with --claude-extra-args=<args>", out)
-
-    def test_channel_exports_in_the_replaced_file_are_named(self):
-        out, _extra = self._replace_hand_shim('#!/bin/sh\nexport BRIDGE_CHANNEL_NAME=chan BRIDGE_CHANNEL_TRANSPORT=http\nexport BRIDGE_CHANNEL_PORT=8790\n'
-                                              'exec ~/x/start-channel-session.sh "$@"\n')
-        self.assertIn("set BRIDGE_CHANNEL_PORT, BRIDGE_CHANNEL_TRANSPORT; the shim sets only BRIDGE_CHANNEL_NAME", out)
 
     def test_a_file_system_fault_is_io_error_with_a_status_line_never_a_traceback(self):
         self._root()
-        with mock.patch.object(pbt, "_write_text_atomically", side_effect=PermissionError(13, "Permission denied", self.shim)):
+        with mock.patch.object(pbt, "_stage_text", side_effect=PermissionError(13, "Permission denied", self.shim)):
             rc, out = self._write()
         self.assertEqual((rc, self._status(out)), (6, "launcher-shim-status: io_error"))
         self.assertIn("Permission denied", self.err)
@@ -3783,7 +3687,9 @@ class LauncherShim(unittest.TestCase):
              mock.patch.object(pbt, "install_launcher_shims", side_effect=PermissionError(13, "Permission denied")), \
              contextlib.redirect_stdout(out):
             pbt._offer_launcher_shim("chan")
-        self.assertIn("launcher shim: not written — [Errno 13] Permission denied", out.getvalue())
+        said = out.getvalue().strip().splitlines()
+        self.assertTrue(said[0].startswith("⚠ launcher shim: NOT written — [Errno 13] Permission denied"), said)
+        self.assertEqual(said[-1], "launcher-shim-status: io_error")
 
     def test_transport_flags_are_refused(self):
         with self.assertRaises(SystemExit) as cm:
@@ -3832,16 +3738,6 @@ class LauncherShim(unittest.TestCase):
         with open(self.shim, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), self.FRAMEWORK_SH)
 
-    def test_the_framework_marker_on_line_six_is_not_the_framework_s_and_is_replaced(self):
-        self._root()
-        late = "#!/bin/sh\n#\n#\n#\n#\n# coord-launcher-shim\nexec claude\n"
-        with open(self.shim, "w", encoding="utf-8") as fh:
-            fh.write(late)
-        rc, out = self._write()
-        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: written"))
-        self.assertEqual(len([n for n in self._home_files() if n.startswith("start-claude.sh.pre-shim-")]), 1)
-        with open(self.shim, encoding="utf-8") as fh:
-            self.assertTrue(pbt.is_launcher_shim(fh.read()))
 
     def test_the_framework_marker_predicate_is_exact(self):
         cases = {
@@ -3851,6 +3747,9 @@ class LauncherShim(unittest.TestCase):
             ("start-claude.ps1", "\ufeff# coord-launcher-shim\r\n"): True,
             ("start-claude.ps1", "<#\r\n#>\r\n\r\n\r\n# coord-launcher-shim\r\n"): True,
             ("start-claude.bat", "@echo off\r\nREM coord-launcher-shim v2\r\n"): True,
+            ("start-claude.bat", "@echo off\r\nREM coord-launcher-shim (hooks/bin/seat-launcher.py)\r\n"): True,
+            ("start-claude.sh", "# coord-launcher-shim (hooks/bin/seat-launcher.py)\n#!/bin/sh\n"): True,
+            ("start-claude.ps1", "# coord-launcher-shim (hooks/bin/seat-launcher.py)\r\n"): True,
             ("start-claude.sh", "\n\n\n\n\n# coord-launcher-shim\n"): False,  # line 6
             ("start-claude.sh", "#coord-launcher-shim\n"): False,
             ("start-claude.sh", "# coord-launcher-shims\n"): False,
@@ -3946,25 +3845,7 @@ class LauncherShim(unittest.TestCase):
                     with open(os.path.join(home, name), "rb") as fh:
                         self.assertEqual(fh.read(), data, (label, name))
 
-    def test_a_utf16_file_without_the_marker_is_handled_as_today(self):
-        data = b"\xff\xfe" + "# my own launcher\r\n& claude @args\r\n".encode("utf-16-le")
-        home = self._windows_home_bytes({"start-claude.ps1": data})
-        status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
-        self.assertEqual(status, "written")
-        backups = [n for n in os.listdir(home) if n.startswith("start-claude.ps1.pre-shim-")]
-        self.assertEqual(len(backups), 1, os.listdir(home))
-        with open(os.path.join(home, backups[0]), "rb") as fh:
-            self.assertEqual(fh.read(), data)
 
-    def test_windows_unmarked_pair_is_written_as_today(self):
-        home = self._windows_home({"start-claude.bat": "@echo off\r\nrem coord-launcher-shim\r\nclaude\r\n"})
-        status, _lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
-        self.assertEqual(status, "written")
-        files = dict(pbt.launcher_shims("chan", "C:\\r", "nt"))
-        for name, body in files.items():
-            with open(os.path.join(home, name), encoding="utf-8", newline="") as fh:
-                self.assertEqual(fh.read(), body)
-        self.assertEqual(len([n for n in os.listdir(home) if n.startswith("start-claude.bat.pre-shim-")]), 1)
 
     def test_an_onboarding_run_leaves_a_framework_shim_and_says_so(self):
         self._root()
@@ -4008,6 +3889,682 @@ class LauncherShim(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn(f"launcher shim: wrote {self.shim}", out.getvalue())
         self.assertTrue(os.path.isfile(self.shim))
+
+    # --- The coord framework's launcher written before its marker existed (card#11822): recognised by content ---
+
+    # The reported seat's shape: a .bat that resolves the coord plugin's install path and runs the
+    # launcher inside it, with the seat's settings beside the launch (host and key path are stand-ins).
+    DEVICE_SEAT_BAT = (
+        "@echo off\r\n"
+        "REM start-claude.bat -- runs the launcher the coord plugin ships, from the plugin's install path.\r\n"
+        "REM The path is read from installed_plugins.json at every launch.\r\n"
+        "setlocal\r\n"
+        'set "TUNNEL_HOST=device@bridge.example"\r\n'
+        'set "SSH_KEY=C:\\Users\\seat\\.ssh\\tunnel-key"\r\n'
+        'set "SERVER_DIR=C:\\Users\\seat\\agent-webhook-bridge-channel"\r\n'
+        "for /f \"usebackq delims=\" %%P in (`powershell -NoProfile -Command \"(Get-Content $env:USERPROFILE\\.claude\\plugins\\installed_plugins.json | ConvertFrom-Json).plugins.'coord@agent-board-framework'[0].installPath\"`) do set \"PLUGIN=%%P\"\r\n"
+        'if not exist "%PLUGIN%\\templates\\bridge\\start-claude.ps1" (echo coord plugin launcher not found 1>&2 & exit /b 1)\r\n'
+        'powershell -NoProfile -ExecutionPolicy Bypass -File "%PLUGIN%\\templates\\bridge\\start-claude.ps1" --dangerously-skip-permissions %*\r\n'
+    )
+    # What a copy of the coord plugin's templates/bridge/start-claude.sh / .ps1 is known by: its header
+    # phrase and its own launch line (the .ps1 also by the framework's default key name). The lines
+    # around them here are stand-ins for the template's body (the recogniser reads only the keys).
+    FRAMEWORK_TEMPLATE_SH = (
+        "#!/usr/bin/env bash\n"
+        "# start-claude.sh — Linux launcher for coordination-bridge channel live-wake (the Linux\n"
+        "# half of the cross-platform launcher).\n"
+        "set -euo pipefail\n"
+        'CHANNEL="${CHANNEL:-${BRIDGE_CHANNEL_NAME:-}}"\n'
+        'cd "$HOME"\n'
+        'exec claude --dangerously-load-development-channels "server:${CHANNEL}" --dangerously-skip-permissions "$@"\n'
+    )
+    FRAMEWORK_TEMPLATE_PS1 = (
+        "<#\r\n"
+        "  start-claude.ps1 -- Windows reference launcher for agent-webhook-bridge live-wake (the\r\n"
+        "  Windows half of the cross-platform launcher).\r\n"
+        "#>\r\n"
+        "if (-not $TunnelHost) { $TunnelHost = if ($env:TUNNEL_HOST) { $env:TUNNEL_HOST } else { 'device@bridge.example' } }\r\n"
+        "if (-not $SshKey) { $SshKey = if ($env:SSH_KEY) { $env:SSH_KEY } else { Join-Path $env:USERPROFILE '.ssh\\coord-channel-tunnel' } }\r\n"
+        '& claude --dangerously-load-development-channels "server:$Channel" @PassthroughArgs\r\n'
+    )
+    THIN_BAT = '@echo off\r\nREM thin shim\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-claude.ps1" %*\r\n'
+
+    def _install_nt(self, files, environ=None, **kwargs):
+        """`install_launcher_shims` for a Windows home holding `files`, in an environment that sets
+        only `environ`: `(home, status or the refusal, lines)`."""
+        home = self._windows_home(files)
+        with mock.patch.dict(os.environ, environ or {}, clear=True):
+            try:
+                status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt", **kwargs)
+            except pbt.LauncherShimRefused as e:
+                status, lines = e, [str(e)]
+        return home, status, lines
+
+    def _assert_untouched(self, home, files):
+        self.assertEqual(sorted(os.listdir(home)), sorted(files), "nothing renamed, nothing added")
+        for name, text in files.items():
+            with open(os.path.join(home, name), encoding="utf-8", newline="") as fh:
+                self.assertEqual(fh.read(), text, name)
+
+    def test_the_device_seat_framework_bat_is_left_byte_identical(self):
+        files = {"start-claude.bat": self.DEVICE_SEAT_BAT}
+        home, status, lines = self._install_nt(files)
+        self.assertEqual(status, "framework_shim", lines)
+        self.assertEqual(pbt.LAUNCHER_SHIM_EXIT["framework_shim"], 0)
+        self.assertIn("written before its marker line existed", lines[0])
+        self.assertIn("left in place, nothing written", lines[0])
+        self._assert_untouched(home, files)
+
+    def test_a_device_seat_bat_that_names_the_plugin_launcher_in_a_set_line_is_left_byte_identical(self):
+        # The reported seat's line form (PR #920 review): the template path is assigned, then run.
+        bat = ("@echo off\r\nsetlocal\r\n"
+               'set "TUNNEL_HOST=device@bridge.example"\r\n'
+               'set "LAUNCHER=%COORD_ROOT%\\templates\\bridge\\start-claude.ps1"\r\n'
+               'powershell -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%" --dangerously-skip-permissions %*\r\n')
+        files = {"start-claude.bat": bat}
+        home, status, lines = self._install_nt(files)
+        self.assertEqual(status, "framework_shim", lines)
+        self._assert_untouched(home, files)
+
+    def test_an_unmarked_framework_launcher_is_left_in_every_file_form(self):
+        wrapper_ps1 = ("# runs the coord plugin's launcher\r\n$env:TUNNEL_HOST = 'device@bridge.example'\r\n"
+                       "$p = (Get-Content \"$env:USERPROFILE\\.claude\\plugins\\installed_plugins.json\" | ConvertFrom-Json)\r\n"
+                       "& (Join-Path $p 'templates\\bridge\\start-claude.ps1') --dangerously-skip-permissions @args\r\n")
+        layouts = {
+            "a .ps1 that runs the plugin's launcher": {"start-claude.ps1": wrapper_ps1},
+            "a copy of the template .ps1 with its thin .bat": {"start-claude.ps1": self.FRAMEWORK_TEMPLATE_PS1, "start-claude.bat": self.THIN_BAT},
+            "the device seat's .bat beside a shim of ours": {"start-claude.bat": self.DEVICE_SEAT_BAT,
+                                                             "start-claude.ps1": dict(pbt.launcher_shims("chan", "C:\\old", "nt"))["start-claude.ps1"]},
+        }
+        for label, files in layouts.items():
+            with self.subTest(label):
+                home, status, lines = self._install_nt(files)
+                self.assertEqual(status, "framework_shim", lines)
+                self._assert_untouched(home, files)
+        for label, text in {
+            "a .sh that runs the plugin's launcher": '#!/bin/sh\nexport BRIDGE_CHANNEL_PORT=8790\nP="$(coord-plugin-path)"\nexec "$P/templates/bridge/start-claude.sh" --dangerously-skip-permissions "$@"\n',
+            "a copy of the template .sh": self.FRAMEWORK_TEMPLATE_SH,
+        }.items():
+            with self.subTest(label):
+                self._root()
+                with open(self.shim, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                rc, out = self._write()
+                self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: framework_shim"), out + self.err)
+                with open(self.shim, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), text)
+                self.assertEqual(self._home_files(), ["start-claude.sh"])
+
+    def test_the_content_recogniser_does_not_take_an_operators_launcher_for_the_frameworks(self):
+        cases = {
+            # Named in a comment only: nothing here runs the plugin's launcher.
+            ("start-claude.sh", "#!/bin/sh\n# replaces templates/bridge/start-claude.sh\nexec ~/x/start-channel-session.sh \"$@\"\n"): False,
+            ("start-claude.bat", "@echo off\r\nREM was templates\\bridge\\start-claude.ps1\r\nclaude %*\r\n"): False,
+            ("start-claude.ps1", "<#\r\n ran templates\\bridge\\start-claude.ps1 once\r\n#>\r\n& claude @args\r\n"): False,
+            # The header phrase without the template's launch line, and the reverse.
+            ("start-claude.sh", "#!/bin/sh\n# Linux launcher for coordination-bridge channel live-wake\nexec claude \"$@\"\n"): False,
+            ("start-claude.sh", '#!/bin/sh\n# mine\nexec claude --dangerously-load-development-channels "server:${CHANNEL}" "$@"\n'): False,
+            # This repo's old examples/start-claude.ps1 shares the .ps1 header phrase, not the key name.
+            ("start-claude.ps1", self.FRAMEWORK_TEMPLATE_PS1.replace("coord-channel-tunnel", "bridge-channel-tunnel")): False,
+            ("start-claude.bat", self.THIN_BAT): False,
+            ("start-claude.sh", self.FRAMEWORK_TEMPLATE_SH): True,
+            ("start-claude.ps1", self.FRAMEWORK_TEMPLATE_PS1): True,
+            ("start-claude.bat", self.DEVICE_SEAT_BAT): True,
+        }
+        for (name, text), want in cases.items():
+            self.assertEqual(pbt.unmarked_framework_launcher(name, text.encode("utf-8")) is not None, want, (name, text))
+
+    def test_this_repos_own_launchers_are_never_read_as_the_frameworks(self):
+        launchers = os.path.join(pbt._bundled_snapshot_dir(), "bin")
+        for name in ("start-claude.sh", "start-claude.ps1", "start-claude.bat"):
+            with open(os.path.join(launchers, name), "rb") as fh:
+                self.assertIsNone(pbt.unmarked_framework_launcher(name, fh.read()), name)
+        for os_name in ("posix", "nt"):
+            for name, body in pbt.launcher_shims("chan", "/r", os_name, "--a"):
+                self.assertIsNone(pbt.unmarked_framework_launcher(name, body.encode("utf-8")), name)
+
+    def test_the_readme_declares_the_content_keys_the_recogniser_reads(self):
+        with open(os.path.join(pbt._bundled_snapshot_dir(), "README.md"), encoding="utf-8") as fh:
+            readme = fh.read()
+        self.assertEqual(sorted(pbt.FRAMEWORK_TEMPLATE_KEYS), [".ps1", ".sh"])
+        for header, body in pbt.FRAMEWORK_TEMPLATE_KEYS.values():
+            for key in [header, *body]:
+                self.assertIn(f"`{key}`", readme, key)
+        self.assertIn(f"within its first {pbt.FRAMEWORK_TEMPLATE_HEADER_WITHIN_LINES} lines", readme)
+        for ext in ("sh", "ps1", "bat"):
+            self.assertTrue(pbt._FRAMEWORK_PLUGIN_LAUNCHER_RE.search(f"x\\Templates\\Bridge\\start-claude.{ext}"), ext)
+            self.assertTrue(pbt._FRAMEWORK_PLUGIN_LAUNCHER_RE.search(f"x/templates/bridge/start-claude.{ext}"), ext)
+
+    # --- What the writer does to a file already there (card#11822, DL-480): it writes over nothing it
+    # did not generate. A launcher of the operator's is left untouched; its own shim is rewritten only
+    # when it is exactly what it generates.
+
+    HAND_BAT = (
+        "@echo off\r\n"
+        "rem my launcher\r\n"
+        "setlocal\r\n"
+        'set "TUNNEL_HOST=device@bridge.example"\r\n'
+        "set SSH_KEY=C:\\Users\\seat\\.ssh\\tunnel-key\r\n"
+        'call "C:\\awb\\examples\\start-claude.bat" --dangerously-skip-permissions %*\r\n'
+        "exit /b %ERRORLEVEL%\r\n"
+    )
+    HAND_PS1 = ("$env:TUNNEL_HOST = 'device@bridge.example'\r\n$env:SSH_KEY = 'C:\\Users\\seat\\.ssh\\tunnel-key'\r\n"
+                "& 'C:\\awb\\examples\\start-claude.ps1' --dangerously-skip-permissions @args\r\n")
+
+    # Hand-written POSIX launchers, each left byte for byte. Among them every shape an earlier draft of
+    # this change carried into the shim, and the shapes PR #920's review rounds found it mis-carried.
+    HAND_SH = {
+        "exports and a launch (once carried)": ('#!/usr/bin/env bash\nset -euo pipefail\nexport BRIDGE_CHANNEL_NAME=chan BRIDGE_CHANNEL_TRANSPORT=http\n'
+                                                "BRIDGE_CHANNEL_PORT='8790'; export BRIDGE_CHANNEL_PORT\ncd \"$HOME\"\n"
+                                                'exec "$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"\n'),
+        "a hand shim baking in claude arguments (once carried)": ('#!/usr/bin/env bash\nexport BRIDGE_CHANNEL_NAME=chan\n'
+                                                                  'exec "$HOME/agent-webhook-bridge-prod/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"\n'),
+        "a hand copy running claude (once backed up and replaced)": "#!/bin/sh\n# my hand-copied launcher\nexec claude --dangerously-load-development-channels server:chan \"$@\"\n",
+        "a non-exec launch (once carried)": '#!/bin/sh\n"$HOME/x/examples/start-channel-session.sh" --dangerously-skip-permissions "$@"\n',
+        "claude by its full path (review round 3)": "#!/bin/sh\nexec /home/u/.claude/local/claude --dangerously-load-development-channels server:chan \"$@\"\n",
+        "an export after the launch line (review round 2)": ('#!/bin/sh\nexport BRIDGE_CHANNEL_PORT=8790\nexec ~/x/start-channel-session.sh "$@"\n'
+                                                             "export BRIDGE_CHANNEL_PORT=9999\n"),
+        "a variable set after a launch that returns (review round 2)": '#!/bin/sh\n~/x/start-channel-session.sh "$@"\nSSH_KEY=k; export SSH_KEY\nexit $?\n',
+        "an env -S shebang setting a variable (review round 3)": '#!/usr/bin/env -S FOO=1 bash\nexec ~/x/start-channel-session.sh "$@"\n',
+        "a `#` inside a word (review round 2)": "#!/bin/sh\nexport PASS=ab#cd\nexec ~/x/start-channel-session.sh\n",
+        "a secret built from a variable": '#!/bin/sh\nexport API_TOKEN="s3cr3t-$SUFFIX"\nexec ~/x/start-channel-session.sh --key "s3cr3t two" "$@"\n',
+        "a sourced file": '#!/bin/sh\n. ~/.tunnel-env\nexec ~/x/start-channel-session.sh "$@"\n',
+        "the README's hand-written shim": None,
+        "this repo's own launcher, copied": None,
+        "a wrongly placed framework marker (line 6)": "#!/bin/sh\n#\n#\n#\n#\n# coord-launcher-shim\nexec ~/x/start-channel-session.sh\n",
+    }
+
+    def _readme_hand_shims(self):
+        with open(os.path.join(pbt._bundled_snapshot_dir(), "README.md"), encoding="utf-8") as fh:
+            readme = fh.read()
+        import re
+
+        section = readme[readme.index("**Without the framework, by hand.**"):]
+        blocks = dict(re.findall(r"```(sh|bat|powershell)\n(.*?)```", section, re.DOTALL)[:3])
+        self.assertEqual(sorted(blocks), ["bat", "powershell", "sh"])
+        return {fence: "\n".join(line.strip() for line in body.splitlines()).replace("<channel>", "chan") + "\n"
+                for fence, body in blocks.items()}
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes")
+    def test_a_hand_written_posix_launcher_is_left_byte_identical_with_exit_7(self):
+        self._root()
+        with open(os.path.join(pbt._bundled_snapshot_dir(), "bin", "start-claude.sh"), encoding="utf-8") as fh:
+            copied = fh.read()
+        readme_sh = self._readme_hand_shims()["sh"]
+        for label, text in self.HAND_SH.items():
+            with self.subTest(label):
+                text = {"the README's hand-written shim": readme_sh, "this repo's own launcher, copied": copied}.get(label, text)
+                with open(self.shim, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                os.chmod(self.shim, 0o750)
+                before = os.stat(self.shim)
+                rc, out = self._write()
+                self.assertEqual((rc, self._status(out)), (7, "launcher-shim-status: launcher_kept"), out + self.err)
+                self.assertIn(f"{self.shim} is a launcher this tool did not write, LEFT IN PLACE byte for byte; nothing was written", self.err)
+                target = os.path.join(self.root, "bin", "start-claude")
+                self.assertIn(f"rename {self.shim} to start-claude.sh.mine; then re-run", self.err)
+                self.assertIn(f"in start-claude.sh, `exec '{target}' \"$@\"`", self.err)
+                self.assertNotIn("s3cr3t", out + self.err, "a launcher's line is never quoted")
+                with open(self.shim, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), text)
+                after = os.stat(self.shim)
+                self.assertEqual((after.st_ino, after.st_mode, after.st_mtime_ns), (before.st_ino, before.st_mode, before.st_mtime_ns))
+                self.assertEqual(self._home_files(), ["start-claude.sh"], "no rename, no backup, no temporary file")
+
+    @unittest.skipIf(os.name == "nt", "POSIX symbolic link")
+    def test_a_dangling_link_at_the_shim_path_is_left_in_place(self):
+        self._root()
+        os.symlink(os.path.join(self.tmp.name, "gone"), self.shim)
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (7, "launcher-shim-status: launcher_kept"), out + self.err)
+        self.assertTrue(os.path.islink(self.shim))
+
+    def test_a_hand_written_windows_launcher_is_left_byte_identical(self):
+        ours = dict(pbt.launcher_shims("chan", "C:\\r", "nt"))
+        readme = self._readme_hand_shims()
+        layouts = {
+            "a .bat setting and passing (once carried)": {"start-claude.bat": self.HAND_BAT},
+            "a .bat and .ps1 that agree (once carried)": {"start-claude.bat": self.HAND_BAT, "start-claude.ps1": self.HAND_PS1},
+            "one name in two letter cases (review round 2)": {"start-claude.bat": self.HAND_BAT.replace("setlocal\r\n", 'setlocal\r\nset "tunnel_host=old@bridge.example"\r\n')},
+            "a set after the launch line (review round 2)": {"start-claude.bat": '@echo off\r\nset "TUNNEL_HOST=dev@bridge.example"\r\n'
+                                                                                'call "C:\\awb\\examples\\start-claude.bat" %*\r\nset TUNNEL_HOST=\r\n'},
+            "a $env: assignment after the launch line (review round 2)": {"start-claude.ps1": "& 'C:\\awb\\examples\\start-claude.ps1' @args\r\n$env:SSH_KEY = 'k'\r\n"},
+            "PowerShell without -NoProfile (review round 3)": {"start-claude.bat": 'powershell -ExecutionPolicy Bypass -File "C:\\awb\\examples\\start-claude.ps1" %*\r\n'},
+            "a .ps1 @name splat (review round 3)": {"start-claude.ps1": "$extra = @('--verbose')\r\n& 'C:\\awb\\examples\\start-claude.ps1' @extra @args\r\n"},
+            "claude by its full path (review round 3)": {"start-claude.ps1": "& 'C:\\Users\\u\\.local\\bin\\claude.exe' --dangerously-load-development-channels server:chan @args\r\n"},
+            "the README's hand-written pair": {"start-claude.bat": readme["bat"].replace("\n", "\r\n"), "start-claude.ps1": readme["powershell"].replace("\n", "\r\n")},
+            "a hand .bat beside a shim of ours": {"start-claude.bat": self.HAND_BAT, "start-claude.ps1": ours["start-claude.ps1"]},
+            "a shim of ours beside a hand .ps1": {"start-claude.bat": ours["start-claude.bat"], "start-claude.ps1": self.HAND_PS1},
+            "a wrongly cased framework marker": {"start-claude.bat": "@echo off\r\nrem coord-launcher-shim\r\nclaude --dangerously-load-development-channels server:chan %*\r\n"},
+        }
+        for label, files in layouts.items():
+            with self.subTest(label):
+                home, refusal, lines = self._install_nt(files, {"TUNNEL_HOST": "env@bridge.example"})
+                self.assertIsInstance(refusal, pbt.LauncherShimRefused, lines)
+                self.assertEqual(refusal.status, "launcher_kept")
+                self.assertEqual(pbt.LAUNCHER_SHIM_EXIT[refusal.status], 7)
+                foreign = [n for n, t in files.items() if t not in ours.values()]
+                for name in foreign:
+                    self.assertIn(f"rename {os.path.join(home, name)} to {name}.mine", str(refusal))
+                if "start-claude.bat" in foreign:
+                    self.assertIn('in start-claude.bat, `call "C:\\r\\bin\\start-claude.cmd" %*`', str(refusal))
+                if "start-claude.ps1" in foreign:
+                    self.assertIn("in start-claude.ps1, `& 'C:\\r\\bin\\start-claude.cmd' @args`", str(refusal))
+                self.assertIn("setx NAME value", str(refusal))
+                self.assertNotIn("bridge.example", str(refusal), "a launcher's line is never quoted")
+                self._assert_untouched(home, files)
+
+    def test_a_windows_launcher_not_in_utf8_is_left_in_place(self):
+        data = b"\xff\xfe" + "# my own launcher\r\n& claude @args\r\n".encode("utf-16-le")
+        home = self._windows_home_bytes({"start-claude.ps1": data})
+        with self.assertRaises(pbt.LauncherShimRefused) as cm:
+            pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual(cm.exception.status, "launcher_kept")
+        self.assertEqual(os.listdir(home), ["start-claude.ps1"])
+        with open(os.path.join(home, "start-claude.ps1"), "rb") as fh:
+            self.assertEqual(fh.read(), data)
+
+    # Our own shim: read under a closed set — exactly what launcher_shims generates, or kept.
+
+    def test_our_shim_is_rewritten_for_a_moved_root_keeping_its_extra_args(self):
+        old = os.path.join(self.tmp.name, "old-data", "agent-webhook-bridge", "client", "chan")
+        [(_, body)] = pbt.launcher_shims("chan", old, "posix", "--dangerously-skip-permissions")
+        self._root()
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: written"), out + self.err)
+        self.assertIn(f"launcher shim: {self.shim} rewritten.", out)
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), pbt.launcher_shims("chan", self.root, "posix", "--dangerously-skip-permissions")[0][1])
+        self.assertEqual(self._home_files(), ["start-claude.sh"], "no backup of our own shim")
+        rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: up_to_date"))
+
+    def test_a_shim_of_ours_edited_by_hand_is_kept_naming_the_line(self):
+        self._root()
+        [(_, body)] = pbt.launcher_shims("chan", self.root, "posix", "--a")
+        lines = body.splitlines(keepends=True)
+        at_launcher = next(i for i, line in enumerate(lines) if line.startswith("launcher="))
+        at_extra = next(i for i, line in enumerate(lines) if line.startswith("BRIDGE_CLAUDE_EXTRA_ARGS="))
+        edits = {
+            # (label): (the edited text, the 1-based line the refusal names)
+            "a template line changed": (body.replace("exec ", "exec  "), len(lines)),
+            "an environment line added (once carried)": ("".join(lines[:at_launcher] + ["TUNNEL_HOST='s3cr3t@h'; export TUNNEL_HOST\n"] + lines[at_launcher:]), at_launcher + 1),
+            "the extra arguments set twice (read first-wins, run last-wins)": (
+                "".join(lines[:at_extra + 1] + ["BRIDGE_CLAUDE_EXTRA_ARGS='--b'; export BRIDGE_CLAUDE_EXTRA_ARGS\n"] + lines[at_extra + 1:]), at_extra + 2),
+            "the channel set twice": ("".join(lines[:at_extra] + ["BRIDGE_CHANNEL_NAME='chan'; export BRIDGE_CHANNEL_NAME\n"] + lines[at_extra:]), at_extra + 1),
+            "extra arguments that are not plain tokens": (body.replace("BRIDGE_CLAUDE_EXTRA_ARGS='--a'", "BRIDGE_CLAUDE_EXTRA_ARGS='--a $X'"), at_extra + 1),
+            "a line appended": (body + "export LATE=1\n", len(lines) + 1),
+        }
+        for label, (edited, line) in edits.items():
+            with self.subTest(label):
+                with open(self.shim, "w", encoding="utf-8") as fh:
+                    fh.write(edited)
+                before = os.stat(self.shim)
+                rc, out = self._write("--claude-extra-args=--a")
+                self.assertEqual((rc, self._status(out)), (7, "launcher-shim-status: launcher_kept"), out + self.err)
+                self.assertIn(f"{self.shim} is this channel's launcher shim, but line {line} is not the line this tool generates there", self.err)
+                self.assertIn("The shim is generated, never edited", self.err)
+                self.assertNotIn("s3cr3t", self.err)
+                with open(self.shim, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), edited)
+                self.assertEqual(os.stat(self.shim).st_ino, before.st_ino)
+                self.assertEqual(self._home_files(), ["start-claude.sh"])
+
+    # What releases 0.98.0 through 0.103.0 wrote, byte for byte (generated by v0.98.0's launcher_shims; the
+    # template is the same in every release since). Every seat upgrading holds one of these: a template
+    # change that stops reading them as generated would leave every such seat `launcher_kept`.
+    RELEASED_SHIMS = {
+        'posix': ('/home/seat/.local/share/agent-webhook-bridge/client/chan', {
+            'start-claude.sh': (
+                '#!/bin/sh\n'
+                '# agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)\n'
+                "# Runs the channel launcher of the release this seat's client root has installed; rewritten, never edited.\n"
+                "BRIDGE_CHANNEL_NAME='chan'; export BRIDGE_CHANNEL_NAME\n"
+                "BRIDGE_CLAUDE_EXTRA_ARGS='--dangerously-skip-permissions'; export BRIDGE_CLAUDE_EXTRA_ARGS\n"
+                "launcher='/home/seat/.local/share/agent-webhook-bridge/client/chan/bin/start-claude'\n"
+                '[ -x "$launcher" ] || { echo \'/home/seat/.local/share/agent-webhook-bridge/client/chan/bin/start-claude is missing: this seat\'\\\'\'s channel client is not installed, or predates the launcher it ships. Run provision-board-tools.py --role b --bootstrap-client for channel chan.\' >&2; exit 2; }\n'
+                'exec "$launcher" "$@"\n'
+            ),
+        }),
+        'nt': ('C:\\Users\\seat\\AppData\\Local\\agent-webhook-bridge\\client\\chan', {
+            'start-claude.bat': (
+                '@echo off\r\n'
+                'rem agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)\r\n'
+                "rem Runs the channel launcher of the release this seat's client root has installed.\r\n"
+                'setlocal\r\n'
+                'set "BRIDGE_CHANNEL_NAME=chan"\r\n'
+                'set "BRIDGE_CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions"\r\n'
+                'if not exist "C:\\Users\\seat\\AppData\\Local\\agent-webhook-bridge\\client\\chan\\bin\\start-claude.cmd" (echo C:\\Users\\seat\\AppData\\Local\\agent-webhook-bridge\\client\\chan\\bin\\start-claude.cmd is missing: this seat\'s channel client is not installed, or predates the launcher it ships. Run provision-board-tools.py --role b --bootstrap-client for channel chan. 1>&2 & exit /b 2)\r\n'
+                'call "C:\\Users\\seat\\AppData\\Local\\agent-webhook-bridge\\client\\chan\\bin\\start-claude.cmd" %*\r\n'
+                'exit /b %ERRORLEVEL%\r\n'
+            ),
+            'start-claude.ps1': (
+                '# agent-webhook-bridge launcher shim (provision-board-tools.py --write-launcher-shim)\r\n'
+                "# Runs the channel launcher of the release this seat's client root has installed.\r\n"
+                "$env:BRIDGE_CHANNEL_NAME = 'chan'\r\n"
+                "$env:BRIDGE_CLAUDE_EXTRA_ARGS = '--dangerously-skip-permissions'\r\n"
+                "$launcher = 'C:\\Users\\seat\\AppData\\Local\\agent-webhook-bridge\\client\\chan\\bin\\start-claude.cmd'\r\n"
+                "if (-not (Test-Path -LiteralPath $launcher)) { [Console]::Error.WriteLine('C:\\Users\\seat\\AppData\\Local\\agent-webhook-bridge\\client\\chan\\bin\\start-claude.cmd is missing: this seat''s channel client is not installed, or predates the launcher it ships. Run provision-board-tools.py --role b --bootstrap-client for channel chan.'); exit 2 }\r\n"
+                '& $launcher @args\r\n'
+                'exit $LASTEXITCODE\r\n'
+            ),
+        }),
+    }
+
+    def test_every_released_shim_is_read_as_generated_and_keeps_its_extra_args(self):
+        for os_name, (root, files) in self.RELEASED_SHIMS.items():
+            with self.subTest(os_name):
+                home = self._windows_home(files)
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    status, lines = pbt.install_launcher_shims("chan", root, home, os_name)
+                # Same root: the .sh and the .bat are current; the .ps1 gains its byte-order mark once.
+                self.assertEqual(status, "written" if os_name == "nt" else "up_to_date", lines)
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    status, lines = pbt.install_launcher_shims("chan", root + "-moved", home, os_name)
+                self.assertEqual(status, "written", lines)
+                for name, body in pbt.launcher_shims("chan", root + "-moved", os_name, "--dangerously-skip-permissions"):
+                    with open(os.path.join(home, name), encoding="utf-8-sig", newline="") as fh:
+                        self.assertEqual(fh.read(), body, name)
+
+
+    def test_a_windows_pair_of_ours_that_disagrees_is_kept_unless_the_run_names_the_arguments(self):
+        a = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--a"))
+        b = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--b"))
+        files = {"start-claude.bat": a["start-claude.bat"], "start-claude.ps1": b["start-claude.ps1"]}
+        home, refusal, lines = self._install_nt(files, {"TUNNEL_HOST": "a@b"})
+        self.assertIsInstance(refusal, pbt.LauncherShimRefused, lines)
+        self.assertEqual(refusal.status, "launcher_kept")
+        self.assertIn("but they set different claude arguments", str(refusal))
+        self.assertIn("Re-run with --claude-extra-args=<args>", str(refusal))
+        self._assert_untouched(home, files)
+        # An explicit value replaces the arguments of both files, so the disagreement is settled by it.
+        for given in ("--a", "--c", ""):
+            with self.subTest(given):
+                home, status, lines = self._install_nt(files, {"TUNNEL_HOST": "a@b"}, extra_args=given)
+                self.assertEqual(status, "written", lines)
+                for name, body in pbt.launcher_shims("chan", "C:\\r", "nt", given):
+                    with open(os.path.join(home, name), encoding="utf-8-sig", newline="") as fh:
+                        self.assertEqual(fh.read(), body, name)
+
+    def test_a_windows_shim_of_ours_edited_by_hand_is_kept(self):
+        ours = dict(pbt.launcher_shims("chan", "C:\\r", "nt"))
+        bat = ours["start-claude.bat"].replace("setlocal\r\n", 'setlocal\r\nset "TUNNEL_HOST=device@bridge.example"\r\n')
+        ps1 = ours["start-claude.ps1"].replace("$launcher =", "$env:TUNNEL_HOST = 'device@bridge.example'\r\n$launcher =")
+        for files in ({"start-claude.bat": bat, "start-claude.ps1": ours["start-claude.ps1"]},
+                      {"start-claude.bat": ours["start-claude.bat"], "start-claude.ps1": ps1}):
+            with self.subTest(sorted(n for n in files if files[n] not in ours.values())):
+                home, refusal, lines = self._install_nt(files, {"TUNNEL_HOST": "a@b"})
+                self.assertIsInstance(refusal, pbt.LauncherShimRefused, lines)
+                self.assertEqual(refusal.status, "launcher_kept")
+                self._assert_untouched(home, files)
+
+    def test_one_windows_shim_of_ours_completes_the_pair_with_its_extra_args(self):
+        ours = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--a"))
+        home, status, lines = self._install_nt({"start-claude.bat": ours["start-claude.bat"]}, {"TUNNEL_HOST": "seat@bridge"})
+        self.assertEqual(status, "written", lines)
+        with open(os.path.join(home, "start-claude.ps1"), encoding="utf-8-sig", newline="") as fh:
+            self.assertEqual(fh.read(), ours["start-claude.ps1"])
+
+    def test_the_missing_half_of_a_windows_pair_needs_tunnel_host_too(self):
+        # The reported sequence: an operator's .bat beside a shim .ps1 of ours is kept; the operator
+        # renames the .bat aside and re-runs. The .bat written now runs a launcher that exits without
+        # TUNNEL_HOST, which the renamed file may have been the one setting.
+        ours = dict(pbt.launcher_shims("chan", "C:\\r", "nt"))
+        files = {"start-claude.bat": self.HAND_BAT, "start-claude.ps1": ours["start-claude.ps1"]}
+        home, refusal, lines = self._install_nt(files, {"TUNNEL_HOST": "seat@bridge"})
+        self.assertEqual(refusal.status, "launcher_kept", lines)
+        for name in files:
+            self.assertIn(f"rename {os.path.join(home, name)} to {name}.mine", str(refusal), "on Windows, both files aside")
+        os.rename(os.path.join(home, "start-claude.bat"), os.path.join(home, "start-claude.bat.mine"))
+        for persisted in ({}, {"TUNNEL_HOST": pbt.TUNNEL_HOST_PLACEHOLDER}):
+            with self.subTest(persisted), mock.patch.dict(os.environ, persisted, clear=True):
+                with self.assertRaises(pbt.LauncherShimRefused) as cm:
+                    pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+                self.assertEqual(cm.exception.status, "needs_setting")
+                self.assertEqual(sorted(os.listdir(home)), ["start-claude.bat.mine", "start-claude.ps1"], "nothing written")
+        with mock.patch.dict(os.environ, {"TUNNEL_HOST": "seat@bridge"}, clear=True):
+            status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual(status, "written", lines)
+        self.assertEqual(sorted(os.listdir(home)), ["start-claude.bat", "start-claude.bat.mine", "start-claude.ps1"])
+
+    def test_the_windows_ps1_shim_carries_a_utf8_bom_and_a_bomless_one_is_rewritten_once(self):
+        home, status, _lines = self._install_nt({}, {"TUNNEL_HOST": "a@b"})
+        self.assertEqual(status, "written")
+        with open(os.path.join(home, "start-claude.ps1"), "rb") as fh:
+            self.assertTrue(fh.read().startswith(b"\xef\xbb\xbf"))
+        with open(os.path.join(home, "start-claude.bat"), "rb") as fh:
+            self.assertFalse(fh.read().startswith(b"\xef\xbb\xbf"), "cmd would run the BOM as part of `@echo off`")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            status, _lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual(status, "up_to_date")
+        released = dict(pbt.launcher_shims("chan", "C:\\r", "nt"))  # what releases before this one wrote: no BOM
+        home, status, lines = self._install_nt(released)
+        self.assertEqual(status, "written", lines)
+        self.assertEqual(lines, [f"launcher shim: {os.path.join(home, 'start-claude.bat')} is up to date.",
+                                 f"launcher shim: {os.path.join(home, 'start-claude.ps1')} rewritten."])
+
+    # No launcher yet, on Windows: the launcher the shim runs exits at once without TUNNEL_HOST.
+
+    def test_the_tunnel_host_placeholder_is_the_one_the_pack_launcher_refuses(self):
+        with open(os.path.join(pbt._bundled_snapshot_dir(), "bin", "start-claude.ps1"), encoding="utf-8") as fh:
+            ps1 = fh.read()
+        import re
+
+        self.assertEqual(re.findall(r'Write-Error "(\w+) is not set', ps1), ["TUNNEL_HOST"], "the one input it exits without")
+        self.assertIn(f"$TunnelHost -eq '{pbt.TUNNEL_HOST_PLACEHOLDER}'", ps1)
+        self.assertIn(f"else {{ '{pbt.TUNNEL_HOST_PLACEHOLDER}' }}", ps1)
+
+    def test_a_windows_seat_with_no_launcher_needs_tunnel_host_in_the_persisted_environment(self):
+        for persisted in ({}, {"TUNNEL_HOST": ""}, {"tunnel_host": ""}, {"TUNNEL_HOST": pbt.TUNNEL_HOST_PLACEHOLDER},
+                          {"Tunnel_Host": pbt.TUNNEL_HOST_PLACEHOLDER.upper()}):
+            with self.subTest(persisted), mock.patch.object(pbt, "_launch_environment", return_value=persisted):
+                # Set in this process only: a `set` in this terminal does not reach the next one.
+                home, refusal, lines = self._install_nt({}, {"TUNNEL_HOST": "this-terminal@only"})
+                self.assertIsInstance(refusal, pbt.LauncherShimRefused, lines)
+                self.assertEqual((refusal.status, pbt.LAUNCHER_SHIM_EXIT[refusal.status]), ("needs_setting", 8))
+                self.assertIn("setx TUNNEL_HOST <agent>@<bridge-host>", str(refusal))
+                self.assertEqual(os.listdir(home), [])
+        for persisted in ({"TUNNEL_HOST": "seat@bridge"}, {"tunnel_host": "seat@bridge"}):
+            with self.subTest(persisted), mock.patch.object(pbt, "_launch_environment", return_value=persisted):
+                home, status, lines = self._install_nt({})
+                self.assertEqual(status, "written", lines)
+                self.assertEqual(sorted(os.listdir(home)), ["start-claude.bat", "start-claude.ps1"])
+
+    def test_on_windows_tunnel_host_counts_only_from_the_persisted_environment(self):
+        class FakeWinreg:
+            HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE = "HKCU", "HKLM"
+
+            def __init__(self, hives):
+                self.hives = hives
+
+            def OpenKey(self, hive, _key):
+                if hive not in self.hives:
+                    raise FileNotFoundError(hive)
+                return contextlib.nullcontext(self.hives[hive])
+
+            def EnumValue(self, values, i):
+                if i >= len(values):
+                    raise OSError("no more")
+                return (*values[i], 1)
+
+        with mock.patch.dict(os.environ, {"TUNNEL_HOST": "only-this-terminal"}, clear=True):
+            self.assertEqual(pbt._launch_environment(FakeWinreg({})), {})
+            self.assertEqual(pbt._launch_environment(FakeWinreg({"HKCU": [("TUNNEL_HOST", "a@b")]})), {"TUNNEL_HOST": "a@b"})
+            self.assertEqual(pbt._launch_environment(FakeWinreg({"HKLM": [("TUNNEL_HOST", "m@b")], "HKCU": [("TUNNEL_HOST", "u@b")]})),
+                             {"TUNNEL_HOST": "u@b"}, "the user's value over the machine's")
+
+    def test_a_posix_seat_with_no_launcher_gets_the_shim(self):
+        self._root()
+        with mock.patch.object(pbt, "_launch_environment", side_effect=AssertionError("no environment check on POSIX")):
+            rc, out = self._write()
+        self.assertEqual((rc, self._status(out)), (0, "launcher-shim-status: written"))
+
+    # The swap, and what a fault leaves.
+
+    def _fail_nth_replace(self, n):
+        real, calls = os.replace, []
+
+        def replace(src, dst):
+            calls.append(dst)
+            if len(calls) == n:
+                raise PermissionError(13, "Permission denied", dst)
+            return real(src, dst)
+
+        return mock.patch.object(pbt.os, "replace", side_effect=replace)
+
+    def test_a_failed_swap_removes_its_temporary_files_and_says_the_pair_is_mixed(self):
+        files = dict(pbt.launcher_shims("chan", "C:\\old", "nt", "--a"))
+        home = self._windows_home(files)
+        with mock.patch.dict(os.environ, {}, clear=True), self._fail_nth_replace(2):
+            with self.assertRaises(pbt.LauncherShimRefused) as cm:
+                pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual((cm.exception.status, cm.exception.partly), ("io_error", True))
+        bat, ps1 = (os.path.join(home, n) for n in ("start-claude.bat", "start-claude.ps1"))
+        self.assertIn(f"{bat} holds the new shim", str(cm.exception))
+        self.assertIn(f"replacing {ps1} failed", str(cm.exception))
+        self.assertIn("MIXED", str(cm.exception))
+        self.assertEqual(sorted(os.listdir(home)), ["start-claude.bat", "start-claude.ps1"], "no temporary file left")
+        with open(ps1, encoding="utf-8", newline="") as fh:
+            self.assertEqual(fh.read(), files["start-claude.ps1"])
+        # The pair is mixed — the .bat names the new root, the .ps1 the old — and a re-run completes it:
+        # a client root is derived, not a setting, so two roots are not a disagreement to keep.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual(status, "written", lines)
+        for name, body in pbt.launcher_shims("chan", "C:\\r", "nt", "--a"):
+            with open(os.path.join(home, name), encoding="utf-8-sig", newline="") as fh:
+                self.assertEqual(fh.read(), body, name)
+
+    def test_a_partial_swap_that_changed_the_arguments_is_completed_by_a_re_run_with_them(self):
+        files = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--a"))
+        home = self._windows_home(files)
+        with mock.patch.dict(os.environ, {}, clear=True), self._fail_nth_replace(2):
+            with self.assertRaises(pbt.LauncherShimRefused) as cm:
+                pbt.install_launcher_shims("chan", "C:\\r", home, "nt", extra_args="--b")
+        self.assertEqual((cm.exception.status, cm.exception.partly), ("io_error", True))
+        self.assertIn('re-run with the same --claude-extra-args="--b"', str(cm.exception))
+        b = dict(pbt.launcher_shims("chan", "C:\\r", "nt", "--b"))
+        with open(os.path.join(home, "start-claude.bat"), encoding="utf-8", newline="") as fh:
+            self.assertEqual(fh.read(), b["start-claude.bat"])
+        # Without the value the pair disagrees and is kept, as the message says.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(pbt.LauncherShimRefused) as kept:
+                pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertEqual(kept.exception.status, "launcher_kept")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            status, lines = pbt.install_launcher_shims("chan", "C:\\r", home, "nt", extra_args="--b")
+        self.assertEqual(status, "written", lines)
+        for name, body in b.items():
+            with open(os.path.join(home, name), encoding="utf-8-sig", newline="") as fh:
+                self.assertEqual(fh.read(), body, name)
+
+    def test_a_partial_swap_that_kept_the_arguments_says_a_plain_re_run_completes_it(self):
+        home = self._windows_home(dict(pbt.launcher_shims("chan", "C:\\old", "nt", "--a")))
+        with mock.patch.dict(os.environ, {}, clear=True), self._fail_nth_replace(2):
+            with self.assertRaises(pbt.LauncherShimRefused) as cm:
+                pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self.assertIn("re-run (no --claude-extra-args needed)", str(cm.exception))
+
+    def test_a_failed_write_leaves_every_file_as_it_was(self):
+        files = dict(pbt.launcher_shims("chan", "C:\\old", "nt"))
+        home = self._windows_home(files)
+        real, calls = pbt._stage_text, []
+
+        def fail_second(path, data, mode):
+            calls.append(path)
+            if len(calls) == 2:
+                raise PermissionError(13, "Permission denied", path)
+            return real(path, data, mode)
+
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(pbt, "_stage_text", side_effect=fail_second):
+            with self.assertRaises(PermissionError):
+                pbt.install_launcher_shims("chan", "C:\\r", home, "nt")
+        self._assert_untouched(home, files)
+
+    def test_an_onboarding_run_says_a_failed_swap_wrote_part_of_the_pair_with_its_status(self):
+        home = self._windows_home({})
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"TUNNEL_HOST": "a@b"}, clear=True), self._fail_nth_replace(2), \
+             mock.patch.object(pbt, "_launcher_shim_unavailable", return_value=("C:\\r", None, None)), \
+             mock.patch.object(pbt, "_host_b_home", return_value=home), \
+             mock.patch.object(pbt, "install_launcher_shims", functools.partial(pbt.install_launcher_shims, os_name="nt")), \
+             contextlib.redirect_stdout(out):
+            pbt._offer_launcher_shim("chan")
+        said = out.getvalue().strip().splitlines()
+        self.assertTrue(said[0].startswith("⚠ launcher shim: PARTLY written — "), said)
+        self.assertEqual(said[-1], "launcher-shim-status: io_error")
+
+    def test_an_onboarding_run_says_a_failed_first_swap_wrote_nothing_with_its_status(self):
+        files = dict(pbt.launcher_shims("chan", "C:\\old", "nt"))
+        home = self._windows_home(files)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"TUNNEL_HOST": "a@b"}, clear=True), self._fail_nth_replace(1), \
+             mock.patch.object(pbt, "_launcher_shim_unavailable", return_value=("C:\\r", None, None)), \
+             mock.patch.object(pbt, "_host_b_home", return_value=home), \
+             mock.patch.object(pbt, "install_launcher_shims", functools.partial(pbt.install_launcher_shims, os_name="nt")), \
+             contextlib.redirect_stdout(out):
+            pbt._offer_launcher_shim("chan")
+        said = out.getvalue().strip().splitlines()
+        self.assertTrue(said[0].startswith("⚠ launcher shim: NOT written — [Errno 13] Permission denied"), said)
+        self.assertEqual(said[-1], "launcher-shim-status: io_error")
+        self._assert_untouched(home, files)
+
+    def test_an_onboarding_run_on_a_windows_seat_without_tunnel_host_says_so_with_its_status(self):
+        home = self._windows_home({})
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(pbt, "_launcher_shim_unavailable", return_value=("C:\\r", None, None)), \
+             mock.patch.object(pbt, "_host_b_home", return_value=home), \
+             mock.patch.object(pbt, "install_launcher_shims", functools.partial(pbt.install_launcher_shims, os_name="nt")), \
+             contextlib.redirect_stdout(out):
+            pbt._offer_launcher_shim("chan")
+        said = out.getvalue().strip().splitlines()
+        self.assertTrue(said[0].startswith("⚠ launcher shim: NOT written — "), said)
+        self.assertEqual(said[-1], "launcher-shim-status: needs_setting")
+        self.assertEqual(os.listdir(home), [])
+
+    def test_bootstrap_client_installs_the_client_and_keeps_a_launcher_it_did_not_write(self):
+        project = os.path.join(self.tmp.name, "project")
+        os.makedirs(project)
+        with open(os.path.join(project, ".mcp.json"), "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"chan": {"command": "node", "args": [os.path.join(project, ".channel-server", pbt.CHANNEL_MJS_BASENAME)],
+                                               "env": {"BRIDGE_TOOLS_ENDPOINT": "http://127.0.0.1:9/agent-tools/call"}}}}, fh)
+        hand = '#!/bin/sh\nexport SSH_KEY="$HOME/.ssh/k"\nexec ~/x/start-channel-session.sh --dangerously-skip-permissions "$@"\n'
+        with open(self.shim, "w", encoding="utf-8") as fh:
+            fh.write(hand)
+        ran = []
+
+        def fake_run(cmd, env=None, cwd=None, check=False):
+            ran.append(cmd)
+            self._root()
+            return mock.Mock(returncode=0)
+
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": self.data}), \
+             mock.patch.object(pbt, "_require_node_20"), \
+             mock.patch.object(pbt.subprocess, "run", side_effect=fake_run), \
+             contextlib.redirect_stdout(out):
+            rc = pbt.main(["--role", "b", "--agent", "a", "--bootstrap-client", "--project-dir", project, "--channel-name", "chan"])
+        said = out.getvalue()
+        self.assertEqual(rc, 0, said)
+        self.assertTrue(ran, "the client install ran")
+        lines = said.strip().splitlines()
+        ok = next(i for i, line in enumerate(lines) if line.startswith("--bootstrap-client: OK"))
+        warn = next(i for i, line in enumerate(lines) if line.startswith("⚠ launcher shim: NOT written"))
+        self.assertLess(ok, warn, "the warning comes after the run's own OK line")
+        self.assertEqual(lines[-1], "launcher-shim-status: launcher_kept")
+        self.assertIn("LEFT IN PLACE byte for byte", said)
+        with open(self.shim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), hand)
+        self.assertEqual(self._home_files(), ["start-claude.sh"])
+
+    def test_the_readme_s_status_table_is_the_exit_table(self):
+        with open(os.path.join(pbt._bundled_snapshot_dir(), "README.md"), encoding="utf-8") as fh:
+            readme = fh.read()
+        for token, code in pbt.LAUNCHER_SHIM_EXIT.items():
+            self.assertIn(f"| `{token}` | {code} |", readme, token)
 
 
 def pathlib_uri(path):

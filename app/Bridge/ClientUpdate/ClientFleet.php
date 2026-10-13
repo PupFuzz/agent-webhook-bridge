@@ -208,8 +208,9 @@ final class ClientFleet
 
                 $launched = "it launched after release {$published->bridgeRelease} was published (that launch first seen ".HumanAge::floored((int) $launchSeen->diffInSeconds($now, true))." ago) and still runs release {$running}";
                 $client = $row->running_client_version;
-                if ($client !== null && ChannelSnapshotManifest::compareVersions($client, self::FIRST_BACKGROUND_CHECK_CLIENT) < 0) {
-                    return [FleetState::Behind, "{$launched} on client {$client}, which updates only at launch, before its first call — so that launch's update did not install the published release. This bridge holds no failure for it, because a client before ".self::FIRST_BACKGROUND_CHECK_CLIENT.' reports one only when the bridge answered that launch in time; the last `launch` lines of `<client-root>/install-log.jsonl` on the seat name the cause (a launch that began before the publication and first called after it reads the same, and its next launch settles that). It tries again only at each launch, under the same limit, so bootstrap its client: '.self::bootstrapRemedy($agent)];
+                // A version that does not start with digits (`v0.9.50`, `abc`) is not evidence of an old client: versionTuple reads its first chunk as 0, so without this guard it would compare below every release.
+                if ($client !== null && preg_match('/^[0-9]+(\.[0-9]+)*/', $client) === 1 && ChannelSnapshotManifest::compareVersions($client, self::FIRST_BACKGROUND_CHECK_CLIENT) < 0) {
+                    return [FleetState::Behind, "{$launched} on client {$client}, which updates only at launch, before its first call — so that launch's update did not install the published release. This bridge holds no failure for it, because a client before ".self::FIRST_BACKGROUND_CHECK_CLIENT.' reports one only when the bridge answered that launch in time — and a launch that began before the publication and first called after it reads the same. Tell them apart on the seat first: if the last `launch` lines of `<client-root>/install-log.jsonl` are `fail` lines, its launch-time update fails, and it tries again only at each launch under the same limit, so bootstrap its client: '.self::bootstrapRemedy($agent).'. If they are not, restart the session once, and bootstrap only if it is still BEHIND after that restart'];
                 }
 
                 return [FleetState::Behind, "{$launched}, with no stage, failure or approval reported — its background update check has not reported yet, or did not stage the published release and did not say why"];
@@ -390,7 +391,7 @@ final class ClientFleet
 
     private static function bootstrapRemedy(string $agent): string
     {
-        return 'on the seat, as its own OS user, from a bridge checkout at this bridge\'s release tag, run `'.self::bootstrapCommand($agent).'`, then restart its session';
+        return 'on the seat, as its own OS user, from a bridge checkout at this bridge\'s release tag, run `'.self::bootstrapCommand($agent).'`, then restart its session. That run leaves the seat\'s own launcher (`~/start-claude.sh`, or `start-claude.bat` + `.ps1` on Windows) as it is when the provisioner did not write it: if it prints `launcher-shim-status: launcher_kept`, the seat still starts through its old launcher, and the line before it says how to move the seat to the shim';
     }
 
     /** The seat's own evidence: its latest call or report — never a probe's. */
