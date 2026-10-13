@@ -1926,7 +1926,8 @@ def run_bootstrap_client(args) -> int:
         _print_activation_block(args.channel_name)
     _offer_launcher_shim(args.channel_name, args.claude_extra_args)
     print(f"--bootstrap-client: OK — channel {args.channel_name} now starts from its client root and updates "
-          f"itself from the bridge at each launch.")
+          f"itself from the bridge: a session stages a newer release in the background, and the launch after "
+          f"it installs it.")
     return 0
 
 

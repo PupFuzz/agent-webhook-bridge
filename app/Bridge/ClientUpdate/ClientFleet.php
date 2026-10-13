@@ -38,6 +38,14 @@ final class ClientFleet
     public const RESTART_OWED_WARN_DAYS = 7;
 
     /**
+     * The first client whose update check runs in the background of a session and reports from
+     * there (DL-476). An older one updates only at launch, before its first call, and reports
+     * only once the bridge has answered that launch's `client_manifest` — so a launch whose
+     * update got no answer leaves nothing in the ledger (card#11816).
+     */
+    public const FIRST_BACKGROUND_CHECK_CLIENT = '0.9.57';
+
+    /**
      * @param  list<array<string, mixed>>  $seats
      */
     private function __construct(
@@ -198,7 +206,13 @@ final class ClientFleet
                     return [FleetState::AppliesNextLaunch, "runs release {$running}; the session it runs started before release {$published->bridgeRelease} was published, so that session's first background update check did not see it: a client from 0.9.59 stages it at its next periodic re-check (every few hours by default; never, if the seat set AWB_CLIENT_RECHECK_HOURS=0), an older one, or one whose re-check is off, in its next session, and the launch after the stage runs it (a client older than DL-476 installs it at its next launch)"];
                 }
 
-                return [FleetState::Behind, "it launched after release {$published->bridgeRelease} was published (that launch first seen ".HumanAge::floored((int) $launchSeen->diffInSeconds($now, true))." ago) and still runs release {$running}, with no stage, failure or approval reported — its background update check has not reported yet, or did not stage the published release and did not say why"];
+                $launched = "it launched after release {$published->bridgeRelease} was published (that launch first seen ".HumanAge::floored((int) $launchSeen->diffInSeconds($now, true))." ago) and still runs release {$running}";
+                $client = $row->running_client_version;
+                if ($client !== null && ChannelSnapshotManifest::compareVersions($client, self::FIRST_BACKGROUND_CHECK_CLIENT) < 0) {
+                    return [FleetState::Behind, "{$launched} on client {$client}, which updates only at launch, before its first call — so that launch's update did not install the published release. This bridge holds no failure for it, because a client before ".self::FIRST_BACKGROUND_CHECK_CLIENT.' reports one only when the bridge answered that launch in time; the last `launch` lines of `<client-root>/install-log.jsonl` on the seat name the cause (a launch that began before the publication and first called after it reads the same, and its next launch settles that). It tries again only at each launch, under the same limit, so bootstrap its client: '.self::bootstrapRemedy($agent)];
+                }
+
+                return [FleetState::Behind, "{$launched}, with no stage, failure or approval reported — its background update check has not reported yet, or did not stage the published release and did not say why"];
             }
         }
 

@@ -8,6 +8,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#11816** — **`bridge:client-fleet` does not show `UPDATE FAILED` for a seat whose launch-time update got no answer from the bridge, and v0.103.0's upgrade warning said it did.** A client before 0.9.57 sends its install log only after the bridge answered that launch, so a launch that logs `bridge unreachable (no answer to client_manifest within 10000 ms)` reports nothing, and the next launch seen calling clears any failure reported earlier. The seat reads `restart owed` or `BEHIND`, never `UPDATE FAILED`.
+  - ⚠ **Correction to the v0.103.0 upgrade warning.** To find a seat that needs the one-time `--bootstrap-client`, do not look for `UPDATE FAILED` in the fleet view. Look on the seat: the last `"actor":"launch"` lines of `<client-root>/install-log.jsonl` are `fail` lines naming `bridge unreachable`; its channel server's instructions open with `CLIENT UPDATE FAILED (…)`; or, restarted after `bridge:client-pack:install`, it still reads the old release under `installed` in `bridge:client-fleet`. `CLAUDE_DEPLOYMENT.md` § *Multi-agent channel-server distribution* now says so.
+  - `bridge:client-fleet`: a seat listed `BEHIND` whose launch runs a client before 0.9.57 now says that its launch-time update did not install the published release and that this bridge was sent no failure, and prints the exact bootstrap command. A `BEHIND` seat on client 0.9.57 or later reads as before. The state and its warning are unchanged.
+  - `provision-board-tools.py --role b --bootstrap-client`: the success line no longer says the channel updates "at each launch"; since client 0.9.57 a session stages a release and the launch after it installs it.
+
 ## [0.103.0] - 2026-10-12
 
 ### Changed
