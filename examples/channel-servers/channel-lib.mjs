@@ -1,5 +1,5 @@
 // Helpers for the reference channel MCP server (agent-webhook-bridge-channel.mjs), its
-// launch-time updater (client-update.mjs) and the seat CLI (bin/bridge-board-call.mjs).
+// client updater (client-update.mjs) and the seat CLI (bin/bridge-board-call.mjs).
 //
 // Two kinds of export, and one rule for both: every input is an ARGUMENT. Nothing here reads
 // process.env, closes over a startup constant, or calls process.exit — so each is testable
@@ -368,8 +368,9 @@ export function launchIdentity(env) {
   return { id, bridge_release: release };
 }
 
-// The one INSTRUCTIONS line that says what this launch's client update did, or null when there
-// is nothing to say (design §3.4). `state` is <root>/state.json as entry.mjs wrote it for THIS
+// The one INSTRUCTIONS line that says what this launch's client update did — the install of a
+// staged release, or else the last background check's finding (DL-476) — or null when there is
+// nothing to say (design §3.4). `state` is <root>/state.json as entry.mjs wrote it for THIS
 // launch, or `{unreadable: <why>}`; `launchId` is this launch's id. Fixed at session start: the
 // server reads it once, and nothing changes mid-session.
 //
@@ -406,14 +407,14 @@ function updateStateLine(state, { launchId, root }) {
         `CLIENT RELEASE ${state.approval_owed || 'unknown'} IS PUBLISHED by your bridge, and this seat requires PM approval ` +
         `before it installs it, so it keeps running channel-server release ${running}. ` +
         `The PM approves it on the bridge with \`php artisan bridge:client-approve <this agent> ${state.approval_owed || '<release>'} --reason="…"\`; ` +
-        'it is installed at the next launch after that.'
+        'after that, a session\'s background update check stages it and the launch after that installs it.'
       );
     case 'update_failed':
       return (
         `CLIENT UPDATE FAILED (${state.error || 'no reason recorded'}): this seat runs channel-server release ${running}` +
         (state.published && state.published !== state.running ? `; published release ${state.published} was not applied` : '') +
         `. Tell your operator; the install log is ${log}. ` +
-        'The update is tried again at the next launch' +
+        'This session checks for an update again in the background, and a release it stages is installed at the next launch' +
         // An installed updater that cannot run never fetches the fix itself, and re-bootstrapping
         // the same release reuses the same updater; an unreadable install log is a local fault no
         // release fixes. Every other cause is named by the reason at the start of the line.
@@ -465,56 +466,6 @@ function isToolList(value) {
   return Array.isArray(value) && value.every((name) => typeof name === 'string');
 }
 
-const PRE_DOOR_REFUSAL = 'request must carry a non-empty `tool`';
-
-// What one `{"op":"served_tools"}` answer says. Input: `{via: 'ssh', code, stdout}`,
-// `{via: 'http', status, text}`, or `{failure: <why>}` when no answer arrived. Output:
-//   { kind: 'served', served }   the bridge's list for this agent
-//   { kind: 'door_closed' }      the ssh door will not serve this agent at all (DL-461)
-//   { kind: 'old_bridge' }       a bridge that does not know the op: one with the update door but
-//                                not this op (`unknown client-update …`, no reason), one older than
-//                                the door (ssh: the empty-`tool` refusal; http: 404, no route)
-//   { kind: 'unknown', why }     anything else — no answer, a reason-less exit 2, a 5xx, a 401, a
-//                                body that is not the op's answer. It says nothing about what is
-//                                served, so the caller falls back (last cache, then the env rule).
-export function classifyServedToolsAnswer(answer) {
-  if (answer.failure) {
-    return { kind: 'unknown', why: answer.failure };
-  }
-  const status = answer.via === 'ssh' ? `ssh exit ${answer.code}` : `HTTP ${answer.status}`;
-  if (answer.via === 'http' && answer.status === 404) {
-    return { kind: 'old_bridge' };
-  }
-  let body = null;
-  try {
-    body = JSON.parse(answer.via === 'ssh' ? answer.stdout : answer.text);
-  } catch {
-    body = null;
-  }
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return { kind: 'unknown', why: `${status}, no JSON envelope` };
-  }
-  const clean = answer.via === 'ssh' ? answer.code === 0 : answer.status === 200;
-  if (clean && body.ok === true && body.op === 'served_tools' && isToolList(body.served)) {
-    return { kind: 'served', served: body.served };
-  }
-  if (answer.via === 'ssh' && answer.code === 2 && body.ok === false && body.reason === 'door_closed') {
-    return { kind: 'door_closed' };
-  }
-  const refused = answer.via === 'ssh' ? answer.code === 1 : answer.status === 422;
-  if (refused && body.ok === false && typeof body.error === 'string') {
-    if (body.reason === undefined && body.error.startsWith('unknown client-update')) {
-      return { kind: 'old_bridge' };
-    }
-    // The pre-door refusal carries no reason on every real bridge; a later bridge added
-    // `bad_request` to it, though such a bridge routes an `op` body to the door instead.
-    if ((body.reason === undefined || body.reason === 'bad_request') && body.error === PRE_DOOR_REFUSAL) {
-      return { kind: 'old_bridge' };
-    }
-  }
-  return { kind: 'unknown', why: `${status}${typeof body.error === 'string' ? `: ${scrubSnippet(body.error).slice(0, 200)}` : ''}` };
-}
-
 // `<root>/served-tools.json` as `{launchId, served}`, or null for an absent or malformed file.
 export function readServedToolsCache(root) {
   let raw;
@@ -529,55 +480,16 @@ export function readServedToolsCache(root) {
   return { launchId: raw.launch_id, served: raw.served };
 }
 
-// The ONE `served_tools` call, over the seat's board-tools transport (`boardToolsTransport`'s
-// ssh or http result). Resolves with the classified answer; never rejects.
-export async function askServedTools(transport, { deadlineMs }) {
-  const input = JSON.stringify({ op: 'served_tools' });
-  if (transport.kind === 'ssh') {
-    const r = await sshRoundTrip({ target: transport.target, key: transport.key, port: transport.port, input, deadlineMs });
-    return classifyServedToolsAnswer(r.failure ? { failure: r.failure.message } : { via: 'ssh', code: r.code, stdout: r.stdout });
-  }
-  const door = deriveClientDoorUrl(transport.url);
-  if (door.why) {
-    return { kind: 'unknown', why: door.why };
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deadlineMs);
-  try {
-    const r = await httpRoundTrip({ url: door.url, token: transport.token, body: input, signal: controller.signal });
-    return classifyServedToolsAnswer({ via: 'http', status: r.status, text: r.text });
-  } catch (err) {
-    return classifyServedToolsAnswer({ failure: `${redactUrl(door.url)}: ${errorDetail(err)}` });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// The served set this launch advertises, down the ladder (design §5, DL-462):
-//   1. this launch's cache (the updater wrote it from this launch's client_manifest answer);
-//   2. one served_tools call — `served` is used; `door_closed` advertises no bridge tool;
-//      `old_bridge` takes the env rule (a bridge that does not know the op predates scope-less
-//      agents, so any cache is from a newer bridge and is not believed);
-//   3. on `unknown`, the last good cache, from any launch;
-//   4. else the env rule.
-// Resolves `{served, source}`; `served` null means the env rule. `cache` is readServedToolsCache's
-// result; `ask` makes the call.
-export async function resolveServedTools({ launchId, cache, ask }) {
+// The served set this launch advertises (design §5, DL-462, amended by DL-476): the served-tools
+// cache, whichever launch's background check wrote it — the bridge is NOT asked at start-up, so
+// a slow door never holds the MCP connect window open — else the env rule. Returns
+// `{served, source}`; `served` null means the env rule. `cache` is readServedToolsCache's result.
+export function resolveServedTools({ launchId, cache }) {
   if (cache && launchId && cache.launchId === launchId) {
     return { served: cache.served, source: 'this launch\'s served-tools cache' };
   }
-  const answer = await ask();
-  if (answer.kind === 'served') {
-    return { served: answer.served, source: 'the bridge\'s served_tools answer' };
-  }
-  if (answer.kind === 'door_closed') {
-    return { served: [], source: 'the bridge\'s door is closed to this agent (door_closed)' };
-  }
-  if (answer.kind === 'old_bridge') {
-    return { served: null, source: 'a bridge that predates served_tools; the env rule' };
-  }
   if (cache) {
-    return { served: cache.served, source: `the last good served-tools cache (launch ${cache.launchId}), since served_tools did not answer (${answer.why})` };
+    return { served: cache.served, source: `the last good served-tools cache (launch ${cache.launchId}); the bridge is not asked at start-up` };
   }
-  return { served: null, source: `the env rule, since served_tools did not answer (${answer.why}) and no cache exists` };
+  return { served: null, source: 'the env rule, since no served-tools cache exists yet (a background check writes one)' };
 }

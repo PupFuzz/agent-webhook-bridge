@@ -28,9 +28,9 @@ recognised by its `current.json` (or, that lost, by its `entry.mjs` beside a `ve
 directory): point this at the root, or at its `entry.mjs`, and it
 launches the server of the release `current.json` names —
 `<root>/versions/<release>/client/agent-webhook-bridge-channel.mjs`, what `entry.mjs` starts.
-It never launches `entry.mjs` itself: that would run the launch-time UPDATE, which asks the
-bridge over the network and writes the root (`launch.json`, `state.json`, the install log) —
-a diagnostic must not. So the claim is bounded to that release: when `current.json` cannot
+It never launches `entry.mjs` itself: that would run the launch-time UPDATE, which installs any
+release a background check staged and writes the root (`launch.json`, `state.json`,
+`current.json`, the install log) — a diagnostic must not. So the claim is bounded to that release: when `current.json` cannot
 be read, or its release has no server entry while another release does, `entry.mjs` would
 pick another intact release on its own, which this tool does not reproduce, and it says
 COULD NOT CHECK rather than guess. When NO release under `versions/` has a server entry,
@@ -465,7 +465,7 @@ def _client_release_dir(root: str):
         None,
         f"client root {root}: launching release {release}'s channel server, the one its "
         f"{CLIENT_POINTER} names and entry.mjs starts. entry.mjs itself is NOT run — its "
-        f"launch-time update would ask the bridge and write this root.",
+        f"launch-time update would install any staged release and write this root.",
     )
 
 

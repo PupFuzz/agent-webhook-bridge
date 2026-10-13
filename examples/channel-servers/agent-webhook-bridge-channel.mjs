@@ -41,7 +41,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 // Helpers split into sibling modules so they can be tested directly (this file
-// self-executes on import) and shared with the launch-time updater: channel-lib.mjs
+// self-executes on import) and shared with the client updater: channel-lib.mjs
 // holds the relay contract and the bridge transport, entry.mjs the channel's socket and
 // `.FAILED` marker paths (its own refusals write the same marker). Plain ESM, no build
 // step; consumers copy the whole directory, and the client pack carries it whole.
@@ -56,7 +56,6 @@ import {
   clientUpdateInstruction,
   errorDetail,
   readClientVersion,
-  askServedTools,
   readServedToolsCache,
   resolveServedTools,
 } from './channel-lib.mjs';
@@ -774,14 +773,14 @@ const TOOL_DEFINITIONS = [
 ];
 
 // The bridge tools this launch advertises: the served set ∩ TOOL_DEFINITIONS (card#11283 /
-// DL-462). Resolved ONCE, before INSTRUCTIONS and the Server, down channel-lib's
-// `resolveServedTools` ladder: this launch's cache, one served_tools call, the last good cache,
-// the env rule. Only on a seat whose environment turns the tools on and names a transport: an
-// explicit BRIDGE_CHANNEL_TOOLS=0 still asks nothing. The bridge enforces the same set
-// (`not_served`), so a fallback can only ever advertise a tool that refuses — never grant one.
-const SERVED_TOOLS_DEADLINE_MS = 5000;
-
-async function resolveAdvertisedTools() {
+// DL-462). Resolved ONCE, before INSTRUCTIONS and the Server, from channel-lib's
+// `resolveServedTools`: the served-tools cache a background update check wrote (this launch's or
+// an earlier one's), else the env rule. The bridge is NOT asked here (DL-476): a door that is slow
+// under a saturated host must never hold Claude Code's MCP connect window open. Only on a seat
+// whose environment turns the tools on and names a transport: an explicit BRIDGE_CHANNEL_TOOLS=0
+// still lists none. The bridge enforces the same set (`not_served`), so a fallback can only ever
+// advertise a tool that refuses — never grant one.
+function resolveAdvertisedTools() {
   if (!ENV_TOOLS_ON) {
     return { tools: [], source: 'board tools are off in this environment' };
   }
@@ -790,15 +789,14 @@ async function resolveAdvertisedTools() {
     return { tools: TOOL_DEFINITIONS, source: 'the env rule: no usable board-tools transport to ask' };
   }
   const root = process.env.AWB_CLIENT_ROOT;
-  const { served, source } = await resolveServedTools({
+  const { served, source } = resolveServedTools({
     launchId: process.env.AWB_LAUNCH_ID,
     cache: root ? readServedToolsCache(root) : null,
-    ask: () => askServedTools(transport, { deadlineMs: SERVED_TOOLS_DEADLINE_MS }),
   });
   return { tools: served === null ? TOOL_DEFINITIONS : TOOL_DEFINITIONS.filter((tool) => served.includes(tool.name)), source };
 }
 
-const ADVERTISED = await resolveAdvertisedTools();
+const ADVERTISED = resolveAdvertisedTools();
 const BRIDGE_TOOLS = ADVERTISED.tools;
 const TOOLS_ENABLED = BRIDGE_TOOLS.length > 0;
 // Only CI tools, no board tool: an implementation seat (a scope-less block, DL-461). Its
@@ -1322,11 +1320,13 @@ const server = http.createServer((req, res) => {
 // the launcher's stale-socket guard + the marker backstop are for (DL-154/155/157).
 let cleanedUp = false;
 let bound = false; // true once WE own the socket (set in the unix listen callback)
+let updateChecks = null; // startUpdateChecks' handle, once the updater has loaded
 function shutdown(code) {
   if (cleanedUp) {
     return;
   }
   cleanedUp = true;
+  updateChecks?.stop();
   try {
     server.close();
   } catch {
@@ -1346,6 +1346,31 @@ function shutdown(code) {
     }
   }
   process.exit(code);
+}
+
+// The background update check (card#11760, DL-476): once this server is listening, ask the bridge
+// what it offers and STAGE a newer release for the next launch to install — and again every
+// AWB_CLIENT_RECHECK_HOURS while it runs (card#11787), so a release published mid-session is
+// staged and one restart runs it. It runs outside the MCP connect window, one check at a time, and
+// it never switches the release this session runs. Only for a server entry.mjs started (the client
+// root and a launch identity are set); a check that cannot run is said on stderr and costs this
+// session nothing.
+function startBackgroundUpdate() {
+  const root = process.env.AWB_CLIENT_ROOT;
+  if (!root || launchIdentity(process.env) === null) {
+    return;
+  }
+  import('./client-update.mjs')
+    .then((updater) => {
+      const interval = updater.recheckIntervalMs(process.env);
+      if (interval.error !== null) {
+        console.error(`[${SERVER_NAME}] client update (background): ${interval.error}`);
+      }
+      if (!cleanedUp) {
+        updateChecks = updater.startUpdateChecks({ root, launchId: process.env.AWB_LAUNCH_ID, env: process.env, intervalMs: interval.ms });
+      }
+    })
+    .catch((err) => console.error(`[${SERVER_NAME}] client update (background): the check could not run: ${err && err.message ? err.message : err}`));
 }
 
 if (TRANSPORT === 'unix') {
@@ -1404,6 +1429,7 @@ if (TRANSPORT === 'unix') {
     if (SHARED_TOKEN) {
       console.error(`[${SERVER_NAME}] bearer-token gating active (defense in depth)`);
     }
+    startBackgroundUpdate();
   });
 } else {
   server.on('error', (err) => {
@@ -1431,6 +1457,7 @@ if (TRANSPORT === 'unix') {
           `For multi-user hosts, set BRIDGE_CHANNEL_TOKEN or switch to BRIDGE_CHANNEL_TRANSPORT=unix.`,
       );
     }
+    startBackgroundUpdate();
   });
 }
 

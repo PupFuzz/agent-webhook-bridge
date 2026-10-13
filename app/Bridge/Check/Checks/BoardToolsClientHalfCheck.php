@@ -23,6 +23,7 @@ use App\Bridge\Tools\ClientHalfLedger;
 use App\Bridge\Tools\ClientVersion;
 use App\Bridge\Tools\ServedTools;
 use Closure;
+use Illuminate\Support\Carbon;
 use Throwable;
 
 /**
@@ -100,6 +101,11 @@ use Throwable;
  *     {@see ClientVersion::FIRST_REPORTING_SNAPSHOT} — or a caller that is not a channel
  *     server at all — sends no version. ⛔ An absent report is NOT a stale seat and must
  *     never be warned as one: it is the shape every pre-DL-364 client produces.
+ *   - a call the fleet ledger says is SUPERSEDED — the client updater reported a successful
+ *     launch or install after it, by {@see ClientFleet::callSupersededFor()}, the rule
+ *     `bridge:client-fleet` uses (DL-475, DL-478) ⇒ the client the seat INSTALLED is what is
+ *     compared, by the arms here, and the line says so. That call's version no longer says
+ *     which client the seat starts.
  *   - reported but the operand could not be read — this bridge's published client pack
  *     record, or (with nothing published) this checkout's own bundled manifest ⇒ `ok`, and
  *     the line says the comparison was NOT MADE. ⛔ The whole finding deliberately does NOT
@@ -142,15 +148,20 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
      *                              every version assertion a function of whatever this
      *                              repo's snapshot happens to be on the day it runs.
      */
-    public function __construct(private readonly string $bundledDir, ?ClientPackStore $store = null, ?Closure $isApproved = null)
+    public function __construct(private readonly string $bundledDir, ?ClientPackStore $store = null, ?Closure $isApproved = null, ?Closure $supersededFor = null)
     {
         $this->store = $store ?? new ClientPackStore;
         // `(agent, filesJsonSha256) => bool`, throwing when the ledger cannot say — injectable
         // so a test can reach the arm where it cannot, which no database state reaches alone.
         $this->isApproved = $isApproved ?? SeatClientLedger::isApproved(...);
+        // {@see ClientFleet::callSupersededFor()}, injectable for the same reason: an unmigrated
+        // connection would fail this leg's own read first.
+        $this->supersededFor = $supersededFor ?? ClientFleet::callSupersededFor(...);
     }
 
     private readonly Closure $isApproved;
+
+    private readonly Closure $supersededFor;
 
     private readonly ClientPackStore $store;
 
@@ -242,7 +253,22 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         // ONE clause, appended to BOTH green lines, so the two arms cannot drift into
         // reporting the seat's version differently — they differ in what they claim about
         // the CALLER, and nothing about the version depends on that.
-        [$stale, $versionClause] = $this->versionClause($record->clientVersion, $name, $bt->clientUpdateApprovalRequired);
+        // DL-478: the version compared is the fleet ledger's time-ordered evidence, by the one rule
+        // `bridge:client-fleet` uses — a launch or install the updater reported after this call
+        // supersedes it. A ledger that will not answer is said beside a warn, never read as either.
+        try {
+            $superseded = ($this->supersededFor)($name, $record->lastSuccessAt);
+            $fleetFault = null;
+        } catch (Throwable $e) {
+            $superseded = null;
+            $fleetFault = RedactedErrorText::of($e);
+        }
+        [$stale, $versionClause] = $superseded === null
+            ? $this->versionClause($record->clientVersion, $name, $bt->clientUpdateApprovalRequired)
+            : $this->supersededClause($record->clientVersion, $superseded, $name, $bt->clientUpdateApprovalRequired);
+        if ($stale && $fleetFault !== null) {
+            $versionClause .= ' Whether a launch or install the client updater reported after this call supersedes it could not be read (the fleet ledger did not answer: '.UntrustedText::forOperator($fleetFault).'), so the call\'s own version was compared; bridge:client-fleet names the seat\'s state.';
+        }
 
         if ($record->provenance === CallProvenance::Sshd) {
             $sshd = ("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".HumanAge::floored($age).' ago, over '.$record->transport.", and the process that served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY — the shape of the pinned pty-less forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe and every other http call, since that door states its provenance as a constant and never measures; EVERY hand-run FROM A TERMINAL — an ssh login shell, a tmux pane, a screen window, this host's own console — because a terminal hand-run keeps its controlling terminal even when stdin is a pipe, and this process had none; a hand-run whose lineage held a pty and still carried SSH_TTY; and anything running with no ssh session environment at all. TWO THINGS IT DOES NOT RULE OUT, so it STILL DOES NOT NAME THE CALLER: ANY OTHER PTY-LESS ssh INVOCATION of this command, `ssh <host> '<command>'` included — `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run; and a hand-run from a TERMINAL-LESS context carrying SSH_CONNECTION — a cron entry or a systemd user unit after `systemctl --user import-environment`, an agent tool harness, or a setsid wrapper.").' '.$versionClause;
@@ -355,12 +381,12 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
                         $approve = "`php artisan bridge:client-approve {$agent} {$published->bridgeRelease} --reason=…`";
 
                         return [true, $behind.($approved === false
-                            ? " This agent requires approval and release {$published->bridgeRelease}'s client is not approved for it, so the bridge offers it nothing: approve it ({$approve}), then restart that session — it updates at launch (a seat still on a copied snapshot bootstraps instead: {$bootstrap})."
+                            ? " This agent requires approval and release {$published->bridgeRelease}'s client is not approved for it, so the bridge offers it nothing: approve it ({$approve}); a session of that seat then stages it in the background and the launch after installs it (a seat still on a copied snapshot bootstraps instead: {$bootstrap})."
                             : " This agent requires approval, and whether release {$published->bridgeRelease}'s client is approved for it could not be read (the fleet ledger did not answer): if it is not, approve it ({$approve}); a seat is offered nothing until then. bridge:client-fleet names the seat's state.")];
                     }
                 }
 
-                return [true, $behind." A seat on its client root updates itself at its next launch: RESTART that session (bridge:client-fleet shows whether an update is owed or failed). A seat still on a copied snapshot does not: bootstrap it onto the published client ({$bootstrap}), then restart that session. The version is read when the channel server starts, so neither changes what this line reports until the restart."];
+                return [true, $behind." A seat on its client root stages the published release in the background of a session and installs it at the launch after (DL-476): RESTART that session once bridge:client-fleet shows it `restart owed` (it also shows an update that failed). A seat still on a copied snapshot does not: bootstrap it onto the published client ({$bootstrap}), then restart that session. The version is read when the channel server starts, so neither changes what this line reports until the restart."];
             }
 
             return [false, "Client version {$reported} is at or ahead of the {$published->clientVersion} this bridge publishes."];
@@ -380,6 +406,25 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         }
 
         return [false, "Client version {$reported} is at or ahead of the {$bundled['version']} this bridge bundles."];
+    }
+
+    /**
+     * The version half of a green line for a call the fleet ledger says is SUPERSEDED (DL-478): the
+     * client the seat installed after it is what is compared, through {@see self::versionClause()}.
+     *
+     * @param  array{what: string, at: Carbon, installed_release: string, installed_client_version: ?string}  $superseded
+     * @return array{0: bool, 1: string}
+     */
+    private function supersededClause(?string $reported, array $superseded, string $agent, bool $approvalRequired): array
+    {
+        $lead = 'That call came from '.($reported !== null ? "client {$reported}" : 'a client that reports no version').", but the client updater reported {$superseded['what']} after it (".HumanAge::floored((int) $superseded['at']->diffInSeconds(now(), true))." ago), so that call no longer says which client the seat starts: it installed release {$superseded['installed_release']}";
+        $installed = $superseded['installed_client_version'];
+        if ($installed === null) {
+            return [false, $lead.', and its install line names no client version, so nothing was compared.'];
+        }
+        [$stale, $clause] = $this->versionClause($installed, $agent, $approvalRequired);
+
+        return [$stale, $lead." (client {$installed}), and that client is what is compared. ".$clause];
     }
 
     /**

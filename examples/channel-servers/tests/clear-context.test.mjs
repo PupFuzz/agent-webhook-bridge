@@ -30,14 +30,17 @@ import { scratch, connectServer } from './mcp-harness.mjs';
 // Drop an executable fake `clear-agent.sh` into `binDir` that records its own
 // pid/ppid/pgid to $SENTINEL_FILE (inherited from the server's env). A detached child
 // is its own session/process-group leader, so pgid == pid — the observable that proves
-// `detached: true` without a spy inside the server process.
+// `detached: true` without a spy inside the server process. The record is written beside
+// the sentinel and renamed onto it: a `>` redirect creates the file before `printf` fills
+// it, and a test that polls for the file would read it empty.
 function installFakeHelper(binDir) {
   const helper = path.join(binDir, 'clear-agent.sh');
   fs.writeFileSync(
     helper,
     '#!/usr/bin/env bash\n' +
       'pgid=$(ps -o pgid= -p $$ | tr -d " ")\n' +
-      'printf "pid=%s ppid=%s pgid=%s\\n" "$$" "$PPID" "$pgid" > "$SENTINEL_FILE"\n',
+      'printf "pid=%s ppid=%s pgid=%s\\n" "$$" "$PPID" "$pgid" > "$SENTINEL_FILE.tmp"\n' +
+      'mv "$SENTINEL_FILE.tmp" "$SENTINEL_FILE"\n',
     { mode: 0o755 },
   );
   return helper;

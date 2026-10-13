@@ -466,6 +466,73 @@ class FleetLedgerDoorTest extends TestCase
     }
 
     /**
+     * card#11787: a running server re-checks, and a `check` line of the SAME launch — written when a
+     * later check of that session succeeded after an earlier one failed — clears its failure, so the
+     * seat reads its stage (restart owed) rather than `update_failed` for the rest of the session.
+     */
+    public function test_a_clean_check_of_the_same_launch_clears_that_launchs_failure(): void
+    {
+        $stage = ['action' => 'stage', 'from_bridge_release' => '0.90.0', 'to_bridge_release' => '0.91.0', 'files_json_sha256' => str_repeat('b', 64), 'pack_sha256' => str_repeat('c', 64), 'manifest_sha256' => str_repeat('d', 64)];
+        $lines = self::log([
+            ['action' => 'fail', 'result' => 'failed', 'reason' => 'bridge unreachable', 'launch_id' => 'L1'],
+            $stage + ['launch_id' => 'L1'],
+        ]);
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $lines]);
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+        $this->assertSame('failed', $row->last_launch_result, 'a stage line alone does not clear the failure');
+
+        $check = self::log([['action' => 'check', 'from_bridge_release' => '0.90.0', 'to_bridge_release' => '0.91.0', 'launch_id' => 'L1']], 3, hash('sha256', $lines[1]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $check]);
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+        $this->assertSame(['L1', 'ok', null], [$row->last_launch_id, $row->last_launch_result, $row->last_launch_error]);
+        $this->assertSame(['httpseat' => '0.91.0'], SeatClientLedger::stagedReleases());
+
+        $again = self::log([['action' => 'fail', 'result' => 'failed', 'reason' => 'bridge unreachable again', 'launch_id' => 'L1']], 4, hash('sha256', $check[0]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $again]);
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+        $this->assertSame(['failed', 'bridge unreachable again'], [$row->last_launch_result, $row->last_launch_error], 'a failure after the check counts again');
+    }
+
+    /**
+     * The background update check's lines (card#11760, DL-476) are stored like any other: a clean
+     * `check` from a later launch supersedes an earlier launch's failure, and the newest stage or
+     * discard decides what the seat has staged.
+     */
+    public function test_the_background_checks_lines_are_accepted_and_a_clean_check_supersedes_a_failed_launch(): void
+    {
+        $stage = ['action' => 'stage', 'from_bridge_release' => '0.90.0', 'to_bridge_release' => '0.91.0', 'files_json_sha256' => str_repeat('b', 64), 'pack_sha256' => str_repeat('c', 64), 'manifest_sha256' => str_repeat('d', 64)];
+        $lines = self::log([
+            ['action' => 'fail', 'result' => 'failed', 'reason' => 'bridge unreachable', 'launch_id' => 'L1'],
+            ['action' => 'check', 'from_bridge_release' => '0.90.0', 'launch_id' => 'L2'],
+            $stage + ['launch_id' => 'L2'],
+        ]);
+
+        $http = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $lines]);
+
+        $this->assertSame(200, $http['status'], $http['raw']);
+        $this->assertSame(3, $http['body']['stored']);
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+        $this->assertSame('L2', $row->last_launch_id);
+        $this->assertSame('ok', $row->last_launch_result, 'a clean check of a later launch is that launch\'s outcome');
+        $this->assertSame(['httpseat' => '0.91.0'], SeatClientLedger::stagedReleases());
+        $this->assertNull($row->installed_bridge_release, 'a stage is not an install');
+
+        $discard = self::log([['action' => 'stage_discard', 'to_bridge_release' => '0.91.0', 'reason' => 'withdrawn', 'launch_id' => 'L3']], 4, hash('sha256', $lines[2]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $discard]);
+        $this->assertSame([], SeatClientLedger::stagedReleases(), 'a discard after the stage leaves nothing staged');
+
+        // A launch that refuses a damaged stage discards it with no stage_discard line (its refuse
+        // line says it), and a launch that installs a stage consumes it: neither leaves it staged.
+        $restage = self::log([$stage + ['launch_id' => 'L4'], ['action' => 'refuse', 'result' => 'refused', 'to_bridge_release' => '0.91.0', 'reason' => 'the staged update was refused and discarded', 'launch_id' => 'L5']], 5, hash('sha256', $discard[0]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $restage]);
+        $this->assertSame([], SeatClientLedger::stagedReleases(), 'a refusal after the stage leaves nothing staged');
+
+        $installed = self::log([$stage + ['launch_id' => 'L6'], self::install('0.91.0', 'L7')], 7, hash('sha256', $restage[1]));
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $installed]);
+        $this->assertSame([], SeatClientLedger::stagedReleases(), 'an install after the stage consumed it');
+    }
+
+    /**
      * @return array<string, array{0: array<string, mixed>, 1: string}>
      */
     public static function reportRefusals(): array
@@ -693,6 +760,86 @@ class FleetLedgerDoorTest extends TestCase
         $this->assertSame('0.91.0', $byAgent['httpseat']['installed']['bridge_release']);
         $this->assertSame('approval_owed', $byAgent['gated']['state']);
         $this->assertSame('needs_bootstrap', $byAgent['sshseat']['state']);
+        Carbon::setTestNow();
+    }
+
+    /**
+     * @return array<string, array{0: array<string, mixed>}>
+     */
+    public static function updaterRuns(): array
+    {
+        return [
+            'a launch that installed' => [self::install()],
+            'a bootstrap (a provision line, no launch)' => [['action' => 'bootstrap', 'actor' => 'provision', 'to_bridge_release' => '0.91.0', 'client_version' => '0.9.28', 'files_json_sha256' => str_repeat('b', 64)]],
+        ];
+    }
+
+    /**
+     * card#11761 through the real ledger writes: evidence is ordered by when the bridge received it.
+     * A call from a legacy client, then a successful updater run reported, reads as installed and
+     * not yet called — and a legacy call after that report is off the path again.
+     *
+     * @param  array<string, mixed>  $line
+     */
+    #[DataProvider('updaterRuns')]
+    public function test_an_updater_run_reported_after_a_legacy_call_supersedes_it_until_the_next_call(array $line): void
+    {
+        $this->publish(new ClientPackFixture);
+        $state = function (): string {
+            $seats = array_column($this->ssh(['op' => 'client_fleet'], 'sshpm')['body']['seats'], null, 'agent');
+
+            return $seats['httpseat']['state'];
+        };
+
+        Carbon::setTestNow('2026-09-24T09:00:00Z');
+        $this->http('/agent-tools/call', ['tool' => 'no_such_tool', 'client_version' => '0.9.27']);
+        Carbon::setTestNow('2026-09-28T07:00:00Z');
+        $this->report(self::INSTALL, self::log([$line]));
+        Carbon::setTestNow('2026-09-28T12:00:00Z');
+        $this->assertSame('applies_next_launch', $state());
+
+        Carbon::setTestNow('2026-09-28T12:05:00Z');
+        $this->http('/agent-tools/call', ['tool' => 'no_such_tool', 'client_version' => '0.9.27']);
+        $this->assertSame('off_update_path', $state());
+        Carbon::setTestNow();
+    }
+
+    /**
+     * @return array<string, array{0: array<string, mixed>}>
+     */
+    public static function runsThatInstallNothing(): array
+    {
+        return [
+            'a failed bootstrap' => [['action' => 'bootstrap', 'actor' => 'provision', 'result' => 'failed', 'to_bridge_release' => '0.91.0', 'reason' => 'pack digest mismatch']],
+            'an ok provision line that is not an install' => [['action' => 'prune', 'actor' => 'provision', 'to_bridge_release' => '0.91.0']],
+        ];
+    }
+
+    /**
+     * card#11761: a provision run reported after a legacy call that installed nothing supersedes
+     * nothing — a bootstrap repoints `.mcp.json` only when it succeeds — even when an install from
+     * BEFORE that call is on the row.
+     *
+     * @param  array<string, mixed>  $line
+     */
+    #[DataProvider('runsThatInstallNothing')]
+    public function test_a_provision_run_that_installs_nothing_leaves_a_legacy_call_in_charge(array $line): void
+    {
+        $this->publish(new ClientPackFixture);
+        $bootstrap = ['action' => 'bootstrap', 'actor' => 'provision', 'to_bridge_release' => '0.91.0', 'client_version' => '0.9.28', 'files_json_sha256' => str_repeat('b', 64)];
+        $lines = self::log([$bootstrap, $line]);
+
+        Carbon::setTestNow('2026-09-24T09:00:00Z');
+        $this->report(self::INSTALL, [$lines[0]]);
+        Carbon::setTestNow('2026-09-25T09:00:00Z');
+        $this->http('/agent-tools/call', ['tool' => 'no_such_tool', 'client_version' => '0.9.27']);
+        Carbon::setTestNow('2026-09-28T07:00:00Z');
+        $this->report(self::INSTALL, [$lines[1]]);
+        Carbon::setTestNow('2026-09-28T12:00:00Z');
+
+        $seats = array_column($this->ssh(['op' => 'client_fleet'], 'sshpm')['body']['seats'], null, 'agent');
+        $this->assertSame('0.91.0', $seats['httpseat']['installed']['bridge_release']);
+        $this->assertSame('off_update_path', $seats['httpseat']['state'], $seats['httpseat']['reason']);
         Carbon::setTestNow();
     }
 

@@ -76,9 +76,10 @@ class ClientFleetStateTest extends TestCase
      * @param  array<string, string>  $installedDigests
      * @return array<string, mixed>
      */
-    private function derive(array $row, ?PublishedClientPack $published, bool $approval = false, array $approved = [], array $installedDigests = [], string $transport = 'ssh', ?string $publishedError = null): array
+    private function derive(array $row, ?PublishedClientPack $published, bool $approval = false, array $approved = [], array $installedDigests = [], string $transport = 'ssh', ?string $publishedError = null, ?string $installReportedAt = null, ?string $staged = null): array
     {
-        $fleet = ClientFleet::derive(['seat' => self::bt($approval, $transport)], ['seat' => $this->row($row)], $published, $publishedError, ['seat' => $approved], ['seat' => $installedDigests], ClientCapabilities::bundled(), $this->now);
+        $installsReportedAt = $installReportedAt === null ? [] : ['seat' => Carbon::parse($installReportedAt)];
+        $fleet = ClientFleet::derive(['seat' => self::bt($approval, $transport)], ['seat' => $this->row($row)], $published, $publishedError, ['seat' => $approved], ['seat' => $installedDigests], $installsReportedAt, $staged === null ? [] : ['seat' => $staged], ClientCapabilities::bundled(), $this->now);
         $seat = $fleet->toArray()['seats'][0];
         $seat['warns'] = $seat['warn'];
 
@@ -113,6 +114,7 @@ class ClientFleetStateTest extends TestCase
             'current' => [FleetState::Current, $launched('0.91.0'), true, false, [], false],
             'applies_next_launch (launched before publication)' => [FleetState::AppliesNextLaunch, $launched('0.90.0', null, '2026-09-27T00:00:00Z'), true, false, [], false],
             'applies_next_launch (already installed)' => [FleetState::AppliesNextLaunch, $launched('0.90.0', '0.91.0'), true, false, [], false],
+            'applies_next_launch (an off-path call superseded by a later launch)' => [FleetState::AppliesNextLaunch, ['last_call_at' => '2026-09-28T09:00:00Z', 'last_call_client_version' => '0.9.27', 'installed_bridge_release' => '0.91.0', 'last_launch_id' => 'L1', 'last_launch_result' => 'ok', 'last_launch_first_reported_at' => '2026-09-28T10:00:00Z', 'last_report_at' => '2026-09-28T10:00:00Z'], true, false, [], false],
             'applies_next_launch (bootstrapped, never launched)' => [FleetState::AppliesNextLaunch, ['installed_bridge_release' => '0.91.0', 'last_report_at' => '2026-09-28T11:00:00Z'], true, false, [], false],
             'behind' => [FleetState::Behind, $launched('0.90.0'), true, false, [], true],
             'unverified (running ahead of the published release)' => [FleetState::Unverified, $launched('0.92.0'), true, false, [], true],
@@ -221,6 +223,35 @@ class ClientFleetStateTest extends TestCase
         $this->assertSame($before['last_seen'], $after['last_seen'], 'a probe is not the seat being seen');
     }
 
+    /** card#11760: a seat that launched after publication and STAGED the release is owed a restart, not behind. */
+    public function test_a_seat_that_staged_the_published_release_applies_it_at_its_next_launch(): void
+    {
+        $staged = $this->derive($this->launched('0.90.0'), $this->published(), staged: '0.91.0');
+        $this->assertSame('applies_next_launch', $staged['state']);
+        $this->assertStringContainsString('its background update check has staged it', $staged['reason']);
+        $this->assertFalse($staged['warns']);
+
+        $this->assertSame('behind', $this->derive($this->launched('0.90.0'), $this->published(), staged: '0.90.5')['state'], 'a stage of another release is not the published one');
+        $this->assertSame('behind', $this->derive($this->launched('0.90.0'), $this->published())['state']);
+    }
+
+    /**
+     * card#11787: a session that started before publication and whose periodic re-check STAGED the
+     * release says so, not that its next session stages it.
+     */
+    public function test_a_session_that_began_before_publication_and_staged_it_by_a_re_check_reads_staged(): void
+    {
+        $before = $this->launched('0.90.0', null, '2026-09-27T00:00:00Z');
+
+        $staged = $this->derive($before, $this->published(), staged: '0.91.0');
+        $this->assertSame('applies_next_launch', $staged['state']);
+        $this->assertStringContainsString('its background update check has staged it', $staged['reason']);
+
+        $notYet = $this->derive($before, $this->published());
+        $this->assertSame('applies_next_launch', $notYet['state']);
+        $this->assertStringContainsString('stages it at its next periodic re-check', $notYet['reason']);
+    }
+
     /** A failure stops counting once a different, later launch has been seen calling. */
     public function test_a_later_launch_supersedes_a_failed_one(): void
     {
@@ -298,6 +329,111 @@ class ClientFleetStateTest extends TestCase
             $this->assertSame('needs_bootstrap', $never['state']);
             $this->assertStringContainsString($command, $never['reason']);
         }
+    }
+
+    /**
+     * card#11761: evidence is ordered by when the bridge received it. A seat whose latest call came
+     * from a client with no launch identity, and whose updater then reported a launch, is not off
+     * the update path — the magento seat of rt#624: installed the published release at a launch
+     * reported this morning, last called four days earlier from a legacy client.
+     */
+    public function test_a_launch_reported_after_an_off_path_call_supersedes_it(): void
+    {
+        $row = [
+            'last_call_at' => '2026-09-24T09:00:00Z', 'last_call_client_version' => '0.9.27',
+            'installed_bridge_release' => '0.91.0', 'installed_client_version' => '0.9.28',
+            'last_launch_id' => 'L1', 'last_launch_result' => 'ok', 'last_launch_first_reported_at' => '2026-09-28T07:11:34Z',
+            'last_report_at' => '2026-09-28T07:11:34Z',
+        ];
+        $seat = $this->derive($row, $this->published());
+
+        $this->assertSame('applies_next_launch', $seat['state'], $seat['reason']);
+        $this->assertFalse($seat['warns'], 'a seat the updater launched an hour ago needs nothing from the operator');
+        $this->assertStringContainsString('the client updater reported a launch after it (4h ago)', $seat['reason']);
+        $this->assertStringContainsString('installed release 0.91.0', $seat['reason']);
+    }
+
+    /**
+     * card#11761, the platform seat of rt#624: bootstrapped (a provision line, no launch line)
+     * after its last call from a legacy client. A successful bootstrap repoints the seat at the
+     * updater's entry point, so that call no longer says where its next launch comes from.
+     */
+    public function test_a_successful_install_reported_after_an_off_path_call_supersedes_it(): void
+    {
+        $row = [
+            'last_call_at' => '2026-09-24T09:00:00Z', 'last_call_client_version' => '0.9.27',
+            'installed_bridge_release' => '0.91.0', 'installed_client_version' => '0.9.28',
+            'last_report_at' => '2026-09-28T07:01:00Z',
+        ];
+        $seat = $this->derive($row, $this->published(), installReportedAt: '2026-09-28T07:01:00Z');
+
+        $this->assertSame('applies_next_launch', $seat['state'], $seat['reason']);
+        $this->assertFalse($seat['warns']);
+        $this->assertStringContainsString('the client updater reported an install after it', $seat['reason']);
+    }
+
+    /**
+     * card#11761, the converse: a call newer than the report still speaks for the seat — a launch
+     * or a bootstrap followed by a call from a client with no launch identity is off the path again.
+     */
+    public function test_an_off_path_call_after_the_launch_or_install_still_wins(): void
+    {
+        $base = ['last_call_at' => '2026-09-28T11:30:00Z', 'last_call_client_version' => '0.9.27', 'installed_bridge_release' => '0.91.0', 'last_report_at' => '2026-09-28T07:00:00Z'];
+        $launch = $base + ['last_launch_id' => 'L1', 'last_launch_result' => 'ok', 'last_launch_first_reported_at' => '2026-09-28T07:00:00Z'];
+
+        $this->assertSame('off_update_path', $this->derive($launch, $this->published())['state']);
+        $this->assertSame('off_update_path', $this->derive($base, $this->published(), installReportedAt: '2026-09-28T07:00:00Z')['state']);
+    }
+
+    /**
+     * card#11761: only an updater run that SUCCEEDED moves a seat onto the path. A report after the
+     * call that installed nothing (a failed bootstrap leaves `.mcp.json` as it was) supersedes
+     * nothing, even when an earlier install is on the row.
+     */
+    public function test_a_report_after_an_off_path_call_that_installed_nothing_supersedes_nothing(): void
+    {
+        $row = [
+            'last_call_at' => '2026-09-26T09:00:00Z', 'last_call_client_version' => '0.9.27',
+            'installed_bridge_release' => '0.91.0', 'last_report_at' => '2026-09-28T07:00:00Z',
+        ];
+
+        $this->assertSame('off_update_path', $this->derive($row, $this->published(), installReportedAt: '2026-09-25T07:00:00Z')['state']);
+    }
+
+    /**
+     * card#11763 (PR #910 review): a launch reported after an off-path call, with no install on the
+     * row, says nothing about which client the seat starts, so the call stays in charge. Before, the
+     * seat fell through to the catch-all `unverified` message.
+     */
+    public function test_a_launch_after_an_off_path_call_with_nothing_installed_leaves_it_off_the_path(): void
+    {
+        $row = [
+            'last_call_at' => '2026-09-24T09:00:00Z', 'last_call_client_version' => '0.9.27',
+            'last_launch_id' => 'L1', 'last_launch_result' => 'ok', 'last_launch_first_reported_at' => '2026-09-28T07:00:00Z',
+            'last_report_at' => '2026-09-28T07:00:00Z',
+        ];
+        $seat = $this->derive($row, $this->published());
+
+        $this->assertSame('off_update_path', $seat['state'], $seat['reason']);
+    }
+
+    /**
+     * card#11761: once a report supersedes the off-path call, the running fields the seat's calls
+     * last wrote are older still (a call without a launch never writes them), so they place nothing.
+     */
+    public function test_a_superseded_off_path_call_takes_the_older_running_launch_with_it(): void
+    {
+        $row = [
+            'running_launch_id' => 'L0', 'running_bridge_release' => '0.90.0', 'running_client_version' => '0.9.27',
+            'running_launch_first_seen_at' => '2026-09-28T08:00:00Z', 'running_seen_at' => '2026-09-28T08:00:00Z',
+            'last_call_at' => '2026-09-28T09:00:00Z', 'last_call_client_version' => '0.9.27',
+            'installed_bridge_release' => '0.91.0', 'last_launch_id' => 'L1', 'last_launch_result' => 'ok',
+            'last_launch_first_reported_at' => '2026-09-28T10:00:00Z', 'last_report_at' => '2026-09-28T10:00:00Z',
+        ];
+        $seat = $this->derive($row, $this->published());
+
+        $this->assertSame('applies_next_launch', $seat['state'], $seat['reason']);
+        $this->assertStringNotContainsString('0.90.0', $seat['reason'], 'the launch the off-path call superseded is not what the seat runs');
     }
 
     public function test_a_seat_supplied_reason_is_escaped_before_it_is_printed(): void

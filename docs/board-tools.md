@@ -2398,7 +2398,7 @@ bridge-board-call board_take_card '{"card_id":123,"start":true}'
 
 ## The client-update door (DL-430)
 
-A seat's channel server updates itself from its own bridge at launch (card#10568, DL-434) — the seat half is `examples/channel-servers/entry.mjs` and `client-update.mjs`, described in that directory's README § *Installed and updated by the bridge*. The bridge half is a separate door, **not a board tool**: `POST /agent-tools/client` behind the same loopback gate and bearer as `/agent-tools/call`, and, on the ssh transport, the same pinned `bridge:tools-call` forced command given a body carrying `op` instead of `tool`. Both transports answer the same bytes. It never goes through the board-tools dispatcher, so no tool refusal, board outage or client-version rule can stand between a seat and the pack that fixes it.
+A seat's channel server updates itself from its own bridge (card#10568, DL-434): a background check in each session stages a newer release (from client 0.9.59 the running server re-runs it every few hours, so a release published mid-session is staged in that session — card#11787, DL-479), and the next launch installs it from local files, asking the bridge nothing (card#11760, DL-476) — except a launch whose previous launch completed no check, which runs the check itself (DL-476 Decision 7) — the seat half is `examples/channel-servers/entry.mjs` and `client-update.mjs`, described in that directory's README § *Installed and updated by the bridge*. The bridge half is a separate door, **not a board tool**: `POST /agent-tools/client` behind the same loopback gate and bearer as `/agent-tools/call`, and, on the ssh transport, the same pinned `bridge:tools-call` forced command given a body carrying `op` instead of `tool`. Both transports answer the same bytes. It never goes through the board-tools dispatcher, so no tool refusal, board outage or client-version rule can stand between a seat and the pack that fixes it.
 
 It serves `client_manifest` (what this bridge publishes, the release a seat should install, whether an approval is owed, and the last install-log entry this bridge holds for the seat), `client_pack` (that release's pack, base64), `client_report` (the seat's install-log lines, chain-checked) `client_fleet` (every seat's reported client and state — only to an agent with `board_tools.fleet_view: true`) and `served_tools` (the tools this bridge serves the calling agent — § *Scope-less agents*; `client_manifest` carries the same list). The request and response shapes, and every refusal, are owned by `App\Bridge\ClientUpdate\ClientUpdateDoor`'s class docblock; this section deliberately does not restate them. What it serves is whatever `php artisan bridge:client-pack:install` last published (CLAUDE_DEPLOYMENT.md § Commands); until that has run, `client_manifest` and `client_pack` answer `503` and a seat keeps its installed client. Each release's pack is attached to its GitHub release by the release workflow (DL-442), and `bridge:check`'s `board_tools.client_pack_source` leg warns until this checkout's release is the published one — and fails where the published client is also older than this checkout's, unless this release shipped without a pack (DL-466).
 
@@ -2723,11 +2723,20 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   snapshot never advertised — was reported *"absent from my surface"*, and it was
   attributed to the **BRIDGE**, because nothing compared the two numbers. The line now
   prints both.
+  - ⭐ **A call the client updater has since superseded is not compared (card#11763, DL-478).**
+    When the fleet ledger shows a successful launch, bootstrap or install reported AFTER the
+    recorded call — the rule `bridge:client-fleet` uses (DL-475), from the same primitive — that
+    call no longer says which client the seat starts, so the client the seat **installed** is
+    compared instead, by the arms below (against the published client, or the bundled snapshot
+    when nothing is published), and the line names the call, the report and the installed
+    release. A call recorded after the report (the seat's or an exempt caller's) is compared again.
+    A staged release is never what is compared. A fleet ledger that will not answer leaves the
+    call's own version compared, and, when that comparison warns, the line says so.
   - ⭐ **Which version it is compared with (card#10568 comment 7177, DL-445).** Once this
     bridge PUBLISHES a client pack, the reported version is compared with the **published
     client**, never this checkout's bundled copy — seats take their client from the pack now.
-    Behind it ⇒ **`warn`**, and the remedy is a **restart** for a seat on its client root (it
-    updates itself at launch) or the **bootstrap** (`provision-board-tools.py --role b
+    Behind it ⇒ **`warn`**, and the remedy is a **restart** for a seat on its client root, once
+    `bridge:client-fleet` shows the release staged (`restart owed`; DL-476) or the **bootstrap** (`provision-board-tools.py --role b
     --bootstrap-client` on the seat) for one still on a copy — never a re-copy, which would take
     a seat off the update path. For an agent with `board_tools.client_update.approval_required`
     whose published content is not approved, the remedy is `bridge:client-approve` (the bridge

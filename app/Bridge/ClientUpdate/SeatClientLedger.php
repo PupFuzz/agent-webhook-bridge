@@ -287,6 +287,59 @@ final class SeatClientLedger
     }
 
     /**
+     * When this bridge last received a successful bootstrap or install line from each agent's own
+     * install log — the lines {@see self::applyEntry()} takes the row's installed release from.
+     * This bridge's clock, so it orders against `last_call_at` (card#11761). A late line that fills
+     * a gap is stamped when it arrived, not where it sits in the log.
+     *
+     * @return array<string, Carbon> agent => received_at; only `$agent`'s when one is named
+     */
+    public static function installsReportedAt(?string $agent = null): array
+    {
+        $out = [];
+        $rows = SeatClientEvent::query()
+            ->when($agent !== null, static fn ($q) => $q->where('agent', $agent))
+            ->where('install_id', '!=', self::BRIDGE_INSTALL_ID)
+            ->whereIn('action', ['bootstrap', 'install'])->where('result', 'ok')
+            ->whereNotNull('to_bridge_release')
+            ->groupBy('agent')->selectRaw('agent, max(received_at) as reported_at')->get();
+        foreach ($rows as $row) {
+            $out[(string) $row->agent] = Carbon::parse((string) $row->getAttribute('reported_at'));
+        }
+
+        return $out;
+    }
+
+    /**
+     * The release each agent's background update check has STAGED for its next launch (DL-476):
+     * the newest `stage`, `stage_discard`, `refuse` or `install` line the seat reported, when that
+     * line is a successful `stage`. Each of the others ends a stage: a discard removes it, a launch
+     * that refuses a damaged stage discards it under its `refuse` line alone, an install consumes
+     * it, and a refused offer discards whatever was staged. An agent whose newest such line is not
+     * a stage, or that reported none, is absent.
+     *
+     * @return array<string, string> agent => to_bridge_release
+     */
+    public static function stagedReleases(): array
+    {
+        $out = [];
+        $rows = SeatClientEvent::query()
+            ->where('install_id', '!=', self::BRIDGE_INSTALL_ID)
+            ->whereIn('action', ['stage', 'stage_discard', 'refuse', 'install'])
+            ->orderBy('id')->get(['agent', 'action', 'result', 'to_bridge_release']);
+        foreach ($rows as $row) {
+            $agent = (string) $row->agent;
+            if ($row->action === 'stage' && $row->result === 'ok' && $row->to_bridge_release !== null) {
+                $out[$agent] = (string) $row->to_bridge_release;
+            } else {
+                unset($out[$agent]);
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * @return array{install_id: string, seq: int, sha256: string}|null
      */
     private static function headOf(SeatClientState $row): ?array
@@ -388,8 +441,11 @@ final class SeatClientLedger
     /**
      * What one stored line changes on the seat's row.
      *
-     * A launch's OUTCOME is `failed` if any of its lines failed or refused, `ok` otherwise. Lines
-     * are grouped by `launch_id`, which every `actor: launch` line carries ({@see InstallLogEntry}).
+     * A launch's OUTCOME is `failed` if any of its lines failed or refused, `ok` otherwise — until a
+     * `check` / `ok` line of that launch: the seat writes one when a later check of the same
+     * session reached the bridge cleanly after an earlier one failed (card#11787), and it clears
+     * the failure the way a later launch's lines do. Lines are grouped by `launch_id`, which every
+     * `actor: launch` line carries ({@see InstallLogEntry}).
      */
     private static function applyEntry(SeatClientState $row, InstallLogEntry $entry, Carbon $now): void
     {
@@ -413,6 +469,10 @@ final class SeatClientLedger
         if ($failed && $row->last_launch_result !== 'failed') {
             $row->last_launch_result = 'failed';
             $row->last_launch_error = $entry->reason ?? $entry->action;
+        }
+        if ($entry->action === 'check' && $entry->result === 'ok') {
+            $row->last_launch_result = 'ok';
+            $row->last_launch_error = null;
         }
     }
 

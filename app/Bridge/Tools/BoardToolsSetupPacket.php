@@ -301,7 +301,7 @@ final class BoardToolsSetupPacket
                 .self::PROJECT_DIR.'/.channel-server/… — a copy it deploys there. Any previous copy '
                 .'is left on disk untouched and is no longer what the session runs; delete it only '
                 .'once this seat is certified. Once STEP 4 bootstraps the client they point at its client root\'s '
-                .'entry.mjs instead, which updates itself at each launch, and STEP 1\'s copy is no longer run either.',
+                .'entry.mjs instead, which updates itself (a session stages a newer release, the next launch installs it), and STEP 1\'s copy is no longer run either.',
         ];
     }
 
