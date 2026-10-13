@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.103.0] - 2026-10-12
+
 ### Changed
 
 - **card#11787 / DL-479** — **A seat's channel server checks for an update again every few hours during a long session, so one restart picks up a release published mid-session.** Before, a seat checked once per session, and a seat already running at a publication needed two restarts: one session to stage the release, one launch to install it. Client **0.9.59** re-runs the same background check `AWB_CLIENT_RECHECK_HOURS` after each check ends (default **4**, at least 60 s; `0` turns it off). Only one check runs at a time. The check only stages, never switches release mid-session, and uses the same lock, verification and stage rules against the release installed now: a newer offer replaces the stage, a withdrawn one discards it.
@@ -43,6 +45,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ### Security
 
 - **card#11766** — **GHSA-rxp7-6hxx-x8q5: `ip-address` 10.7.2 → 10.7.4 in `examples/channel-servers/`** (transitive, via `express-rate-limit` under `@modelcontextprotocol/sdk`; affected `<= 10.7.3`, medium); channel-server snapshot `0.9.55` → `0.9.56`. `Address6` strips a zone identifier with `/%.*$/` before its length limit, so a long string of `%` followed by a line terminator takes quadratic time to reject. Only the `ip-address` lockfile entry moves. **It does not reach the channel server**: the server's SDK imports (`server/index.js`, `server/stdio.js`, `types.js`) resolve no `ip-address` or `express-rate-limit` module (measured with a resolve hook: zero, against one for each when imported directly, as controls). The advisory is published only on the package's own repository, so the global feed (`osv-scanner`, `npm audit`) reports nothing on either lockfile; the repo's dependency-advisory audit finds it through its repository-advisory source on the base lockfile and is green on this one.
+
+### Upgrade warnings
+
+- ⚠ **Upgrade the bridge before, or together with, its seats (card#11760).** A seat on client 0.9.57 or later reports the install-log actions `stage`, `stage_discard` and `check`. A bridge older than this release refuses a report carrying them; the seat sends them again with each check once the bridge is upgraded.
+- ⚠ **Run `php artisan bridge:client-pack:install` on the bridge host to publish channel-server snapshot 0.9.60** (`CLAUDE_DEPLOYMENT.md` § *Update an existing install*). A seat on a client before 0.9.57 installs it at its next launch, as before.
+- ⚠ **From client 0.9.57 a release reaches a seat one session later (card#11760, card#11787).** A running session's background check stages a newer release and the launch after it installs it; nothing switches mid-session. The check runs again every `AWB_CLIENT_RECHECK_HOURS` (default 4, at least 60 s, `0` for off — set in the seat's environment), so a session that outlasts one interval after a publication needs one restart. `bridge:client-fleet` reads a seat that staged the published release as `applies_next_launch` (restart owed).
+- No migration and no bridge `.env` change.
 
 ## [0.102.0] - 2026-10-12
 
