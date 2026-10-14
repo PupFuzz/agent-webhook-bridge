@@ -8,6 +8,24 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.104.0] - 2026-10-13
+
+### Added
+
+- **card#11823 / DL-481** — **`bridge-board-call` resolves by name on a bootstrapped seat with no manual step.** Before, a seat got `<client root>/bin/bridge-board-call` and nothing put it on `PATH`, so a hook, script or framework tool calling it by name failed until an operator linked it by hand.
+  - **Inside a session:** the launcher now appends `<client root>/bin` to the `PATH` of the `claude` it starts, so hooks, the Bash tool and the channel server find `bridge-board-call` and the seat tools by name. This covers Linux and macOS, and Windows through the `.ps1` launcher; the Windows change is parsed in CI, not run. A program of the same name already on `PATH` still wins. Nothing outside the client root is written for it. It arrives with the client pack and needs no re-bootstrap. It applies from the first launch after the seat installs client 0.9.62, and only to a seat whose launcher runs the client root's `start-claude`.
+  - **Outside a session, on Linux and macOS:** `provision-board-tools.py --bootstrap-client` (and `--certify-only`, `--self-cert`) links `~/.local/bin/bridge-board-call` to the client root's shim when `~/.local/bin` exists and is on `PATH`. It writes only where nothing is at that name, or over a link of its own whose client root is gone; a file or link it did not write is left untouched. It never creates the directory and never edits a shell rc: when the directory is missing or not on `PATH`, it prints the one `ln -s` command to run. The run prints `board-call-status: <token>` (`linked`, `already_linked`, `kept`, `not_on_path`, `no_program`, `launcher_path`, `io_error`) and whether the name resolves in that shell, and keeps its own exit code. The link names the root's shim, which every client update rewrites in place, so it keeps resolving.
+  - **Outside a session, on Windows:** nothing is written outside the client root and the persisted `Path` is not edited. The run prints the shim's full path (`<client root>\bin\bridge-board-call.cmd`) to use there.
+  - `bridge:check` does not report this: it runs on the bridge host and does not read the seat's home. The seat's own onboarding run reports it.
+  - Channel-server snapshot `0.9.61` → `0.9.62` (the launchers changed).
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.62. Until you do, seats stay on client 0.9.61 and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+- The `PATH` entry reaches a session from the launch after the one that installs client 0.9.62 (the launch that installs it runs the previous release's launcher). A seat whose own launcher does not run `<client root>/bin/start-claude` (`launcher-shim-status: launcher_kept`, or a copy of the coord framework's template) does not get it; point its launch line at `<client root>/bin/start-claude`.
+- To call `bridge-board-call` by name outside a session on Linux or macOS, re-run `provision-board-tools.py --bootstrap-client` (or `--certify-only`) once on the seat from a shell whose `PATH` includes an existing `~/.local/bin`, and read the `board-call-status:` line.
+- A script reading the output of `--bootstrap-client`, `--certify-only` or `--self-cert` meets the new `bridge-board-call` lines and the `board-call-status:` line before `launcher-shim-status:`, which stays the last line. Exit codes are unchanged.
+
 ## [0.103.1] - 2026-10-13
 
 ### Fixed
