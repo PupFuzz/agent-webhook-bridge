@@ -174,39 +174,18 @@ class CiAwaitOverdueTest extends TestCase
         $this->assertSame(['ci_settled'], $this->kinds(), 'the pass reads stale heads before it looks for overdue awaits');
     }
 
-    public function test_an_await_whose_head_the_aggregate_already_settled_for_the_seat_gets_no_overdue_event(): void
+    public function test_an_await_whose_seat_was_sent_the_heads_delivered_runs_state_still_gets_its_overdue_event(): void
     {
+        // The per-head aggregate sent this seat the head's current tracked state before the await
+        // existed (card#11938): that state was never read from GitHub, so it does not answer the await.
         $this->register(['overdue_after_seconds' => 600]);
         $this->trackSettledRun(1);
-        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, $this->currentFingerprint());
-
-        $this->sweepAt('2026-10-10T10:10:00.000Z');
-
-        $this->assertSame([], $this->kinds(), 'the seat was already sent the head\'s current settled state; the await stays registered');
-        $this->assertNull(CiAwait::query()->firstOrFail()->overdue_sent_at, 'nothing was claimed, so no stamp');
-    }
-
-    public function test_another_seats_settlement_of_the_head_does_not_silence_this_seats_overdue_event(): void
-    {
-        $this->register(['overdue_after_seconds' => 600]);
-        $this->trackSettledRun(1);
-        CiHeadSettlementLedger::claim('seat-b', self::REPO, self::SHA, $this->currentFingerprint());
+        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, HeadRuns::of(CiHeadRunTracker::runsOf(self::REPO, self::SHA))->fingerprint());
 
         $this->sweepAt('2026-10-10T10:10:00.000Z');
 
         $this->assertSame(['ci_await_overdue'], $this->kinds());
-    }
-
-    public function test_a_state_the_head_has_since_left_does_not_silence_the_overdue_event(): void
-    {
-        $this->register(['overdue_after_seconds' => 600]);
-        $this->trackSettledRun(1);
-        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, $this->currentFingerprint());
-        $this->trackSettledRun(2, status: 'in_progress');   // a re-run or late run: the head is open again
-
-        $this->sweepAt('2026-10-10T10:10:00.000Z');
-
-        $this->assertSame(['ci_await_overdue'], $this->kinds(), 'the ledger holds an OLD state of this head');
+        $this->assertNotNull(CiAwait::query()->sole()->overdue_sent_at);
     }
 
     public function test_a_head_settled_once_and_then_re_run_gets_an_overdue_event_for_the_re_run(): void
@@ -236,34 +215,6 @@ class CiAwaitOverdueTest extends TestCase
             $this->assertSame('install_fault.ci_await_store_unavailable', $out->body()['reason']);
             $this->assertSame($before, CiAwait::query()->firstOrFail()->expires_at->toIso8601String(), 'the refusal says nothing was stored, so the expiry did not move');
         });
-    }
-
-    public function test_awaits_skipped_for_a_sent_state_do_not_use_up_the_send_cap(): void
-    {
-        foreach ([1, 2, 3] as $n) {
-            $this->dueAwait($n, skipped: true);
-        }
-        $this->dueAwait(4, skipped: false);
-        Carbon::setTestNow('2026-10-10T10:10:00.000Z');
-
-        $result = $this->app->make(CiAwaitService::class)->emitOverdue(1, 300);
-
-        $this->assertSame(1, $result['emitted'], 'three skips sat ahead of the due await under a cap of one');
-        $this->assertSame(['ci_await_overdue'], $this->kinds());
-    }
-
-    public function test_more_skips_than_the_scan_bound_can_starve_a_later_await(): void
-    {
-        foreach (range(1, 10) as $n) {   // the scan looks at 10x the cap, here 10
-            $this->dueAwait($n, skipped: true);
-        }
-        $this->dueAwait(11, skipped: false);
-        Carbon::setTestNow('2026-10-10T10:10:00.000Z');
-
-        $result = $this->app->make(CiAwaitService::class)->emitOverdue(1, 300);
-
-        $this->assertSame(0, $result['emitted'], 'the bound is real: skips are never stamped, so this await waits behind them');
-        $this->assertSame([], $this->kinds());
     }
 
     // ---- the deadline -----------------------------------------------------------------------
@@ -516,40 +467,16 @@ class CiAwaitOverdueTest extends TestCase
         ]);
     }
 
-    /** An await past its deadline on its own head; `$skipped` gives that head's current state as already sent to the seat. */
-    private function dueAwait(int $n, bool $skipped): void
-    {
-        $sha = str_pad((string) $n, 40, 'f', STR_PAD_LEFT);
-        CiAwait::query()->create([
-            'agent' => 'seat-a', 'repo' => CiAwaitService::key(self::REPO), 'repo_name' => self::REPO, 'head_sha' => $sha, 'pr' => null,
-            'expires_at' => Carbon::parse('2026-10-10T16:00:00Z'), 'overdue_at' => Carbon::parse('2026-10-10T10:00:00Z')->addSeconds($n), 'overdue_basis' => 'override',
-        ]);
-        if ($skipped) {
-            DB::table('ci_head_runs')->insert([
-                'run_id' => 900 + $n, 'repo' => CiAwaitService::key(self::REPO), 'repo_name' => self::REPO, 'head_sha' => $sha,
-                'workflow_id' => 77, 'workflow' => 'CI', 'run_number' => 1, 'run_attempt' => 1, 'event' => 'push',
-                'status' => 'completed', 'conclusion' => 'success', 'html_url' => "https://github.com/octo/widgets/actions/runs/{$n}", 'pr' => null,
-                'created_at' => Carbon::parse('2026-10-10T09:00:00Z'), 'updated_at' => Carbon::parse('2026-10-10T09:05:00Z'),
-            ]);
-            CiHeadSettlementLedger::claim('seat-a', self::REPO, $sha, HeadRuns::of(CiHeadRunTracker::runsOf(self::REPO, $sha))->fingerprint());
-        }
-    }
-
     /** One tracked run on the awaited head, as the `workflow_run` deliveries would leave it. */
-    private function trackSettledRun(int $runId, string $status = 'completed'): void
+    private function trackSettledRun(int $runId): void
     {
         DB::table('ci_head_runs')->insert([
             'run_id' => 500 + $runId, 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA,
             'workflow_id' => 70 + $runId, 'workflow' => "W{$runId}", 'run_number' => 1, 'run_attempt' => 1, 'event' => 'push',
-            'status' => $status, 'conclusion' => $status === 'completed' ? 'success' : null,
+            'status' => 'completed', 'conclusion' => 'success',
             'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}", 'pr' => null,
             'created_at' => Carbon::now(), 'updated_at' => Carbon::now(),
         ]);
-    }
-
-    private function currentFingerprint(): string
-    {
-        return HeadRuns::of(CiHeadRunTracker::runsOf(self::REPO, self::SHA))->fingerprint();
     }
 
     /** @return list<array<string, mixed>> */

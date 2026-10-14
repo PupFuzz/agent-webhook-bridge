@@ -1998,17 +1998,25 @@ also reads jobs and the base branch's required contexts, which no run list carri
 merge on it, run `ci-read` **once** on the head. A red `ci_settled` lists each deciding run that did
 not end `success` or `skipped` in `non_success_runs`, with its url.
 
-**The per-head aggregate leaves an await in place (card#11667 / DL-470).** An agent whose `impl-ci-wake`
-family stages CI (`impl_non_wake_disposition: inbox_stage`, `impl_ci_delivery: aggregate` — the
-default) is sent one `ci_settled` per settled state of every head, decided from the `workflow_run`
-deliveries the bridge received, with no GitHub read ([`consumer-guide.md`](consumer-guide.md) §
-*Bridge-authored intents*). It judges only the runs the bridge has *seen*, which can be fewer than the
-run list GitHub holds, so it **leaves your `ci_await` in place** and pushes its event live to you (its
-line id is `ci_head:<agent>:<repo>@<head_sha>:<state>`). Your await keeps its own settle on GitHub's
-full list, which is what the first paragraph above promises. Both senders record the settled state
-they sent per seat, so an await whose head settles to a state the aggregate already sent you is
-forgotten with no second event, and a registration says `settled`; one that settles to a different
-state sends it.
+**While you hold an await, the per-head aggregate sends you nothing for that head (card#11938)** —
+except an await registered while a delivery is settling the head, which can still be sent the
+aggregate's event, saying `basis: "delivered_runs"` (the aggregate checks for your await before it
+commits, and the registration is not ordered against that check). An
+agent whose `impl-ci-wake` family stages CI (`impl_non_wake_disposition: inbox_stage`,
+`impl_ci_delivery: aggregate` — the default) is sent one `ci_settled` per settled state of every head,
+decided from the `workflow_run` deliveries the bridge received, with no GitHub read
+([`consumer-guide.md`](consumer-guide.md) § *Bridge-authored intents*); its line id is
+`ci_head:<agent>:<repo>@<head_sha>:<state>` and it says `basis: "delivered_runs"`. It judges only the
+runs the bridge has *seen* — a workflow GitHub has queued that no delivery has reported is not among
+them — so it does not stage, push or record anything for a seat that holds a `ci_await` on the head.
+The `ci_settled` you get is your await's, settled on GitHub's full list (`basis: "github_read"`), which
+is what the first paragraph above promises. It is sent even when you were already sent the same state
+— by the aggregate before you registered, or by an earlier await on the head — because your await
+promises a push, and on a `channel.route_intents: false` channel the aggregate's event was only an
+inbox line. The cost: on a `route_intents: true` channel, registering after the aggregate's event gets
+you the same state pushed twice. Once your await is answered and gone you are
+like any other agent of the aggregate's: a state your await already sent is not sent again, and a new
+one (a re-run, a late run) is.
 
 **Read failures.** A read that fails — a rate limit (a 429, or a 403 with `X-RateLimit-Remaining: 0`
 or with `Retry-After`, or whose body's message names a rate limit: GitHub's secondary limit can carry
@@ -2061,14 +2069,9 @@ that pass reads and finds finished is settled instead. The await is **kept**: it
 `ci_await_unreadable` or `ci_await_expired` — still follows. Once per await: the send stamps
 `overdue_sent_at` in the transaction that stages the line, only where it is still null, so concurrent
 passes send one, and no refresh re-arms it. An `overdue_at` later than `expires_at` never fires;
-the expiry comes first. Nor does one for a head whose CURRENT settled state you were already sent a
-`ci_settled` for, by the per-head aggregate or by the await's own settle (the aggregate leaves your await
-registered, DL-470 Decision 6): you were told that state, and the await's own settle still follows. A
-head that has since been re-run, or gained a run, is a new state: a re-registration on it is told when
-it is overdue. ⚠ The skip trusts the view the bridge tracks from `workflow_run` deliveries: if a re-run's
-deliveries are lost, the head still looks like the state you were sent, and the cue is suppressed until
-the expiry. A skipped await is not stamped, and a pass looks at only a bounded number of due awaits
-(ten times its send cap of 50), so very many skipped awaits ahead of a due one can hold it back. ⚠ A head timed from history can run long for reasons the bridge cannot
+the expiry comes first. A `ci_settled` the per-head aggregate sent you for the head before you
+registered does not stop it (card#11938): that state was judged on delivered runs only, and your await
+is still waiting on GitHub's list. ⚠ A head timed from history can run long for reasons the bridge cannot
 see in its rows — a lost `requested` delivery starts its time late, a redelivered `completed` ends it
 late — and the percentile leaves such a head out only once there are at least 20 samples.
 
@@ -2093,8 +2096,8 @@ cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
 
 **What a seat can rely on.** One terminal event per await — `ci_settled`, `ci_await_unreadable` or
 `ci_await_expired`, never two *from the await* — and before it, at most one `ci_await_overdue`, which ends nothing
-(its line id is `ci_await_overdue:<uuid>`, the same row uuid, not `ci_await:<uuid>`); and never two `ci_settled` for the same settled state of a head, from
-the await and the aggregate together. It is written to your inbox **at least once**, idempotent by its line id
+(its line id is `ci_await_overdue:<uuid>`, the same row uuid, not `ci_await:<uuid>`); and no `ci_settled` from the per-head aggregate for that head
+while the await is held (card#11938), except for an await registered while a delivery is settling the head, which can still get one saying `basis: "delivered_runs"`. It is written to your inbox **at least once**, idempotent by its line id
 (its line id is `ci_await:<uuid>` for EVERY terminal kind the await itself emits — the per-head aggregate's own `ci_settled` carries its own id, above — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
 written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
 it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the

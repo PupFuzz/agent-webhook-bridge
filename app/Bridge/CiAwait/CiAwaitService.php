@@ -121,9 +121,6 @@ final class CiAwaitService
      */
     public const OVERDUE = 'ci_await_overdue';
 
-    /** How many due awaits a pass may LOOK at per send it may make: skipped ones are not sends. */
-    private const OVERDUE_SCAN_FACTOR = 10;
-
     /** Sent instead of waiting out the expiry when GitHub will not let this install read the repo (card#11600). */
     public const UNREADABLE = 'ci_await_unreadable';
 
@@ -460,47 +457,16 @@ final class CiAwaitService
         $due = CiAwait::query()->where('overdue_at', '<=', $now)->whereNull('overdue_sent_at')->where('expires_at', '>', $now)
             ->where(fn ($q) => $q->whereNull('emit_failed_at')->orWhere('emit_failed_at', '<', $now->copy()->subSeconds($retryAfterSeconds)))
             ->orderByRaw('emit_failed_at is not null')->orderBy('overdue_at')->orderBy('id')
-            ->limit($limit * self::OVERDUE_SCAN_FACTOR)->get();
+            ->limit($limit)->get();
         $emitted = 0;
         $failed = 0;
-        $attempted = 0;
         foreach ($due as $await) {
             $result = $this->claimOverdue($await, $now);
             $emitted += $result === EmitResult::Emitted ? 1 : 0;
             $failed += $result === EmitResult::Failed ? 1 : 0;
-            // A skipped await (its head's current state was already sent) costs a read, not a send.
-            $attempted += $result === EmitResult::ClaimedElsewhere ? 0 : 1;
-            if ($attempted >= $limit) {
-                break;
-            }
         }
 
         return ['emitted' => $emitted, 'failed' => $failed];
-    }
-
-    /**
-     * The fingerprint of the head's CURRENT settled state, from the runs its `workflow_run`
-     * deliveries reported, when that state was already sent to `$await`'s seat (`ci_head_settlements`,
-     * card#11667); null otherwise. The per-head aggregate leaves the await registered, so it can still
-     * be overdue after the seat was told the head settled; the event would send it to check CI it has
-     * just been told about. ⛔ The CURRENT state only: a head that settled once and was then re-run
-     * or gained a late run has a new fingerprint, and a hung re-run is exactly what the event is for.
-     *
-     * @param  ?list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs  {@see CiHeadRunTracker::runsOf()}, null when unreadable
-     */
-    private static function sentSettledState(CiAwait $await, ?array $runs): ?string
-    {
-        if ($runs === null) {
-            return null;
-        }
-        $head = HeadRuns::of($runs);
-        if (! $head->settled()) {
-            return null;
-        }
-        $fingerprint = $head->fingerprint();
-
-        return DB::table(CiHeadSettlementLedger::TABLE)->where('agent', $await->agent)->where('repo', $await->repo)->where('head_sha', $await->head_sha)
-            ->where('fingerprint', $fingerprint)->exists() ? $fingerprint : null;
     }
 
     /** {@see emitOverdue()}'s claim and send for one await. Never throws. */
@@ -514,9 +480,6 @@ final class CiAwaitService
             ] + RedactedErrorText::logContext($e));
             $runs = null;
         }
-        if (self::sentSettledState($await, $runs) !== null) {
-            return EmitResult::ClaimedElsewhere;
-        }
         $intent = new Intent(
             kind: self::OVERDUE,
             subjectId: "ci:{$await->repo_name}@{$await->head_sha}",
@@ -527,9 +490,8 @@ final class CiAwaitService
         );
 
         try {
-            $claimed = DB::transaction(function () use ($await, $intent, $now, $runs): bool {
-                if (self::sentSettledState($await, $runs) !== null
-                    || CiAwait::query()->whereKey($await->id)->whereNull('overdue_sent_at')->update(['overdue_sent_at' => $now, 'emit_failed_at' => null]) !== 1) {
+            $claimed = DB::transaction(function () use ($await, $intent, $now): bool {
+                if (CiAwait::query()->whereKey($await->id)->whereNull('overdue_sent_at')->update(['overdue_sent_at' => $now, 'emit_failed_at' => null]) !== 1) {
                     return false;
                 }
                 $this->intents->stageAuthored($await->agent, self::OVERDUE.":{$await->uuid}", microtime(true), $intent);
@@ -695,8 +657,8 @@ final class CiAwaitService
         $emitFailed = [];
         if ($allTerminal) {
             foreach ($awaits as $await) {
-                $settled = $head->settledPayload($await->repo_name, $await->head_sha, $await->pr, $measuredAt);
-                if ($this->claimAndEmit($await, self::SETTLED, $settled, $head->settledSummary($await->repo_name, $await->head_sha, $await->pr), $head->fingerprint()) === EmitResult::Failed) {
+                $settled = $head->settledPayload($await->repo_name, $await->head_sha, $await->pr, $measuredAt, HeadRuns::BASIS_GITHUB_READ);
+                if ($this->claimAndEmit($await, self::SETTLED, $settled, $head->settledSummary($await->repo_name, $await->head_sha, $await->pr, HeadRuns::BASIS_GITHUB_READ), $head->fingerprint()) === EmitResult::Failed) {
                     $emitFailed[] = $await->id;
                 }
             }
@@ -784,10 +746,12 @@ final class CiAwaitService
      *
      * `$settledState` is a `ci_settled`'s {@see HeadRuns::fingerprint()}: it is recorded in
      * {@see CiHeadSettlementLedger} in the same transaction, so the per-head aggregate does not send
-     * this seat the same settled state again (card#11667). Where the ledger ALREADY holds it — the
-     * aggregate sent this seat that state before the await was stored — the await is claimed with
-     * no event and answered {@see EmitResult::ClaimedElsewhere}: the seat has the event, and a
-     * registration says `settled`.
+     * this seat the same settled state again once the await is gone (card#11667). ⛔ The ledger is
+     * written here, never consulted (card#11938): the await promises a push, and a row already there
+     * — the aggregate's, from before the await existed, or an earlier settled await's on the same
+     * head — may have reached the seat only as an inbox line (a `route_intents: false` channel), so
+     * the await sends its own `ci_settled` from its GitHub read. Cost: a `route_intents: true` seat
+     * that registers after the aggregate's event gets the same state pushed twice.
      *
      * @param  array<string, mixed>  $payload
      */
@@ -803,15 +767,12 @@ final class CiAwaitService
         );
 
         try {
-            $alreadySent = false;
-            $claimed = DB::transaction(function () use ($await, $intent, $settledState, &$alreadySent): bool {
+            $claimed = DB::transaction(function () use ($await, $intent, $settledState): bool {
                 if (CiAwait::query()->whereKey($await->id)->delete() !== 1) {
                     return false;
                 }
-                if ($settledState !== null && ! CiHeadSettlementLedger::claim($await->agent, $await->repo, $await->head_sha, $settledState)) {
-                    $alreadySent = true;
-
-                    return true;
+                if ($settledState !== null) {
+                    CiHeadSettlementLedger::claim($await->agent, $await->repo, $await->head_sha, $settledState);
                 }
                 $this->intents->stageAuthored($await->agent, "ci_await:{$await->uuid}", microtime(true), $intent);
 
@@ -832,11 +793,6 @@ final class CiAwaitService
             return EmitResult::Failed;
         }
         if (! $claimed) {
-            return EmitResult::ClaimedElsewhere;
-        }
-        if ($alreadySent) {
-            Log::info('bridge ci_await: the await is answered by the ci_settled already sent to this seat for the same settled state — nothing is sent twice', ['agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha]);
-
             return EmitResult::ClaimedElsewhere;
         }
 
