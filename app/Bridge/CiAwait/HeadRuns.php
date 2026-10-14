@@ -26,6 +26,12 @@ use Illuminate\Support\Carbon;
  * `cancelled` (nothing newer of its workflow on the head) is red. It is NOT `ci-read`'s verdict:
  * that one reads JOBS and the base branch's required contexts, neither of which a run list
  * carries; the summary says so and names `ci-read` as the authoritative one.
+ *
+ * ⛔ SETTLED IS ONLY AS COMPLETE AS THE LIST IT JUDGES (card#11938). Over GitHub's own run list
+ * (`ci_await`) it says every run on the head is terminal; over the runs the bridge was told of
+ * (the per-head aggregate) it says only that those are — a workflow still queued that no delivery
+ * has reported is not in that list. The payload's `basis` names which list it judged, and only a
+ * GitHub read carries `all_terminal: true`.
  */
 final class HeadRuns
 {
@@ -42,6 +48,12 @@ final class HeadRuns
     public const GREEN = 'green';
 
     public const RED = 'red';
+
+    /** `basis` of a `ci_settled` judged on GitHub's run list for the head: every run on it is terminal. */
+    public const BASIS_GITHUB_READ = 'github_read';
+
+    /** `basis` of a `ci_settled` judged on the runs `workflow_run` deliveries reported: those are complete, nothing more. */
+    public const BASIS_DELIVERED_RUNS = 'delivered_runs';
 
     /**
      * @param  list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
@@ -157,36 +169,42 @@ final class HeadRuns
     }
 
     /**
-     * The `ci_settled` payload both senders carry.
+     * The `ci_settled` payload both senders carry, judged on the list `$basis` names
+     * ({@see BASIS_GITHUB_READ} or {@see BASIS_DELIVERED_RUNS}). `all_terminal` is `true` only on a
+     * GitHub read; on delivered runs it is null — not known, because no list of every run was read.
      *
      * @return array<string, mixed>
      */
-    public function settledPayload(string $repoName, string $headSha, ?int $pr, DateTimeInterface $measuredAt): array
+    public function settledPayload(string $repoName, string $headSha, ?int $pr, DateTimeInterface $measuredAt, string $basis): array
     {
         return [
             'repo' => $repoName,
             'head_sha' => $headSha,
             'pr' => $pr,
+            'basis' => $basis,
             'runs' => $this->payloadRuns(),
-            'all_terminal' => true,
+            'all_terminal' => $basis === self::BASIS_GITHUB_READ ? true : null,
             'runs_verdict' => $this->verdict(),
             'non_success_runs' => $this->nonSuccessRuns(),
             'measured_at' => Carbon::instance($measuredAt)->utc()->format('Y-m-d\TH:i:s.v\Z'),
         ];
     }
 
-    public function settledSummary(string $repoName, string $headSha, ?int $pr): string
+    public function settledSummary(string $repoName, string $headSha, ?int $pr, string $basis): string
     {
         $deciding = $this->decidingRuns();
         $superseded = count($this->runs) - count($deciding);
-        $head = "CI settled on {$repoName}@".substr($headSha, 0, 12).($pr === null ? '' : " (PR #{$pr})");
+        $where = "{$repoName}@".substr($headSha, 0, 12).($pr === null ? '' : " (PR #{$pr})");
+        $delivered = $basis === self::BASIS_DELIVERED_RUNS;
+        $head = $delivered ? "On {$where}, every workflow run delivered so far is complete" : "CI settled on {$where}";
         if ($this->verdict() === self::GREEN) {
-            $detail = 'GREEN — the latest run of each of '.count($deciding).' workflow(s) concluded success, neutral or skipped';
+            $detail = 'GREEN — the latest run of each of '.count($deciding).' workflow(s)'.($delivered ? ' delivered so far' : '').' concluded success, neutral or skipped';
         } else {
             $detail = 'RED — '.implode(', ', array_map(static fn (array $r): string => $r['workflow'].' → '.($r['conclusion'] ?? 'no conclusion').' ('.$r['html_url'].')', $this->nonSuccessRuns()));
         }
 
         return "{$head}: {$detail}".($superseded > 0 ? " ({$superseded} superseded run(s) not counted)" : '')
+            .($delivered ? '. Decided from the workflow_run deliveries this bridge received, not GitHub\'s run list: a run no delivery has reported yet (one still queued) is not counted, and ci_await reads the full list' : '')
             .'. Run-level only: ci-read stays the authoritative verdict (it reads jobs and the branch\'s required checks).';
     }
 

@@ -358,6 +358,7 @@ class CiAwaitTest extends TestCase
                 'repo' => self::REPO,
                 'head_sha' => self::SHA,
                 'pr' => 12,
+                'basis' => 'github_read',
                 'runs' => [
                     ['workflow' => 'CI', 'conclusion' => 'success', 'html_url' => 'https://github.com/octo/widgets/actions/runs/1', 'superseded' => false],
                     ['workflow' => 'E2E', 'conclusion' => 'failure', 'html_url' => 'https://github.com/octo/widgets/actions/runs/2', 'superseded' => false],

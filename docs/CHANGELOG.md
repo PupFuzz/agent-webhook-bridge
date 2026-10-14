@@ -12,6 +12,18 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#11937 — the shim contract allows a shim to start `claude` with no bridge channel when the client launcher is missing.** Until now, [`examples/channel-servers/README.md`](../examples/channel-servers/README.md) § *The shim contract* said such a shim should exit non-zero naming `--bootstrap-client`. It now allows either behaviour. A shim may refuse that way, or it may start `claude` with no channel, provided it says so on stderr and drops a leading `--channel <name>` (`-Channel <name>` on Windows) instead of passing it to `claude`. This lets a seat with no bridge installed still start. Documentation only: the provisioner's own shim still exits 2. Channel-server snapshot `0.9.62` → `0.9.63` (documentation only; the README ships in the client pack).
 
+### Fixed
+
+- **card#11938 / DL-482** — **A seat waiting on a head with `ci_await` is no longer woken by a `ci_settled` that saw only part of the head's CI.** The per-head aggregate decides from the `workflow_run` deliveries the bridge has received, with no GitHub read, and it pushed its `ci_settled` to an agent holding a `ci_await` on the head, with `all_terminal: true`. A workflow GitHub had queued but not yet reported was missing from it: a seat was woken green over one workflow of two, and the correct event came ten minutes later.
+  - **While an agent holds a `ci_await` on a head, the aggregate sends it nothing for that head** — not staged, not pushed. The `ci_settled` it gets is its await's, from a read of GitHub's full run list.
+  - **The await's `ci_settled` is always sent.** It used to be dropped, with no event, when the aggregate had already sent that agent the same state before the await was registered. That left an await settled by the sweep after a skipped or failed registration read deleted with no push. A seat that registers after an aggregate event now gets a second `ci_settled`, read from GitHub.
+  - **`ci_await_overdue` is no longer suppressed by an earlier aggregate event.** An aggregate event sent before the await was registered no longer counts as telling the seat the head settled, so a workflow stuck in the queue still gets its overdue cue.
+  - **`ci_settled` names what it judged.** New payload key `basis`: `github_read` on an await's event, `delivered_runs` on the aggregate's. The aggregate's event now carries `all_terminal: null` (not known: no full run list was read), and its summary says every run delivered so far is complete, not that CI on the head settled. The await's event keeps `all_terminal: true`. Its `pr` no longer falls back to an await's PR. `docs/consumer-guide.md` § *Bridge-authored intents* has the table.
+
+### Upgrade warnings
+
+- **card#11938 — a consumer that reads `ci_settled.payload.all_terminal` sees `null` on the per-head aggregate's event**, where it was always `true`. Read `basis` to tell the two senders apart: only `github_read` says every run GitHub lists for the head is terminal.
+
 ## [0.104.0] - 2026-10-13
 
 ### Added

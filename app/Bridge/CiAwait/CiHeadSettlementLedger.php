@@ -6,9 +6,11 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * Which settled states each agent has already been sent (`ci_head_settlements`, card#11667): one
- * row per (agent, head, {@see HeadRuns::fingerprint()}). Both senders of `ci_settled` write it — the
- * per-head aggregate and `ci_await` — inside the transaction that stages the event, so the same
- * settled state reaches one agent once, whichever of them gets there first.
+ * row per (agent, head, {@see HeadRuns::fingerprint()}). Both senders of `ci_settled` write it,
+ * inside the transaction that stages the event, but only the per-head aggregate is GATED by it: it
+ * never sends an agent a state already recorded, whoever recorded it. `ci_await` records the state
+ * it sends and sends it regardless (card#11938) — a state the aggregate sent before the await
+ * existed was judged on delivered runs only, and does not answer a seat waiting on GitHub's list.
  */
 final class CiHeadSettlementLedger
 {
