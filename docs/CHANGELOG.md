@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#11937 — the shim contract allows a shim to start `claude` with no bridge channel when the client launcher is missing.** Until now, [`examples/channel-servers/README.md`](../examples/channel-servers/README.md) § *The shim contract* said such a shim should exit non-zero naming `--bootstrap-client`. It now allows either behaviour. A shim may refuse that way, or it may start `claude` with no channel, provided it says so on stderr and drops a leading `--channel <name>` (`-Channel <name>` on Windows) instead of passing it to `claude`. This lets a seat with no bridge installed still start. Documentation only: the provisioner's own shim still exits 2. Channel-server snapshot `0.9.62` → `0.9.63` (documentation only; the README ships in the client pack).
+
 ## [0.104.0] - 2026-10-13
 
 ### Added
