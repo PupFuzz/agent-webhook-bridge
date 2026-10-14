@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.104.0] - 2026-10-13
+
 ### Added
 
 - **card#11823 / DL-481** — **`bridge-board-call` resolves by name on a bootstrapped seat with no manual step.** Before, a seat got `<client root>/bin/bridge-board-call` and nothing put it on `PATH`, so a hook, script or framework tool calling it by name failed until an operator linked it by hand.
@@ -16,6 +18,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **Outside a session, on Windows:** nothing is written outside the client root and the persisted `Path` is not edited. The run prints the shim's full path (`<client root>\bin\bridge-board-call.cmd`) to use there.
   - `bridge:check` does not report this: it runs on the bridge host and does not read the seat's home. The seat's own onboarding run reports it.
   - Channel-server snapshot `0.9.61` → `0.9.62` (the launchers changed).
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.62. Until you do, seats stay on client 0.9.61 and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+- The `PATH` entry reaches a session from the launch after the one that installs client 0.9.62 (the launch that installs it runs the previous release's launcher). A seat whose own launcher does not run `<client root>/bin/start-claude` (`launcher-shim-status: launcher_kept`, or a copy of the coord framework's template) does not get it; point its launch line at `<client root>/bin/start-claude`.
+- To call `bridge-board-call` by name outside a session on Linux or macOS, re-run `provision-board-tools.py --bootstrap-client` (or `--certify-only`) once on the seat from a shell whose `PATH` includes an existing `~/.local/bin`, and read the `board-call-status:` line.
+- A script reading the output of `--bootstrap-client`, `--certify-only` or `--self-cert` meets the new `bridge-board-call` lines and the `board-call-status:` line before `launcher-shim-status:`, which stays the last line. Exit codes are unchanged.
 
 ## [0.103.1] - 2026-10-13
 
