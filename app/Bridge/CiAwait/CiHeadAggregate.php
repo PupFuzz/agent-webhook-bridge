@@ -42,7 +42,9 @@ use Throwable;
  * a `ci_settled` when every run GITHUB lists is terminal, and the partial view above broke that
  * promise: a seat was woken green over one workflow of two. So the aggregate neither stages, pushes
  * nor records a state for an awaited agent, and the await's own settle on its GitHub read is the one
- * it gets — never silenced by the ledger, which the await writes but does not consult. Once the
+ * it gets — never silenced by the ledger, which the await writes but does not consult. ⚠ The check
+ * runs inside the transaction but is not ordered against a concurrent registration: an await stored
+ * while a delivery is settling the head can still be sent this event (DL-482 bound 1). Once the
  * await is answered and gone, the agent is like any other: a state the await already sent is not
  * sent again, and a new one (a re-run, a late run) is, with `basis: delivered_runs`.
  *

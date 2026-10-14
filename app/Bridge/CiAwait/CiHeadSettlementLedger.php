@@ -9,8 +9,11 @@ use Illuminate\Support\Facades\DB;
  * row per (agent, head, {@see HeadRuns::fingerprint()}). Both senders of `ci_settled` write it,
  * inside the transaction that stages the event, but only the per-head aggregate is GATED by it: it
  * never sends an agent a state already recorded, whoever recorded it. `ci_await` records the state
- * it sends and sends it regardless (card#11938) — a state the aggregate sent before the await
- * existed was judged on delivered runs only, and does not answer a seat waiting on GitHub's list.
+ * it sends and sends it regardless (card#11938): an await promises a push, and a row the aggregate
+ * wrote before the await existed may have been only an inbox line (a `route_intents: false`
+ * channel), as may one an earlier, settled await on the head wrote for a seat that re-registered.
+ * The cost is a `route_intents: true` seat that registers after the aggregate's event gets the same
+ * state pushed twice.
  */
 final class CiHeadSettlementLedger
 {

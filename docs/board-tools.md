@@ -1998,7 +1998,10 @@ also reads jobs and the base branch's required contexts, which no run list carri
 merge on it, run `ci-read` **once** on the head. A red `ci_settled` lists each deciding run that did
 not end `success` or `skipped` in `non_success_runs`, with its url.
 
-**While you hold an await, the per-head aggregate sends you nothing for that head (card#11938).** An
+**While you hold an await, the per-head aggregate sends you nothing for that head (card#11938)** —
+except an await registered while a delivery is settling the head, which can still be sent the
+aggregate's event, saying `basis: "delivered_runs"` (the aggregate checks for your await before it
+commits, and the registration is not ordered against that check). An
 agent whose `impl-ci-wake` family stages CI (`impl_non_wake_disposition: inbox_stage`,
 `impl_ci_delivery: aggregate` — the default) is sent one `ci_settled` per settled state of every head,
 decided from the `workflow_run` deliveries the bridge received, with no GitHub read
@@ -2007,8 +2010,11 @@ decided from the `workflow_run` deliveries the bridge received, with no GitHub r
 runs the bridge has *seen* — a workflow GitHub has queued that no delivery has reported is not among
 them — so it does not stage, push or record anything for a seat that holds a `ci_await` on the head.
 The `ci_settled` you get is your await's, settled on GitHub's full list (`basis: "github_read"`), which
-is what the first paragraph above promises. It is sent even when the aggregate sent you the same state
-before you registered: that one was not read from GitHub. Once your await is answered and gone you are
+is what the first paragraph above promises. It is sent even when you were already sent the same state
+— by the aggregate before you registered, or by an earlier await on the head — because your await
+promises a push, and on a `channel.route_intents: false` channel the aggregate's event was only an
+inbox line. The cost: on a `route_intents: true` channel, registering after the aggregate's event gets
+you the same state pushed twice. Once your await is answered and gone you are
 like any other agent of the aggregate's: a state your await already sent is not sent again, and a new
 one (a re-run, a late run) is.
 
@@ -2091,7 +2097,7 @@ cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
 **What a seat can rely on.** One terminal event per await — `ci_settled`, `ci_await_unreadable` or
 `ci_await_expired`, never two *from the await* — and before it, at most one `ci_await_overdue`, which ends nothing
 (its line id is `ci_await_overdue:<uuid>`, the same row uuid, not `ci_await:<uuid>`); and no `ci_settled` from the per-head aggregate for that head
-while the await is held (card#11938). It is written to your inbox **at least once**, idempotent by its line id
+while the await is held (card#11938), except for an await registered while a delivery is settling the head, which can still get one saying `basis: "delivered_runs"`. It is written to your inbox **at least once**, idempotent by its line id
 (its line id is `ci_await:<uuid>` for EVERY terminal kind the await itself emits — the per-head aggregate's own `ci_settled` carries its own id, above — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
 written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
 it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the

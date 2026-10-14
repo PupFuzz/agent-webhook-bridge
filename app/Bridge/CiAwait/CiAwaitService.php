@@ -747,9 +747,11 @@ final class CiAwaitService
      * `$settledState` is a `ci_settled`'s {@see HeadRuns::fingerprint()}: it is recorded in
      * {@see CiHeadSettlementLedger} in the same transaction, so the per-head aggregate does not send
      * this seat the same settled state again once the await is gone (card#11667). ⛔ The ledger is
-     * written here, never consulted (card#11938): a state the aggregate sent this seat before the
-     * await existed was judged on delivered runs only, so it does not answer the await — the await
-     * sends its own `ci_settled` from its GitHub read.
+     * written here, never consulted (card#11938): the await promises a push, and a row already there
+     * — the aggregate's, from before the await existed, or an earlier settled await's on the same
+     * head — may have reached the seat only as an inbox line (a `route_intents: false` channel), so
+     * the await sends its own `ci_settled` from its GitHub read. Cost: a `route_intents: true` seat
+     * that registers after the aggregate's event gets the same state pushed twice.
      *
      * @param  array<string, mixed>  $payload
      */

@@ -105,7 +105,7 @@ is *superseded*: it holds nothing open and decides nothing. Two senders:
 
 - **Your `ci_await`** — for a head you registered; decided on a read of GitHub's run list
   (`basis: "github_read"`). One terminal event per await, and while you hold the await it is the only
-  `ci_settled` you get for that head (card#11938).
+  `ci_settled` you get for that head (card#11938) — except for an await registered while a delivery is settling the head, whose seat can still be sent the aggregate's event, saying `basis: "delivered_runs"`.
 - **The per-head aggregate** — sent to an agent whose `impl-ci-wake` family stages CI
   (`impl_non_wake_disposition: inbox_stage`) under `impl_ci_delivery: aggregate`, the default, for
   every head of its repos, in place of a per-run `impl_ci` for each run that ended `success`,
@@ -114,8 +114,8 @@ is *superseded*: it holds nothing open and decides nothing. Two senders:
   `workflow_run` deliveries the bridge received — no GitHub read (`basis: "delivered_runs"`). ⛔ **It
   says only that every run DELIVERED so far is complete**, not that the head is: a workflow GitHub has
   queued that no delivery has reported yet is not counted, so `all_terminal` is `null` and the summary
-  says so. Not sent to you at all while you hold a `ci_await` on the head — your await answers it from
-  GitHub's list. Pushed live where `impl_ci` was (`channel.route_intents: true`); staged to the inbox
+  says so. Not sent to you while you hold a `ci_await` on the head — your await answers it from
+  GitHub's list — except for an await registered while a delivery is settling the head, whose seat can still get this event. Pushed live where `impl_ci` was (`channel.route_intents: true`); staged to the inbox
   either way. A failed run still sends its own `impl_ci_failed` at once, and a `cancelled` run with no newer run
   of its workflow still sends its own `impl_ci` (the head's `ci_settled` follows when it settles — red, unless a newer run of that workflow supersedes it — and is itself best-effort).
   ⚠ **The aggregate is per-head and best-effort.** It is edge-triggered from `workflow_run` deliveries
@@ -124,9 +124,12 @@ is *superseded*: it holds nothing open and decides nothing. Two senders:
   unsuperseded cancellation is reported per run; for any other head, `ci_await` (level-triggered, reads
   GitHub) or `ci-read` is how you ask. A run that starts after a head settled —
   an `on: workflow_run` follow-on, a re-run — settles the head again once it completes, and sends a
-  second `ci_settled`. The aggregate never sends you a state you were already sent, by either sender;
-  your await's `ci_settled` is sent even when the aggregate sent the same state before you registered,
-  because that one was not read from GitHub.
+  second `ci_settled`. The aggregate never sends you a state you were already sent, by either sender.
+  Your await's `ci_settled` is always sent, even when you were already sent the same state — by the
+  aggregate before you registered, or by an earlier await on the head — because your await promises
+  a push, and on a `channel.route_intents: false` channel the aggregate's event was only an inbox line.
+  The cost: on a `route_intents: true` channel, registering after the aggregate's event gets you the
+  same state pushed twice.
 
 Written to the inbox at least once — collapse duplicates on the line `id` — and pushed live once; the
 live push carries no line id, so a seat reading both its channel and `bridge:inbox` sees it on each.
