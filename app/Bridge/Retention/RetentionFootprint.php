@@ -46,7 +46,9 @@ final class RetentionFootprint
          *    for this schema — the engine's own accounting of what it has ALLOCATED, not
          *    a read of the bytes this app wrote, and covering one schema of a datadir
          *    that also holds redo/undo and every other schema. It matches neither `du`
-         *    nor a live byte sum, and it EXCLUDES off-page payload bytes outright.
+         *    nor a live byte sum, and it is a STATISTICS ESTIMATE InnoDB refreshes in the
+         *    background, so whether it yet counts the pages of rows just written — off-page
+         *    payload pages included — depends on when the refresh last ran (DL-483).
          *
          * Never divide one by the other without consulting
          * {@see $storeBytesContainsPayloadBytes} below.
@@ -58,16 +60,16 @@ final class RetentionFootprint
          * can answer it, because the answer is a property of the storage ENGINE, and a
          * consumer that computes a share MUST consult it (DL-331).
          *
-         * ⛔ IT IS FALSE ON MariaDB, AND THAT IS MEASURED RATHER THAN ASSUMED. On InnoDB
-         * `ROW_FORMAT=Dynamic` a payload above the inline-row limit is stored OFF-PAGE,
-         * and those pages are in NEITHER `data_length` NOR `index_length`: on MariaDB
-         * 10.6.28 and 11.8.9, 200 rows carrying 13107200 bytes of payload left
-         * `data_length` at 16384 (one page) and moved `avg_row_length` to 81 — the
-         * clustered-index record holds the inline columns and an off-page pointer, and
-         * nothing else. The failure this field prevents is NOT the visible one: a share
-         * above 100% is at least obviously wrong, while an install whose payloads
-         * straddle the inline limit gets a plausible percentage computed over a
-         * denominator that contains only some of its own numerator.
+         * ⛔ IT IS FALSE ON MariaDB BECAUSE THE SIZE IS AN ESTIMATE THAT LAGS, NOT
+         * BECAUSE IT OMITS OFF-PAGE BYTES (DL-483, correcting DL-331's reason). Measured
+         * on MariaDB 10.11.14: 200 rows carrying 13107200 bytes of payload, all stored
+         * off-page, read `data_length` 262144 straight after the insert and 17317888 once
+         * InnoDB's background statistics refresh had run — the fresh figure counts the
+         * off-page pages, the stale one does not, and which one a read gets is timing.
+         * The failure this field prevents is NOT the visible one: a share above 100% is
+         * at least obviously wrong, while an install whose statistics lag what it holds
+         * gets a plausible percentage computed over a denominator that contains only some
+         * of its own numerator.
          */
         public readonly bool $storeBytesContainsPayloadBytes,
         /** Age of the oldest retained row in days; null when there are no rows. */

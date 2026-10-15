@@ -20,7 +20,7 @@ use RuntimeException;
  * PARAMETERISED, like {@see GoldenSshEnvironment} and unlike {@see GoldenChannelEnvironment}:
  * the cost line has five operator-distinguishable shapes (a loaded store, an empty one, one
  * whose oldest row has outlived its delete window, a store that could not be read at all,
- * and one whose ENGINE accounts for its size without the payload bytes — which is every
+ * and one whose ENGINE reports a size not on the payload sum's basis — which is every
  * MariaDB install), and each is a fixture rather than a variation the corpus can do
  * without.
  *
@@ -67,12 +67,12 @@ final class GoldenRetentionStore implements RetentionStoreProbe
 
     /**
      * The shape EVERY MariaDB INSTALL GETS, and the reason it is its own fixture rather
-     * than a variation: the engine's size figure excludes off-page payload bytes
-     * (measured on MariaDB 10.6.28 / 11.8.9, DL-331), so the share is withheld and said
-     * so in words. Same footprint as {@see loaded()} in every other respect, so the diff
+     * than a variation: the engine's size figure is a statistics estimate that can lag
+     * the rows just written (DL-483, correcting DL-331's reason), so the share is withheld
+     * and said so in words. Same footprint as {@see loaded()} in every other respect, so the diff
      * against it is the withheld clause and nothing else.
      */
-    public static function offPageAccounting(): self
+    public static function shareWithheld(): self
     {
         return self::holding(new RetentionFootprint(
             rows: 12345,
