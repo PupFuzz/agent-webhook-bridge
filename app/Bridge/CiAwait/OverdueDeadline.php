@@ -13,16 +13,34 @@ use Throwable;
  * seat is told once, by `ci_await_overdue`, and checks CI by hand only then.
  *
  * ⭐ DERIVED FROM WHAT THE BRIDGE ALREADY STORES — NO GITHUB READ. `ci_head_runs` holds every
- * `workflow_run` delivery's run ({@see CiHeadRunTracker}). A head's CI time is from the first
- * run the bridge heard of on it (`min(created_at)`) to the last run's last update
- * (`max(updated_at)`), over the {@see SAMPLE_HEADS} heads of the repo that finished most recently
- * with every tracked run `completed` and none re-run. The deadline is the 95th percentile of those
- * times (nearest rank) plus a margin of a quarter of it, at least {@see MARGIN_MIN_SECONDS}.
+ * `workflow_run` delivery's run ({@see CiHeadRunTracker}). A head's CI time is its LONGEST RUN: one
+ * run's time from the bridge's first delivery for it (`created_at`, so queueing counts) to its last
+ * update (`updated_at`), over the runs a commit started (below), on the {@see SAMPLE_HEADS} heads of
+ * the repo that finished most recently with every such run `completed` and none re-run. The
+ * deadline is the {@see PERCENTILE}th percentile of those times (nearest rank) plus a margin of a
+ * quarter of it, at least {@see MARGIN_MIN_SECONDS}.
  *
- * ⚠ A RE-RUN HEAD IS NOT A SAMPLE: its span includes however long a person took to press re-run.
- * A run whose `requested` delivery was lost starts its head's span late, and a redelivered
- * `completed` ends it late; neither is detected. The percentile keeps one such head out of the
- * answer once there are twenty samples.
+ * ⛔ A SHA IS NOT ONE CI SESSION, SO A HEAD IS NEVER TIMED FROM ITS FIRST RUN TO ITS LAST
+ * (card#11952). One SHA collects runs from arrivals hours apart: a PR edit or reopen runs the
+ * `pull_request` workflows again as attempt 1, a `dev` → `main` release PR is opened long after
+ * the head's `push` runs, and a `schedule` or `workflow_dispatch` run fires on the default branch's
+ * unchanged tip. Timed first-to-last, those gaps became CI time and pushed the deadline past the
+ * await's own expiry, so `ci_await_overdue` could never fire. Every workflow one arrival starts is
+ * created at that arrival, so its longest run is how long the arrival's CI took, and a later
+ * arrival cannot stretch it. ⚠ The cost: when one wait spans two arrivals minutes apart (a push,
+ * then the PR opened on it), the gap between them is not counted — the margin is what covers it.
+ *
+ * ⛔ ONLY RUNS A COMMIT STARTED ARE SAMPLED — {@see COMMIT_EVENTS}, an allow-list. A `schedule` or
+ * `workflow_dispatch` run is not timed, and need not be complete for its head to be a sample
+ * (`ci_await` itself still waits for every run GitHub lists). An event outside the list cuts both
+ * ways: a head with ONLY such runs is no sample (fewer samples, then the {@see MIN_HEADS} default),
+ * and on a head that also has listed runs a longer unlisted run is left out, so its time is SHORTER
+ * and the cue can come early. A deny-list instead would let the next event GitHub adds stretch it.
+ *
+ * ⚠ A RE-RUN HEAD IS NOT A SAMPLE: a re-run keeps its run's id, so its time includes however long a
+ * person took to press re-run. A run whose `requested` delivery was lost starts late and reads
+ * short; a redelivered `completed` ends it late. Neither is detected. The percentile keeps one
+ * such head out of the answer once there are twenty samples.
  *
  * ⚠ FEWER THAN {@see MIN_HEADS} SAMPLES IS NO HISTORY: the deadline is
  * `BRIDGE_CI_AWAIT_OVERDUE_DEFAULT`, and its basis says `default`. So is a history that could not be
@@ -34,6 +52,9 @@ use Throwable;
 final class OverdueDeadline
 {
     public const SAMPLE_HEADS = 50;
+
+    /** The `workflow_run.event` values that mean a commit arrived: pushed, or a PR's head moved. */
+    public const COMMIT_EVENTS = ['push', 'pull_request'];
 
     public const MIN_HEADS = 5;
 
@@ -93,28 +114,33 @@ final class OverdueDeadline
 
     /**
      * The CI time, in whole seconds, of each of the repo's {@see SAMPLE_HEADS} most recently
-     * finished heads: every tracked run `completed`, none on an attempt past the first.
+     * finished heads — its longest run of {@see COMMIT_EVENTS} — where every such run is
+     * `completed` and none on an attempt past the first.
      *
      * @return list<int>
      */
     private static function recentHeadSpans(string $repoName): array
     {
-        $rows = CiHeadRun::query()
+        $runs = CiHeadRun::query()
             ->where('repo', CiAwaitService::key($repoName))
-            ->selectRaw('head_sha, min(created_at) as started_at, max(coalesce(updated_at, created_at)) as finished_at')
+            ->whereIn('event', self::COMMIT_EVENTS);
+        $heads = $runs->clone()
+            ->select('head_sha')
             ->groupBy('head_sha')
             ->havingRaw("sum(case when status = 'completed' then 0 else 1 end) = 0")
             ->havingRaw('max(coalesce(run_attempt, 1)) <= 1')
             ->orderByRaw('max(coalesce(updated_at, created_at)) desc')
             ->limit(self::SAMPLE_HEADS)
             ->toBase()
-            ->get();
+            ->pluck('head_sha')
+            ->all();
 
-        $spans = [];
-        foreach ($rows as $row) {
-            $spans[] = max(0, (int) Carbon::parse((string) $row->started_at, 'UTC')->diffInSeconds(Carbon::parse((string) $row->finished_at, 'UTC'), false));
+        $longest = [];
+        foreach ($runs->clone()->whereIn('head_sha', $heads)->toBase()->get(['head_sha', 'created_at', 'updated_at']) as $run) {
+            $span = max(0, (int) Carbon::parse((string) $run->created_at, 'UTC')->diffInSeconds(Carbon::parse((string) ($run->updated_at ?? $run->created_at), 'UTC'), false));
+            $longest[(string) $run->head_sha] = max($longest[(string) $run->head_sha] ?? 0, $span);
         }
 
-        return $spans;
+        return array_values($longest);
     }
 }

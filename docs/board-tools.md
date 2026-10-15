@@ -2055,8 +2055,11 @@ in order (`overdue_basis` names which):
 - **`override`** — your `overdue_after_seconds`;
 - **`history`** — the repo's normal CI time, from what the bridge already stores and with no GitHub
   read: the `workflow_run` deliveries it tracked (`ci_head_runs`, card#11667) for the repo's 50 most
-  recently finished heads — every tracked run `completed` and none re-run — each head timed from the
-  first run the bridge heard of to its last run's last update; the deadline is the 95th percentile
+  recently finished heads, counting only the runs a commit started (`push` and `pull_request`, never
+  a `schedule` or `workflow_dispatch` run on the same SHA) — every such run `completed` and none
+  re-run — each head timed as its LONGEST such run, from the bridge's first delivery for it to its
+  last update, so a later arrival on the same SHA (a PR edit that re-runs CI) cannot stretch it
+  (card#11952 / DL-484); the deadline is the 95th percentile
   of those times (nearest rank) plus a margin of a quarter of it, at least 5 minutes. `App\Bridge\CiAwait\OverdueDeadline`
   owns the rule and its constants;
 - **`default`** — `BRIDGE_CI_AWAIT_OVERDUE_DEFAULT` (1800 s) when the repo has fewer than 5 such

@@ -246,16 +246,72 @@ class CiAwaitOverdueTest extends TestCase
         $this->assertSame(600 + OverdueDeadline::MARGIN_MIN_SECONDS, OverdueDeadline::forRepo(self::REPO, 1800)->seconds);
     }
 
-    public function test_a_heads_time_runs_from_its_first_run_to_its_last(): void
+    public function test_a_heads_time_is_its_longest_run(): void
     {
         foreach (range(1, 5) as $i) {
-            // Two runs per head: one from 0 to 300 s, the other from 100 to 2000 s.
+            // Two runs per head: one from 0 to 300 s, the other from 100 to 2000 s (1900 s long).
             $start = Carbon::parse('2026-10-09T00:00:00Z')->addHours($i);
             $this->insertRun("{$i}a", $start, $start->copy()->addSeconds(300));
             $this->insertRun("{$i}b", $start->copy()->addSeconds(100), $start->copy()->addSeconds(2000));
         }
 
-        $this->assertSame(2000 + 500, OverdueDeadline::forRepo(self::REPO, 1800)->seconds);
+        $this->assertSame(1900 + 475, OverdueDeadline::forRepo(self::REPO, 1800)->seconds);
+    }
+
+    public function test_a_scheduled_or_dispatched_run_on_a_head_is_not_part_of_its_ci_time(): void
+    {
+        foreach (range(1, OverdueDeadline::MIN_HEADS) as $i) {
+            // The commit's CI: a push run and a pull_request run, the longer 200 s.
+            $start = Carbon::parse('2026-10-05T00:00:00Z')->addHours($i);
+            $this->insertRun("{$i}a", $start, $start->copy()->addSeconds(180), event: 'push');
+            $this->insertRun("{$i}b", $start->copy()->addSeconds(10), $start->copy()->addSeconds(210), event: 'pull_request');
+            // The same SHA, hours and days later: a slow nightly scan and a manual dispatch.
+            $this->insertRun("{$i}a", $start->copy()->addHours(6), $start->copy()->addHours(6)->addSeconds(1200), event: 'schedule');
+            $this->insertRun("{$i}a", $start->copy()->addDays(2), $start->copy()->addDays(2)->addSeconds(900), event: 'workflow_dispatch');
+        }
+
+        $deadline = OverdueDeadline::forRepo(self::REPO, 1800);
+
+        $this->assertSame(OverdueDeadline::BASIS_HISTORY, $deadline->basis);
+        $this->assertSame(200 + OverdueDeadline::MARGIN_MIN_SECONDS, $deadline->seconds);
+    }
+
+    public function test_a_pr_edit_that_runs_ci_again_on_the_same_sha_hours_later_is_not_part_of_its_ci_time(): void
+    {
+        foreach (range(1, OverdueDeadline::MIN_HEADS) as $i) {
+            $start = Carbon::parse('2026-10-05T00:00:00Z')->addHours($i * 12);
+            $this->insertRun("{$i}a", $start, $start->copy()->addSeconds(200), event: 'pull_request');
+            // The same workflow, attempt 1 again: a PR body edit (`pull_request.edited`) hours later.
+            $this->insertRun("{$i}a", $start->copy()->addHours(5), $start->copy()->addHours(5)->addSeconds(150), event: 'pull_request');
+        }
+
+        $deadline = OverdueDeadline::forRepo(self::REPO, 1800);
+
+        $this->assertSame(OverdueDeadline::BASIS_HISTORY, $deadline->basis);
+        $this->assertSame(200 + OverdueDeadline::MARGIN_MIN_SECONDS, $deadline->seconds);
+    }
+
+    public function test_a_scheduled_run_still_open_on_a_head_does_not_take_it_out_of_the_sample(): void
+    {
+        $this->seedHistory(array_fill(0, OverdueDeadline::MIN_HEADS, 600));
+        foreach (range(0, OverdueDeadline::MIN_HEADS - 1) as $i) {
+            $at = Carbon::parse('2026-10-09T00:00:00Z')->addHours($i)->addDay();
+            $this->insertRun("h{$i}", $at, $at, status: 'in_progress', event: 'schedule');
+        }
+
+        $deadline = OverdueDeadline::forRepo(self::REPO, 1800);
+
+        $this->assertSame(OverdueDeadline::BASIS_HISTORY, $deadline->basis);
+        $this->assertSame(600 + OverdueDeadline::MARGIN_MIN_SECONDS, $deadline->seconds);
+    }
+
+    public function test_a_head_whose_only_runs_no_commit_started_is_not_a_sample(): void
+    {
+        $this->seedHistory(array_fill(0, OverdueDeadline::MIN_HEADS - 1, 600));
+        $start = Carbon::parse('2026-10-09T12:00:00Z');
+        $this->insertRun('sched', $start, $start->copy()->addSeconds(60), event: 'schedule');
+
+        $this->assertSame(OverdueDeadline::BASIS_DEFAULT, OverdueDeadline::forRepo(self::REPO, 900)->basis);
     }
 
     public function test_the_percentile_is_nearest_rank(): void
@@ -453,14 +509,14 @@ class CiAwaitOverdueTest extends TestCase
     }
 
     /** One `ci_head_runs` row on its own head (the head is keyed by `$tag`'s leading digits or letters). */
-    private function insertRun(string $tag, Carbon $created, Carbon $updated, int $attempt = 1, string $status = 'completed'): void
+    private function insertRun(string $tag, Carbon $created, Carbon $updated, int $attempt = 1, string $status = 'completed', string $event = 'push'): void
     {
         static $runId = 1000;
         $runId++;
         DB::table('ci_head_runs')->insert([
             'run_id' => $runId, 'repo' => self::REPO, 'repo_name' => self::REPO,
             'head_sha' => substr(sha1('head-'.rtrim($tag, 'ab')), 0, 40),
-            'workflow_id' => 77, 'workflow' => 'CI', 'run_number' => $runId, 'run_attempt' => $attempt, 'event' => 'push',
+            'workflow_id' => 77, 'workflow' => 'CI', 'run_number' => $runId, 'run_attempt' => $attempt, 'event' => $event,
             'status' => $status, 'conclusion' => $status === 'completed' ? 'success' : null,
             'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}", 'pr' => null,
             'created_at' => $created, 'updated_at' => $updated,
