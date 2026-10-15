@@ -46,7 +46,7 @@ class DocRefSampleLintTest extends TestCase
     private const CAPTURE = <<<'TXT'
         OK: database: connected
         OK: retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
-        WARN: retention: 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: MariaDB counts only the bytes InnoDB stores inline) · oldest row 12.4d old.
+        WARN: retention: 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: the size is a statistics estimate that lags the rows) · oldest row 12.4d old.
         exit: 0
         checks: 38
         TXT;

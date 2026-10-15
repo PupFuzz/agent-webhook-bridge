@@ -48,7 +48,7 @@ use Tests\TestCase;
  *     the severity IS the finding.
  *  4. THE INVERTED-SHARE ARM — the output invariant, not an install shape. The
  *     engine-accounting arm beside it IS an install shape (every MariaDB install), so it
- *     has a golden fixture: `retention-store-off-page-accounting`. This one does not,
+ *     has a golden fixture: `retention-store-share-withheld`. This one does not,
  *     because it is reached only by a footprint that DECLARES its two figures comparable
  *     and then contradicts itself — a state no shipped probe arm produces, kept as the
  *     last guard on what may reach an operator. A fixture for it would pin numbers chosen
@@ -364,21 +364,21 @@ class RetentionPostureCheckTest extends TestCase
 
     /**
      * ⛔ EVERY MariaDB INSTALL'S ARM, and the one that matters more than the 234% the
-     * review found. On InnoDB `ROW_FORMAT=Dynamic` a payload above the inline-row limit
-     * is stored OFF-PAGE and its bytes are in NEITHER `data_length` NOR `index_length`
-     * — measured on MariaDB 10.6.28 and 11.8.9 (CI, card#8374): 200 rows carrying
-     * 13107200 bytes left `data_length` at 16384, one page, while `table_rows` refreshed
-     * to 200, so it is the ACCOUNTING and not stale statistics. An install whose payloads
-     * straddle that limit therefore gets a BELIEVABLE percentage over a denominator
-     * holding only part of its own numerator, and nothing flags it. The share is
+     * review found. The MariaDB size is `sum(data_length + index_length)`, an InnoDB
+     * statistics ESTIMATE refreshed in the background, so it can lag the stored data by
+     * the very rows just written — measured on MariaDB 10.11.14 (DL-483, correcting
+     * DL-331's reason): 200 rows carrying 13107200 bytes, all off-page, read 262144
+     * straight after the insert and 17317888 once the refresh had run. An install whose
+     * statistics lag what it holds therefore gets a BELIEVABLE percentage over a
+     * denominator holding only part of its own numerator, and nothing flags it. The share is
      * withheld, in words, and both byte figures still print.
      *
-     * The message is pinned byte-for-byte by `retention-store-off-page-accounting`; what
+     * The message is pinned byte-for-byte by `retention-store-share-withheld`; what
      * is here is the severity that capture witnesses nowhere, and the DENOMINATOR the
      * tail sends the operator to — a golden capture reds on any tail edit and is
      * regenerated with `UPDATE_GOLDEN=1`, which is how a wrong one survived a round.
      */
-    public function test_an_engine_that_excludes_off_page_payload_bytes_prints_no_share(): void
+    public function test_an_engine_whose_size_is_not_on_the_payload_basis_prints_no_share(): void
     {
         Cache::swap(new Repository(new ArrayStore));
 

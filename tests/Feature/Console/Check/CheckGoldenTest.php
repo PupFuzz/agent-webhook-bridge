@@ -263,14 +263,14 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
-            case 'retention-store-off-page-accounting':
-                // EVERY MariaDB INSTALL'S SHAPE. The size the engine reports excludes the
-                // payload bytes it stores off-page (measured, DL-331), so the share is
-                // withheld rather than computed over a denominator missing its own
-                // numerator. Only that declaration moves from the default pin, so the diff
-                // against `minimal` is the withheld clause and nothing else.
+            case 'retention-store-share-withheld':
+                // EVERY MariaDB INSTALL'S SHAPE. The size the engine reports is a
+                // statistics estimate that can lag the rows just written (DL-483), so the
+                // share is withheld rather than computed over a denominator that may miss
+                // part of its own numerator. Only that declaration moves from the default
+                // pin, so the diff against `minimal` is the withheld clause and nothing else.
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
-                $this->app->instance(RetentionStoreProbe::class, GoldenRetentionStore::offPageAccounting());
+                $this->app->instance(RetentionStoreProbe::class, GoldenRetentionStore::shareWithheld());
 
                 return $default;
 
@@ -733,7 +733,7 @@ class CheckGoldenTest extends TestCase
             'retention-last-pass-failed',
             'retention-store-empty',
             'retention-store-past-window',
-            'retention-store-off-page-accounting',
+            'retention-store-share-withheld',
             'retention-store-unmeasurable',
             'standup-enabled',
             'standup-last-pass-failed',
@@ -840,7 +840,7 @@ class CheckGoldenTest extends TestCase
             // read back. What must hold is which arm the check chose.
             'retention-store-empty' => ['webhook_events is EMPTY (0 rows)'],
             'retention-store-past-window' => ['PAST the 30d delete window'],
-            'retention-store-off-page-accounting' => ['share of the database NOT shown'],
+            'retention-store-share-withheld' => ['share of the database NOT shown'],
             'retention-store-unmeasurable' => ['could NOT measure what the store is holding'],
 
             // ---- standup posture (card#8683 / DL-345) ----

@@ -26,7 +26,7 @@ use RuntimeException;
  * ⛔ THOSE TWO FIELDS ARE NOT ONE MEASUREMENT AND ARE NOT COMPARABLE ON EVERY ENGINE, so
  * the probe DECLARES which it is (`RetentionFootprint::$storeBytesContainsPayloadBytes`)
  * rather than leaving a consumer to divide and hope — see {@see storeSize()} for the
- * measurement behind each arm (DL-331).
+ * measurement behind each arm (DL-331; its MariaDB reason corrected by DL-483).
  *
  * AN UNKNOWN DRIVER YIELDS NULL FOR BOTH AND STILL RETURNS A FOOTPRINT. Row counts and
  * the oldest row's age are portable, so a Postgres install gets the half of the cost line
@@ -112,20 +112,24 @@ final class DatabaseRetentionStoreProbe implements RetentionStoreProbe
      * is a property of the first: split into two `match`es they could drift, and the
      * drift would be silent (a share computed over the wrong denominator still renders).
      *
-     * ⛔ `containsPayloadBytes` IS FALSE ON MariaDB, AND IT IS MEASURED. On InnoDB
-     * `ROW_FORMAT=Dynamic` a payload above the inline-row limit is stored OFF-PAGE, and
-     * those pages are in NEITHER `data_length` NOR `index_length`. Measured on MariaDB
-     * 10.6.28 and 11.8.9 (CI, card#8374): 200 rows carrying 13107200 bytes of payload
-     * left `webhook_events.data_length` at 16384 — one page — and `index_length`
-     * unchanged, while `table_rows` moved 0 → 200 and `avg_row_length` to 81. So this is
-     * NOT stale statistics (they refreshed); the clustered-index record simply holds the
-     * inline columns plus an off-page pointer and nothing else, and `data_free` moved
-     * 0 → 1048576 for the pages the payloads actually took.
+     * ⛔ `containsPayloadBytes` IS FALSE ON MariaDB BECAUSE THE SIZE IS A STATISTICS
+     * ESTIMATE THAT LAGS THE DATA (DL-483, correcting DL-331's reason). `data_length` and
+     * `index_length` come from InnoDB's persistent statistics, which a background thread
+     * refreshes some time after enough rows change; `table_rows` is a live counter and
+     * moves without that refresh, so it is no evidence one has happened. Measured on
+     * MariaDB 10.11.14, 200 rows of 64 KiB (13107200 bytes, all off-page) read
+     * `data_length` 262144 straight after the insert, 17317888 once the refresh had run,
+     * and still 16384 twelve seconds on with the refresh disabled (`STATS_AUTO_RECALC=0`).
+     * So a FRESH figure counts the off-page pages and a stale one does not, and which one
+     * this read gets is timing. DL-331's CI reading on 10.6.28 and 11.8.9 (16384) is
+     * exactly the stale figure; those versions were not re-measured.
+     * Forcing a refresh (`ANALYZE TABLE`) before the read is not done here: among other
+     * things it implicitly COMMITS the caller's open transaction (measured, DL-483).
      *
      * `data_length + index_length` IS STILL THE MariaDB SOURCE, because the alternatives
      * were measured and are closed:
-     *  - `avg_row_length * table_rows` = 81 × 200 = 16200 ≈ `data_length`. It is derived
-     *    from the same statistics and answers no differently.
+     *  - `avg_row_length * table_rows` = 81 × 200 = 16200 ≈ `data_length`. It is
+     *    `data_length / table_rows` multiplied back, so it lags exactly as that does.
      *  - `information_schema.innodb_tablespaces` — the one source that reads the
      *    tablespace FILE — does not exist on 10.6.28 or 11.8.9 (`1109 Unknown table`),
      *    and its predecessor `innodb_sys_tablespaces` answered

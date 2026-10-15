@@ -22,11 +22,13 @@ use Tests\TestCase;
  * matrix rather than by reading.
  *
  * WHAT IS ASSERTED IS THE RELATION, NOT THE FIGURE, wherever the figure is the engine's
- * (a database's own size is not a property of these three rows). The one exact figure
- * asserted is the payload byte count, because it IS portable — the stored bytes are what
- * this app wrote — and because it is the assertion that catches SQLite's `length()`
- * counting CHARACTERS: a payload with one two-byte character is the discriminator, and
- * the naive spelling under-reports it by exactly that one byte.
+ * (a database's own size is not a property of these three rows) — and on MariaDB not even
+ * the relation, because that size is a statistics estimate whose freshness is timing
+ * (DL-483). The one exact figure asserted is the payload byte count, because it IS
+ * portable — the stored bytes are what this app wrote — and because it is the assertion
+ * that catches SQLite's `length()` counting CHARACTERS: a payload with one two-byte
+ * character is the discriminator, and the naive spelling under-reports it by exactly that
+ * one byte.
  *
  * ⛔ THE ROWS-BUT-NO-ANSWERABLE-`min(received_at)` THROW IS EXERCISED HERE, ON SQLite
  * ONLY: A PORTABLE TEST DOES NOT EXIST, AND THE BOUND IS THE ENGINE RATHER THAN THE
@@ -134,58 +136,48 @@ class DatabaseRetentionStoreProbeTest extends TestCase
     }
 
     /**
-     * ⛔ THE PROBE'S `storeBytesContainsPayloadBytes` DECLARATION IS A CLAIM ABOUT THE
-     * LIVE ENGINE, AND THIS IS WHERE IT IS HELD TO IT. The check divides the payload sum
-     * by the store size only where the probe says the first is inside the second, so a
-     * wrong declaration would silently restore the defect the declaration exists to
-     * remove — and no amount of reading settles it, because it is a property of how the
-     * engine accounts for its own pages.
+     * ⛔ THE PROBE'S `storeBytesContainsPayloadBytes` DECLARATION IS PINNED HERE, PER
+     * ENGINE. The check divides the payload sum by the store size only where the probe
+     * says the first is inside the second, so a declaration that flipped would silently
+     * restore the defect it exists to remove.
      *
-     * Rows of 64 KiB (at least 200 of them, more when the schema already holds more — see the
-     * sizing note in the test) put the question at full magnitude: each is far above the InnoDB
-     * inline-row limit, so every payload is stored OFF-PAGE.
+     * ON SQLite THE DECLARATION IS TRUE AND THE RELATION IS ASSERTED: the size is
+     * `page_count * page_size`, the whole file, so the payload is inside it by
+     * construction and `payloadBytes <= storeBytes` must hold on the live engine.
      *
-     * ⛤ WHAT CI MEASURED (card#8374, run 33576949649), and why each arm asserts what it
-     * does. On **MariaDB 10.6.28 and 11.8.9** the 13107200 bytes written left
-     * `webhook_events.data_length` at **16384 — one page** — and `index_length`
-     * unchanged, while `table_rows` refreshed 0 → 200 and `avg_row_length` became 81:
-     * off-page bytes are in NEITHER figure, and it is the ACCOUNTING, not stale
-     * statistics. The whole schema still reported 245760 bytes against 13107200 of
-     * payload. On **SQLite** the size is `page_count * page_size` — the whole file — so
-     * the payload is inside it by construction.
+     * ON MariaDB/MySQL THE DECLARATION IS FALSE AND ONLY THE DECLARATION IS ASSERTED —
+     * NOT THE ENGINE'S ACCOUNTING (DL-483, correcting DL-331's reason). The size there is
+     * `sum(data_length + index_length)`, an InnoDB statistics estimate a background thread
+     * refreshes some time after the rows change. Measured on MariaDB 10.11.14 with the
+     * same 200 × 64 KiB write: `data_length` read 262144 straight after the insert
+     * and 17317888 once the refresh had run, so the payload is OUTSIDE a stale figure and
+     * INSIDE a fresh one. This test used to assert `payloadBytes > storeBytes`, which holds
+     * only while the statistics are stale, and it went red when the refresh beat the
+     * second read: run 38645407337 (card#11940), and plausibly run 36376084510, which
+     * card#10567 put down to other tables' residue and answered with a margin. Neither
+     * direction can be pinned inside `RefreshDatabase`'s transaction: `ANALYZE TABLE`,
+     * the one way to force the figure current, implicitly COMMITS it (measured). So the
+     * declaration is false because the two figures are not on one basis, and that is what
+     * this arm holds the probe to.
      *
-     * ⚠ A RED IN EITHER ARM IS A FINDING ABOUT THE ENGINE, NEVER A REASON TO RELAX THE
-     * ASSERTION: it would say that engine's accounting has changed basis, and the fix is
-     * to move the declaration in `DatabaseRetentionStoreProbe::storeSize()` and record
-     * the new measurement in DL-331.
+     * THE ROWS ARE 64 KiB, far above the InnoDB inline-row limit, so on MariaDB every
+     * payload is stored OFF-PAGE and the exact numerator assertion below proves `length()`
+     * still answers for the whole value. The count is fixed: the payload no longer has to
+     * outweigh whatever the schema already holds (the 2x-the-prior-reading sizing this
+     * test used to carry), because no assertion compares it with the engine's size there.
      */
-    public function test_the_probes_declaration_about_the_two_figures_holds_on_this_engine(): void
+    public function test_only_the_whole_file_size_is_declared_to_contain_the_payload_bytes(): void
     {
-        // ⚑ THE PAYLOAD IS SIZED TO DOMINATE WHATEVER THE SCHEMA ALREADY HOLDS. The MariaDB figure
-        // sums every table, and a rollback returns rows but not pages, so the tables EARLIER TESTS
-        // in the same run grew are in it — and InnoDB refreshes their statistics asynchronously, so
-        // how much of that residue shows is timing. A fixed 12.5 MiB payload lost to it once:
-        // run 36376084510 read 13533184 bytes on MariaDB 11 (not on 10.6, same run) after a fuzz
-        // test filled another table (card#10567). So the probe is read once BEFORE the write and
-        // the payload is at least twice that figure plus 1 MiB (never less than the 200 × 64 KiB
-        // CI measured with), in whole 64 KiB rows. If the engine counts off-page bytes, the figure
-        // after the write is at least before + payload, above the payload whatever the residue; if
-        // it does not, the figure stays near `before`, and residue already allocated by then can
-        // surface through a stale statistic only up to that allocation, which the 2x margin covers.
-        $before = (new DatabaseRetentionStoreProbe)->measure()->storeBytes;
-        $this->assertNotNull($before);
-        $this->assertGreaterThan(0, $before, 'the probe read a real size figure before the write');
-        $rowBytes = 65536;
-        $rows = (int) ceil(max(200 * $rowBytes, 2 * $before + 1048576) / $rowBytes);
+        $rows = 200;
         $countBefore = WebhookEvent::query()->count();
-        $written = $this->bulkPayloads($rows, $rowBytes);
+        $written = $this->bulkPayloads($rows, 65536);
         $this->assertSame($rows, WebhookEvent::query()->count() - $countBefore, 'every payload row is stored (a query, not a statistic)');
 
         $footprint = (new DatabaseRetentionStoreProbe)->measure();
 
         // The numerator first, and exactly: `length()` over an off-page LOB must still
-        // answer for the whole value on every engine. Without it, either arm below could
-        // be satisfied by a numerator that silently lost the off-page bytes.
+        // answer for the whole value on every engine. Without it, the SQLite arm below could
+        // be satisfied by a numerator that silently lost bytes.
         $this->assertSame($countBefore + $rows, $footprint->rows);
         $this->assertSame($written, $footprint->payloadBytes, "{$rows} payloads of exactly 64 KiB each");
         $this->assertNotNull($footprint->storeBytes);
@@ -198,11 +190,10 @@ class DatabaseRetentionStoreProbeTest extends TestCase
                 'this driver declares its size CONTAINS the payload bytes, and it does not',
             );
         } else {
-            $this->assertContains(DB::connection()->getDriverName(), ['mysql', 'mariadb']);
-            $this->assertGreaterThan(
-                $footprint->storeBytes,
-                $footprint->payloadBytes,
-                'this engine no longer excludes off-page payload bytes from its size figure — re-measure and move the declaration in DatabaseRetentionStoreProbe::storeSize() (DL-331)',
+            $this->assertContains(
+                DB::connection()->getDriverName(),
+                ['mysql', 'mariadb'],
+                'only the InnoDB statistics-estimate size read may declare the two figures not comparable (DL-483)',
             );
         }
     }

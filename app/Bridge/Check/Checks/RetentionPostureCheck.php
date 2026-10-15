@@ -206,17 +206,19 @@ final class RetentionPostureCheck implements Check
      * THE PROBE SAYS THEY ARE ONE. The numerator is a LIVE byte sum this app scans out of
      * its own rows; the denominator is whatever the ENGINE reports for the database. On
      * SQLite the first is inside the second by construction (`page_count * page_size` is
-     * the whole file). On MariaDB it is NOT, measured rather than reasoned: off-page
-     * payload bytes are in neither `data_length` nor `index_length`
-     * ({@see RetentionFootprint}, DL-331). So the check consults the probe's declaration
-     * instead of dividing and hoping.
+     * the whole file). On MariaDB it is NOT: the size is InnoDB's statistics ESTIMATE,
+     * refreshed in the background, so it can lag the stored data by the very rows just
+     * written — a fresh estimate counts off-page payload pages and a stale one does not
+     * ({@see RetentionFootprint}, DL-483 correcting DL-331's reason). So the check consults
+     * the probe's declaration instead of dividing and hoping.
      *
      * ⛔ THE DANGEROUS FAILURE IS THE PLAUSIBLE ONE, NOT THE 234%. An unbounded quotient
      * printing `~234% of the database` is at least obviously wrong. An install whose
-     * payloads STRADDLE the inline-row limit gets a believable percentage computed over a
+     * store's statistics lag what it holds gets a believable percentage computed over a
      * denominator holding only some of its own numerator — a capacity figure nothing
      * flags, on a line whose whole purpose is capacity. Both byte figures still print
-     * either way, because both are measurements; it is only their ratio that is not one.
+     * either way, because each is what its own source reports; it is only their ratio
+     * that is not a measurement.
      *
      * Neither withholding clause is a `warn`: the store's posture is what the age verdict
      * decides, and how an engine accounts for its own pages says nothing about whether
@@ -233,7 +235,7 @@ final class RetentionPostureCheck implements Check
             return $held;
         }
         if (! $store->storeBytesContainsPayloadBytes) {
-            return $held.' (share of the database NOT shown: this engine reports its size without the payload bytes it stores off-page, so the two figures are not on one basis — compare the payload figure against this TABLE\'s own tablespace file, webhook_events.ibd under the default innodb_file_per_table=ON, and not against the whole database directory, which also holds redo/undo, binlogs and every other schema; CLAUDE_DEPLOYMENT.md "What bridge:check reports about retention" covers the shared-tablespace case)';
+            return $held.' (share of the database NOT shown: this engine\'s size is a statistics estimate that can lag the stored data (rows just written or just pruned may not be in it yet), so the two figures are not on one basis — compare the payload figure against this TABLE\'s own tablespace file, webhook_events.ibd under the default innodb_file_per_table=ON, and not against the whole database directory, which also holds redo/undo, binlogs and every other schema; CLAUDE_DEPLOYMENT.md "What bridge:check reports about retention" covers the shared-tablespace case)';
         }
         // The invariant on the OUTPUT, kept even though the declaration above should make
         // it unreachable: the size is a number an engine hands us, and no share above
