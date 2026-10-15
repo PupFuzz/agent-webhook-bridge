@@ -27,7 +27,8 @@ use Throwable;
  *
  * ⭐ DECIDED FROM TRACKED STATE — NO GITHUB READ. The head's runs are what `workflow_run`
  * deliveries reported ({@see CiHeadRunTracker}), judged by {@see HeadRuns} — the same predicate
- * `ci_await` applies to the list it reads. ⛔ So it can settle on a PARTIAL view: a workflow GitHub
+ * `ci_await` applies to the list it reads, though over EVERY delivered run, where `ci_await` judges
+ * only the runs a commit started (card#11958). ⛔ So it can settle on a PARTIAL view: a workflow GitHub
  * has queued that no delivery has reported yet is not in the list (card#11938). The event says so —
  * `basis: delivered_runs`, `all_terminal: null`, and a summary that says the runs delivered so far
  * are complete, not that the head is.
@@ -39,7 +40,7 @@ use Throwable;
  * settles again and the agent gets a second event — never silence, never the same state twice.
  *
  * ⛔ AN AGENT WITH A `ci_await` ON THE HEAD GETS NOTHING FROM HERE (card#11938). Its await promises
- * a `ci_settled` when every run GITHUB lists is terminal, and the partial view above broke that
+ * a `ci_settled` when every run GITHUB lists that a commit started is terminal, and the partial view above broke that
  * promise: a seat was woken green over one workflow of two. So the aggregate neither stages, pushes
  * nor records a state for an awaited agent, and the await's own settle on its GitHub read is the one
  * it gets — never silenced by the ledger, which the await writes but does not consult. ⚠ The check

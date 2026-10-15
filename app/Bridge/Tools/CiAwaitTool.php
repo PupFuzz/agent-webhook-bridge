@@ -16,8 +16,8 @@ use Throwable;
 
 /**
  * ci_await (card#11200 / DL-452) — the calling seat declares that it is waiting for CI on one head
- * SHA, and the bridge sends it ONE `ci_settled` intent when every workflow run on that head is
- * terminal, instead of the seat polling GitHub. {@see CiAwaitService} owns detection, the sweep,
+ * SHA, and the bridge sends it ONE `ci_settled` intent when every workflow run a commit started on
+ * that head is terminal (`HeadRuns::ofCommit()`), instead of the seat polling GitHub. {@see CiAwaitService} owns detection, the sweep,
  * the claim that makes it one event per await, and the read-failure rules; this class owns the door.
  *
  * ⛔ SELF-SCOPED. The await belongs to the agent the front door resolved; no argument names a

@@ -687,10 +687,12 @@ const TOOL_DEFINITIONS = [
     name: 'ci_await',
     description:
       'Tell the bridge you are WAITING for CI on one commit, instead of polling GitHub. When every ' +
-      'workflow run GitHub lists for that head SHA is terminal (status completed), the bridge sends ' +
+      'workflow run GitHub lists for that head SHA that a commit started (event push or ' +
+      'pull_request) is terminal (status completed), the bridge sends ' +
       'you ONE ci_settled event on this channel, carrying each run\'s workflow, conclusion and url, ' +
-      'and forgets the wait. ci_settled is NOT a verdict: run ci-read once on the head for green or ' +
-      'red. If the runs never all finish (or the bridge never gets to see them) before the wait ' +
+      'and forgets the wait. A schedule or workflow_dispatch run on the same SHA neither holds the ' +
+      'wait open nor turns it red, and is not listed; ci-read still reports it. ci_settled is NOT ' +
+      'a verdict: run ci-read once on the head for green or red. If the runs never all finish (or the bridge never gets to see them) before the wait ' +
       'expires (6 h by default), you get ONE ci_await_expired event instead, with the last read ' +
       'error if a read failed. The wait is YOURS — no argument names a seat. Calling it again for ' +
       'the same head refreshes the wait and reads the runs again (not within the read cooldown). ' +
@@ -701,7 +703,7 @@ const TOOL_DEFINITIONS = [
       'stored, retry_not_before says when a read is possible again, and the bridge\'s own sweep ' +
       'or the run\'s completion settles it. Otherwise, if ' +
       'they have already all finished, ci_settled is sent immediately (state: settled). A head ' +
-      'with no runs yet keeps waiting. A repo this bridge receives no GitHub events for is ' +
+      'with no runs a commit started yet keeps waiting. A repo this bridge receives no GitHub events for is ' +
       'REFUSED (reason repo_not_received) — do NOT poll there: tell your operator, who wires the ' +
       'repo\'s webhook to this bridge or tells you the repo is not covered. A repo this bridge\'s ' +
       'operator declared to have no CI is REFUSED (reason repo_not_ci) — there is nothing to wait ' +
@@ -714,8 +716,8 @@ const TOOL_DEFINITIONS = [
       '(overdue_at in the answer — derived from the repo\'s recent heads, or set with ' +
       'overdue_after_seconds), you get ONE ci_await_overdue event and the wait stays: that event, ' +
       'not polling, is your cue to run ci-read once. Until an event arrives, wait. A workflow that only starts ' +
-      'after the others finish (on: workflow_run) can appear after ci_settled; ci-read then reports ' +
-      'it pending, and you re-register.',
+      'after the others finish (on: workflow_run) is not counted, so ci_settled does not wait for ' +
+      'it; ci-read then reports it.',
     inputSchema: {
       type: 'object',
       properties: {

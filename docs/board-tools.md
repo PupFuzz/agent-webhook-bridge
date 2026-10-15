@@ -28,7 +28,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none` / `unrouted` — the unassigned cards in no home lane, the PM's routing queue, card#11267) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused — except `unrouted`'s unassigned test, which the board has no term for and the bridge applies to the rows it returns; the window says `total`, `truncated` and `total_is_lower_bound`. |
-| `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA is terminal, you get ONE `ci_settled` event on your channel; if that does not happen before the wait expires, ONE `ci_await_expired`. If it has not happened by the repo's normal CI time (`overdue_at` in the answer — derived from the repo's recent heads, or yours via `overdue_after_seconds`), you get ONE `ci_await_overdue` first and the wait stays (card#11674 / DL-471): that event, not polling, is your cue to check CI by hand. A repo the operator declared to have no CI is refused (`repo_not_ci`, card#11696). A repo this bridge's GitHub token cannot read is refused (`repo_unreadable`), and a wait whose later read finds that ends with ONE `ci_await_unreadable` (card#11600; a `401` or `403` must be confirmed by a second read first). **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
+| `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA that a commit started (`push`, `pull_request`) is terminal, you get ONE `ci_settled` event on your channel — a `schedule` or `workflow_dispatch` run on the same SHA neither holds it open nor turns it red (card#11958 / DL-485); if that does not happen before the wait expires, ONE `ci_await_expired`. If it has not happened by the repo's normal CI time (`overdue_at` in the answer — derived from the repo's recent heads, or yours via `overdue_after_seconds`), you get ONE `ci_await_overdue` first and the wait stays (card#11674 / DL-471): that event, not polling, is your cue to check CI by hand. A repo the operator declared to have no CI is refused (`repo_not_ci`, card#11696). A repo this bridge's GitHub token cannot read is refused (`repo_unreadable`), and a wait whose later read finds that ends with ONE `ci_await_unreadable` (card#11600; a `401` or `403` must be confirmed by a second read first). **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
 | `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it. Never touches another seat's. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
@@ -1941,7 +1941,7 @@ The answer:
   "overdue_at": "2026-10-03T10:25:00.000Z",   // when ci_await_overdue is due; null as expires_at is
   "overdue_basis": "history", // history | default | override — where overdue_at came from; null with it
   "overdue_sent_at": "…",    // only on a refresh after this wait's ci_await_overdue was sent
-  "runs_total": 3,           // null when the read failed
+  "runs_total": 3,           // the runs a commit started (push, pull_request) — what the settle counts; null when the read failed
   "runs_completed": 1,
   "read_error": "…",         // only on state: unmeasured
   "read_skipped": "cooldown", // only when no read was made: "cooldown", "rate_limited", "unreadable_unconfirmed" or "seat_read_limited"
@@ -1953,7 +1953,10 @@ The answer:
 - **`settled`** — every run was already terminal, or a concurrent read settled your await while you
   registered: `ci_settled` has been sent to you and nothing is stored.
 - **`waiting`** — stored; at least one run is not finished, **or there are no runs yet** (CI not
-  queued yet looks exactly like that, so an empty list is never treated as settled).
+  queued yet looks exactly like that, so an empty list is never treated as settled). A head whose
+  only runs are `schedule` or `workflow_dispatch` runs has no run a commit started, so it is the
+  same: it waits, and `ci_await_overdue` and then `ci_await_expired` end it unless a commit's run
+  appears (card#11958).
 - **`unmeasured`** — stored, but the read failed (with `retry_not_before` when GitHub rate limited
   it), every run is terminal but `ci_settled` could not be written to your inbox, or evaluating the
   stored await failed (a database error after the store); `read_error` says which. Nothing is sent
@@ -1971,8 +1974,14 @@ running or does not show it yet: the list API can lag the webhook, and a last ru
 would strand the wait until it expired. ⚠ **Except a later attempt:** a re-run keeps the run's id
 and raises its `run_attempt`, so when the list shows a LATER attempt than the delivery reports (a
 late delivery, or one an operator redelivered by hand from the webhook's settings), or either
-attempt is unknown, the list's row stands. When the head is **settled** — at least one run, and the
-LATEST run of every workflow (by `workflow_id`, ranked by `run_number` then id, as `ci-read` ranks
+attempt is unknown, the list's row stands. ⛔ **Only the runs a commit started are judged** —
+`event` `push` or `pull_request`, the allow-list `App\Bridge\CiAwait\HeadRuns::COMMIT_EVENTS` that
+the overdue deadline samples too (card#11958 / DL-485). A `schedule` or `workflow_dispatch` run on
+the head — a nightly audit firing on `main`'s unchanged tip — is dropped before anything else is
+decided, so it neither holds the head open nor turns it red, and is not in `ci_settled`'s `runs`;
+the summary counts how many were left out. Dropped first, so a workflow that runs on `push` AND on
+`schedule` is decided by its push run, not by the newer nightly one. When the head is **settled** —
+at least one such run, and the LATEST run of every workflow (by `workflow_id`, ranked by `run_number` then id, as `ci-read` ranks
 them) has `status: completed`; an older run of a workflow with a newer run on the head is superseded
 and holds nothing open — every seat awaiting that head gets **one** `ci_settled` and its await is
 deleted. `App\Bridge\CiAwait\HeadRuns` is that predicate, and the per-head aggregate (below) uses it too. ⛔ **A list that moved
@@ -2119,9 +2128,19 @@ whose channel was down (*What a seat can rely on* above). `subject_id` is `ci:<r
 
 **Limits, named:**
 
-- ⚠ **Late runs.** A workflow that starts only after others finish (`on: workflow_run`) may not be
-  on the list when the others complete, so `ci_settled` can arrive before it exists; `ci-read` then
-  reports the head pending, and the seat re-registers. The payload carries no `late_runs_possible`
+- ⚠ **Runs no commit started are not counted (card#11958 / DL-485).** The settle judges only
+  `push` and `pull_request` runs. A red `schedule` or `workflow_dispatch` run on the head does not
+  turn `ci_settled` red. What else reports it is unchanged: an agent whose `impl-ci-wake` family
+  reports that repo's CI gets the run's own per-run event as before; the per-head aggregate still
+  judges every delivered run, so once the await has settled green and gone, a scheduled or
+  dispatched run that finishes red on that head can send the same seat a second, red `ci_settled`
+  (`basis: delivered_runs`); and `ci-read` on the head reads
+  every run, so it can say RED or PENDING on a head whose `ci_settled` was green. ⚠ The list is an allow-list and cuts both ways: a run of any
+  other event a commit DID cause — `pull_request_target`, `merge_group`, an `on: workflow_run`
+  follow-on — is not counted either, so its red does not turn the wait red.
+- ⚠ **Late runs.** A workflow that starts only after others finish (`on: workflow_run`) is not
+  counted (its event is `workflow_run`), so `ci_settled` never waits for it; `ci-read` then
+  reports the head pending or red, and the seat re-registers or reads it. The payload carries no `late_runs_possible`
   hint: telling whether a repo has such a workflow would need a read of its workflow files on every
   settle, which is not cheap, so it is omitted rather than guessed. Whether such a run reports the
   awaited head's SHA at all is **not measured here**.

@@ -30,9 +30,9 @@ use Throwable;
  * arrival cannot stretch it. ⚠ The cost: when one wait spans two arrivals minutes apart (a push,
  * then the PR opened on it), the gap between them is not counted — the margin is what covers it.
  *
- * ⛔ ONLY RUNS A COMMIT STARTED ARE SAMPLED — {@see COMMIT_EVENTS}, an allow-list. A `schedule` or
- * `workflow_dispatch` run is not timed, and need not be complete for its head to be a sample
- * (`ci_await` itself still waits for every run GitHub lists). An event outside the list cuts both
+ * ⛔ ONLY RUNS A COMMIT STARTED ARE SAMPLED — {@see HeadRuns::COMMIT_EVENTS}, an allow-list, the
+ * same one the await's settle judges (card#11958). A `schedule` or `workflow_dispatch` run is not
+ * timed, and need not be complete for its head to be a sample. An event outside the list cuts both
  * ways: a head with ONLY such runs is no sample (fewer samples, then the {@see MIN_HEADS} default),
  * and on a head that also has listed runs a longer unlisted run is left out, so its time is SHORTER
  * and the cue can come early. A deny-list instead would let the next event GitHub adds stretch it.
@@ -52,9 +52,6 @@ use Throwable;
 final class OverdueDeadline
 {
     public const SAMPLE_HEADS = 50;
-
-    /** The `workflow_run.event` values that mean a commit arrived: pushed, or a PR's head moved. */
-    public const COMMIT_EVENTS = ['push', 'pull_request'];
 
     public const MIN_HEADS = 5;
 
@@ -114,7 +111,7 @@ final class OverdueDeadline
 
     /**
      * The CI time, in whole seconds, of each of the repo's {@see SAMPLE_HEADS} most recently
-     * finished heads — its longest run of {@see COMMIT_EVENTS} — where every such run is
+     * finished heads — its longest run of {@see HeadRuns::COMMIT_EVENTS} — where every such run is
      * `completed` and none on an attempt past the first.
      *
      * @return list<int>
@@ -123,7 +120,7 @@ final class OverdueDeadline
     {
         $runs = CiHeadRun::query()
             ->where('repo', CiAwaitService::key($repoName))
-            ->whereIn('event', self::COMMIT_EVENTS);
+            ->whereIn('event', HeadRuns::COMMIT_EVENTS);
         $heads = $runs->clone()
             ->select('head_sha')
             ->groupBy('head_sha')
