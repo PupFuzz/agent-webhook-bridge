@@ -104,7 +104,9 @@ then id, as `ci-read` ranks them) is complete. An older run of a workflow with a
 is *superseded*: it holds nothing open and decides nothing. Two senders:
 
 - **Your `ci_await`** — for a head you registered; decided on a read of GitHub's run list
-  (`basis: "github_read"`). One terminal event per await, and while you hold the await it is the only
+  (`basis: "github_read"`), over the runs a COMMIT started only — `push` and `pull_request`; a
+  `schedule` or `workflow_dispatch` run on the head is not judged and not listed (card#11958 / DL-485;
+  [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`* owns the rule). One terminal event per await, and while you hold the await it is the only
   `ci_settled` you get for that head (card#11938) — except for an await registered while a delivery is settling the head, whose seat can still be sent the aggregate's event, saying `basis: "delivered_runs"`.
 - **The per-head aggregate** — sent to an agent whose `impl-ci-wake` family stages CI
   (`impl_non_wake_disposition: inbox_stage`) under `impl_ci_delivery: aggregate`, the default, for
@@ -142,8 +144,8 @@ the base branch's required contexts — run `ci-read` once on the head before ac
 |---|---|
 | `repo`, `head_sha`, `pr` | the head; `pr` as registered for an await (null when none was given), and for the aggregate the PR the runs' deliveries named, else null |
 | `basis` | which run list was judged: `github_read` (your `ci_await` read GitHub's list for the head) or `delivered_runs` (the per-head aggregate judged the runs `workflow_run` deliveries reported — a run not yet delivered is not in it) |
-| `runs` | every run seen on the head, each `{workflow, conclusion, html_url, superseded}` — `workflow` is the run's workflow name, `conclusion` GitHub's string for it, `superseded` true for a run a newer run of its workflow decides instead |
-| `all_terminal` | `true` on `basis: github_read` — every run GitHub lists for the head is terminal; `null` on `basis: delivered_runs` — not known, since no full list was read (it was `true` on both before card#11938) |
+| `runs` | every run seen on the head — on `basis: github_read`, every run a commit started (`push`, `pull_request`) — each `{workflow, conclusion, html_url, superseded}` — `workflow` is the run's workflow name, `conclusion` GitHub's string for it, `superseded` true for a run a newer run of its workflow decides instead |
+| `all_terminal` | `true` on `basis: github_read` — every run GitHub lists for the head that a commit started is terminal; `null` on `basis: delivered_runs` — not known, since no full list was read (it was `true` on both before card#11938) |
 | `runs_verdict` | `green` when every deciding run concluded `success`, `neutral` or `skipped` (`ci-read`'s `BENIGN_CONCLUSIONS`), else `red` — a `cancelled` run with no newer run of its workflow is red, as is a conclusion GitHub adds later |
 | `non_success_runs` | each deciding run whose conclusion is neither `success` nor `skipped`, `{workflow, conclusion, html_url}` — what a red `ci_settled` asks you to look at; the `summary` names them with their urls too |
 | `measured_at` | when the bridge read the run list, or decided the aggregate (UTC, milliseconds) |

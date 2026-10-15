@@ -27,7 +27,8 @@ use Throwable;
  *
  * ⭐ DECIDED FROM TRACKED STATE — NO GITHUB READ. The head's runs are what `workflow_run`
  * deliveries reported ({@see CiHeadRunTracker}), judged by {@see HeadRuns} — the same predicate
- * `ci_await` applies to the list it reads. ⛔ So it can settle on a PARTIAL view: a workflow GitHub
+ * `ci_await` applies to the list it reads, though over EVERY delivered run, where `ci_await` judges
+ * only the runs a commit started (card#11958). ⛔ So it can settle on a PARTIAL view: a workflow GitHub
  * has queued that no delivery has reported yet is not in the list (card#11938). The event says so —
  * `basis: delivered_runs`, `all_terminal: null`, and a summary that says the runs delivered so far
  * are complete, not that the head is.

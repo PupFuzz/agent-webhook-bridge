@@ -53,6 +53,7 @@ final class CiAwaitGate
             'run_number' => is_int($run['run_number'] ?? null) ? $run['run_number'] : null,
             'conclusion' => is_string($run['conclusion'] ?? null) ? $run['conclusion'] : null,
             'html_url' => is_string($run['html_url'] ?? null) ? $run['html_url'] : '',
+            'event' => is_string($run['event'] ?? null) ? $run['event'] : '',
             'run_attempt' => is_int($run['run_attempt'] ?? null) ? $run['run_attempt'] : null,
         ] : null;
 

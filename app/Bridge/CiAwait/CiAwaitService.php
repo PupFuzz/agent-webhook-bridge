@@ -39,8 +39,9 @@ use UnexpectedValueException;
 
 /**
  * The `ci_settled` wake (card#11200 / DL-452): a seat declares that it is waiting for CI on one
- * head SHA, and the bridge tells it when every workflow run GitHub lists for that head is terminal —
- * so the seat stops polling GitHub for it.
+ * head SHA, and the bridge tells it when every workflow run GitHub lists for that head that a commit
+ * started (`push`, `pull_request` — {@see HeadRuns::COMMIT_EVENTS}, card#11958) is terminal — so the
+ * seat stops polling GitHub for it.
  *
  * ⭐ THE GUARANTEE. One terminal event per await (`ci_settled`, `ci_await_unreadable` or
  * `ci_await_expired`), written to the
@@ -53,7 +54,9 @@ use UnexpectedValueException;
  *
  * ⭐ SETTLED, AND HOW IT ENDED, ARE {@see HeadRuns}' ANSWERS — the same predicate the per-head
  * aggregate applies to tracked runs (card#11667): the latest run per workflow decides, and every
- * deciding run must be `completed`. The payload carries a RUN-LEVEL `runs_verdict`; the
+ * deciding run must be `completed` — over the runs a commit started only ({@see HeadRuns::ofCommit()}):
+ * a scheduled or dispatched run on the head neither holds it open nor turns it red, and is not in
+ * the payload. The payload carries a RUN-LEVEL `runs_verdict`; the
  * authoritative verdict stays `ci-read`'s (jobs and the base branch's required contexts), which
  * the summary names.
  *
@@ -91,6 +94,8 @@ use UnexpectedValueException;
  * delivered run, keyed by id, as completed with the delivery's conclusion — unless the list already
  * shows a LATER attempt of it (`run_attempt`): a re-run keeps the run's id, and a delivery for an
  * earlier attempt (a late one, or one an operator redelivered by hand) must not finish the new one.
+ * The delivered run carries its `event`, so one the list does not show yet is counted only when a
+ * commit started it, like a listed run (card#11958).
  *
  * ⚠ A RATE-LIMITED HEAD IS NOT READ BEFORE ITS RESET. A read that GitHub refused as rate limited and
  * that named when the quota returns records it as `retry_not_before`; until then no read of that
@@ -374,7 +379,7 @@ final class CiAwaitService
      * (null when the payload named no readable run id). Never throws: it runs after the response,
      * where nothing would report a throw.
      *
-     * @param  ?array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
+     * @param  ?array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}  $deliveredRun
      */
     public function onWorkflowRunCompleted(string $repo, string $headSha, ?array $deliveredRun = null): void
     {
@@ -601,7 +606,7 @@ final class CiAwaitService
      * registration making this read: it is removed WITHOUT an event, because that seat is answered
      * by the `repo_unreadable` refusal instead.
      *
-     * @param  ?array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, run_attempt: ?int}  $deliveredRun
+     * @param  ?array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}  $deliveredRun
      * @return array{runs: ?list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>, error: ?string, all_terminal: bool, retry_not_before: ?Carbon, read: bool, emit_failed: list<int>, unreadable: ?CiRunsReadException, unconfirmed: bool}
      */
     private function evaluate(string $key, string $headSha, ?array $deliveredRun, ?int $silentAwaitId = null): array
@@ -649,10 +654,10 @@ final class CiAwaitService
             $runs = self::overlay($runs, $deliveredRun);
         }
 
-        // Settled is HeadRuns' answer — the one the per-head aggregate gives on tracked runs
-        // (card#11667): no run at all is NOT settled, and a run a newer run of its workflow
-        // supersedes does not hold the head open.
-        $head = HeadRuns::of($runs);
+        // Settled is HeadRuns' answer (card#11667) over the runs a commit started (card#11958):
+        // no such run at all is NOT settled, and a run a newer run of its workflow supersedes does
+        // not hold the head open. What it judged is what the answer counts (runs_total).
+        $head = HeadRuns::ofCommit($runs);
         $allTerminal = $head->settled();
         $emitFailed = [];
         if ($allTerminal) {
@@ -664,7 +669,7 @@ final class CiAwaitService
             }
         }
 
-        return ['runs' => $runs, 'error' => null, 'all_terminal' => $allTerminal, 'retry_not_before' => null, 'read' => true, 'emit_failed' => $emitFailed, 'unreadable' => null, 'unconfirmed' => false];
+        return ['runs' => $head->runs, 'error' => null, 'all_terminal' => $allTerminal, 'retry_not_before' => null, 'read' => true, 'emit_failed' => $emitFailed, 'unreadable' => null, 'unconfirmed' => false];
     }
 
     /** @return array{runs: null, error: null, all_terminal: false, retry_not_before: null, read: false, emit_failed: list<int>, unreadable: null, unconfirmed: false} */
@@ -712,7 +717,7 @@ final class CiAwaitService
      * attempt of a run that has since been re-run.
      *
      * @param  list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
-     * @param  array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, run_attempt: ?int}  $delivered
+     * @param  array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}  $delivered
      * @return list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      */
     private static function overlay(array $runs, array $delivered): array
@@ -728,7 +733,7 @@ final class CiAwaitService
                 return $runs;
             }
         }
-        $runs[] = $delivered + ['status' => 'completed', 'event' => ''];
+        $runs[] = $delivered + ['status' => 'completed'];
 
         return $runs;
     }
