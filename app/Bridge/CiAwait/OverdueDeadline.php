@@ -15,9 +15,20 @@ use Throwable;
  * ⭐ DERIVED FROM WHAT THE BRIDGE ALREADY STORES — NO GITHUB READ. `ci_head_runs` holds every
  * `workflow_run` delivery's run ({@see CiHeadRunTracker}). A head's CI time is from the first
  * run the bridge heard of on it (`min(created_at)`) to the last run's last update
- * (`max(updated_at)`), over the {@see SAMPLE_HEADS} heads of the repo that finished most recently
- * with every tracked run `completed` and none re-run. The deadline is the 95th percentile of those
- * times (nearest rank) plus a margin of a quarter of it, at least {@see MARGIN_MIN_SECONDS}.
+ * (`max(updated_at)`), over the runs a commit started (below) of the {@see SAMPLE_HEADS} heads of
+ * the repo that finished most recently with every such run `completed` and none re-run. The
+ * deadline is the {@see PERCENTILE}th percentile of those times (nearest rank) plus a margin of a
+ * quarter of it, at least {@see MARGIN_MIN_SECONDS}.
+ *
+ * ⛔ ONLY RUNS A COMMIT STARTED ARE TIMED — {@see COMMIT_EVENTS}, an allow-list (card#11952). A SHA is
+ * not one CI session: a `schedule` or `workflow_dispatch` run fires on the default branch's unchanged
+ * tip hours or days after its commit's CI, and on the same `head_sha`. Counted, it stretched a head's time to
+ * the next nightly scan, and the deadline past the await's own expiry, so `ci_await_overdue` could
+ * never fire. Such a run is neither timed nor waited for: one still open does not take its head out
+ * of the sample. An allow-list, not a deny-list, because an event GitHub adds later then leaves the
+ * sample smaller — the {@see MIN_HEADS} fallback to the default — instead of stretching it. ⚠ It
+ * cannot tell two arrivals on one SHA apart: a `pull_request` run that a PR edit or reopen starts
+ * later, or a PR opened on a head long after its `push` runs, still joins that head's time.
  *
  * ⚠ A RE-RUN HEAD IS NOT A SAMPLE: its span includes however long a person took to press re-run.
  * A run whose `requested` delivery was lost starts its head's span late, and a redelivered
@@ -34,6 +45,9 @@ use Throwable;
 final class OverdueDeadline
 {
     public const SAMPLE_HEADS = 50;
+
+    /** The `workflow_run.event` values that mean a commit arrived: pushed, or a PR's head moved. */
+    public const COMMIT_EVENTS = ['push', 'pull_request'];
 
     public const MIN_HEADS = 5;
 
@@ -93,7 +107,8 @@ final class OverdueDeadline
 
     /**
      * The CI time, in whole seconds, of each of the repo's {@see SAMPLE_HEADS} most recently
-     * finished heads: every tracked run `completed`, none on an attempt past the first.
+     * finished heads, over the runs of {@see COMMIT_EVENTS} only: each of them `completed`, none on
+     * an attempt past the first.
      *
      * @return list<int>
      */
@@ -101,6 +116,7 @@ final class OverdueDeadline
     {
         $rows = CiHeadRun::query()
             ->where('repo', CiAwaitService::key($repoName))
+            ->whereIn('event', self::COMMIT_EVENTS)
             ->selectRaw('head_sha, min(created_at) as started_at, max(coalesce(updated_at, created_at)) as finished_at')
             ->groupBy('head_sha')
             ->havingRaw("sum(case when status = 'completed' then 0 else 1 end) = 0")
