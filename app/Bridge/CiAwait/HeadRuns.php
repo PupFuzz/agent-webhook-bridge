@@ -30,7 +30,7 @@ use Illuminate\Support\Carbon;
  * carries; the summary says so and names `ci-read` as the authoritative one.
  *
  * ⛔ SETTLED IS ONLY AS COMPLETE AS THE LIST IT JUDGES (card#11938). Over GitHub's own run list
- * (`ci_await`) it says every run on the head is terminal; over the runs the bridge was told of
+ * (`ci_await`) it says every run a commit started on the head is terminal; over the runs the bridge was told of
  * (the per-head aggregate) it says only that those are — a workflow still queued that no delivery
  * has reported is not in that list. The payload's `basis` names which list it judged, and only a
  * GitHub read carries `all_terminal: true`.

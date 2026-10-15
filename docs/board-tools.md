@@ -2131,7 +2131,10 @@ whose channel was down (*What a seat can rely on* above). `subject_id` is `ci:<r
 - ⚠ **Runs no commit started are not counted (card#11958 / DL-485).** The settle judges only
   `push` and `pull_request` runs. A red `schedule` or `workflow_dispatch` run on the head does not
   turn `ci_settled` red. What else reports it is unchanged: an agent whose `impl-ci-wake` family
-  reports that repo's CI gets the run's own per-run event as before, and `ci-read` on the head reads
+  reports that repo's CI gets the run's own per-run event as before; the per-head aggregate still
+  judges every delivered run, so once the await has settled green and gone, a scheduled or
+  dispatched run that finishes red on that head can send the same seat a second, red `ci_settled`
+  (`basis: delivered_runs`); and `ci-read` on the head reads
   every run, so it can say RED or PENDING on a head whose `ci_settled` was green. ⚠ The list is an allow-list and cuts both ways: a run of any
   other event a commit DID cause — `pull_request_target`, `merge_group`, an `on: workflow_run`
   follow-on — is not counted either, so its red does not turn the wait red.
