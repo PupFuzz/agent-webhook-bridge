@@ -96,23 +96,29 @@ carry `provider: "bridge"` and a null actor. `seat_idle_nudge` and `pm_standup` 
 **staged to the inbox first and then pushed**, because the await they answer is deleted when they
 are sent and nothing else would carry them to a seat whose channel was down (their line `id` is
 defined in [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`*). The per-head
-aggregate `ci_settled` is always staged, and pushed only where its entry below says.
+aggregate `ci_settled` is staged to every agent it is sent to, and pushed only where its entry below says.
 
 **`ci_settled`** (card#11200 / DL-452; card#11667 / DL-470) — a head's CI is settled: at least one
 workflow run, and the LATEST run of every workflow on it (by `workflow_id`, ranked by `run_number`
 then id, as `ci-read` ranks them) is complete. An older run of a workflow with a newer run on the head
-is *superseded*: it holds nothing open and decides nothing. Two senders, one event:
+is *superseded*: it holds nothing open and decides nothing. Two senders:
 
-- **Your `ci_await`** — for a head you registered; decided on a read of GitHub's run list. One terminal
-  event per await.
+- **Your `ci_await`** — for a head you registered; decided on a read of GitHub's run list
+  (`basis: "github_read"`), over the runs a COMMIT started only — `push` and `pull_request`; a
+  `schedule` or `workflow_dispatch` run on the head is not judged and not listed (card#11958 / DL-485;
+  [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`* owns the rule). One terminal event per await, and while you hold the await it is the only
+  `ci_settled` you get for that head (card#11938) — except for an await registered while a delivery is settling the head, whose seat can still be sent the aggregate's event, saying `basis: "delivered_runs"`.
 - **The per-head aggregate** — sent to an agent whose `impl-ci-wake` family stages CI
   (`impl_non_wake_disposition: inbox_stage`) under `impl_ci_delivery: aggregate`, the default, for
   every head of its repos, in place of a per-run `impl_ci` for each run that ended `success`,
   `skipped` or `neutral`, or `cancelled` with a newer run of its workflow on the head
   ([`config-schema.md`](config-schema.md)). Decided from the
-  `workflow_run` deliveries the bridge received — no GitHub read. Pushed live where `impl_ci` was
-  (`channel.route_intents: true`) or where you hold a `ci_await` on the head; staged to the inbox either
-  way. A failed run still sends its own `impl_ci_failed` at once, and a `cancelled` run with no newer run
+  `workflow_run` deliveries the bridge received — no GitHub read (`basis: "delivered_runs"`). ⛔ **It
+  says only that every run DELIVERED so far is complete**, not that the head is: a workflow GitHub has
+  queued that no delivery has reported yet is not counted, so `all_terminal` is `null` and the summary
+  says so. Not sent to you while you hold a `ci_await` on the head — your await answers it from
+  GitHub's list — except for an await registered while a delivery is settling the head, whose seat can still get this event. Pushed live where `impl_ci` was (`channel.route_intents: true`); staged to the inbox
+  either way. A failed run still sends its own `impl_ci_failed` at once, and a `cancelled` run with no newer run
   of its workflow still sends its own `impl_ci` (the head's `ci_settled` follows when it settles — red, unless a newer run of that workflow supersedes it — and is itself best-effort).
   ⚠ **The aggregate is per-head and best-effort.** It is edge-triggered from `workflow_run` deliveries
   and nothing retries it: a green, skipped or neutral head whose last completion was lost, gated for you
@@ -120,7 +126,12 @@ is *superseded*: it holds nothing open and decides nothing. Two senders, one eve
   unsuperseded cancellation is reported per run; for any other head, `ci_await` (level-triggered, reads
   GitHub) or `ci-read` is how you ask. A run that starts after a head settled —
   an `on: workflow_run` follow-on, a re-run — settles the head again once it completes, and sends a
-  second `ci_settled`; the same settled state is never sent to you twice, by either sender.
+  second `ci_settled`. The aggregate never sends you a state you were already sent, by either sender.
+  Your await's `ci_settled` is always sent, even when you were already sent the same state — by the
+  aggregate before you registered, or by an earlier await on the head — because your await promises
+  a push, and on a `channel.route_intents: false` channel the aggregate's event was only an inbox line.
+  The cost: on a `route_intents: true` channel, registering after the aggregate's event gets you the
+  same state pushed twice.
 
 Written to the inbox at least once — collapse duplicates on the line `id` — and pushed live once; the
 live push carries no line id, so a seat reading both its channel and `bridge:inbox` sees it on each.
@@ -131,9 +142,10 @@ the base branch's required contexts — run `ci-read` once on the head before ac
 
 | key | meaning |
 |---|---|
-| `repo`, `head_sha`, `pr` | the head; `pr` as registered for an await (null when none was given), and for the aggregate the PR the runs' deliveries named, else the answered await's, else null |
-| `runs` | every run seen on the head, each `{workflow, conclusion, html_url, superseded}` — `workflow` is the run's workflow name, `conclusion` GitHub's string for it, `superseded` true for a run a newer run of its workflow decides instead |
-| `all_terminal` | always `true` |
+| `repo`, `head_sha`, `pr` | the head; `pr` as registered for an await (null when none was given), and for the aggregate the PR the runs' deliveries named, else null |
+| `basis` | which run list was judged: `github_read` (your `ci_await` read GitHub's list for the head) or `delivered_runs` (the per-head aggregate judged the runs `workflow_run` deliveries reported — a run not yet delivered is not in it) |
+| `runs` | every run seen on the head — on `basis: github_read`, every run a commit started (`push`, `pull_request`) — each `{workflow, conclusion, html_url, superseded}` — `workflow` is the run's workflow name, `conclusion` GitHub's string for it, `superseded` true for a run a newer run of its workflow decides instead |
+| `all_terminal` | `true` on `basis: github_read` — every run GitHub lists for the head that a commit started is terminal; `null` on `basis: delivered_runs` — not known, since no full list was read (it was `true` on both before card#11938) |
 | `runs_verdict` | `green` when every deciding run concluded `success`, `neutral` or `skipped` (`ci-read`'s `BENIGN_CONCLUSIONS`), else `red` — a `cancelled` run with no newer run of its workflow is red, as is a conclusion GitHub adds later |
 | `non_success_runs` | each deciding run whose conclusion is neither `success` nor `skipped`, `{workflow, conclusion, html_url}` — what a red `ci_settled` asks you to look at; the `summary` names them with their urls too |
 | `measured_at` | when the bridge read the run list, or decided the aggregate (UTC, milliseconds) |

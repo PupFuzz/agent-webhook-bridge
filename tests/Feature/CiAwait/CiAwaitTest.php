@@ -358,6 +358,7 @@ class CiAwaitTest extends TestCase
                 'repo' => self::REPO,
                 'head_sha' => self::SHA,
                 'pr' => 12,
+                'basis' => 'github_read',
                 'runs' => [
                     ['workflow' => 'CI', 'conclusion' => 'success', 'html_url' => 'https://github.com/octo/widgets/actions/runs/1', 'superseded' => false],
                     ['workflow' => 'E2E', 'conclusion' => 'failure', 'html_url' => 'https://github.com/octo/widgets/actions/runs/2', 'superseded' => false],
@@ -579,6 +580,92 @@ class CiAwaitTest extends TestCase
         $this->postRunCompleted(self::SHA, runId: 2, conclusion: 'success', attempt: 2)->assertOk();
 
         $this->assertSame(['ci_settled'], array_column($this->inbox(), 'kind'));
+    }
+
+    // ---- only runs a commit started (card#11958) ------------------------------------------
+
+    /** A nightly run still going on the awaited head is not this commit's CI and holds nothing open. */
+    public function test_a_scheduled_run_still_in_progress_does_not_hold_the_settle(): void
+    {
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success', 1, 1, 'push'], ['Nightly', 'in_progress', null, 1, 2, 'schedule']])]]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertSame('settled', $out->body()['result']['state'], json_encode($out->body()) ?: '');
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertSame('green', $lines[0]['payload']['runs_verdict']);
+        $this->assertSame(['CI'], array_column($lines[0]['payload']['runs'], 'workflow'), 'a run no commit started is not listed');
+    }
+
+    /** A CVE published overnight reds the scheduled audit; the awaited commit changed nothing, so its wait is not red. */
+    public function test_scheduled_and_dispatched_failures_do_not_turn_the_verdict_red(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->fakeGitHub([[$this->runs([
+            ['CI', 'completed', 'success', 1, 1, 'pull_request'],
+            ['Security', 'completed', 'failure', 1, 2, 'schedule'],
+            ['Matrix', 'completed', 'failure', 1, 3, 'workflow_dispatch'],
+        ])]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertSame('green', $lines[0]['payload']['runs_verdict']);
+        $this->assertSame([], $lines[0]['payload']['non_success_runs']);
+        $this->assertStringContainsString('2 run(s) no commit started (not push or pull_request) not counted', $lines[0]['summary']);
+    }
+
+    /**
+     * No run a commit started is no CI of this commit's yet — the same as a head with no runs at
+     * all, which keeps waiting (the overdue cue, then the expiry, end it).
+     */
+    public function test_a_head_whose_only_runs_are_scheduled_or_dispatched_keeps_waiting(): void
+    {
+        $this->fakeGitHub([[$this->runs([['Security', 'completed', 'failure', 1, 1, 'schedule'], ['Matrix', 'completed', 'success', 1, 2, 'workflow_dispatch']])]]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertSame('waiting', $out->body()['result']['state']);
+        $this->assertSame(0, $out->body()['result']['runs_total'], 'runs_total counts the runs the settle counts');
+        $this->assertSame(1, CiAwait::query()->count());
+        $this->assertSame([], $this->inbox());
+    }
+
+    /**
+     * One workflow on `push` AND `schedule` (this repo's security.yml): the nightly run is the newer
+     * run of the workflow on main's tip. It must not supersede the push run that judged the commit —
+     * the commit's own failure still turns the wait red.
+     */
+    public function test_a_commit_runs_failure_is_red_though_a_newer_scheduled_run_of_its_workflow_passed(): void
+    {
+        $this->fakeGitHub([[$this->runs([
+            ['Security', 'completed', 'failure', 1, 1, 'push'],
+            ['CI', 'completed', 'success', 1, 2, 'pull_request'],
+            ['Security', 'completed', 'success', 1, 3, 'schedule'],
+        ])]]);
+
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertSame('red', $lines[0]['payload']['runs_verdict']);
+        $this->assertEquals([['workflow' => 'Security', 'conclusion' => 'failure', 'html_url' => 'https://github.com/octo/widgets/actions/runs/1']], $lines[0]['payload']['non_success_runs']);
+    }
+
+    /** The delivered run carries its event: a scheduled failure the list does not show yet is not counted either. */
+    public function test_a_delivered_scheduled_run_the_list_does_not_carry_yet_is_not_counted(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success', 1, 1, 'push']])]]);
+
+        $this->postRunCompleted(self::SHA, runId: 7, conclusion: 'failure', event: 'schedule')->assertOk();
+
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertSame('green', $lines[0]['payload']['runs_verdict']);
+        $this->assertCount(1, $lines[0]['payload']['runs']);
     }
 
     // ---- the level-triggered sweep (round 4) ---------------------------------------------
@@ -1641,9 +1728,9 @@ class CiAwaitTest extends TestCase
     }
 
     /**
-     * Runs `[name, status, conclusion, run_attempt = 1, id = $firstId + index]`.
+     * Runs `[name, status, conclusion, run_attempt = 1, id = $firstId + index, event = 'pull_request']`.
      *
-     * @param  list<array{0: string, 1: string, 2: ?string, 3?: int, 4?: int}>  $runs
+     * @param  list<array{0: string, 1: string, 2: ?string, 3?: int, 4?: int, 5?: string}>  $runs
      * @return array<string, mixed>
      */
     private function runs(array $runs, ?int $total = null, int $firstId = 1): array
@@ -1652,7 +1739,7 @@ class CiAwaitTest extends TestCase
         foreach (array_values($runs) as $i => $run) {
             [$name, $status, $conclusion] = $run;
             $id = $run[4] ?? $firstId + $i;
-            $list[] = ['id' => $id, 'name' => $name, 'head_sha' => self::SHA, 'status' => $status, 'conclusion' => $conclusion, 'event' => 'pull_request', 'run_attempt' => $run[3] ?? 1, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$id}"];
+            $list[] = ['id' => $id, 'name' => $name, 'head_sha' => self::SHA, 'status' => $status, 'conclusion' => $conclusion, 'event' => $run[5] ?? 'pull_request', 'run_attempt' => $run[3] ?? 1, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$id}"];
         }
 
         return ['total_count' => $total ?? count($list), 'workflow_runs' => $list];
@@ -1662,16 +1749,16 @@ class CiAwaitTest extends TestCase
      * A delivery for run `$runId` — by default run 1, which every list fixture here carries, so the
      * overlay of the delivered run changes nothing unless a test means it to.
      */
-    private function postRunCompleted(string $sha, int $runId = 1, string $conclusion = 'success', int $attempt = 1): TestResponse
+    private function postRunCompleted(string $sha, int $runId = 1, string $conclusion = 'success', int $attempt = 1, string $event = 'pull_request'): TestResponse
     {
-        return $this->postWorkflowRun('completed', $sha, $runId, $conclusion, $attempt);
+        return $this->postWorkflowRun('completed', $sha, $runId, $conclusion, $attempt, $event);
     }
 
-    private function postWorkflowRun(string $action, string $sha, int $runId = 1, string $conclusion = 'success', int $attempt = 1): TestResponse
+    private function postWorkflowRun(string $action, string $sha, int $runId = 1, string $conclusion = 'success', int $attempt = 1, string $event = 'pull_request'): TestResponse
     {
         $body = (string) json_encode([
             'action' => $action,
-            'workflow_run' => ['id' => $runId, 'name' => 'CI', 'head_sha' => $sha, 'status' => $action, 'conclusion' => $action === 'completed' ? $conclusion : null, 'run_attempt' => $attempt, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}"],
+            'workflow_run' => ['id' => $runId, 'name' => 'CI', 'head_sha' => $sha, 'event' => $event, 'status' => $action, 'conclusion' => $action === 'completed' ? $conclusion : null, 'run_attempt' => $attempt, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}"],
             'repository' => ['full_name' => self::REPO],
             'sender' => ['id' => 4242],
         ]);

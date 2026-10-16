@@ -174,39 +174,18 @@ class CiAwaitOverdueTest extends TestCase
         $this->assertSame(['ci_settled'], $this->kinds(), 'the pass reads stale heads before it looks for overdue awaits');
     }
 
-    public function test_an_await_whose_head_the_aggregate_already_settled_for_the_seat_gets_no_overdue_event(): void
+    public function test_an_await_whose_seat_was_sent_the_heads_delivered_runs_state_still_gets_its_overdue_event(): void
     {
+        // The per-head aggregate sent this seat the head's current tracked state before the await
+        // existed (card#11938): that state was never read from GitHub, so it does not answer the await.
         $this->register(['overdue_after_seconds' => 600]);
         $this->trackSettledRun(1);
-        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, $this->currentFingerprint());
-
-        $this->sweepAt('2026-10-10T10:10:00.000Z');
-
-        $this->assertSame([], $this->kinds(), 'the seat was already sent the head\'s current settled state; the await stays registered');
-        $this->assertNull(CiAwait::query()->firstOrFail()->overdue_sent_at, 'nothing was claimed, so no stamp');
-    }
-
-    public function test_another_seats_settlement_of_the_head_does_not_silence_this_seats_overdue_event(): void
-    {
-        $this->register(['overdue_after_seconds' => 600]);
-        $this->trackSettledRun(1);
-        CiHeadSettlementLedger::claim('seat-b', self::REPO, self::SHA, $this->currentFingerprint());
+        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, HeadRuns::of(CiHeadRunTracker::runsOf(self::REPO, self::SHA))->fingerprint());
 
         $this->sweepAt('2026-10-10T10:10:00.000Z');
 
         $this->assertSame(['ci_await_overdue'], $this->kinds());
-    }
-
-    public function test_a_state_the_head_has_since_left_does_not_silence_the_overdue_event(): void
-    {
-        $this->register(['overdue_after_seconds' => 600]);
-        $this->trackSettledRun(1);
-        CiHeadSettlementLedger::claim('seat-a', self::REPO, self::SHA, $this->currentFingerprint());
-        $this->trackSettledRun(2, status: 'in_progress');   // a re-run or late run: the head is open again
-
-        $this->sweepAt('2026-10-10T10:10:00.000Z');
-
-        $this->assertSame(['ci_await_overdue'], $this->kinds(), 'the ledger holds an OLD state of this head');
+        $this->assertNotNull(CiAwait::query()->sole()->overdue_sent_at);
     }
 
     public function test_a_head_settled_once_and_then_re_run_gets_an_overdue_event_for_the_re_run(): void
@@ -238,34 +217,6 @@ class CiAwaitOverdueTest extends TestCase
         });
     }
 
-    public function test_awaits_skipped_for_a_sent_state_do_not_use_up_the_send_cap(): void
-    {
-        foreach ([1, 2, 3] as $n) {
-            $this->dueAwait($n, skipped: true);
-        }
-        $this->dueAwait(4, skipped: false);
-        Carbon::setTestNow('2026-10-10T10:10:00.000Z');
-
-        $result = $this->app->make(CiAwaitService::class)->emitOverdue(1, 300);
-
-        $this->assertSame(1, $result['emitted'], 'three skips sat ahead of the due await under a cap of one');
-        $this->assertSame(['ci_await_overdue'], $this->kinds());
-    }
-
-    public function test_more_skips_than_the_scan_bound_can_starve_a_later_await(): void
-    {
-        foreach (range(1, 10) as $n) {   // the scan looks at 10x the cap, here 10
-            $this->dueAwait($n, skipped: true);
-        }
-        $this->dueAwait(11, skipped: false);
-        Carbon::setTestNow('2026-10-10T10:10:00.000Z');
-
-        $result = $this->app->make(CiAwaitService::class)->emitOverdue(1, 300);
-
-        $this->assertSame(0, $result['emitted'], 'the bound is real: skips are never stamped, so this await waits behind them');
-        $this->assertSame([], $this->kinds());
-    }
-
     // ---- the deadline -----------------------------------------------------------------------
 
     public function test_a_repo_with_too_little_history_is_overdue_after_the_configured_default(): void
@@ -295,16 +246,72 @@ class CiAwaitOverdueTest extends TestCase
         $this->assertSame(600 + OverdueDeadline::MARGIN_MIN_SECONDS, OverdueDeadline::forRepo(self::REPO, 1800)->seconds);
     }
 
-    public function test_a_heads_time_runs_from_its_first_run_to_its_last(): void
+    public function test_a_heads_time_is_its_longest_run(): void
     {
         foreach (range(1, 5) as $i) {
-            // Two runs per head: one from 0 to 300 s, the other from 100 to 2000 s.
+            // Two runs per head: one from 0 to 300 s, the other from 100 to 2000 s (1900 s long).
             $start = Carbon::parse('2026-10-09T00:00:00Z')->addHours($i);
             $this->insertRun("{$i}a", $start, $start->copy()->addSeconds(300));
             $this->insertRun("{$i}b", $start->copy()->addSeconds(100), $start->copy()->addSeconds(2000));
         }
 
-        $this->assertSame(2000 + 500, OverdueDeadline::forRepo(self::REPO, 1800)->seconds);
+        $this->assertSame(1900 + 475, OverdueDeadline::forRepo(self::REPO, 1800)->seconds);
+    }
+
+    public function test_a_scheduled_or_dispatched_run_on_a_head_is_not_part_of_its_ci_time(): void
+    {
+        foreach (range(1, OverdueDeadline::MIN_HEADS) as $i) {
+            // The commit's CI: a push run and a pull_request run, the longer 200 s.
+            $start = Carbon::parse('2026-10-05T00:00:00Z')->addHours($i);
+            $this->insertRun("{$i}a", $start, $start->copy()->addSeconds(180), event: 'push');
+            $this->insertRun("{$i}b", $start->copy()->addSeconds(10), $start->copy()->addSeconds(210), event: 'pull_request');
+            // The same SHA, hours and days later: a slow nightly scan and a manual dispatch.
+            $this->insertRun("{$i}a", $start->copy()->addHours(6), $start->copy()->addHours(6)->addSeconds(1200), event: 'schedule');
+            $this->insertRun("{$i}a", $start->copy()->addDays(2), $start->copy()->addDays(2)->addSeconds(900), event: 'workflow_dispatch');
+        }
+
+        $deadline = OverdueDeadline::forRepo(self::REPO, 1800);
+
+        $this->assertSame(OverdueDeadline::BASIS_HISTORY, $deadline->basis);
+        $this->assertSame(200 + OverdueDeadline::MARGIN_MIN_SECONDS, $deadline->seconds);
+    }
+
+    public function test_a_pr_edit_that_runs_ci_again_on_the_same_sha_hours_later_is_not_part_of_its_ci_time(): void
+    {
+        foreach (range(1, OverdueDeadline::MIN_HEADS) as $i) {
+            $start = Carbon::parse('2026-10-05T00:00:00Z')->addHours($i * 12);
+            $this->insertRun("{$i}a", $start, $start->copy()->addSeconds(200), event: 'pull_request');
+            // The same workflow, attempt 1 again: a PR body edit (`pull_request.edited`) hours later.
+            $this->insertRun("{$i}a", $start->copy()->addHours(5), $start->copy()->addHours(5)->addSeconds(150), event: 'pull_request');
+        }
+
+        $deadline = OverdueDeadline::forRepo(self::REPO, 1800);
+
+        $this->assertSame(OverdueDeadline::BASIS_HISTORY, $deadline->basis);
+        $this->assertSame(200 + OverdueDeadline::MARGIN_MIN_SECONDS, $deadline->seconds);
+    }
+
+    public function test_a_scheduled_run_still_open_on_a_head_does_not_take_it_out_of_the_sample(): void
+    {
+        $this->seedHistory(array_fill(0, OverdueDeadline::MIN_HEADS, 600));
+        foreach (range(0, OverdueDeadline::MIN_HEADS - 1) as $i) {
+            $at = Carbon::parse('2026-10-09T00:00:00Z')->addHours($i)->addDay();
+            $this->insertRun("h{$i}", $at, $at, status: 'in_progress', event: 'schedule');
+        }
+
+        $deadline = OverdueDeadline::forRepo(self::REPO, 1800);
+
+        $this->assertSame(OverdueDeadline::BASIS_HISTORY, $deadline->basis);
+        $this->assertSame(600 + OverdueDeadline::MARGIN_MIN_SECONDS, $deadline->seconds);
+    }
+
+    public function test_a_head_whose_only_runs_no_commit_started_is_not_a_sample(): void
+    {
+        $this->seedHistory(array_fill(0, OverdueDeadline::MIN_HEADS - 1, 600));
+        $start = Carbon::parse('2026-10-09T12:00:00Z');
+        $this->insertRun('sched', $start, $start->copy()->addSeconds(60), event: 'schedule');
+
+        $this->assertSame(OverdueDeadline::BASIS_DEFAULT, OverdueDeadline::forRepo(self::REPO, 900)->basis);
     }
 
     public function test_the_percentile_is_nearest_rank(): void
@@ -502,54 +509,30 @@ class CiAwaitOverdueTest extends TestCase
     }
 
     /** One `ci_head_runs` row on its own head (the head is keyed by `$tag`'s leading digits or letters). */
-    private function insertRun(string $tag, Carbon $created, Carbon $updated, int $attempt = 1, string $status = 'completed'): void
+    private function insertRun(string $tag, Carbon $created, Carbon $updated, int $attempt = 1, string $status = 'completed', string $event = 'push'): void
     {
         static $runId = 1000;
         $runId++;
         DB::table('ci_head_runs')->insert([
             'run_id' => $runId, 'repo' => self::REPO, 'repo_name' => self::REPO,
             'head_sha' => substr(sha1('head-'.rtrim($tag, 'ab')), 0, 40),
-            'workflow_id' => 77, 'workflow' => 'CI', 'run_number' => $runId, 'run_attempt' => $attempt, 'event' => 'push',
+            'workflow_id' => 77, 'workflow' => 'CI', 'run_number' => $runId, 'run_attempt' => $attempt, 'event' => $event,
             'status' => $status, 'conclusion' => $status === 'completed' ? 'success' : null,
             'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}", 'pr' => null,
             'created_at' => $created, 'updated_at' => $updated,
         ]);
     }
 
-    /** An await past its deadline on its own head; `$skipped` gives that head's current state as already sent to the seat. */
-    private function dueAwait(int $n, bool $skipped): void
-    {
-        $sha = str_pad((string) $n, 40, 'f', STR_PAD_LEFT);
-        CiAwait::query()->create([
-            'agent' => 'seat-a', 'repo' => CiAwaitService::key(self::REPO), 'repo_name' => self::REPO, 'head_sha' => $sha, 'pr' => null,
-            'expires_at' => Carbon::parse('2026-10-10T16:00:00Z'), 'overdue_at' => Carbon::parse('2026-10-10T10:00:00Z')->addSeconds($n), 'overdue_basis' => 'override',
-        ]);
-        if ($skipped) {
-            DB::table('ci_head_runs')->insert([
-                'run_id' => 900 + $n, 'repo' => CiAwaitService::key(self::REPO), 'repo_name' => self::REPO, 'head_sha' => $sha,
-                'workflow_id' => 77, 'workflow' => 'CI', 'run_number' => 1, 'run_attempt' => 1, 'event' => 'push',
-                'status' => 'completed', 'conclusion' => 'success', 'html_url' => "https://github.com/octo/widgets/actions/runs/{$n}", 'pr' => null,
-                'created_at' => Carbon::parse('2026-10-10T09:00:00Z'), 'updated_at' => Carbon::parse('2026-10-10T09:05:00Z'),
-            ]);
-            CiHeadSettlementLedger::claim('seat-a', self::REPO, $sha, HeadRuns::of(CiHeadRunTracker::runsOf(self::REPO, $sha))->fingerprint());
-        }
-    }
-
     /** One tracked run on the awaited head, as the `workflow_run` deliveries would leave it. */
-    private function trackSettledRun(int $runId, string $status = 'completed'): void
+    private function trackSettledRun(int $runId): void
     {
         DB::table('ci_head_runs')->insert([
             'run_id' => 500 + $runId, 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA,
             'workflow_id' => 70 + $runId, 'workflow' => "W{$runId}", 'run_number' => 1, 'run_attempt' => 1, 'event' => 'push',
-            'status' => $status, 'conclusion' => $status === 'completed' ? 'success' : null,
+            'status' => 'completed', 'conclusion' => 'success',
             'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}", 'pr' => null,
             'created_at' => Carbon::now(), 'updated_at' => Carbon::now(),
         ]);
-    }
-
-    private function currentFingerprint(): string
-    {
-        return HeadRuns::of(CiHeadRunTracker::runsOf(self::REPO, self::SHA))->fingerprint();
     }
 
     /** @return list<array<string, mixed>> */

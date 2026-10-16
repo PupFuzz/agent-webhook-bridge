@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\CiAwait;
 
+use App\Bridge\CiAwait\CiAwaitService;
 use App\Bridge\Classifiers\CoordinationClassifier;
 use App\Bridge\ClientUpdate\CallerReport;
 use App\Bridge\Support\BoardToolsConfig;
@@ -14,6 +15,7 @@ use App\Models\CiHeadRun;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
@@ -39,6 +41,9 @@ class CiHeadAggregateTest extends TestCase
     private const PORT = 8711;
 
     private string $dir;
+
+    /** What the faked GitHub runs read answers: a run list, or a status code to fail with. */
+    private array|int|null $github = null;
 
     protected function setUp(): void
     {
@@ -277,11 +282,54 @@ class CiHeadAggregateTest extends TestCase
         $this->assertSame([], $this->pushedKinds());
     }
 
-    public function test_a_ci_await_on_the_head_gets_one_ci_settled_pushed_not_one_per_sender(): void
+    public function test_the_aggregate_names_its_basis_and_does_not_say_every_run_on_the_head_is_terminal(): void
     {
-        CiAwait::query()->create(['agent' => 'seat-a', 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA, 'pr' => 17, 'expires_at' => Carbon::now()->addHour()]);
-        // The await's own read on run 1's completion (ci_await's unchanged behaviour): run 2 is open.
-        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response($this->listOf([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'in_progress', null]]))]);
+        // card#11938's shape: GitHub holds a second workflow, queued, that no delivery has told the bridge of.
+        $this->requestAll([1 => 'CI']);
+
+        $this->complete(1, 'CI', 'success');
+
+        $settled = $this->lastSettled();
+        $this->assertStringStartsWith('ci_head:', $settled['id']);
+        $this->assertSame('delivered_runs', $settled['payload']['basis']);
+        $this->assertArrayHasKey('all_terminal', $settled['payload']);
+        $this->assertNull($settled['payload']['all_terminal'], 'the aggregate read no run list, so it cannot say every run on the head is terminal');
+        $this->assertStringNotContainsString('CI settled on', $settled['summary']);
+        $this->assertStringContainsString('every workflow run delivered so far is complete', $settled['summary']);
+        $this->assertNoGitHubRead();
+    }
+
+    public function test_an_awaited_head_with_a_partial_delivered_set_gets_no_aggregate_and_settles_from_the_awaits_read(): void
+    {
+        $this->awaitHead();
+        $this->githubLists([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'queued', null]]);
+        $this->requestAll([1 => 'CI']);
+
+        $this->complete(1, 'CI', 'success');
+
+        $this->assertSame([], $this->kinds(), 'every run delivered so far is complete, but GitHub lists one that is not, and the seat waits on GitHub\'s list');
+        $this->assertSame([], $this->pushedKinds());
+        $this->assertSame(1, CiAwait::query()->count());
+        $this->assertSame(0, DB::table('ci_head_settlements')->count(), 'nothing is recorded as sent to the awaiting seat');
+
+        $this->githubLists([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'completed', 'success']]);
+        $this->complete(2, 'Lint', 'success');
+
+        $this->assertSame(['ci_settled'], $this->kinds());
+        $this->assertSame(['ci_settled'], $this->pushedKinds());
+        $settled = $this->lastSettled();
+        $this->assertStringStartsWith('ci_await:', $settled['id'], 'the await\'s own event');
+        $this->assertSame('github_read', $settled['payload']['basis']);
+        $this->assertTrue($settled['payload']['all_terminal']);
+        $this->assertSame(['CI', 'Lint'], array_column($settled['payload']['runs'], 'workflow'));
+        $this->assertSame(0, CiAwait::query()->count());
+    }
+
+    public function test_an_awaited_head_whose_delivered_runs_match_github_is_settled_by_the_awaits_event_not_the_aggregates(): void
+    {
+        $this->awaitHead();
+        // The list lags the last delivery; the await's read counts the delivered run as completed.
+        $this->githubLists([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'in_progress', null]]);
         $this->requestAll([1 => 'CI', 2 => 'Lint']);
 
         $this->complete(1, 'CI', 'success');
@@ -289,48 +337,43 @@ class CiHeadAggregateTest extends TestCase
 
         $this->assertSame(['ci_settled'], $this->kinds());
         $this->assertSame(['ci_settled'], $this->pushedKinds());
-        $this->assertSame(0, CiAwait::query()->count(), 'the await settled on its own read (list plus the delivered run) and found the state already sent');
+        $settled = $this->lastSettled();
+        $this->assertStringStartsWith('ci_await:', $settled['id'], 'the aggregate recorded no state for the awaited seat, so the await\'s settle was not silenced as already sent');
+        $this->assertSame('github_read', $settled['payload']['basis']);
+        $this->assertSame(0, CiAwait::query()->count());
     }
 
-    public function test_an_await_the_aggregate_left_ends_silently_when_github_agrees_with_the_state_sent(): void
-    {
-        CiAwait::query()->create(['agent' => 'seat-a', 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA, 'pr' => 17, 'expires_at' => Carbon::now()->addHour()]);
-        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response($this->listOf([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'completed', 'success']]))]);
-        $this->requestAll([1 => 'CI', 2 => 'Lint']);
-
-        $this->complete(1, 'CI', 'success');
-        $this->complete(2, 'Lint', 'success');
-
-        $this->assertSame(['ci_settled'], $this->kinds(), 'one event for the state, not one per sender');
-        $this->assertSame(0, CiAwait::query()->count(), 'the await settled on its own list and found the state already sent');
-    }
-
-    public function test_an_await_the_aggregate_left_is_not_ended_by_a_head_github_lists_as_still_running(): void
-    {
-        CiAwait::query()->create(['agent' => 'seat-a', 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA, 'pr' => 17, 'expires_at' => Carbon::now()->addHour()]);
-        // The bridge has seen two runs; GitHub lists a third (created late) that is still running.
-        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response($this->listOf([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'completed', 'success'], [3, 'Deploy', 'in_progress', null]]))]);
-        $this->requestAll([1 => 'CI', 2 => 'Lint']);
-
-        $this->complete(1, 'CI', 'success');
-        $this->complete(2, 'Lint', 'success');
-
-        $this->assertSame(['ci_settled'], $this->kinds(), 'the aggregate settled on the runs it saw');
-        $this->assertSame(1, CiAwait::query()->count(), 'the await keeps waiting for the run GitHub lists');
-    }
-
-    public function test_a_ci_await_registered_after_the_aggregate_is_answered_settled_without_a_second_event(): void
+    public function test_a_ci_await_registered_after_the_aggregate_gets_its_own_ci_settled_from_its_read(): void
     {
         $this->requestAll([1 => 'CI']);
         $this->complete(1, 'CI', 'success');
-        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response($this->listOf([[1, 'CI', 'completed', 'success']]))]);
+        $this->githubLists([[1, 'CI', 'completed', 'success']]);
 
         $out = $this->callTool('ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
 
         $this->assertTrue($out->ok, json_encode($out->body()) ?: '');
         $this->assertSame('settled', $out->body()['result']['state']);
-        $this->assertSame(['ci_settled'], $this->kinds());
+        $this->assertSame(['ci_settled', 'ci_settled'], $this->kinds(), 'the aggregate\'s event, then the await\'s answer from GitHub\'s list');
+        $this->assertSame(['delivered_runs', 'github_read'], $this->settledBases());
         $this->assertSame(0, CiAwait::query()->count());
+    }
+
+    public function test_a_ci_await_whose_registration_read_failed_is_still_sent_its_ci_settled_after_the_aggregate_staged_the_same_state(): void
+    {
+        $this->writeSeat(routeIntents: false);   // the aggregate is staged only: nothing reaches the seat live
+        $this->requestAll([1 => 'CI']);
+        $this->complete(1, 'CI', 'success');
+        $this->githubFails();
+        $out = $this->callTool('ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->assertNotSame('settled', $out->body()['result']['state']);
+        $this->assertSame(1, CiAwait::query()->count());
+
+        $this->githubLists([[1, 'CI', 'completed', 'success']]);
+        $this->app->make(CiAwaitService::class)->sweepUnsettled(10, 0);
+
+        $this->assertSame(0, CiAwait::query()->count());
+        $this->assertSame(['delivered_runs', 'github_read'], $this->settledBases(), 'the sweep\'s settle of the same state is sent, not dropped as already sent');
+        $this->assertSame(['ci_settled'], $this->pushedKinds(), 'the await promises a push');
     }
 
     public function test_a_ci_await_that_settled_first_is_not_followed_by_the_aggregate_for_the_same_state(): void
@@ -338,7 +381,7 @@ class CiHeadAggregateTest extends TestCase
         $this->requestAll([1 => 'CI', 2 => 'Lint']);
         $this->complete(1, 'CI', 'success');
         // The list is ahead of the webhook: it already shows run 2 finished.
-        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response($this->listOf([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'completed', 'success']]))]);
+        $this->githubLists([[1, 'CI', 'completed', 'success'], [2, 'Lint', 'completed', 'success']]);
         $out = $this->callTool('ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
         $this->assertSame('settled', $out->body()['result']['state']);
         $this->assertSame(['ci_settled'], $this->kinds());
@@ -348,7 +391,57 @@ class CiHeadAggregateTest extends TestCase
         $this->assertSame(['ci_settled'], $this->kinds(), 'the delivery that settles the tracked runs finds the state already sent');
     }
 
+    public function test_after_an_await_is_answered_a_new_state_of_the_head_is_sent_by_the_aggregate_naming_its_basis(): void
+    {
+        $this->awaitHead();
+        $this->githubLists([[1, 'CI', 'completed', 'success']]);
+        $this->requestAll([1 => 'CI']);
+        $this->complete(1, 'CI', 'success');
+        $this->assertSame(['github_read'], $this->settledBases());
+
+        // A re-run once the await is gone: the seat is an agent with no await on the head again.
+        $this->deliver('requested', 1, 'CI', null, attempt: 2);
+        $this->complete(1, 'CI', 'success', attempt: 2);
+
+        $this->assertSame(['github_read', 'delivered_runs'], $this->settledBases());
+        $this->assertSame(['ci_settled', 'ci_settled'], $this->pushedKinds());
+    }
+
     // ---- helpers -------------------------------------------------------------------------
+
+    private function awaitHead(): void
+    {
+        CiAwait::query()->create(['agent' => 'seat-a', 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA, 'pr' => 17, 'expires_at' => Carbon::now()->addHour()]);
+    }
+
+    /** @param  list<array{0: int, 1: string, 2: string, 3: ?string}>  $runs  [id, name, status, conclusion] */
+    private function githubLists(array $runs): void
+    {
+        $this->fakeGitHub();
+        $this->github = $this->listOf($runs);
+    }
+
+    private function githubFails(int $status = 503): void
+    {
+        $this->fakeGitHub();
+        $this->github = $status;
+    }
+
+    private function fakeGitHub(): void
+    {
+        if ($this->github === null) {
+            Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => fn () => is_int($this->github) ? Http::response('unavailable', $this->github) : Http::response($this->github)]);
+        }
+    }
+
+    /** @return list<?string> the `basis` of each staged `ci_settled`, in inbox order */
+    private function settledBases(): array
+    {
+        return array_values(array_map(
+            static fn (array $l): ?string => $l['payload']['basis'] ?? null,
+            array_filter($this->inbox(), static fn (array $l): bool => $l['kind'] === 'ci_settled'),
+        ));
+    }
 
     private function writeSeat(?string $disposition = 'inbox_stage', bool $routeIntents = true, ?string $delivery = null): void
     {
