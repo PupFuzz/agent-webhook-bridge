@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.104.1] - 2026-10-16
+
 ### Changed
 
 - **card#11937 — the shim contract allows a shim to start `claude` with no bridge channel when the client launcher is missing.** Until now, [`examples/channel-servers/README.md`](../examples/channel-servers/README.md) § *The shim contract* said such a shim should exit non-zero naming `--bootstrap-client`. It now allows either behaviour. A shim may refuse that way, or it may start `claude` with no channel, provided it says so on stderr and drops a leading `--channel <name>` (`-Channel <name>` on Windows) instead of passing it to `claude`. This lets a seat with no bridge installed still start. Documentation only: the provisioner's own shim still exits 2. Channel-server snapshot `0.9.62` → `0.9.63` (documentation only; the README ships in the client pack).
@@ -29,6 +31,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.65. Until you do, seats stay on client 0.9.62 and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 - **card#11958 — a `ci_settled` from `ci_await` can now be green while `ci-read` on the same head reads red or pending.** The await counts only `push` and `pull_request` runs, while `ci-read` reads every run, so a red or still-running nightly `schedule` or `workflow_dispatch` run on the head shows in `ci-read` only. A run of any other event a commit causes (`pull_request_target`, `merge_group`, an `on: workflow_run` follow-on) is not counted either (DL-485).
 - **card#11938 — a consumer that reads `ci_settled.payload.all_terminal` sees `null` on the per-head aggregate's event**, where it was always `true`. Read `basis` to tell the two senders apart: only `github_read` says every run GitHub lists for the head is terminal.
 
