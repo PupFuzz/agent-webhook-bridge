@@ -3,6 +3,7 @@
 namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ToolRefusalException;
+use App\Bridge\Support\BoardCardTextRefusal;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\CardTextCheck;
 use App\Bridge\Support\RedactedErrorText;
@@ -41,8 +42,8 @@ use Illuminate\Support\Facades\Log;
  *
  * ⭐ THE TITLE AND DESCRIPTION ARE HELD TO THE PLAIN-LANGUAGE CARD RULES ({@see CardTextCheck}, the
  * toolkit's shared rule file): T1-T6 on the title, the filing bar and D1 on the description — which
- * is therefore REQUIRED, as on `kbcard create-card`. A refusal is kbcard's own text, before any
- * request.
+ * is therefore REQUIRED, as on `kbcard create-card`. A refusal is kbcard's own text plus the lines
+ * {@see BoardCardTextRefusal} adds for a bridge seat, before any request.
  *
  * The idempotency probe reads BOTH sides of kanban's archive axis (DL-297),
  * because that axis is a SWITCH and not a widening: a live tag search cannot see
@@ -510,7 +511,7 @@ final class BoardCreateCardTool implements Tool
         if ($tooLong !== null) {
             throw $tooLong;
         }
-        $refusal = CardTextCheck::title($trimmed, $this->name(), self::NOTHING_SENT);
+        $refusal = BoardCardTextRefusal::title($trimmed, $this->name(), self::NOTHING_SENT);
         if ($refusal !== null) {
             throw new ToolRefusalException($refusal, reason: 'card_text_title');
         }
@@ -613,7 +614,7 @@ final class BoardCreateCardTool implements Tool
             throw new ToolRefusalException('board_create_card: `description` must be a string');
         }
         $description = BoardToolArgs::trimmed($description ?? '');
-        $refusal = CardTextCheck::description($description, $this->name(), ucfirst(self::NOTHING_SENT));
+        $refusal = BoardCardTextRefusal::description($description, $this->name(), ucfirst(self::NOTHING_SENT));
         if ($refusal !== null) {
             throw new ToolRefusalException($refusal, reason: 'card_text_description');
         }

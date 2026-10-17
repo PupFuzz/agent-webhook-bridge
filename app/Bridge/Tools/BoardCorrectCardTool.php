@@ -4,8 +4,8 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
+use App\Bridge\Support\BoardCardTextRefusal;
 use App\Bridge\Support\BoardToolsConfig;
-use App\Bridge\Support\CardTextCheck;
 use App\Bridge\Writeback\CardTags;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -69,8 +69,8 @@ use Illuminate\Support\Facades\Log;
  * ⛔ The stamp compare is CASE-SENSITIVE, deliberately the narrow direction. Agent
  * names are filesystem-cased config names, so `me` and `ME` can be two seats and a
  * casefolded compare would let one correct the other's cards. Nothing is lost by
- * being narrower than the writer: the bridge is the only writer of a `created-by:`
- * tag and it writes the exact agent name.
+ * being narrower than the writer: the bridge is the only writer of the mint stamp
+ * (payload key or legacy tag) and it writes the exact agent name.
  *
  * ⭐ THE ID IS CALLER-SUPPLIED, SO IT IS ESTABLISHED BOARD-SCOPED BEFORE ANYTHING
  * READS IT. kanban's card id space is GLOBAL across every board on the instance,
@@ -111,7 +111,8 @@ use Illuminate\Support\Facades\Log;
  * that is somebody else's control ({@see CallerTagPolicy::isPreserved}) and lets the
  * caller's list replace only the rest. ⭐ THAT SET IS A SUPERSET OF THE TAGS A CALLER
  * MAY NOT SUPPLY, and the difference is the whole point: the bridge-stamped ones
- * (`created-by:` — losing it locks the seat out of its own card; `idem:` —
+ * (`created-by:` — on a card stamped with the legacy tag rather than the payload key,
+ * losing it locks the seat out of its own card; `idem:` —
  * re-opening duplicate minting under that key; `triaged`/`type:` — undoing the triage
  * pass) a caller could not restore because it may not supply them, but `no-automove`
  * and this install's `hold_marker_tags` are a HUMAN's pin on the card, forgeable and
@@ -121,11 +122,9 @@ use Illuminate\Support\Facades\Log;
  * destroy the other.
  *
  * ⚠ `kbcard` records the sharp edge of a read-merge-write on this field — an unreadable
- * tag list treated as "no tags" destroys every tag. On the MINTED arm an ABSENT list is
- * unreachable (the row's tags had to contain `created-by:<agent>`), though a list that is not a
- * plain list, or holds a non-string entry beside the stamp, is not, and is refused by the same
- * guard. ⛔ The
- * ASSIGNED arm authorizes without reading the tags, so there it is GUARDED
+ * tag list treated as "no tags" destroys every tag. The mint stamp is the payload key or the
+ * legacy tag, so a MINTED row need not carry a readable tag list either, and the ASSIGNED arm
+ * authorizes without reading the tags at all. ⛔ Both are therefore GUARDED
  * ({@see requireReadableTagList}): a `tags` correction on a row whose `tags` key is absent, is
  * not a list, or holds any entry that is not a string refuses, while present-null — kanban stores `tags` as a nullable json column, so
  * an untagged card can carry it — is an empty list and deletes nothing. The OPERATOR-declared half of the
@@ -163,7 +162,7 @@ use Illuminate\Support\Facades\Log;
  */
 final class BoardCorrectCardTool implements Tool
 {
-    /** `authorized_by`: the row carries the calling agent's own `created-by:` mint stamp. */
+    /** `authorized_by`: the row carries the calling agent's own mint stamp (payload key or legacy tag). */
     private const AUTHORIZED_BY_MINT = 'minted';
 
     /** `authorized_by`: the row's `assigned_user_id` is the calling seat's own kanban user. */
@@ -393,7 +392,7 @@ final class BoardCorrectCardTool implements Tool
             if ($tooLong !== null) {
                 throw $tooLong;
             }
-            $refusal = CardTextCheck::title($trimmed, $this->name(), 'nothing was written.');
+            $refusal = BoardCardTextRefusal::title($trimmed, $this->name(), 'nothing was written.');
             if ($refusal !== null) {
                 throw new ToolRefusalException($refusal, reason: 'card_text_title');
             }
@@ -409,7 +408,7 @@ final class BoardCorrectCardTool implements Tool
             // A CLEAR is not held to the rules, as `kbcard patch` checks only a description it writes:
             // the rules read the value being written, and an empty one writes no text.
             if ($fields['description'] !== '') {
-                $refusal = CardTextCheck::description($fields['description'], $this->name(), 'Nothing was written.');
+                $refusal = BoardCardTextRefusal::description($fields['description'], $this->name(), 'Nothing was written.');
                 if ($refusal !== null) {
                     throw new ToolRefusalException($refusal, reason: 'card_text_description');
                 }
@@ -627,9 +626,9 @@ final class BoardCorrectCardTool implements Tool
      * DELETE — every tag it could not read, holds and other agents' stamps included. It passes
      * only for present-null (a real, empty answer) or a list whose entries are ALL strings.
      *
-     * ⚠ Mostly reached through the ASSIGNED arm, whose authorization never reads the tags; a
-     * MINTED row's list at least holds the stamp that authorized it, but can still be a keyed
-     * object or carry an unreadable entry beside it, and it is refused the same way. It is refused by its own name
+     * ⚠ Reached through either arm: the ASSIGNED arm's authorization never reads the tags, and a
+     * MINTED row's stamp is the payload key or the legacy tag, so its list may hold no stamp at all,
+     * be a keyed object, or carry an unreadable entry beside one. It is refused by its own name
      * because the call is already authorized: the card is the caller's, so naming the cause
      * discloses nothing.
      *

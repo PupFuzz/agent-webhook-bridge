@@ -40,8 +40,9 @@ use App\Bridge\Writeback\WritebackConfig;
  *
  * The reasoning the two constants encode is unchanged and belongs to DL-217 /
  * {@see BoardCreateCardTool}'s docblock, which still owns it: `created-by:` is the
- * audit stamp (a caller must not forge another agent's), `idem:` is the
- * idempotency correlation key (a caller must not poison a future probe), `id:` and
+ * legacy tag form of the audit stamp, still read (a caller must not forge another agent's),
+ * `idem:` is the legacy tag form of the idempotency correlation key, still read (a caller
+ * must not poison a future probe), `id:` and
  * `type:` are the coord adoption / typing keys, and the bare `triaged` would
  * defeat born-untriaged. The match CASEFOLDS the caller's tag because whether the
  * backing tag search folds case is a per-driver collation fact.

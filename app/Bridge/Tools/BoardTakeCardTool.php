@@ -58,7 +58,8 @@ use Illuminate\Support\Facades\Log;
  * ⭐ WHY A SEPARATE TOOL AND NOT AN ARGUMENT ON `board_correct_card` — the fork this card
  * turned on, recorded so it can be attacked rather than inherited:
  *  - THE AUTHORIZATIONS ARE DIFFERENT, AND THIS ONE IS WIDER. A correction is scoped to
- *    cards that are ALREADY the seat's — MINTED by it (`created-by:<agent>`) or, since
+ *    cards that are ALREADY the seat's — MINTED by it (the `created_by` payload key or the
+ *    legacy `created-by:<agent>` tag) or, since
  *    DL-376, ASSIGNED to it. A take must work on cards that are neither yet — the pm mints
  *    work INTO a seat's lane for that seat to pull, which is the case the feature exists
  *    for — so the two cannot share a predicate. Folding a WIDER authority into that tool, keyed on which

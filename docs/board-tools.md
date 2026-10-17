@@ -850,6 +850,15 @@ toolkit's (its README § *Plain-language card text* owns them); this repo vendor
 file byte-for-byte at `resources/card-text-rules.json` and reads it through
 `App\Bridge\Support\CardTextCheck`. They are not restated here.
 
+kbcard's words are written for a `kbcard` user, so the bridge **adds** lines where they do not fit
+this door, and never rewrites kbcard's own (`App\Bridge\Support\BoardCardTextRefusal`):
+
+- **T5** (a leading `[...]` prefix): kbcard's hint is "pass --component". Neither tool takes a
+  component argument or writes the component field, so the T5 line is followed by a bridge line
+  saying to drop the prefix from the title; the technical-notes line keeps it.
+- **"README.md §"** in every refusal is agent-board-toolkit's README; each refusal ends with a line
+  saying so and pointing here.
+
 - **Title** (`board_create_card`'s `title`, `board_correct_card`'s `name`): T1-T6. A refusal carries
   `reason: card_text_title`.
 - **Description** (`board_create_card`'s `description`, always; `board_correct_card`'s `description`
@@ -1017,8 +1026,9 @@ that is somebody ELSE'S — and that set is deliberately WIDER than the set you 
 allowed to send.** Two halves, and the second is the one that is easy to get wrong:
 
 1. **Tags you may not supply**, so you could not restore them either: `created-by:`
-   (your mint stamp — dropping it locks you out of your own card), `idem:` (your
-   correlation key — dropping it re-opens duplicate minting under it), `type:` and
+   (your mint stamp's legacy tag — on a card stamped that way rather than with the payload key,
+   dropping it locks you out of your own card), `idem:` (your correlation key's legacy tag —
+   dropping it re-opens duplicate minting under it), `type:` and
    `triaged` (the triage pass's work), and the retired seat owner tag `owner:` (card#10869,
    operator ruling B) — on a card with no assignee it may be the only record of who holds the
    card, until `kbcard owner-migrate` turns it into an assignee.
@@ -1158,9 +1168,9 @@ through the one privileged seat, which is the serial hub this door exists to rem
 
 **⭐ Which cards you can take — the scoping rule, and it is NOT the correction tool's.**
 
-`board_correct_card` scopes on a card being ALREADY yours — minted by you (`created-by:<you>`)
-or, since DL-376, assigned to you. A take is mostly the opposite case: **the work somebody else
-queued for you, and that nobody holds yet, is exactly what you are claiming**, so the mint stamp
+`board_correct_card` scopes on a card being ALREADY yours — minted by you (the `created_by`
+payload key or the legacy `created-by:<you>` tag) or, since DL-376, assigned to you. A take is
+mostly the opposite case: **the work somebody else queued for you, and that nobody holds yet, is exactly what you are claiming**, so the mint stamp
 is never consulted. Two independent narrowings are checked instead, and **both** are required:
 
 1. **The card is on your configured board.** Established through a **board-scoped** search
@@ -1382,8 +1392,8 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `install_fault.roster_seat_absent` | `board_take_card` | the roster has no seat named your agent's seat (`identity.coord_seat`, else the agent name) |
 | `install_fault.no_kanban_user` | `board_take_card` | your seat carries no kanban user id for this kanban host (or the install's kanban API base names no host), so a seat with no id is refused by name, never moved unassigned |
 | `install_fault.no_agent` | the ssh door (exit 1) | the forced command passed no `--agent` |
-| `card_text_title` | `board_create_card` (`title`), `board_correct_card` (`name`) | the title breaks the plain-language title rules T1-T6; the message is `kbcard`'s, with the findings, a suggested rewrite and the technical-notes line to paste (card#11987) |
-| `card_text_description` | `board_create_card`, `board_correct_card` | the description breaks the filing bar or D1 — at create that includes an absent or blank one; the message is `kbcard`'s (card#11987) |
+| `card_text_title` | `board_create_card` (`title`), `board_correct_card` (`name`) | the title breaks the plain-language title rules T1-T6; the message is `kbcard`'s plus the bridge's added lines ([§ The plain-language card rules](#the-plain-language-card-rules-card11987)), with the findings, a suggested rewrite and the technical-notes line to paste (card#11987) |
+| `card_text_description` | `board_create_card`, `board_correct_card` | the description breaks the filing bar or D1 — at create that includes an absent or blank one; the message is `kbcard`'s plus the bridge's added line (card#11987) |
 | `repo_not_received` | `ci_await` | no agent on this install subscribes to that GitHub repo, so no `workflow_run` delivery would ever settle the await; nothing was stored |
 | `repo_not_ci` | `ci_await` | this install's operator declared the repo to have no CI (`BRIDGE_CI_AWAIT_NO_CI_REPOS`), so there is no run to wait for; nothing was stored and GitHub was not read. Not an install fault — but if the repo does run CI, tell your operator, who removes it from that list (card#11696) |
 | `repo_unreadable` | `ci_await` | this bridge cannot read the repo's workflow runs on GitHub — GitHub answered `404`, or no read token resolves for it for any reader (*Read failures* below) — so no read would ever settle the await; nothing was stored (on a refresh, your existing await on the head was removed, and the message says so). A `401` or `403` is never refused on one read. The message names the token's source and file and the operator's remedy (card#11600). Marked an install fault: no argument fixes it |
@@ -1478,8 +1488,9 @@ FROM: <your seat>
 
 `<your seat>` is the agent name your call authenticated as: the bearer's agent over HTTP, the
 pinned forced command's `--agent` over ssh. It is the same name `board_create_card` stamps as
-`created-by:`. No argument can set it. If your own text starts with a `FROM:` line, that line
-lands **after** the bridge's and does not replace it.
+your mint stamp (the `created_by` payload key or the legacy `created-by:` tag). No argument can
+set it. If your own text starts with a `FROM:` line, that line lands **after** the bridge's and
+does not replace it.
 
 **⛔ Append-only.** Nothing on this door edits or deletes a comment.
 
@@ -2414,10 +2425,11 @@ answers **422** to a write — `board_create_card`'s create, the PATCH of `board
    passed them, so the refusal says they passed and never tells you to shorten a field they cover:
    for a create or a correction, any `title`/`name` you sent is within kanban's `name` cap and each
    tag you passed within its tag cap; for a comment, the body is within kanban's `content` cap.
-   ⚠ A tag the bridge writes itself (`created-by:<you>`, and on a correction every tag kept from
-   the card) is not a tag you passed, and no check bounds it — so a pass does not say what the
-   board refused. A long agent name alone can make the `created-by:` tag longer than kanban's tag
-   cap; the board's reason then names that `tags.N`. The `idem:<you>:<key>` stamp is bounded: a key
+   ⚠ A tag the bridge writes itself (the legacy `created-by:<you>` tag, written only where the
+   board does not register the `created_by` key, and on a correction every tag kept from the card)
+   is not a tag you passed, and no check bounds it — so a pass does not say what the board refused.
+   A long agent name alone can make that `created-by:` tag longer than kanban's tag cap; the
+   board's reason then names that `tags.N`. The `idem:<you>:<key>` stamp is bounded: a key
    that would push it past the cap is refused before any request (the `idempotency_key` row above).
 2. **The board's own reason**, last, read from the 422 body:
 

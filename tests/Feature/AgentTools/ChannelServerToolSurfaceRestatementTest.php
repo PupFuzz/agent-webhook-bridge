@@ -478,14 +478,15 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
      * card#11987: the create entry's `description` property restates the filing bar's IMPACT kinds
      * and the extra line each needs, because a seat reads the schema and cannot follow a pointer to
      * the toolkit's rule file. The needles come from the VENDORED rule file the bridge enforces, so
-     * a kind the toolkit adds reds here until the schema names it.
+     * a kind the toolkit adds reds here until the schema names it, and a kind or extra line the
+     * schema names that the file no longer has reds too.
      */
     public function test_the_create_entry_states_every_impact_kind_the_bridge_enforces(): void
     {
-        $rules = json_decode((string) file_get_contents(base_path(CardTextRules::VENDORED_PATH)), true);
-        $this->assertIsArray($rules);
-        $block = $this->property('board_create_card', 'description');
+        $rules = self::vendoredCardTextRules();
+        $block = self::joinedText($this->property('board_create_card', 'description'));
 
+        $label = $rules['description']['filing_bar']['label'];
         $kinds = $rules['description']['filing_bar']['kinds'] ?? [];
         $this->assertNotSame([], $kinds);
         foreach ($kinds as $kind) {
@@ -494,11 +495,63 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
                 $this->assertStringContainsString($kind['requires_line'].':', $block);
             }
         }
-        $this->assertStringContainsString($rules['description']['filing_bar']['label'].':', $block);
+        $this->assertStringContainsString($label.':', $block);
         foreach ($rules['description']['rules'] as $rule) {
             if (($rule['id'] ?? null) === 'D1') {
                 $this->assertStringContainsString((string) $rule['divider'], $block);
             }
         }
+
+        $this->assertSame(1, preg_match('/'.preg_quote($label, '/').': ([A-Z][A-Z-]*(?: \| [A-Z][A-Z-]*)*)/', $block, $m), "the create entry's `description` no longer states the {$label}: kinds as one `A | B` list — re-anchor the reverse check");
+        $this->assertEqualsCanonicalizing(array_column($kinds, 'kind'), explode(' | ', $m[1]), "the create entry's `description` names a different set of {$label} kinds from the rule file the bridge enforces");
+        preg_match_all('/"([A-Z][A-Z -]*):" line/', $block, $lines);
+        $this->assertEqualsCanonicalizing(
+            array_values(array_filter(array_column($kinds, 'requires_line'), fn ($l) => $l !== '')),
+            $lines[1],
+            "the create entry's `description` names a different set of extra lines from the rule file the bridge enforces"
+        );
+    }
+
+    /**
+     * card#12001: the create entry's `title` property states each title rule by its id and the rule
+     * file's own summary, both ways — every rule in the vendored file is named with its summary, and
+     * every rule id the schema names is one the file has — plus each length limit the file checks.
+     * `board_correct_card`'s `name` points at this property rather than restating it.
+     */
+    public function test_the_create_entry_states_every_title_rule_the_bridge_enforces(): void
+    {
+        $rules = self::vendoredCardTextRules()['title']['rules'] ?? [];
+        $this->assertNotSame([], $rules);
+        $block = self::joinedText($this->property('board_create_card', 'title'));
+
+        foreach ($rules as $rule) {
+            $this->assertStringContainsString("{$rule['id']} ({$rule['summary']})", $block, "the create entry's `title` does not state rule {$rule['id']} as the rule file the bridge enforces does");
+            foreach ($rule['checks'] as $check) {
+                if ($check['kind'] === 'max_length') {
+                    $this->assertStringContainsString("at most {$check['limit']} characters", $block, "the create entry's `title` does not state rule {$rule['id']}'s limit");
+                }
+            }
+        }
+        preg_match_all('/\b(T[0-9]+) \(/', $block, $named);
+        $this->assertEqualsCanonicalizing(array_column($rules, 'id'), $named[1], "the create entry's `title` names a different set of title rules from the rule file the bridge enforces");
+        $this->assertStringContainsString('held to the same plain-language title rules as board_create_card', self::joinedText($this->property('board_correct_card', 'name')));
+    }
+
+    /** @return array<string, mixed> */
+    private static function vendoredCardTextRules(): array
+    {
+        $rules = json_decode((string) file_get_contents(base_path(CardTextRules::VENDORED_PATH)), true);
+        self::assertIsArray($rules);
+
+        return $rules;
+    }
+
+    /**
+     * A property block with its JS string concatenations (`'…' +\n '…'`) joined, so a phrase the
+     * source wraps across two literals reads as the one sentence a seat sees.
+     */
+    private static function joinedText(string $block): string
+    {
+        return (string) preg_replace('/([\'"])\s*\+\s*([\'"])/', '', $block);
     }
 }
