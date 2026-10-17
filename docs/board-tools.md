@@ -873,8 +873,8 @@ this door, and never rewrites kbcard's own (`App\Bridge\Support\BoardCardTextRef
   are not read by the bridge.
 - Whether the two ends still agree is `docs/card-text-parity-corpus.json`'s to say: this repo's suite
   holds the port to it, and `bin/card-text-parity.sh` holds a toolkit checkout's `kbcard` to it
-  (`CLAUDE_TESTING.md` § Tool runs outside the suite). Its `known_divergences` lists the one case
-  where the port follows the toolkit's README rather than `kbcard`.
+  (`CLAUDE_TESTING.md` § Tool runs outside the suite). Its `known_divergences` lists any case where
+  the two ends are known to answer differently.
 
 ### Where the stamps live (card#11987)
 

@@ -17,7 +17,7 @@ use App\Bridge\Exceptions\CardTextRulesException;
  * (held here by `Tests\Unit\Support\CardTextParityTest`, against the toolkit by
  * `bin/card-text-parity.sh`).
  *
- * Where kbcard's ACTUAL behaviour is narrower or odder than the README's prose, this follows kbcard:
+ * The reading rules, as kbcard applies them and the README's "The rule file's schema" states them:
  *  - lines split on LF only, so a CR stays on its line (it is not a blank, and `[^A-Z0-9_]` matches it);
  *  - "blank" is exactly the six ASCII blanks (`kb_is_blank`), never PHP's default `trim()` set, which
  *    strips NUL and not FF;
