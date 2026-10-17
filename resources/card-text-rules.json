@@ -1,0 +1,109 @@
+{
+  "schema": "agent-board-toolkit/card-text-rules",
+  "schema_version": 1,
+  "about": "The plain-language rules for board card text: titles (T1-T6), the description layout (D1) with the filing bar's IMPACT line, and the tags kept for filtering. bin/kbcard reads this file; other writers read the same file rather than restating it. README.md section 'Plain-language card text' owns the schema note and the matching algorithm.",
+  "title": {
+    "rules": [
+      {
+        "id": "T1",
+        "summary": "at most 80 characters",
+        "checks": [
+          { "kind": "max_length", "limit": 80 }
+        ]
+      },
+      {
+        "id": "T2",
+        "summary": "no file path",
+        "hint": "move the path to the Technical notes",
+        "checks": [
+          { "kind": "ere", "boundary": "none", "ignore_case": false, "what": "a /home/ path", "ere": "/home/[^[:space:]]*" },
+          { "kind": "ere", "boundary": "none", "ignore_case": false, "what": "a ~/ path", "ere": "~/[^[:space:]]*" },
+          { "kind": "ere", "boundary": "word", "ignore_case": false, "what": "a dir/file.ext path", "ere": "[A-Za-z0-9._-]*/[A-Za-z0-9._/-]*\\.[A-Za-z][A-Za-z0-9]*" },
+          { "kind": "ere", "boundary": "word", "ignore_case": false, "what": "a file name", "ere": "[A-Za-z0-9_.-]*\\.(json|mjs|yml|py|sh|md)" }
+        ]
+      },
+      {
+        "id": "T3",
+        "summary": "no code identifier",
+        "hint": "say what it does in words; move the identifier to the Technical notes",
+        "checks": [
+          { "kind": "ere", "boundary": "none", "ignore_case": false, "what": "backtick-quoted text", "ere": "`[^`]*`" },
+          { "kind": "ere", "boundary": "none", "ignore_case": false, "what": "a backtick", "ere": "`" },
+          { "kind": "ere", "boundary": "none", "ignore_case": false, "what": "a function call", "ere": "[A-Za-z0-9_.:]*\\(\\)" },
+          { "kind": "ere", "boundary": "none", "ignore_case": false, "what": "a ${VAR} variable", "ere": "\\$\\{[A-Za-z_][A-Za-z0-9_]*[}]" },
+          { "kind": "ere", "boundary": "none", "ignore_case": false, "what": "a $VAR variable", "ere": "\\$[A-Za-z_][A-Za-z0-9_]*" },
+          { "kind": "ere", "boundary": "word", "ignore_case": false, "what": "a --flag", "ere": "--[A-Za-z][A-Za-z0-9-]*" },
+          { "kind": "ere", "boundary": "word", "ignore_case": false, "what": "a snake_case word", "ere": "[A-Za-z0-9]+_[A-Za-z0-9_]*" }
+        ]
+      },
+      {
+        "id": "T4",
+        "summary": "no card, PR, issue or DL number",
+        "hint": "move the reference to the Technical notes",
+        "checks": [
+          { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "a card/fw/rt reference", "ere": "[A-Za-z][A-Za-z0-9_-]*#[0-9]+" },
+          { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "a DL number", "ere": "DL-[0-9]+" },
+          { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "a PR number", "ere": "PR[[:space:]#-]*[0-9]+" },
+          { "kind": "ere", "boundary": "word", "ignore_case": false, "what": "a #NN number", "ere": "#[0-9]{2,}" }
+        ]
+      },
+      {
+        "id": "T5",
+        "summary": "no leading [...] prefix",
+        "hint": "that is the component field now: pass --component",
+        "checks": [
+          { "kind": "ere", "boundary": "start", "ignore_case": false, "what": "a leading [...] prefix", "ere": "\\[[^]]*\\]" }
+        ]
+      },
+      {
+        "id": "T6",
+        "summary": "no WORD: prefix and no process jargon",
+        "hint": "drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes",
+        "checks": [
+          { "kind": "prefix", "what": "a WORD: prefix", "values": ["CLASS:", "SECURITY:", "FLEET:", "OPERATOR-DIRECTED:", "Built:"] },
+          { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "process jargon", "ere": "seen-to-fail" },
+          { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "process jargon", "ere": "canon[[:space:]]*#[0-9]*" },
+          { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "process jargon", "ere": "selftests?" },
+          { "kind": "ere", "boundary": "word", "ignore_case": false, "what": "process jargon", "ere": "rc[[:space:]]+[0-9]+" }
+        ]
+      }
+    ]
+  },
+  "description": {
+    "line_lead_ere": "^[[:space:]*_>#-]*",
+    "line_trail_ere": "[[:space:]*_:#]*$",
+    "filing_bar": {
+      "label": "IMPACT",
+      "label_space_ere": "[[:space:]]+",
+      "label_sep_ere": "[*_]*:[[:space:]*_]*",
+      "kind_end_ere": "([^A-Z0-9_]|$)",
+      "value_ere": "[^[:space:]*_]",
+      "kinds": [
+        { "kind": "RUNTIME" },
+        { "kind": "SECURITY" },
+        { "kind": "REQUESTED", "requires_line": "REQUESTED BY", "requires_text": "<who, when, the ask>" },
+        { "kind": "BELOW-BAR", "requires_line": "BELOW-BAR REASON", "requires_text": "<why it is filed anyway>" }
+      ]
+    },
+    "rules": [
+      {
+        "id": "D1",
+        "summary": "a plain-language summary, then the divider line, then the agent detail with the IMPACT line",
+        "divider": "Technical notes (for agents)"
+      }
+    ]
+  },
+  "tags": {
+    "summary": "tags are for filtering; data belongs in a field",
+    "refused_prefixes": [
+      { "prefix": "owner:", "use_instead": "the card's assignee (patch --assign, move --stamp-owner)" },
+      { "prefix": "related:", "use_instead": "a task link (kbcard link)" },
+      { "prefix": "created-by:", "use_instead": "the payload key created_by" },
+      { "prefix": "idem:", "use_instead": "the payload key idempotency_key" },
+      { "prefix": "design:", "use_instead": "the description's Technical notes" }
+    ],
+    "refused_on_native_type_boards": [
+      { "prefix": "type:", "use_instead": "--type, which writes the board's native card type" }
+    ]
+  }
+}

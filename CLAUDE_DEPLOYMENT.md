@@ -591,6 +591,10 @@ php artisan bridge:github-owed [--fix] [--repo=owner/repo] [--limit=50]       # 
                                                       #   write only when a person asks. --fix exits NON-ZERO while anything
                                                       #   in scope is still owed; either mode exits NON-ZERO on a record it
                                                       #   cannot read. Run as the receiver's user (the record is 0600). docs/writeback.md
+php artisan bridge:legacy-stamps                      # how many cards on THIS install's board-tools boards still carry the
+                                                      # legacy created-by:/idem: stamp tags, and does each board register the
+                                                      # created_by/idempotency_key payload keys (card#11987)? Non-zero exit when
+                                                      # any board could not be measured. docs/board-tools.md § Where the stamps live
 php artisan bridge:writeback-exposure                 # is THIS install exposed to the one-repo-one-board writeback defect
                                                       # (card#9850 / DL-404)? Reads each mapping's repo's recently merged PRs,
                                                       # probes every cited card#  against that mapping's OWN declared boards

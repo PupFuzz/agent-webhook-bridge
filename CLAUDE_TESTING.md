@@ -496,6 +496,12 @@ bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit 
                                                     # card#10869 / DL-439): sources that checkout's lib and runs the
                                                     # corpus through its own functions. NOT in CI; run it on a
                                                     # toolkit bump. Same 0 / 1 / 2 exit meaning; --control.
+bin/card-text-parity.sh --corpus docs/card-text-parity-corpus.json --toolkit <toolkit git checkout>
+                                                    # the same half for the bridge's PORT of the toolkit's plain-language
+                                                    # card-text checks (card#11987): every vector through that checkout's
+                                                    # own `kbcard title-check` / `description-check`, plus the vendored
+                                                    # rule file against its pinned commit (needs git history). NOT in CI;
+                                                    # run it on a toolkit bump. Same 0 / 1 / 2 exit meaning; --control.
 git fetch origin dev && node bin/gen-client-capabilities.mjs
                                                     # regenerate resources/client-capabilities.json after ANY change to
                                                     # the channel server's TOOL_DEFINITIONS (DL-425). The fetch is not

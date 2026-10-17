@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\ClientUpdate\CallerReport;
 use App\Bridge\ClientUpdate\SeatClientLedger;
+use App\Bridge\Exceptions\CardTextRulesException;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
@@ -182,6 +183,12 @@ final class BoardToolDispatcher
             Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
 
             return DispatchOutcome::failure(422, $refusal, $e->reason);
+        } catch (CardTextRulesException $e) {
+            // The vendored rule file is part of the install: a missing or corrupt copy fails every create
+            // and correction identically, which is an install fault and not a bridge crash (card#11987).
+            Log::error('agent-tools: the card-text rule file could not be applied', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'error' => RedactedErrorText::of($e)]);
+
+            return DispatchOutcome::failure(503, 'board tools are not fully configured on this bridge (card-text rule file)');
         } catch (RequestException $e) {
             // A kanban error (4xx/5xx from upstream) — the caller may retry; do not
             // leak the upstream body.

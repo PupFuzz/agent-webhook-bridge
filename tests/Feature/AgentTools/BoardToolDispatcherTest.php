@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Http;
 use LogicException;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\KanbanSearchSim;
+use Tests\Support\PlainCardText;
 use Tests\Support\UsesUnmigratedDatabase;
 use Tests\TestCase;
 
@@ -42,6 +43,7 @@ class BoardToolDispatcherTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        PlainCardText::legacyBoardFields();
         $this->dir = sys_get_temp_dir().'/dispatcher-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/writeback-token', 'wb');   // gitleaks:allow — test fixture
@@ -140,7 +142,7 @@ class BoardToolDispatcherTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
-        $outcome = $this->dispatcher()->dispatch('board_create_card', ['title' => 't', 'tags' => ['triaged']], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
+        $outcome = $this->dispatcher()->dispatch('board_create_card', ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'tags' => ['triaged']], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertFalse($outcome->ok);
         $this->assertSame(422, $outcome->status);

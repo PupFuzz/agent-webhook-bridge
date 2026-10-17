@@ -8,12 +8,25 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#11987 / DL-488** — **`board_create_card` and `board_correct_card` now refuse the card text `kbcard` refuses, in kbcard's own words.** The title (`title`, or a correction's `name`) must pass the plain-language rules T1-T6, and the description must pass the filing bar and D1: a plain-language summary, then `Technical notes (for agents)`, then the detail and an `IMPACT:` line. A refusal is a 422 carrying `reason: card_text_title` or `card_text_description`, kbcard's findings and a suggested rewrite, and nothing is sent to the board. The rules are read from the toolkit's own rule file, vendored at `resources/card-text-rules.json` and pinned to toolkit `c4c7fa65`; `docs/board-tools.md` § The plain-language card rules owns the details.
+- **card#11987 / DL-488** — **The bridge's provenance and idempotency stamps move into the card payload on a board that registers them.** On a board registering the `created_by` and `idempotency_key` custom fields (`string`, the second filterable), `board_create_card` writes them there instead of the `created-by:<agent>` / `idem:<agent>:<key>` tags. On every other board it writes the tags exactly as before. Every read accepts both, so existing cards keep correlating and stay their seat's. `docs/board-tools.md` § Where the stamps live.
+
+### Added
+
+- **card#11987** — **`php artisan bridge:legacy-stamps`** counts, per board-tools agent on this install, the live and archived cards still carrying the legacy stamp tags, and whether each board registers the two payload keys. It exits non-zero when any board could not be measured. The legacy tag reads can be retired only once every install reports none.
+- **card#11987** — **`bin/card-text-parity.sh`** runs the published corpus `docs/card-text-parity-corpus.json` against a toolkit checkout's `kbcard`, the far-end half of the bridge's port of the card-text checks (`CLAUDE_TESTING.md` § Tool runs outside the suite).
+
 ### Fixed
 
 - **card#12000 / DL-486** — **The standup digest can stop reporting a growing "unseen" count for a seat that has no inbox reader.** `unseen_inbox_intents` counted the staged lines a seat's `bridge:inbox` cursor had not consumed. For a seat nobody runs `bridge:inbox` for — a channel seat whose intents reach it live — that count only grew. New optional per-agent key **`surface.inbox_reader`** (bool, default `true`): set it to `false` on such a seat, and its digest row carries `inbox_reader: "none"` and the same count as `staged_inbox_intents`, with no `unseen_inbox_intents` key. A seat without the key reads exactly as before. A non-boolean value is refused at load, like `surface.silent_drop_warnings`. Nothing staged, pushed or accepted changes, and `bridge:inbox` is unchanged.
 
 ### Upgrade warnings
 
+- **card#11987 — `board_create_card` now REQUIRES a `description`**, and refuses titles and descriptions it used to accept. A seat that files cards with a title only, or with a card number or file path in the title, gets a 422 with the reason and a rewrite. Its channel server's schema says so from version **0.9.66**; an older client still sends such calls and gets the same refusal.
+- **card#11987 — a keyed `board_create_card` (one with an `idempotency_key`) now also needs the board's custom-field read** (`GET /boards/{id}/custom_fields.json`, a read the create did not make before). If that read fails, the create answers the retryable 502 (or names the board's permanent refusal) and creates nothing. An unkeyed create goes ahead with the legacy tag.
+- **card#11987 — to move a board's stamps into the payload, register two custom fields on it:** `created_by` (type `string`) and `idempotency_key` (type `string`, filterable). Nothing changes on a board until it does.
 - **card#12000 — a `pm_standup` consumer that reads `seats[].unseen_inbox_intents` finds it absent on a seat whose YAML sets `surface.inbox_reader: false`.** Read `inbox_reader` first: when it is `none`, the count is in `staged_inbox_intents`. Nothing changes until an operator sets the key. To clear a channel-only seat's growing figure, set `surface.inbox_reader: false` in its YAML.
 
 ## [0.104.1] - 2026-10-16

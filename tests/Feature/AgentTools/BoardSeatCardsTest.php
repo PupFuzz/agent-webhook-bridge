@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\CoordRosterFixture;
+use Tests\Support\PlainCardText;
 use Tests\TestCase;
 
 /**
@@ -40,6 +41,7 @@ class BoardSeatCardsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        PlainCardText::legacyBoardFields();
         $this->dir = sys_get_temp_dir().'/tools-seatcards-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
@@ -354,7 +356,7 @@ class BoardSeatCardsTest extends TestCase
     {
         $this->board([]);
 
-        $res = $this->tool('board_create_card', ['title' => 'born owned']);
+        $res = $this->tool('board_create_card', ['title' => 'born owned', 'description' => PlainCardText::DESCRIPTION]);
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
         $this->assertSame(self::ME, $res['body']['result']['assigned_user_id']);
@@ -372,7 +374,7 @@ class BoardSeatCardsTest extends TestCase
     {
         $this->board([]);
 
-        $res = $this->tool('board_create_card', ['title' => 'born held', 'tags' => ['no-automove']]);
+        $res = $this->tool('board_create_card', ['title' => 'born held', 'description' => PlainCardText::DESCRIPTION, 'tags' => ['no-automove']]);
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
         $this->assertSame(self::ME, $res['body']['result']['assigned_user_id']);
@@ -385,7 +387,7 @@ class BoardSeatCardsTest extends TestCase
         CoordRosterFixture::configure($this->dir.'/coord', ['me' => null]);
         $this->board([]);
 
-        $res = $this->tool('board_create_card', ['title' => 'born unowned']);
+        $res = $this->tool('board_create_card', ['title' => 'born unowned', 'description' => PlainCardText::DESCRIPTION]);
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
         $this->assertTrue($res['body']['result']['created']);
@@ -407,7 +409,7 @@ class BoardSeatCardsTest extends TestCase
             return Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => self::HOME]]);
         });
 
-        $res = $this->tool('board_create_card', ['title' => 'born, then refused an owner']);
+        $res = $this->tool('board_create_card', ['title' => 'born, then refused an owner', 'description' => PlainCardText::DESCRIPTION]);
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
         $this->assertTrue($res['body']['result']['created']);
@@ -429,7 +431,7 @@ class BoardSeatCardsTest extends TestCase
             return Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => self::HOME]]);
         });
 
-        $res = $this->tool('board_create_card', ['title' => 'born, owner unknown']);
+        $res = $this->tool('board_create_card', ['title' => 'born, owner unknown', 'description' => PlainCardText::DESCRIPTION]);
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
         $this->assertTrue($res['body']['result']['created']);
@@ -462,7 +464,7 @@ class BoardSeatCardsTest extends TestCase
     {
         $this->idempotentHit(88, ['id' => 88, 'board_id' => 10, 'swimlane_id' => self::HOME, 'assigned_user_id' => null]);
 
-        $res = $this->tool('board_create_card', ['title' => 'retried', 'idempotency_key' => 'k-1']);
+        $res = $this->tool('board_create_card', ['title' => 'retried', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k-1']);
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
         $this->assertTrue($res['body']['result']['idempotent_hit']);
@@ -478,7 +480,7 @@ class BoardSeatCardsTest extends TestCase
     {
         $this->idempotentHit(89, ['id' => 89, 'board_id' => 10, 'swimlane_id' => self::HOME, 'assigned_user_id' => self::OTHER]);
 
-        $res = $this->tool('board_create_card', ['title' => 'retried', 'idempotency_key' => 'k-2']);
+        $res = $this->tool('board_create_card', ['title' => 'retried', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k-2']);
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
         $this->assertSame(self::OTHER, $res['body']['result']['assigned_user_id']);
@@ -502,7 +504,7 @@ class BoardSeatCardsTest extends TestCase
     {
         $this->idempotentHit(90, $readBack);
 
-        $res = $this->tool('board_create_card', ['title' => 'retried', 'idempotency_key' => 'k-3']);
+        $res = $this->tool('board_create_card', ['title' => 'retried', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k-3']);
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
         $this->assertNull($res['body']['result']['assigned_user_id']);
@@ -515,7 +517,7 @@ class BoardSeatCardsTest extends TestCase
         CoordRosterFixture::configure($this->dir.'/coord', ['me' => null]);
         $this->idempotentHit(91, ['id' => 91, 'board_id' => 10, 'swimlane_id' => self::HOME, 'assigned_user_id' => null]);
 
-        $res = $this->tool('board_create_card', ['title' => 'retried', 'idempotency_key' => 'k-4']);
+        $res = $this->tool('board_create_card', ['title' => 'retried', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k-4']);
 
         $this->assertSame(200, $res['status'], json_encode($res['body']));
         $this->assertNull($res['body']['result']['assigned_user_id']);

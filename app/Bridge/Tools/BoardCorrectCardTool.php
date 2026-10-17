@@ -5,6 +5,7 @@ namespace App\Bridge\Tools;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\CardTextCheck;
 use App\Bridge\Writeback\CardTags;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -25,10 +26,13 @@ use Illuminate\Support\Facades\Log;
  *
  * ⭐ WHOSE CARD — the scoping question that decides this tool. Since DL-376 it has TWO
  * sufficient answers, each caller-unforgeable, and neither needed a new relation minted:
- *  1. MINTED — the card carries `created-by:<agent>`, the tag {@see BoardCreateCardTool}
- *     stamps at birth: bridge-written and caller-unforgeable (the `created-by:` prefix is
- *     reserved on create and the guard casefolds, so no caller can plant any case variant of
- *     another agent's stamp).
+ *  1. MINTED — the card carries the mint stamp {@see BoardCreateCardTool} writes at birth: the
+ *     payload key `created_by` holding the agent name, or on a board that does not register that
+ *     key the legacy tag `created-by:<agent>` (card#11987 — both are read). Bridge-written and
+ *     caller-unforgeable on this door: no tool takes a payload argument, the `created-by:` prefix
+ *     is reserved on create and the guard casefolds, so no caller can plant any case variant of
+ *     another agent's stamp. (A kanban user writing the card directly could set either; that
+ *     was as true of the tag as it is of the key.)
  *  2. ASSIGNED — the card's own `assigned_user_id` is, compared as a strict integer, the
  *     kanban user {@see SeatKanbanUser::declaredForCallingSeat} resolves for the seat the DOOR
  *     sealed ({@see CallingSeat}) — its seat's id in the coord roster (DL-450). A seat the roster
@@ -389,6 +393,10 @@ final class BoardCorrectCardTool implements Tool
             if ($tooLong !== null) {
                 throw $tooLong;
             }
+            $refusal = CardTextCheck::title($trimmed, $this->name(), 'nothing was written.');
+            if ($refusal !== null) {
+                throw new ToolRefusalException($refusal, reason: 'card_text_title');
+            }
             $fields['name'] = $trimmed;
         }
 
@@ -398,6 +406,14 @@ final class BoardCorrectCardTool implements Tool
                 throw new ToolRefusalException('board_correct_card: `description` must be a string, or null/"" to CLEAR it (omit `description` to leave it alone)');
             }
             $fields['description'] = BoardToolArgs::trimmed($description ?? '');
+            // A CLEAR is not held to the rules, as `kbcard patch` checks only a description it writes:
+            // the rules read the value being written, and an empty one writes no text.
+            if ($fields['description'] !== '') {
+                $refusal = CardTextCheck::description($fields['description'], $this->name(), 'Nothing was written.');
+                if ($refusal !== null) {
+                    throw new ToolRefusalException($refusal, reason: 'card_text_description');
+                }
+            }
         }
 
         return $fields;
@@ -565,18 +581,25 @@ final class BoardCorrectCardTool implements Tool
      */
     private function notYoursMessage(int $cardId, int $boardId): string
     {
-        return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards on your own board that YOU filed (the bridge's `created-by:` mint stamp) or that are ASSIGNED to you (the card's `assigned_user_id` is the kanban user your bridge identity resolves to). Nothing was written. ⚠ A board the bridge's writeback token is not a MEMBER of answers exactly the same way: kanban's search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe you filed this card or hold it, have your operator check that token's membership of board {$boardId}. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
+        return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards on your own board that YOU filed (the bridge's mint stamp: the `created_by` payload key, or the legacy `created-by:` tag) or that are ASSIGNED to you (the card's `assigned_user_id` is the kanban user your bridge identity resolves to). Nothing was written. ⚠ A board the bridge's writeback token is not a MEMBER of answers exactly the same way: kanban's search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe you filed this card or hold it, have your operator check that token's membership of board {$boardId}. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
     }
 
     /**
-     * Whether the row carries THIS agent's mint stamp. Case-SENSITIVE (class
-     * docblock), and a row whose `tags` are unreadable is not stamped — fail-closed,
-     * and the same read that makes the wholesale tag rewrite safe.
+     * Whether the row carries THIS agent's mint stamp — the payload key `created_by` holding the agent
+     * name, or the legacy `created-by:<agent>` tag that boards which do not register the key still get
+     * (card#11987). Case-SENSITIVE (class docblock), and a row whose `tags` / `payload` are unreadable
+     * is not stamped by that half — fail-closed, and the same read that makes the wholesale tag
+     * rewrite safe.
      *
      * @param  array<string, mixed>  $row
      */
     private function stampedBy(array $row, string $agentName): bool
     {
+        $payload = $row['payload'] ?? null;
+        if (is_array($payload) && ($payload[BoardCreateCardTool::CREATED_BY_KEY] ?? null) === $agentName) {
+            return true;
+        }
+
         return in_array("created-by:{$agentName}", $this->rowTags($row), true);
     }
 

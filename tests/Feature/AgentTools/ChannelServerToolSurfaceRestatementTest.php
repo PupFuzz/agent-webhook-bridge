@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Support\CardTextRules;
 use App\Bridge\Tools\BoardCardProjection;
 use App\Bridge\Tools\BoardCreateCardTool;
 use App\Bridge\Tools\BoardGetCardsTool;
@@ -72,7 +73,7 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
 {
     /** @var array<string, string> tool name => the `required:` line that closes its schema */
     private const TAG_TOOLS = [
-        'board_create_card' => "required: ['title']",
+        'board_create_card' => "required: ['title', 'description']",
         'board_correct_card' => "required: ['card_id']",
     ];
 
@@ -471,5 +472,33 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         sort($advertised);
         sort($accepted);
         $this->assertSame($accepted, $advertised);
+    }
+
+    /**
+     * card#11987: the create entry's `description` property restates the filing bar's IMPACT kinds
+     * and the extra line each needs, because a seat reads the schema and cannot follow a pointer to
+     * the toolkit's rule file. The needles come from the VENDORED rule file the bridge enforces, so
+     * a kind the toolkit adds reds here until the schema names it.
+     */
+    public function test_the_create_entry_states_every_impact_kind_the_bridge_enforces(): void
+    {
+        $rules = json_decode((string) file_get_contents(base_path(CardTextRules::VENDORED_PATH)), true);
+        $this->assertIsArray($rules);
+        $block = $this->property('board_create_card', 'description');
+
+        $kinds = $rules['description']['filing_bar']['kinds'] ?? [];
+        $this->assertNotSame([], $kinds);
+        foreach ($kinds as $kind) {
+            $this->assertStringContainsString((string) $kind['kind'], $block);
+            if (($kind['requires_line'] ?? '') !== '') {
+                $this->assertStringContainsString($kind['requires_line'].':', $block);
+            }
+        }
+        $this->assertStringContainsString($rules['description']['filing_bar']['label'].':', $block);
+        foreach ($rules['description']['rules'] as $rule) {
+            if (($rule['id'] ?? null) === 'D1') {
+                $this->assertStringContainsString((string) $rule['divider'], $block);
+            }
+        }
     }
 }

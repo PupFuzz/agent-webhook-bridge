@@ -15,6 +15,7 @@ use Tests\Support\CallingSeatSeal;
 use Tests\Support\CoordRosterFixture;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\Support\FakeToolsCallStdio;
+use Tests\Support\PlainCardText;
 use Tests\TestCase;
 
 /**
@@ -42,6 +43,7 @@ class ToolsCallCommandTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        PlainCardText::legacyBoardFields();
         $this->dir = sys_get_temp_dir().'/tools-call-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/kanban');
         $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
@@ -430,7 +432,7 @@ class ToolsCallCommandTest extends TestCase
         $this->writeSshAgent();
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
-        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => ['triaged']]]));
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'tags' => ['triaged']]]));
         $this->assertSame(1, $r['exit']);
         $this->assertFalse(json_decode($r['stdout'], true)['ok']);
         Http::assertNothingSent();
@@ -630,7 +632,7 @@ class ToolsCallCommandTest extends TestCase
     {
         return match ($tool) {
             'board_my_cards' => [],
-            'board_create_card' => ['title' => 't'],
+            'board_create_card' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION],
             'board_correct_card' => ['card_id' => 42, 'name' => 'n'],
             'board_take_card' => ['card_id' => 42],
             'board_comment_card' => ['card_id' => 42, 'content' => 'a note'],
@@ -649,6 +651,7 @@ class ToolsCallCommandTest extends TestCase
     public function test_a_board_call_that_gets_no_answer_is_the_502_envelope_and_exit_2_on_every_registered_tool(): void
     {
         $this->writeSshAgent();
+        PlainCardText::passFieldReadsThrough();
         $sent = 0;
         Http::fake(function ($request) use (&$sent) {
             $sent++;
@@ -662,7 +665,9 @@ class ToolsCallCommandTest extends TestCase
             $sent = 0;
             $r = $this->runCommand('me', (string) json_encode(['tool' => $tool, 'args' => $this->argsReachingTheBoard($tool)]));
 
-            $this->assertSame(1, $sent, "{$tool}: the call must reach the board once and send nothing after the unanswered request");
+            // An unkeyed create's first request is its custom-field read, which degrades to the legacy
+            // stamp tag rather than failing the call (card#11987), so its create is the second.
+            $this->assertSame($tool === 'board_create_card' ? 2 : 1, $sent, "{$tool}: the call must reach the board once and send nothing after the unanswered request");
             $this->assertSame(2, $r['exit'], "{$tool}: ".$r['stdout']);
             $this->assertSame('{"ok":false,"error":"upstream board error"}', $r['stdout'], $tool);
         }
