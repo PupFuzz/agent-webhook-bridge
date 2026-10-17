@@ -167,6 +167,19 @@ final class BridgePaths
     }
 
     /**
+     * Whether a reader has EVER consumed this inbox: the seen-cursor exists. `bridge:inbox`
+     * creates it only when it advances over at least one unseen intent, and retention
+     * narrows a cursor but never deletes it, so an absent cursor means no consuming read
+     * has happened here — not that one is behind, and not that no hook is wired (one that has
+     * had nothing to consume, or fires only on a non-advancing event, leaves no cursor either).
+     * An agent whose intents only ever reach it over its channel stays cursor-less.
+     */
+    public static function seenCursorExists(?string $agent): bool
+    {
+        return is_file(self::seenPath($agent));
+    }
+
+    /**
      * Read a seen-cursor into a list of ids (missing/garbage → []). A non-locking
      * peek — the reader that only needs to filter (bridge:inbox's unseen scan) uses
      * this; the read-modify-write callers go through updateSeenLocked instead.

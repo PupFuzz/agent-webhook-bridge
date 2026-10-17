@@ -8,6 +8,7 @@ use App\Bridge\Writeback\KanbanClient;
 use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Tests\Support\KanbanSearchSim;
@@ -121,7 +122,7 @@ class StandupServiceTest extends TestCase
         $row = $this->seatRow('quiet-seat');
 
         $this->assertArrayNotHasKey('last_delivery_at', $row);
-        $this->assertSame(0, $row['unseen_inbox_intents'], 'the row must exist and carry its measured field');
+        $this->assertSame(0, $row['staged_inbox_intents'], 'the row must exist and carry its measured field');
     }
 
     public function test_a_gate_dropped_dispatch_is_not_a_delivery(): void
@@ -164,12 +165,20 @@ class StandupServiceTest extends TestCase
         // adding `last_activity`, a context-%, or a zero-filled `last_delivery_at` would
         // pass every other test in this file — each of those fields is one the bridge has
         // no producer for, and a new key here is a claim that it acquired one.
+        // Both inbox shapes are pinned: a seat a reader has consumed for, and one none has.
         $this->seatYaml('busy-seat');
         $this->dispatch('busy-seat', AgentDispatch::OUTCOME_DELIVERED, '2026-08-21 11:30:00');
+        File::put($this->dir.'/state/inbox-seen-busy-seat.json', '[]');
+        $this->seatYaml('unread-seat');
+        $this->dispatch('unread-seat', AgentDispatch::OUTCOME_DELIVERED, '2026-08-21 11:30:00');
 
         $this->assertSame(
             ['agent', 'last_delivery_at', 'unseen_inbox_intents'],
             array_keys($this->seatRow('busy-seat')),
+        );
+        $this->assertSame(
+            ['agent', 'last_delivery_at', 'inbox_reader', 'staged_inbox_intents'],
+            array_keys($this->seatRow('unread-seat')),
         );
     }
 
@@ -186,7 +195,67 @@ class StandupServiceTest extends TestCase
         ])."\n");
         File::put($this->dir.'/state/inbox-seen-pm.json', (string) json_encode(['a:pm:0']));
 
-        $this->assertSame(1, $this->seatRow('pm')['unseen_inbox_intents']);
+        $row = $this->seatRow('pm');
+        $this->assertSame(1, $row['unseen_inbox_intents']);
+        $this->assertArrayNotHasKey('inbox_reader', $row);
+    }
+
+    public function test_a_seat_no_reader_has_ever_consumed_reports_staged_intents_not_unseen_ones(): void
+    {
+        // The prod-agent shape: a live channel seat whose intents are pushed over its
+        // socket and whose inbox nobody runs `bridge:inbox` for. With no seen-cursor every
+        // staged line reads "unseen" forever, and printing that as `unseen_inbox_intents`
+        // tells the digest's reader a backlog is waiting on a reader that does not exist.
+        File::put($this->dir.'/channel-seat.yml', "identity:\n  kanban_user_id: 3\nsubscriptions: []\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\EventDrivenClassifier\n"
+            ."channel:\n  socket: {$this->dir}/channel.sock\n");
+        File::put($this->dir.'/state/inbox.jsonl', implode("\n", [
+            (string) json_encode(['id' => 'a:channel-seat:0', 'agent' => 'channel-seat', 'kind' => 'ci_settled']),
+            (string) json_encode(['id' => 'b:channel-seat:0', 'agent' => 'channel-seat', 'kind' => 'ci_settled']),
+            (string) json_encode(['id' => 'b:channel-seat:0', 'agent' => 'channel-seat', 'kind' => 'ci_settled']),
+        ])."\n");
+
+        $row = $this->seatRow('channel-seat');
+
+        $this->assertArrayNotHasKey('unseen_inbox_intents', $row);
+        $this->assertSame('none_observed', $row['inbox_reader'] ?? null);
+        $this->assertSame(2, $row['staged_inbox_intents'] ?? null, 'the staged count is still measured, under its own name');
+    }
+
+    public function test_a_reader_whose_cursor_holds_nothing_still_has_its_unseen_count(): void
+    {
+        // A cursor retention has emptied (every id it held aged out) is still a reader's
+        // cursor: an intent staged after it is unread BY that reader, which is the backlog
+        // `unseen_inbox_intents` exists to report.
+        $this->seatYaml('pm');
+        File::put($this->dir.'/state/inbox.jsonl', (string) json_encode(['id' => 'a:pm:0', 'agent' => 'pm', 'kind' => 'coord_message'])."\n");
+        File::put($this->dir.'/state/inbox-seen-pm.json', '[]');
+
+        $row = $this->seatRow('pm');
+
+        $this->assertSame(1, $row['unseen_inbox_intents'] ?? null);
+        $this->assertArrayNotHasKey('inbox_reader', $row);
+        $this->assertArrayNotHasKey('staged_inbox_intents', $row);
+    }
+
+    public function test_the_first_consuming_read_turns_a_staged_count_into_an_unseen_one(): void
+    {
+        // The sequence on a real seat: intents are staged before anything reads them, a
+        // `bridge:inbox` run consumes them, and later intents are then unread BY that
+        // reader. Driven through the command itself, so the cursor this digest keys on is
+        // the one the reader actually writes.
+        $this->seatYaml('pm');
+        $line = fn (string $id): string => (string) json_encode(['id' => $id, 'agent' => 'pm', 'kind' => 'coord_message'])."\n";
+        File::put($this->dir.'/state/inbox.jsonl', $line('a:pm:0'));
+
+        $this->assertSame(1, $this->seatRow('pm')['staged_inbox_intents'] ?? null);
+
+        $this->assertSame(0, Artisan::call('bridge:inbox', ['--hook-format' => 'plain', '--agent' => 'pm']));
+        File::append($this->dir.'/state/inbox.jsonl', $line('b:pm:0'));
+
+        $row = $this->seatRow('pm');
+        $this->assertSame(1, $row['unseen_inbox_intents'] ?? null);
+        $this->assertArrayNotHasKey('inbox_reader', $row);
     }
 
     // --------------------------------------------------------------- boards

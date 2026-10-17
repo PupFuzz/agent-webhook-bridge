@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#12000 / DL-486** — **The standup digest no longer reports a growing "unseen" count for a seat that has no inbox reader.** `unseen_inbox_intents` counted the staged lines a seat's `bridge:inbox` cursor had not consumed. A seat nobody runs `bridge:inbox` for — a channel seat whose intents reach it live — has no cursor, so every intent ever staged for it counted as unseen, and the number only grew. A seat with a seen-cursor reads as before. A seat without one now carries `inbox_reader: "none_observed"` and the same count as `staged_inbox_intents`, and no `unseen_inbox_intents` key. Nothing staged, pushed or accepted changes, and `bridge:inbox` is unchanged.
+
+### Upgrade warnings
+
+- **card#12000 — a `pm_standup` consumer that reads `seats[].unseen_inbox_intents` finds it absent on a seat with no seen-cursor.** Read `inbox_reader` first: when it is `none_observed`, the count is in `staged_inbox_intents`. A seat that ever had one consuming `bridge:inbox` run (a manual or diagnostic run included) keeps its cursor and is still reported as having a reader; delete `inbox-seen-<agent>.json` in the state dir if that seat has no reader.
+
 ## [0.104.1] - 2026-10-16
 
 ### Changed

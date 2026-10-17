@@ -84,7 +84,7 @@ class StandupCommandTest extends TestCase
 
         $this->assertNotNull($quiet, 'the quiet seat must appear in the digest');
         $this->assertArrayNotHasKey('last_delivery_at', $quiet);
-        $this->assertSame(0, $quiet['unseen_inbox_intents']);
+        $this->assertSame(0, $quiet['staged_inbox_intents']);
     }
 
     public function test_a_misconfigured_standup_fails_loudly_instead_of_pushing_somewhere(): void

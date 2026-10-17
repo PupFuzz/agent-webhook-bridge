@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Standup;
 
+use App\Bridge\Support\BridgePaths;
+
 /**
  * One seat's row in the standup digest (DL-306).
  *
@@ -19,6 +21,15 @@ namespace App\Bridge\Standup;
  * of the retention window (`bridge.retention.older_than`, 30d by default); or its only
  * rows predate DL-036, whose NULL `outcome` cannot say whether a processed dispatch was
  * a delivery or a gate-drop.
+ *
+ * ⛔ "UNSEEN" PRESUPPOSES A READER. `unseen_inbox_intents` counts staged lines this seat's
+ * `bridge:inbox` cursor has not consumed, and it is printed only when that cursor exists.
+ * A seat no reader has ever consumed for — a channel seat whose intents reach it live and
+ * whose inbox nobody reads — has no cursor, so every line it was ever staged would count as
+ * unseen and the number would only grow, reading as a backlog waiting on a reader that
+ * does not exist. That seat carries `inbox_reader: "none_observed"` and the same count
+ * under `staged_inbox_intents` instead ({@see BridgePaths::seenCursorExists()} owns
+ * what an absent cursor does and does not mean).
  */
 final class SeatSnapshot
 {
@@ -26,6 +37,7 @@ final class SeatSnapshot
         public readonly string $agent,
         public readonly ?string $lastDeliveryAt,
         public readonly int $unseenInboxIntents,
+        public readonly bool $inboxReaderObserved,
     ) {}
 
     /**
@@ -42,10 +54,15 @@ final class SeatSnapshot
             $row['last_delivery_at'] = $this->lastDeliveryAt;
         }
 
-        // The zero IS printed, unlike the key above: the inbox was read and held nothing
-        // unseen. That is a measurement, and collapsing it into an absent key would make
-        // "this seat is caught up" indistinguishable from "nothing looked".
-        $row['unseen_inbox_intents'] = $this->unseenInboxIntents;
+        // The zero IS printed under either name, unlike the key above: the inbox was read
+        // and held nothing. That is a measurement, and collapsing it into an absent key would
+        // make "this seat is caught up" indistinguishable from "nothing looked".
+        if ($this->inboxReaderObserved) {
+            $row['unseen_inbox_intents'] = $this->unseenInboxIntents;
+        } else {
+            $row['inbox_reader'] = 'none_observed';
+            $row['staged_inbox_intents'] = $this->unseenInboxIntents;
+        }
 
         return $row;
     }
