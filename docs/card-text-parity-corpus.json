@@ -23,28 +23,15 @@
   ],
   "last_measured": {
     "date": "2026-10-17",
-    "authority_ref": "PupFuzz/agent-board-toolkit c4c7fa65f9be9d2e7f898983cfe0fed9087dd360, a local git clone checked out at that commit",
-    "authority_blob": "sha256:91228b0e19d2eef4b491c577a29b63b9949aa8e3e5eac71c56963007f6009f07 (bin/kbcard), sha256:fa825cb983a79f244075600e934aab19c2b13d9e61a9f8cbfe71ad43a75fc4e8 (bin/_card-text-rules.json) — copied from the runner's own `executed:` lines, not typed",
-    "vectors_digest": "sha256:2760b218c9046fcaaffc2138925781df92fd61f2e5ebe6ddbb50b0bffd29caae",
-    "method": "`bin/card-text-parity.sh --corpus docs/card-text-parity-corpus.json --toolkit <that clone>` sent every vector through that checkout's kbcard and checked both pinned constants; `--control` was run on the same clone and reported every perturbed expectation. A copy of that clone with T1's limit edited to 79 was reported as DRIFTED (exit 1), so the runner is seen to fail on a changed rule.",
-    "result": "Exit 0: every vector, the one known divergence and both pinned constants agreed. Whoever adds, changes or deletes a vector re-takes this measurement over the WHOLE corpus and re-writes vectors_digest — CardTextParityTest reds when the digest no longer matches."
+    "authority_ref": "PupFuzz/agent-board-toolkit 94d0ede65e6d9e98bf19fcbbcca5bd2a113b0960 (toolkit dev after PR #473, card#12002), a local git checkout at that commit",
+    "authority_blob": "sha256:ebf1a1b6d9bb073d2341f60240ad367cc1fa5d56c665c94256513312ab759aff (bin/kbcard), sha256:fa825cb983a79f244075600e934aab19c2b13d9e61a9f8cbfe71ad43a75fc4e8 (bin/_card-text-rules.json) — copied from the runner's own `executed:` lines, not typed",
+    "vectors_digest": "sha256:905c5a12f49fe87588bb36780d3bc800bd795adf0171f0aba4744daca044290f",
+    "method": "`bin/card-text-parity.sh --corpus docs/card-text-parity-corpus.json --toolkit <that checkout>` sent every vector through that checkout's kbcard and checked both pinned constants (the rule file is unchanged since SOURCE_COMMIT, so the pin still holds); `--control` was run on the same checkout and reported every perturbed expectation. A copy of that checkout with T1's limit edited to 79 was reported as DRIFTED (exit 1), so the runner is seen to fail on a changed rule. The same corpus run against the pre-fix kbcard (c4c7fa65) reported the trailing-dash title vectors (`flag --x-`, `--x--`, `--flag-`) as DRIFTED (exit 1): those vectors are what would catch kbcard cutting the trailing `-` again.",
+    "result": "Exit 0: every vector and both pinned constants agreed; no known divergence is published. Whoever adds, changes or deletes a vector re-takes this measurement over the WHOLE corpus and re-writes vectors_digest — CardTextParityTest reds when the digest no longer matches."
   },
   "mirror_local": {},
   "mirrored_but_not_driven": {},
-  "known_divergences": {
-    "title": [
-      {
-        "args": [
-          "flag --x-",
-          "title-check",
-          "this was a dry run; no request is ever sent."
-        ],
-        "authority": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --x — say what it does in words; move the identifier to the Technical notes\n  suggested title: flag -\n  technical notes line (paste it below the description's Technical notes divider): --x",
-        "mirror": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --x- — say what it does in words; move the identifier to the Technical notes\n  suggested title: flag\n  technical notes line (paste it below the description's Technical notes divider): --x-",
-        "why": "kbcard's `word` boundary appends the capture group ([^A-Za-z0-9_]|$) to the pattern, and that group can itself match the trailing `-`: `--x` followed by `-` and `--x-` followed by end-of-string tie on overall length, and glibc's ERE hands group 1 the shorter. The toolkit README's algorithm (a boundary that consumes nothing) gives `--x-`, which is what the port's PCRE lookahead answers. Following kbcard would mean modelling one libc's tie-break rather than the rule, so the pair is published and reported to the toolkit to settle; the visible effect is a stray `-` left in kbcard's suggested title."
-      }
-    ]
-  },
+  "known_divergences": {},
   "constants": {
     "SOURCE_COMMIT": "c4c7fa65f9be9d2e7f898983cfe0fed9087dd360",
     "SOURCE_SHA256": "fa825cb983a79f244075600e934aab19c2b13d9e61a9f8cbfe71ad43a75fc4e8"
@@ -392,6 +379,33 @@
         ],
         "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --x- — say what it does in words; move the identifier to the Technical notes\n  suggested title: flag now\n  technical notes line (paste it below the description's Technical notes divider): --x-",
         "note": "a --flag token keeps its trailing hyphen mid-title"
+      },
+      {
+        "args": [
+          "flag --x-",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --x- — say what it does in words; move the identifier to the Technical notes\n  suggested title: flag\n  technical notes line (paste it below the description's Technical notes divider): --x-",
+        "note": "a --flag token ending in - at the END of the title keeps its trailing hyphen, and the rewrite keeps no stray -"
+      },
+      {
+        "args": [
+          "--x--",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --x-- — say what it does in words; move the identifier to the Technical notes\n  suggested title: nothing is left once those are cut — write the title in plain words\n  technical notes line (paste it below the description's Technical notes divider): --x--",
+        "note": "a --flag token with two trailing hyphens, the whole title, is reported whole"
+      },
+      {
+        "args": [
+          "--flag-",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --flag- — say what it does in words; move the identifier to the Technical notes\n  suggested title: nothing is left once those are cut — write the title in plain words\n  technical notes line (paste it below the description's Technical notes divider): --flag-",
+        "note": "a whole-title --flag token ending in - is reported whole"
       },
       {
         "args": [
