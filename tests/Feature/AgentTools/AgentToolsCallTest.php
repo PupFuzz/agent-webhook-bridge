@@ -24,6 +24,7 @@ use Tests\Support\CoordRosterFixture;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\Support\KanbanBoardStatus;
 use Tests\Support\KanbanSearchSim;
+use Tests\Support\PlainCardText;
 use Tests\TestCase;
 
 /**
@@ -59,6 +60,7 @@ class AgentToolsCallTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        PlainCardText::legacyBoardFields();
         $this->dir = sys_get_temp_dir().'/agent-tools-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/kanban');
 
@@ -156,7 +158,7 @@ class AgentToolsCallTest extends TestCase
         $this->app->instance(ServingProcessEnvironment::class, new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: false, ptyMarker: false));
 
         try {
-            $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']])->assertStatus(200);
+            $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]])->assertStatus(200);
         } finally {
             is_string($connection) ? putenv('SSH_CONNECTION='.$connection) : putenv('SSH_CONNECTION');
             is_string($tty) ? putenv('SSH_TTY='.$tty) : putenv('SSH_TTY');
@@ -189,7 +191,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
         ]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x'], 'client_version' => '0.9.14'])->assertStatus(200);
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION], 'client_version' => '0.9.14'])->assertStatus(200);
 
         $this->assertSame('0.9.14', BoardToolsClientCall::query()->where('agent', 'me')->sole()->client_version);
     }
@@ -211,7 +213,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
         ]);
 
-        $response = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']] + $extra);
+        $response = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]] + $extra);
 
         $response->assertStatus(200);
         $response->assertJsonPath('ok', true);
@@ -242,7 +244,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
         ]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x'], 'client_version' => "0.9.14\n"])
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION], 'client_version' => "0.9.14\n"])
             ->assertStatus(200);
 
         $stored = BoardToolsClientCall::query()->where('agent', 'me')->sole()->client_version;
@@ -273,7 +275,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake();   // any outbound call would be recorded; assert none happens
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']], server: ['REMOTE_ADDR' => '203.0.113.9']);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]], server: ['REMOTE_ADDR' => '203.0.113.9']);
 
         $res->assertStatus(403);
         Http::assertNothingSent();
@@ -293,7 +295,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
         ]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']])
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]])
             ->assertStatus(200)
             ->assertJsonPath('result.placement_observed', true);   // the admitted call went down the STUBBED path
     }
@@ -307,7 +309,7 @@ class AgentToolsCallTest extends TestCase
         // forged header and admit the external peer) — that is the point of pinning it.
         Http::fake();
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']], server: [
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]], server: [
             'REMOTE_ADDR' => '203.0.113.9',
             'HTTP_X_FORWARDED_FOR' => '127.0.0.1',
         ])->assertStatus(403);
@@ -324,7 +326,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
         ]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']], server: [
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]], server: [
             'REMOTE_ADDR' => '127.0.0.1',
             'HTTP_X_FORWARDED_FOR' => '203.0.113.9',
         ])->assertStatus(200)
@@ -402,7 +404,7 @@ class AgentToolsCallTest extends TestCase
         File::put($this->dir.'/me.yml', "subscriptions: []\n");
         Http::fake();
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']], bearer: $this->token)
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]], bearer: $this->token)
             ->assertStatus(401);
         $this->callTool(['tool' => 'board_my_cards'], bearer: 'any-other-bearer')
             ->assertStatus(401);
@@ -429,7 +431,7 @@ class AgentToolsCallTest extends TestCase
         Http::fake();
 
         $this->callTool(['tool' => 'board_my_cards'])->assertStatus(401);
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']])->assertStatus(401);
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]])->assertStatus(401);
         Http::assertNothingSent();
     }
 
@@ -465,7 +467,7 @@ class AgentToolsCallTest extends TestCase
         ]);
 
         $res = $this->callTool(['tool' => 'board_create_card', 'args' => [
-            'title' => 'capture me', 'description' => 'body',
+            'title' => 'capture me', 'description' => PlainCardText::DESCRIPTION,
         ]]);
 
         $res->assertStatus(200)->assertJsonPath('result.card_id', 42);
@@ -474,8 +476,8 @@ class AgentToolsCallTest extends TestCase
             && $r['board_id'] === 10
             && $r['workflow_stage_id'] === 55
             && $r['name'] === 'capture me'
-            && $r['description'] === 'body'
-            && $r['payload'] === []             // {} in v1
+            && $r['description'] === PlainCardText::DESCRIPTION
+            && $r['payload'] === []             // a board registering neither stamp key gets none
             && in_array('created-by:me', $r['tags'], true));
         // CONTROL for the placement warnings (card#7225): the card came back where
         // this agent writes, so neither the divergence nor the unreadable warning
@@ -497,7 +499,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => [$tag]]])
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'tags' => [$tag]]])
             ->assertStatus(422);
         Http::assertNothingSent();
     }
@@ -514,7 +516,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => ['triaged']]]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'tags' => ['triaged']]]);
 
         $this->assertSame(
             'board_create_card: the tag `triaged` is reserved — tool-created cards are born untriaged by design (they surface to the triage pass)',
@@ -546,7 +548,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => [$tag]]])
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'tags' => [$tag]]])
             ->assertStatus(422);
         Http::assertNothingSent();
     }
@@ -569,7 +571,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => [$tag]]])
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'tags' => [$tag]]])
             ->assertStatus(422);
         Http::assertNothingSent();
     }
@@ -593,7 +595,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 77, 'board_id' => 10, 'swimlane_id' => 4]]),
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => [$tag]]]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'tags' => [$tag]]]);
 
         $res->assertStatus(200)->assertJsonPath('result.card_id', 77);
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
@@ -614,7 +616,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 7, 'board_id' => 10, 'swimlane_id' => 4]]),
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'Report']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'Report']]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.created', false)
@@ -629,7 +631,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'bad key!%_*']])
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'bad key!%_*']])
             ->assertStatus(422);
         Http::assertNothingSent();
     }
@@ -646,7 +648,7 @@ class AgentToolsCallTest extends TestCase
         $key = str_repeat('k', $cap);
         Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 5));
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => $key]])
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => $key]])
             ->assertStatus(200)
             ->assertJsonPath('result.created', true);
 
@@ -660,7 +662,7 @@ class AgentToolsCallTest extends TestCase
         $cap = KanbanFieldLimits::TAG_MAX - strlen('idem:me:');
         Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 5));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => str_repeat('k', $cap + 1)]]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => str_repeat('k', $cap + 1)]]);
 
         $res->assertStatus(422);
         Http::assertNothingSent();
@@ -693,7 +695,7 @@ class AgentToolsCallTest extends TestCase
         $this->writeAgent($roomForOne, 'tools-bearer-one', $scope);
         Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 5));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k']], 'tools-bearer-full');
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k']], 'tools-bearer-full');
 
         $res->assertStatus(422);
         Http::assertNothingSent();
@@ -703,7 +705,7 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringContainsString('NO card was created', $error);
         $this->assertStringNotContainsString('characters — at most', $error, 'a config fault is not a key-length refusal');
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k']], 'tools-bearer-one')
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k']], 'tools-bearer-one')
             ->assertStatus(200);
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/tasks.json')
             && in_array("idem:{$roomForOne}:k", $r['tags'], true));
@@ -718,11 +720,11 @@ class AgentToolsCallTest extends TestCase
         Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 5));
 
         $this->callTool(['tool' => 'board_create_card', 'args' => [
-            'title' => 't', 'description' => 'd', 'tags' => ['priority:high'], 'idempotency_key' => 'Daily-Report.2026',
+            'title' => 't', 'description' => PlainCardText::DESCRIPTION, 'tags' => ['priority:high'], 'idempotency_key' => 'Daily-Report.2026',
         ]])->assertStatus(200);
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/tasks.json')
-            && $r->body() === '{"board_id":10,"workflow_stage_id":55,"name":"t","payload":[],"tags":["priority:high","created-by:me","idem:me:daily-report.2026"],"swimlane_id":4,"description":"d"}');
+            && $r->body() === '{"board_id":10,"workflow_stage_id":55,"name":"t","payload":[],"tags":["priority:high","created-by:me","idem:me:daily-report.2026"],"swimlane_id":4,"description":'.json_encode(PlainCardText::DESCRIPTION).'}');
     }
 
     public function test_missing_title_is_refused(): void
@@ -768,6 +770,11 @@ class AgentToolsCallTest extends TestCase
 
         return function ($request) use ($live, $archived, $newId, $postCreate, $readBack, $row, &$liveReads) {
             $url = urldecode($request->url());
+            // The board registers none of the bridge's stamp keys, so the create stamps the legacy
+            // tags this fixture's callers assert (card#11987).
+            if (str_contains($url, '/custom_fields.json')) {
+                return Http::response(['data' => []]);
+            }
             if ($request->method() === 'GET' && preg_match('#/tasks/(\d+)\.json#', $url, $m) === 1) {
                 return Http::response(['data' => ['id' => (int) $m[1]] + $readBack]);
             }
@@ -799,7 +806,7 @@ class AgentToolsCallTest extends TestCase
         // indistinguishable from "stopped being idempotent".
         Http::fake($this->archiveAxisFake(live: [['id' => 7]], archived: [['id' => 99]], newId: 88));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k1']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k1']]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.created', false)
@@ -832,7 +839,7 @@ class AgentToolsCallTest extends TestCase
             postCreate: [['id' => 8], ['id' => 9]],     // post-create re-read: raced pair
         ));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k2']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k2']]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.created', true)     // positive: this cannot pass on a SUPPRESSED create
@@ -872,7 +879,7 @@ class AgentToolsCallTest extends TestCase
             postCreate: [['id' => 8], ['id' => 9, 'block_reason' => 'a human parked this one']],
         ));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k2p']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k2p']]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.created', true)
@@ -895,7 +902,7 @@ class AgentToolsCallTest extends TestCase
             postCreate: [['id' => 8], ['id' => 9, 'block_reason' => '', 'tags' => ['dependencies']]],
         ));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k2c']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k2c']]);
 
         $res->assertStatus(200)->assertJsonPath('result.card_id', 8);
         Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json')
@@ -910,7 +917,7 @@ class AgentToolsCallTest extends TestCase
         // through and minted a SECOND card reporting `"created": true`.
         Http::fake($this->archiveAxisFake(live: [], archived: [['id' => 77]], newId: 88));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k3']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k3']]);
 
         $res->assertStatus(422);
         $this->assertStringContainsString('77', $res->json('error') ?? '');
@@ -929,7 +936,7 @@ class AgentToolsCallTest extends TestCase
         // and still be wrong about which card to unarchive.
         Http::fake($this->archiveAxisFake(live: [], archived: [['id' => 77], ['id' => 91]], newId: 88));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k3']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k3']]);
 
         $res->assertStatus(422);
         $error = $res->json('error') ?? '';
@@ -944,7 +951,7 @@ class AgentToolsCallTest extends TestCase
         // finds nothing, so the create fires exactly as before.
         Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 88));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k4']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k4']]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.created', true)
@@ -974,7 +981,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => 99]]),
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION]]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.created', true)
@@ -1010,7 +1017,7 @@ class AgentToolsCallTest extends TestCase
             readBack: ['board_id' => 77, 'swimlane_id' => 5],   // the hit card is NOT on this agent's board
         ));
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k5']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k5']]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.idempotent_hit', true)
@@ -1039,7 +1046,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => null]]),
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION]]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.swimlane_id', null)
@@ -1064,7 +1071,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response('boom', 500),
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION]]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.created', true)            // presence witness: the create still answers
@@ -1094,7 +1101,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'swimlane_id' => 4]]),
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION]]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.card_id', 42)
@@ -1135,7 +1142,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10]]),   // no swimlane_id KEY at all
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION]]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.created', true)            // presence witness: the create still answers
@@ -1162,7 +1169,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => 'none']]),
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION]]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.created', true)
@@ -2634,7 +2641,7 @@ class AgentToolsCallTest extends TestCase
         Http::fake($this->correctFake(live: [$this->ownCardRow()]));
 
         $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
-            'card_id' => 42, 'name' => 'corrected title', 'description' => 'corrected body',
+            'card_id' => 42, 'name' => 'corrected title', 'description' => PlainCardText::DESCRIPTION,
         ]]);
 
         $res->assertStatus(200)
@@ -2654,7 +2661,7 @@ class AgentToolsCallTest extends TestCase
         // `getCard()` is never called — the unscoped `GET /tasks/{id}.json` is exactly
         // what DL-323 records as the defect for an author-supplied id.
         Http::assertNotSent(fn ($r) => $r->method() === 'GET' && ! str_contains($r->url(), 'search.json'));
-        $this->assertSame(['name' => 'corrected title', 'description' => 'corrected body'], $this->sentPatchBody());
+        $this->assertSame(['name' => 'corrected title', 'description' => PlainCardText::DESCRIPTION], $this->sentPatchBody());
         // The live side answered, so the archived probe never runs on a successful call.
         Http::assertNotSent(fn ($r) => str_contains(urldecode($r->url()), 'archived=1'));
     }
@@ -3037,7 +3044,7 @@ class AgentToolsCallTest extends TestCase
     public static function writeRefusingTools(): array
     {
         return [
-            'board_create_card' => [['tool' => 'board_create_card', 'args' => ['title' => 't']]],
+            'board_create_card' => [['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION]]],
             'board_correct_card' => [['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]],
         ];
     }
@@ -3275,11 +3282,11 @@ class AgentToolsCallTest extends TestCase
         Http::fake($this->correctFake(live: [$this->ownCardRow(['block_reason' => 'parked pending a decision'])]));
 
         $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
-            'card_id' => 42, 'description' => 'corrected body',
+            'card_id' => 42, 'description' => PlainCardText::DESCRIPTION,
         ]]);
 
         $res->assertStatus(200)->assertJsonPath('result.fields', ['description']);
-        $this->assertSame(['description' => 'corrected body'], $this->sentPatchBody());
+        $this->assertSame(['description' => PlainCardText::DESCRIPTION], $this->sentPatchBody());
     }
 
     /**
@@ -3293,7 +3300,7 @@ class AgentToolsCallTest extends TestCase
         Http::fake($this->correctFake(live: [$this->ownCardRow(['tags' => ['created-by:me', 'no-automove']])]));
 
         $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
-            'card_id' => 42, 'name' => 'renamed anyway', 'description' => 'corrected body',
+            'card_id' => 42, 'name' => 'renamed anyway', 'description' => PlainCardText::DESCRIPTION,
         ]]);
 
         $res->assertStatus(422);
@@ -3321,13 +3328,17 @@ class AgentToolsCallTest extends TestCase
         $res->assertStatus(422);
         $this->assertStringContainsString('255', (string) $res->json('error'));
         Http::assertNothingSent();
-        // The CONTROL: the boundary itself is accepted, so the refusal is a bound and
-        // not a blanket. ⚠ No second `Http::fake()` — a second registration STACKS
-        // behind the first (the first matching stub wins), so it would look like a new
-        // fixture while the old one answered.
-        $this->callTool(['tool' => 'board_correct_card', 'args' => [
+        // The CONTROL: the boundary itself does not get THIS refusal, so it is a bound and not
+        // a blanket. Since card#11987 a 255-character name is refused all the same — by T1 of the
+        // plain-language rules, which is stricter than kanban's cap and runs after it — so the
+        // control is which refusal answers, not a 200. ⚠ No second `Http::fake()` — a second
+        // registration STACKS behind the first (the first matching stub wins).
+        $atCap = (string) $this->callTool(['tool' => 'board_correct_card', 'args' => [
             'card_id' => 42, 'name' => str_repeat('x', 255),
-        ]])->assertStatus(200);
+        ]])->assertStatus(422)->json('error');
+        $this->assertStringNotContainsString('kanban accepts at most', $atCap);
+        $this->assertStringContainsString('T1 (at most 80 characters): the title is 255 characters', $atCap);
+        Http::assertNothingSent();
     }
 
     /**
@@ -3367,7 +3378,7 @@ class AgentToolsCallTest extends TestCase
     public function test_a_caller_supplied_owner_tag_is_refused_by_name_and_nothing_is_sent(string $tool, string $key, string $tag): void
     {
         Http::fake(['*' => Http::response(['data' => ['id' => 1]], 201)]);
-        $args = ['tags' => [$tag]] + ($key === 'title' ? ['title' => 'a card'] : ['card_id' => 42]);
+        $args = ['tags' => [$tag]] + ($key === 'title' ? ['title' => 'a card', 'description' => PlainCardText::DESCRIPTION] : ['card_id' => 42]);
 
         $res = $this->callTool(['tool' => $tool, 'args' => $args]);
 
@@ -3410,7 +3421,7 @@ class AgentToolsCallTest extends TestCase
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
         $res = $this->callTool(['tool' => 'board_create_card', 'args' => [
-            'title' => 'a card', 'tags' => [str_repeat('x', 65)],
+            'title' => 'a card', 'description' => PlainCardText::DESCRIPTION, 'tags' => [str_repeat('x', 65)],
         ]]);
 
         $res->assertStatus(422);
@@ -3584,13 +3595,13 @@ class AgentToolsCallTest extends TestCase
         Log::spy();
         Http::fake($this->correctFake(live: [$this->assignedCardRow($this->myKanbanUserId())]));
 
-        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'corrected', 'description' => 'fixed']]);
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'corrected', 'description' => PlainCardText::DESCRIPTION]]);
 
         $res->assertStatus(200)
             ->assertJsonPath('result.corrected', true)
             ->assertJsonPath('result.authorized_by', 'assigned')
             ->assertJsonPath('result.fields', ['name', 'description']);
-        $this->assertSame(['name' => 'corrected', 'description' => 'fixed'], $this->sentPatchBody());
+        $this->assertSame(['name' => 'corrected', 'description' => PlainCardText::DESCRIPTION], $this->sentPatchBody());
         $this->assertCorrectedLogRecords('assigned');
     }
 
@@ -3987,7 +3998,7 @@ class AgentToolsCallTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
 
         // `description`, not `name`: the string-keyed case carries `no-automove`, which pins `name`.
-        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'description' => 'x']])
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'description' => PlainCardText::DESCRIPTION]])
             ->assertStatus(200)
             ->assertJsonPath('result.authorized_by', 'minted');
     }
@@ -4186,7 +4197,7 @@ class AgentToolsCallTest extends TestCase
             '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k9']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k9']]);
 
         $res->assertStatus(422);
         $error = (string) $res->json('error');
@@ -4209,7 +4220,7 @@ class AgentToolsCallTest extends TestCase
                 : Http::response(['data' => []]);
         }, '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k9']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k9']]);
 
         $res->assertStatus(422);
         $this->assertStringContainsString('revoked, rotated', (string) $res->json('error'));
@@ -4220,7 +4231,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake(['*/tasks/search.json*' => Http::response('boom', 503)]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k9']])
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k9']])
             ->assertStatus(502);
     }
 
@@ -4253,7 +4264,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response('{"message":"The name field must not be greater than 255 characters."}', $status)]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION]]);
 
         $res->assertStatus(422);
         $error = (string) $res->json('error');
@@ -4268,7 +4279,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response('boom', 500)]);
 
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']])->assertStatus(502);
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'description' => PlainCardText::DESCRIPTION]])->assertStatus(502);
     }
 
     /**
@@ -4286,15 +4297,19 @@ class AgentToolsCallTest extends TestCase
             '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
         ]);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => str_repeat('x', 256)]]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => str_repeat('x', 256), 'description' => PlainCardText::DESCRIPTION]]);
 
         $res->assertStatus(422);
         $this->assertStringContainsString('255', (string) $res->json('error'));
         Http::assertNothingSent();
-        // The CONTROL: the boundary itself is accepted, so the refusal is a bound and not a
-        // blanket. ⚠ No second `Http::fake()` — a second registration STACKS behind the first.
-        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => str_repeat('x', 255)]])
-            ->assertStatus(200);
+        // The CONTROL: the boundary itself does not get THIS refusal, so it is a bound and not a
+        // blanket — and since card#11987 T1 refuses it instead (see the correction twin above).
+        // ⚠ No second `Http::fake()` — a second registration STACKS behind the first.
+        $atCap = (string) $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => str_repeat('x', 255), 'description' => PlainCardText::DESCRIPTION]])
+            ->assertStatus(422)->json('error');
+        $this->assertStringNotContainsString('kanban accepts at most', $atCap);
+        $this->assertStringContainsString('T1 (at most 80 characters): the title is 255 characters', $atCap);
+        Http::assertNothingSent();
     }
 
     // ─── board_take_card: the seat claims a card for ITSELF, and for nobody else (card#9170) ─
@@ -5640,11 +5655,11 @@ class AgentToolsCallTest extends TestCase
                 },
             ],
             'board_create_card' => [
-                'args' => ['title' => 'x', 'description' => 'd', 'tags' => ['priority:high'], 'idempotency_key' => 'k1'],
+                'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION, 'tags' => ['priority:high'], 'idempotency_key' => 'k1'],
                 'fake' => $this->archiveAxisFake(live: [], archived: [], newId: 77),
             ],
             'board_correct_card' => [
-                'args' => ['card_id' => 42, 'name' => 'n', 'description' => 'd', 'tags' => ['priority:low']],
+                'args' => ['card_id' => 42, 'name' => 'n', 'description' => PlainCardText::DESCRIPTION, 'tags' => ['priority:low']],
                 'fake' => $this->correctFake(live: [$this->ownCardRow()]),
             ],
             'board_take_card' => [
@@ -5825,7 +5840,7 @@ class AgentToolsCallTest extends TestCase
     {
         Http::fake($this->undeclaredKeyFixture('board_create_card')['fake']);
 
-        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'swimlane_id' => 9, 'assignee' => 3]]);
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION, 'swimlane_id' => 9, 'assignee' => 3]]);
 
         Http::assertNothingSent();
         $res->assertStatus(422);
@@ -5916,9 +5931,9 @@ class AgentToolsCallTest extends TestCase
 
                 return ['tool' => 'board_my_cards'] + $this->undeclaredKeyFixture('board_my_cards');
             })(),
-            'board_create_card idempotency hit' => ['tool' => 'board_create_card', 'args' => ['title' => 'x', 'idempotency_key' => 'k1'],
+            'board_create_card idempotency hit' => ['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k1'],
                 'fake' => $this->archiveAxisFake(live: [['id' => 7]], archived: [], newId: 77)],
-            'board_create_card raced duplicate collapsed' => ['tool' => 'board_create_card', 'args' => ['title' => 'x', 'idempotency_key' => 'k1'],
+            'board_create_card raced duplicate collapsed' => ['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => 'k1'],
                 'fake' => $this->archiveAxisFake(live: [], archived: [], newId: 8, postCreate: [['id' => 8], ['id' => 9]])],
             'board_correct_card lookup misses into the archive side' => $lookupMiss('board_correct_card', ['card_id' => 42, 'name' => 'n'], $this->correctFake(live: [])),
             'board_take_card lookup misses into the archive side' => $lookupMiss('board_take_card', ['card_id' => 42], $this->takeFake(live: [])),
@@ -5977,6 +5992,9 @@ class AgentToolsCallTest extends TestCase
     #[DataProvider('unansweredCallScenarios')]
     public function test_a_board_call_that_gets_no_answer_is_the_retryable_502_on_every_upstream_call(string $scenario): void
     {
+        // EVERY request is this test's population, the create's custom-field read included: every
+        // create scenario carries an idempotency_key, so an unanswered field read is the 502 too.
+        PlainCardText::passFieldReadsThrough();
         $fake = null;
         $failAt = 0;
         $sent = 0;
@@ -6071,6 +6089,7 @@ class AgentToolsCallTest extends TestCase
     #[DataProvider('unansweredCallScenarios')]
     public function test_a_board_422_is_relayed_on_every_write_and_stays_the_retryable_502_on_every_read(string $scenario): void
     {
+        PlainCardText::passFieldReadsThrough();
         $fake = null;
         $failAt = 0;
         $sent = 0;

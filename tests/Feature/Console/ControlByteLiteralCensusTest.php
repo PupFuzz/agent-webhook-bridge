@@ -26,6 +26,7 @@ class ControlByteLiteralCensusTest extends TestCase
      * @var array<string, array{string, string}>
      */
     private const RULINGS = [
+        'Bridge/Support/CardTextRules.php::(file scope)#1' => ['\r \x0B \f', 'the six ASCII blanks kbcard treats as blank, used only to trim and measure a title or description before it is compared and never written to any stream'],
         'Bridge/Tools/PublicKeyLineShape.php::isSingleAuthorizedKeyLine#1' => ['\r', 'a str_contains() refusal test on a candidate key line'],
         'Bridge/Validation/SocketPath.php::isValid#1' => ['\x00', 'a str_contains() refusal test on a socket path'],
         'Bridge/Writeback/OncePerKey.php::claim#1' => ['\x00', 'the delimiter joining the in-memory one-attempt-per-key dedupe key, which never leaves the map'],

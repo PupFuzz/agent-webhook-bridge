@@ -1,0 +1,1085 @@
+{
+  "schema": 1,
+  "about": "The behavioural corpus for the bridge's PORT of agent-board-toolkit's plain-language card-text checks (card#11987). The toolkit OWNS the rules — titles T1-T6, the description's filing bar (the IMPACT line) and D1 — and declares them once, in bin/_card-text-rules.json; `kbcard` reads that file, and the bridge vendors it verbatim (resources/card-text-rules.json) and reads it in PHP, because board_create_card and board_correct_card must refuse exactly the text `kbcard` refuses, with the same words. What is compared is the WHOLE refusal text after kbcard's `kbcard: ` prefix — the verdict, the findings, the suggested rewrite — or null for text that passes. tests/Unit/Support/CardTextParityTest.php runs every vector against the port on every test run; bin/card-text-parity.sh runs the same vectors against a toolkit checkout's own kbcard.",
+  "mirror": {
+    "repo": "PupFuzz/agent-webhook-bridge",
+    "class": "App\\Bridge\\Support\\CardTextCheck",
+    "corpus": "docs/card-text-parity-corpus.json",
+    "checked_by": "tests/Unit/Support/CardTextParityTest.php",
+    "runner": "bin/card-text-parity.sh"
+  },
+  "authority": {
+    "repo": "PupFuzz/agent-board-toolkit",
+    "symbol": "kbcard title-check / kbcard description-check (_kbc_title_bar, _kbc_mint_bar) over bin/_card-text-rules.json",
+    "path": "bin/kbcard",
+    "relationship": "The toolkit OWNS these rules (its README § \"Plain-language card text\" states them and § \"The rule file's schema\" defines the matching for a non-bash reader). The port follows kbcard's ACTUAL behaviour wherever a PCRE reader can — what a seat is told by the CLI — and where it cannot, follows the README and publishes the pair under known_divergences for the toolkit to settle. Any other disagreement is the bridge's defect to fix by re-porting."
+  },
+  "how_the_far_end_runs_this": "From a bridge checkout: `bin/card-text-parity.sh --corpus docs/card-text-parity-corpus.json --toolkit <toolkit git checkout>`. Each vector's first argument goes to that checkout's `bin/kbcard title-check --name` (method `title`) or `description-check --description` (method `description`), in a sandbox HOME with no KB_TITLE_BAR / KB_MINT_BAR; rc 0 is null, rc 2 is its stderr less the `kbcard: ` prefix and the final newline, which must equal `expect` byte for byte. The second and third arguments are the verb and tail kbcard's dry run prints, and are checked, not sent. SOURCE_COMMIT / SOURCE_SHA256 are checked against the checkout's git history and the bridge's vendored file. Exit 0 agreed, 1 drifted, 2 could not measure. `--control` perturbs every expectation and constant and must report each one.",
+  "not_checked_by_this_repo": [
+    "NOTHING IN THIS REPO'S CI RUNS THE TOOLKIT: a change to kbcard or to its rule file reds nothing here until someone runs bin/card-text-parity.sh against the changed toolkit. Run it on a toolkit bump. This repo's suite does check that the vendored bytes still hash to SOURCE_SHA256.",
+    "The check is VECTOR-granular: a rule, or a branch of kbcard, that no published vector reaches is invisible to both ends. POSIX ERE leftmost-longest and PCRE backtracking can differ in ways the port's load-time alternation guard does not cover; only the vectors hold those.",
+    "A BLANK title or description never reaches the rules at either end, so no vector carries one: kbcard refuses it as holding no text, and the bridge refuses a blank title with its own `title` refusal and treats a blank description as absent.",
+    "The rule file's `tags` block is not read by the bridge; tag policy is CallerTagPolicy's."
+  ],
+  "last_measured": {
+    "date": "2026-10-17",
+    "authority_ref": "PupFuzz/agent-board-toolkit c4c7fa65f9be9d2e7f898983cfe0fed9087dd360, a local git clone checked out at that commit",
+    "authority_blob": "sha256:91228b0e19d2eef4b491c577a29b63b9949aa8e3e5eac71c56963007f6009f07 (bin/kbcard), sha256:fa825cb983a79f244075600e934aab19c2b13d9e61a9f8cbfe71ad43a75fc4e8 (bin/_card-text-rules.json) — copied from the runner's own `executed:` lines, not typed",
+    "vectors_digest": "sha256:2760b218c9046fcaaffc2138925781df92fd61f2e5ebe6ddbb50b0bffd29caae",
+    "method": "`bin/card-text-parity.sh --corpus docs/card-text-parity-corpus.json --toolkit <that clone>` sent every vector through that checkout's kbcard and checked both pinned constants; `--control` was run on the same clone and reported every perturbed expectation. A copy of that clone with T1's limit edited to 79 was reported as DRIFTED (exit 1), so the runner is seen to fail on a changed rule.",
+    "result": "Exit 0: every vector, the one known divergence and both pinned constants agreed. Whoever adds, changes or deletes a vector re-takes this measurement over the WHOLE corpus and re-writes vectors_digest — CardTextParityTest reds when the digest no longer matches."
+  },
+  "mirror_local": {},
+  "mirrored_but_not_driven": {},
+  "known_divergences": {
+    "title": [
+      {
+        "args": [
+          "flag --x-",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "authority": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --x — say what it does in words; move the identifier to the Technical notes\n  suggested title: flag -\n  technical notes line (paste it below the description's Technical notes divider): --x",
+        "mirror": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --x- — say what it does in words; move the identifier to the Technical notes\n  suggested title: flag\n  technical notes line (paste it below the description's Technical notes divider): --x-",
+        "why": "kbcard's `word` boundary appends the capture group ([^A-Za-z0-9_]|$) to the pattern, and that group can itself match the trailing `-`: `--x` followed by `-` and `--x-` followed by end-of-string tie on overall length, and glibc's ERE hands group 1 the shorter. The toolkit README's algorithm (a boundary that consumes nothing) gives `--x-`, which is what the port's PCRE lookahead answers. Following kbcard would mean modelling one libc's tie-break rather than the rule, so the pair is published and reported to the toolkit to settle; the visible effect is a stray `-` left in kbcard's suggested title."
+      }
+    ]
+  },
+  "constants": {
+    "SOURCE_COMMIT": "c4c7fa65f9be9d2e7f898983cfe0fed9087dd360",
+    "SOURCE_SHA256": "fa825cb983a79f244075600e934aab19c2b13d9e61a9f8cbfe71ad43a75fc4e8"
+  },
+  "vectors": {
+    "title": [
+      {
+        "args": [
+          "Plain words only",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "passes: no rule matches"
+      },
+      {
+        "args": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T1 (at most 80 characters): the title is 81 characters, over the limit of 80 — shorten it",
+        "note": "T1: 81 characters, over 80"
+      },
+      {
+        "args": [
+          "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "T1 counts code points, not bytes: 80 two-byte characters pass"
+      },
+      {
+        "args": [
+          "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T1 (at most 80 characters): the title is 81 characters, over the limit of 80 — shorten it",
+        "note": "T1 counts code points: 81 two-byte characters fail"
+      },
+      {
+        "args": [
+          " \taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\u000b\f\r",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "T1 is taken after trimming the six ASCII blanks, so 80 characters pass"
+      },
+      {
+        "args": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa x.py",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T1 (at most 80 characters): the title is 95 characters, over the limit of 80 — shorten it\n  T2 (no file path): x.py — move the path to the Technical notes\n  suggested title: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    (still 90 characters, over the limit of 80 — shorten it)\n  technical notes line (paste it below the description's Technical notes divider): x.py",
+        "note": "T1 with a token: the suggested title is still over the limit, and says so"
+      },
+      {
+        "args": [
+          "Move logs out of /home/u/logs today",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): /home/u/logs — move the path to the Technical notes\n  suggested title: Move logs out of today\n  technical notes line (paste it below the description's Technical notes divider): /home/u/logs",
+        "note": "T2: a /home/ path"
+      },
+      {
+        "args": [
+          "Clean ~/cache before release",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): ~/cache — move the path to the Technical notes\n  suggested title: Clean before release\n  technical notes line (paste it below the description's Technical notes divider): ~/cache",
+        "note": "T2: a ~/ path"
+      },
+      {
+        "args": [
+          "Fix the parser in lib/parse.c soon",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): lib/parse.c — move the path to the Technical notes\n  suggested title: Fix the parser in soon\n  technical notes line (paste it below the description's Technical notes divider): lib/parse.c",
+        "note": "T2: a dir/file.ext path"
+      },
+      {
+        "args": [
+          "Update notes.md and config.yml and run.sh",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): notes.md, config.yml, run.sh — move the path to the Technical notes\n  suggested title: Update and and\n  technical notes line (paste it below the description's Technical notes divider): notes.md, config.yml, run.sh",
+        "note": "T2: file names, one finding per token, in order"
+      },
+      {
+        "args": [
+          "Make `foo` faster",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): `foo` — say what it does in words; move the identifier to the Technical notes\n  suggested title: Make faster\n  technical notes line (paste it below the description's Technical notes divider): `foo`",
+        "note": "T3: backtick-quoted text"
+      },
+      {
+        "args": [
+          "Odd ` mark in title",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): ` — say what it does in words; move the identifier to the Technical notes\n  suggested title: Odd mark in title\n  technical notes line (paste it below the description's Technical notes divider): `",
+        "note": "T3: a lone backtick"
+      },
+      {
+        "args": [
+          "Call parse() twice and Foo::bar() once",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): parse(), Foo::bar() — say what it does in words; move the identifier to the Technical notes\n  suggested title: Call twice and once\n  technical notes line (paste it below the description's Technical notes divider): parse(), Foo::bar()",
+        "note": "T3: function calls"
+      },
+      {
+        "args": [
+          "Read ${HOME_DIR} and $PATH",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): ${HOME_DIR}, $PATH — say what it does in words; move the identifier to the Technical notes\n  suggested title: Read and\n  technical notes line (paste it below the description's Technical notes divider): ${HOME_DIR}, $PATH",
+        "note": "T3: both variable forms, the braced one cut first"
+      },
+      {
+        "args": [
+          "Add --dry-run to the tool",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --dry-run — say what it does in words; move the identifier to the Technical notes\n  suggested title: Add to the tool\n  technical notes line (paste it below the description's Technical notes divider): --dry-run",
+        "note": "T3: a --flag"
+      },
+      {
+        "args": [
+          "Rename max_retries setting",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): max_retries — say what it does in words; move the identifier to the Technical notes\n  suggested title: Rename setting\n  technical notes line (paste it below the description's Technical notes divider): max_retries",
+        "note": "T3: a snake_case word"
+      },
+      {
+        "args": [
+          "Follow up on card#12 and rt#5",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): card#12, rt#5 — move the reference to the Technical notes\n  suggested title: Follow up on and\n  technical notes line (paste it below the description's Technical notes divider): card#12, rt#5",
+        "note": "T4: word#N references"
+      },
+      {
+        "args": [
+          "Record dl-42 and DL-7",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): dl-42, DL-7 — move the reference to the Technical notes\n  suggested title: Record and\n  technical notes line (paste it below the description's Technical notes divider): dl-42, DL-7",
+        "note": "T4: a DL number, case-insensitive"
+      },
+      {
+        "args": [
+          "Merge pr-12 and PR #13 and PR 14",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): pr-12, PR #13, PR 14 — move the reference to the Technical notes\n  suggested title: Merge and and\n  technical notes line (paste it below the description's Technical notes divider): pr-12, PR #13, PR 14",
+        "note": "T4: PR numbers, case-insensitive"
+      },
+      {
+        "args": [
+          "Handle #12 but not #1",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): #12 — move the reference to the Technical notes\n  suggested title: Handle but not #1\n  technical notes line (paste it below the description's Technical notes divider): #12",
+        "note": "T4: #NN needs two or more digits"
+      },
+      {
+        "args": [
+          "[api] Faster search",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T5 (no leading [...] prefix): [api] — that is the component field now: pass --component\n  suggested title: Faster search\n  technical notes line (paste it below the description's Technical notes divider): [api]",
+        "note": "T5: a leading [...] prefix"
+      },
+      {
+        "args": [
+          "Faster [api] search",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "T5 is start-only: a later [...] passes"
+      },
+      {
+        "args": [
+          "CLASS: duplicate cards",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): CLASS: — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: duplicate cards\n  technical notes line (paste it below the description's Technical notes divider): CLASS:",
+        "note": "T6: a listed WORD: prefix"
+      },
+      {
+        "args": [
+          "Security: tighten the token check",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "T6: Security: is allowed"
+      },
+      {
+        "args": [
+          "Built: release notes",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): Built: — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: release notes\n  technical notes line (paste it below the description's Technical notes divider): Built:",
+        "note": "T6: Built: is listed, case-sensitively"
+      },
+      {
+        "args": [
+          "CLASS: CLASS: thing",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): CLASS: — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: CLASS: thing\n  technical notes line (paste it below the description's Technical notes divider): CLASS:",
+        "note": "T6: the prefix cut is ONE pass — the second CLASS: survives"
+      },
+      {
+        "args": [
+          "SECURITY: CLASS: thing",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): SECURITY: — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: CLASS: thing\n  technical notes line (paste it below the description's Technical notes divider): SECURITY:",
+        "note": "T6: values are tried in list order once each — CLASS: is tested before SECURITY: is cut, so it survives"
+      },
+      {
+        "args": [
+          "seen-to-fail selftests rc 2 canon #5",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): seen-to-fail, canon #5, selftests, rc 2 — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: nothing is left once those are cut — write the title in plain words\n  technical notes line (paste it below the description's Technical notes divider): seen-to-fail, canon #5, selftests, rc 2",
+        "note": "T6: process jargon; nothing is left"
+      },
+      {
+        "args": [
+          "Selftest Canon fix",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): Selftest — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: Canon fix\n  technical notes line (paste it below the description's Technical notes divider): Selftest",
+        "note": "T6 jargon folds case; bare canon is still a match of canon[[:space:]]*#[0-9]*"
+      },
+      {
+        "args": [
+          "Fix [x] bin/foo.py and card#12 via `run()` CLASS: --flag",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): bin/foo.py — move the path to the Technical notes\n  T3 (no code identifier): `run()`, --flag — say what it does in words; move the identifier to the Technical notes\n  T4 (no card, PR, issue or DL number): card#12 — move the reference to the Technical notes\n  suggested title: Fix [x] and via CLASS:\n  technical notes line (paste it below the description's Technical notes divider): bin/foo.py, `run()`, --flag, card#12",
+        "note": "several rules: grouped per rule in rule order, the notes line in finding order"
+      },
+      {
+        "args": [
+          "`a, b` thing",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): `a, b` — say what it does in words; move the identifier to the Technical notes\n  suggested title: thing\n  technical notes line (paste it below the description's Technical notes divider): `a, b`",
+        "note": "a token holding a comma is relayed whole"
+      },
+      {
+        "args": [
+          "x.py",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): x.py — move the path to the Technical notes\n  suggested title: nothing is left once those are cut — write the title in plain words\n  technical notes line (paste it below the description's Technical notes divider): x.py",
+        "note": "nothing is left once the token is cut"
+      },
+      {
+        "args": [
+          "a\u000bb   c\td",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "the six blanks fold to one space: passes"
+      },
+      {
+        "args": [
+          "x.py\u000b\u000bkeep\twords",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): x.py — move the path to the Technical notes\n  suggested title: keep words\n  technical notes line (paste it below the description's Technical notes divider): x.py",
+        "note": "the rewrite folds the six blanks"
+      },
+      {
+        "args": [
+          "x.py rest",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): x.py — move the path to the Technical notes\n  suggested title:  rest\n  technical notes line (paste it below the description's Technical notes divider): x.py",
+        "note": "NBSP is not one of the six blanks: it survives in the rewrite"
+      },
+      {
+        "args": [
+          "pre--flag here",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "the word boundary: no --flag after a word character"
+      },
+      {
+        "args": [
+          "abc_ def",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): abc_ — say what it does in words; move the identifier to the Technical notes\n  suggested title: def\n  technical notes line (paste it below the description's Technical notes divider): abc_",
+        "note": "snake_case needs a word character before the underscore and a boundary after"
+      },
+      {
+        "args": [
+          "flag --x- now",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): --x- — say what it does in words; move the identifier to the Technical notes\n  suggested title: flag now\n  technical notes line (paste it below the description's Technical notes divider): --x-",
+        "note": "a --flag token keeps its trailing hyphen mid-title"
+      },
+      {
+        "args": [
+          "Plain words — with ünïcödé",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "non-ASCII text passes"
+      },
+      {
+        "args": [
+          "Follow up on the sprint plan",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "Follow up on card#11140",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): card#11140 — move the reference to the Technical notes\n  suggested title: Follow up on\n  technical notes line (paste it below the description's Technical notes divider): card#11140"
+      },
+      {
+        "args": [
+          "Fix `foo` in docs/SPRINT.md for card#11140 and run_thing()",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): docs/SPRINT.md — move the path to the Technical notes\n  T3 (no code identifier): `foo`, run_thing() — say what it does in words; move the identifier to the Technical notes\n  T4 (no card, PR, issue or DL number): card#11140 — move the reference to the Technical notes\n  suggested title: Fix in for and\n  technical notes line (paste it below the description's Technical notes divider): docs/SPRINT.md, `foo`, run_thing(), card#11140"
+      },
+      {
+        "args": [
+          "[fw] x",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T5 (no leading [...] prefix): [fw] — that is the component field now: pass --component\n  suggested title: x\n  technical notes line (paste it below the description's Technical notes divider): [fw]"
+      },
+      {
+        "args": [
+          "CLASS: x",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): CLASS: — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: x\n  technical notes line (paste it below the description's Technical notes divider): CLASS:"
+      },
+      {
+        "args": [
+          "SECURITY: CLASS: x",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): SECURITY: — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: CLASS: x\n  technical notes line (paste it below the description's Technical notes divider): SECURITY:"
+      },
+      {
+        "args": [
+          "CLASS: SECURITY: x",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): CLASS:, SECURITY: — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: x\n  technical notes line (paste it below the description's Technical notes divider): CLASS:, SECURITY:"
+      },
+      {
+        "args": [
+          "Security: rotate the token",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "Built: dispatched",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): Built: — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: dispatched\n  technical notes line (paste it below the description's Technical notes divider): Built:"
+      },
+      {
+        "args": [
+          "Run the selftest and seen-to-fail control, canon #16, rc 2",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): #16 — move the reference to the Technical notes\n  T6 (no WORD: prefix and no process jargon): seen-to-fail, selftest, rc 2 — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: Run the and control, canon ,\n  technical notes line (paste it below the description's Technical notes divider): #16, seen-to-fail, selftest, rc 2"
+      },
+      {
+        "args": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa card#1",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T1 (at most 80 characters): the title is 95 characters, over the limit of 80 — shorten it\n  T4 (no card, PR, issue or DL number): card#1 — move the reference to the Technical notes\n  suggested title: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    (still 88 characters, over the limit of 80 — shorten it)\n  technical notes line (paste it below the description's Technical notes divider): card#1"
+      },
+      {
+        "args": [
+          "  padded   title\twith tabs  ",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "Use --dry-run with $HOME and ${VAR}",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): ${VAR}, $HOME, --dry-run — say what it does in words; move the identifier to the Technical notes\n  suggested title: Use with and\n  technical notes line (paste it below the description's Technical notes divider): ${VAR}, $HOME, --dry-run"
+      },
+      {
+        "args": [
+          "Edit ~/x/y and /home/kanban/foo",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): /home/kanban/foo, ~/x/y — move the path to the Technical notes\n  suggested title: Edit and\n  technical notes line (paste it below the description's Technical notes divider): /home/kanban/foo, ~/x/y"
+      },
+      {
+        "args": [
+          "PR 12 and PR#13 and pr-14 and DL-42 and #12 and #1",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): PR#13, DL-42, PR 12, pr-14, #12 — move the reference to the Technical notes\n  suggested title: and and and and and #1\n  technical notes line (paste it below the description's Technical notes divider): PR#13, DL-42, PR 12, pr-14, #12"
+      },
+      {
+        "args": [
+          "Update README.md and a.b.c/d.e.f",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): a.b.c/d.e.f, README.md — move the path to the Technical notes\n  suggested title: Update and\n  technical notes line (paste it below the description's Technical notes divider): a.b.c/d.e.f, README.md"
+      },
+      {
+        "args": [
+          "Ünïcödé títle with a snake_case word",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): snake_case — say what it does in words; move the identifier to the Technical notes\n  suggested title: Ünïcödé títle with a word\n  technical notes line (paste it below the description's Technical notes divider): snake_case"
+      },
+      {
+        "args": [
+          "card#1",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): card#1 — move the reference to the Technical notes\n  suggested title: nothing is left once those are cut — write the title in plain words\n  technical notes line (paste it below the description's Technical notes divider): card#1"
+      },
+      {
+        "args": [
+          "selftests selftestsX xselftest",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): selftests — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: selftestsX xselftest\n  technical notes line (paste it below the description's Technical notes divider): selftests"
+      },
+      {
+        "args": [
+          "rc 12 rc12 RC 3",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): rc 12 — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: rc12 RC 3\n  technical notes line (paste it below the description's Technical notes divider): rc 12"
+      },
+      {
+        "args": [
+          "Fix the a.py and b.yml and c.md.bak",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): a.py, b.yml, c.md — move the path to the Technical notes\n  suggested title: Fix the and and .bak\n  technical notes line (paste it below the description's Technical notes divider): a.py, b.yml, c.md"
+      },
+      {
+        "args": [
+          "OPERATOR-DIRECTED: FLEET: do it",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T6 (no WORD: prefix and no process jargon): OPERATOR-DIRECTED: — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: FLEET: do it\n  technical notes line (paste it below the description's Technical notes divider): OPERATOR-DIRECTED:"
+      },
+      {
+        "args": [
+          "[a] [b] c",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T5 (no leading [...] prefix): [a], [b] — that is the component field now: pass --component\n  suggested title: c\n  technical notes line (paste it below the description's Technical notes divider): [a], [b]"
+      },
+      {
+        "args": [
+          "x\u000bvt\fff",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "foo()bar baz.qux()",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): foo(), baz.qux() — say what it does in words; move the identifier to the Technical notes\n  suggested title: bar\n  technical notes line (paste it below the description's Technical notes divider): foo(), baz.qux()"
+      },
+      {
+        "args": [
+          "word#12x",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "`unterminated backtick",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T3 (no code identifier): ` — say what it does in words; move the identifier to the Technical notes\n  suggested title: unterminated backtick\n  technical notes line (paste it below the description's Technical notes divider): `"
+      },
+      {
+        "args": [
+          "Canon#3 and CANON # and canon",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): Canon#3 — move the reference to the Technical notes\n  T6 (no WORD: prefix and no process jargon): CANON # — drop it: Security: is the only WORD: prefix allowed, and process words belong in the Technical notes\n  suggested title: and and canon\n  technical notes line (paste it below the description's Technical notes divider): Canon#3, CANON #"
+      },
+      {
+        "args": [
+          "Fix the login page",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "x y",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "a\rb",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "Fix a/b.c.d_ thing",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): a/b.c — move the path to the Technical notes\n  T3 (no code identifier): d_ — say what it does in words; move the identifier to the Technical notes\n  suggested title: Fix . thing\n  technical notes line (paste it below the description's Technical notes divider): a/b.c, d_"
+      },
+      {
+        "args": [
+          "Bump x.py.md and docs/a/b/c.json",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): docs/a/b/c.json, x.py.md — move the path to the Technical notes\n  suggested title: Bump and\n  technical notes line (paste it below the description's Technical notes divider): docs/a/b/c.json, x.py.md"
+      },
+      {
+        "args": [
+          "a/b.c-d",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T2 (no file path): a/b.c — move the path to the Technical notes\n  suggested title: -d\n  technical notes line (paste it below the description's Technical notes divider): a/b.c"
+      },
+      {
+        "args": [
+          "Mention PR    7 then",
+          "title-check",
+          "this was a dry run; no request is ever sent."
+        ],
+        "expect": "title-check: the title breaks the plain-language card rules (README.md § Plain-language card text) — this was a dry run; no request is ever sent.\n  T4 (no card, PR, issue or DL number): PR 7 — move the reference to the Technical notes\n  suggested title: Mention then\n  technical notes line (paste it below the description's Technical notes divider): PR 7"
+      }
+    ],
+    "description": [
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "passes: summary, divider, IMPACT below"
+      },
+      {
+        "args": [
+          "hello",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the card's description states no IMPACT line — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent.",
+        "note": "no IMPACT line"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: REQUESTED",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: IMPACT is REQUESTED and no non-empty 'REQUESTED BY:' line is in the description — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent.",
+        "note": "REQUESTED without its REQUESTED BY line"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: REQUESTED\nREQUESTED BY: the operator, today",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "REQUESTED with its line"
+      },
+      {
+        "args": [
+          "Summary\nREQUESTED BY: the operator\nTechnical notes (for agents)\nIMPACT: REQUESTED",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "the required line counts wherever it sits"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: REQUESTED\nREQUESTED BY:",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: IMPACT is REQUESTED and no non-empty 'REQUESTED BY:' line is in the description — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent.",
+        "note": "an empty REQUESTED BY value does not count"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: BELOW-BAR\nBELOW-BAR REASON: **",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: IMPACT is BELOW-BAR and no non-empty 'BELOW-BAR REASON:' line is in the description — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent.",
+        "note": "a value of emphasis only does not count"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: BELOW-BAR\nbelow-bar \t reason:  because it is cheap",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "label spaces are any run of spaces, case folds"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: SECURITY",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "SECURITY passes alone"
+      },
+      {
+        "args": [
+          "Summary\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the description has no 'Technical notes (for agents)' line — D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent.",
+        "note": "no divider line"
+      },
+      {
+        "args": [
+          "Technical notes (for agents)\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the description has no plain-language text above the 'Technical notes (for agents)' line — D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent.",
+        "note": "no text above the divider"
+      },
+      {
+        "args": [
+          "Summary\nIMPACT: RUNTIME\nTechnical notes (for agents)",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the IMPACT line sits above the 'Technical notes (for agents)' line — move it below. D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent.",
+        "note": "the IMPACT line above the divider"
+      },
+      {
+        "args": [
+          "Summary\n## **technical NOTES (for agents):**\n- **impact**: runtime",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "decoration and case are ignored on both lines"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents) extra\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the description has no 'Technical notes (for agents)' line — D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent.",
+        "note": "a divider line with more text is not the divider"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT:RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "no space is needed after the colon"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT - RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the card's description states no IMPACT line — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent.",
+        "note": "the separator is a colon"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nThe IMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the card's description states no IMPACT line — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent.",
+        "note": "the label must open the line"
+      },
+      {
+        "args": [
+          "Summary\r\nTechnical notes (for agents)\r\nIMPACT: RUNTIME\r",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "CRLF: a CR left at a line end is trailing whitespace, so it passes"
+      },
+      {
+        "args": [
+          "Summary\rTechnical notes (for agents)\rIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the card's description states no IMPACT line — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent.",
+        "note": "lines split on LF ONLY: a lone CR is not a line break, so this is one line with no IMPACT label at its start"
+      },
+      {
+        "args": [
+          "Technical notes (for agents)\nSummary\nTechnical notes (for agents)\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the description has no plain-language text above the 'Technical notes (for agents)' line — D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent.",
+        "note": "the FIRST divider line is the divider, so the summary below it does not count"
+      },
+      {
+        "args": [
+          "\u000b\f \t\nTechnical notes (for agents)\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the description has no plain-language text above the 'Technical notes (for agents)' line — D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent.",
+        "note": "a line of the six blanks is blank, so there is no text above"
+      },
+      {
+        "args": [
+          " \nTechnical notes (for agents)\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "NBSP is not one of the six blanks, so it is text above"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: RUNTIMEX",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the card's description states no IMPACT line — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent.",
+        "note": "a kind must end at a non-word character"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: RUNTIME-ish",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "a hyphen ends a kind"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: RUNTIME_X\nIMPACT: SECURITY",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "the IMPACT line is the first line that matches a kind"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: SECURITY\nIMPACT: REQUESTED",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null,
+        "note": "the first matching line decides the kind"
+      },
+      {
+        "args": [
+          "IMPACT: RUNTIME\nSummary\nTechnical notes (for agents)\nIMPACT: SECURITY",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the IMPACT line sits above the 'Technical notes (for agents)' line — move it below. D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent.",
+        "note": "an IMPACT line above the divider is THE line even when another sits below"
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the card's description states no IMPACT line — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent.",
+        "note": "a divider with nothing below: no IMPACT line"
+      },
+      {
+        "args": [
+          "what broke\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the description has no 'Technical notes (for agents)' line — D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent."
+      },
+      {
+        "args": [
+          "what broke\n\nTechnical notes (for agents)\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "IMPACT: RUNTIME\nTechnical notes (for agents)\nmore",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the IMPACT line sits above the 'Technical notes (for agents)' line — move it below. D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent."
+      },
+      {
+        "args": [
+          "Summary\n**Technical notes (for agents):**\n> - impact: security",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: REQUESTED\nREQUESTED BY: me, today, the ask",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: BELOW-BAR\nBELOW-BAR REASON:",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: IMPACT is BELOW-BAR and no non-empty 'BELOW-BAR REASON:' line is in the description — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent."
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: BELOW-BAR\n**BELOW-BAR  REASON:** because",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "\n \t\nTechnical notes (for agents)\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the description has no plain-language text above the 'Technical notes (for agents)' line — D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent."
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nTechnical notes (for agents)\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "Summary\nIMPACT: RUNTIMEX\nTechnical notes (for agents)\nIMPACT: SECURITY",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "Summary\n## technical NOTES (for agents) ##\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      },
+      {
+        "args": [
+          "no bar at all",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the card's description states no IMPACT line — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent."
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nsee the impact: runtime mid line",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the card's description states no IMPACT line — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent."
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\n  -  **Impact** : runtime",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the card's description states no IMPACT line — the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR also needs a 'BELOW-BAR REASON: <why it is filed anyway>' line. This was a dry run; no request is ever sent."
+      },
+      {
+        "args": [
+          "\f\n\u000b\nTechnical notes (for agents)\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the description has no plain-language text above the 'Technical notes (for agents)' line — D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent."
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\rjunk\nIMPACT: RUNTIME",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": "description-check: the description has no 'Technical notes (for agents)' line — D1 (README.md § Plain-language card text): write a plain-language summary first, then the line 'Technical notes (for agents)', then the agent detail below it — paths, card numbers and the IMPACT line. This was a dry run; no request is ever sent."
+      },
+      {
+        "args": [
+          "Summary\nTechnical notes (for agents)\nIMPACT: RUNTIME\n",
+          "description-check",
+          "This was a dry run; no request is ever sent."
+        ],
+        "expect": null
+      }
+    ]
+  }
+}

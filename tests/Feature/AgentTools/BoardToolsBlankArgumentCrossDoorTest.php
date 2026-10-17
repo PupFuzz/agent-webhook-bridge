@@ -18,6 +18,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeToolsCallStdio;
 use Tests\Support\JsonTypeArms;
+use Tests\Support\PlainCardText;
 use Tests\TestCase;
 
 /**
@@ -57,6 +58,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        PlainCardText::legacyBoardFields();
         $this->dir = sys_get_temp_dir().'/tools-xdoor-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
@@ -245,8 +247,8 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     {
         $this->fakeCreatableBoard();
 
-        $http = $this->throughHttpDoor(['tool' => 'board_create_card', 'args' => ['title' => $blank]]);
-        $ssh = $this->throughSshDoor(['tool' => 'board_create_card', 'args' => ['title' => $blank]]);
+        $http = $this->throughHttpDoor(['tool' => 'board_create_card', 'args' => ['title' => $blank, 'description' => PlainCardText::DESCRIPTION]]);
+        $ssh = $this->throughSshDoor(['tool' => 'board_create_card', 'args' => ['title' => $blank, 'description' => PlainCardText::DESCRIPTION]]);
 
         $this->assertFalse($http['ok'], 'HTTP door: '.json_encode($http['body']));
         $this->assertFalse($ssh['ok'], 'ssh door: '.json_encode($ssh['body']));
@@ -260,8 +262,8 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     {
         $this->fakeCreatableBoard();
 
-        $http = $this->throughHttpDoor(['tool' => 'board_create_card', 'args' => ['title' => $sent]]);
-        $ssh = $this->throughSshDoor(['tool' => 'board_create_card', 'args' => ['title' => $sent]]);
+        $http = $this->throughHttpDoor(['tool' => 'board_create_card', 'args' => ['title' => $sent, 'description' => PlainCardText::DESCRIPTION]]);
+        $ssh = $this->throughSshDoor(['tool' => 'board_create_card', 'args' => ['title' => $sent, 'description' => PlainCardText::DESCRIPTION]]);
 
         $this->assertTrue($http['ok'], 'HTTP door: '.json_encode($http['body']));
         $this->assertTrue($ssh['ok'], 'ssh door: '.json_encode($ssh['body']));
@@ -276,8 +278,13 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
 
     // ─── board_create_card: `description` ────────────────────────────────────
 
+    /**
+     * A visually blank description is an ABSENT one on both doors — and since card#11987 an absent
+     * one is REFUSED at create, with the filing bar's own sentence, as `kbcard create-card` refuses a
+     * card with no description. The ssh door must not write a body of invisible characters instead.
+     */
     #[DataProvider('visuallyBlankValues')]
-    public function test_a_visually_blank_description_writes_no_description_at_create_on_both_doors(string $blank): void
+    public function test_a_visually_blank_description_is_refused_at_create_on_both_doors(string $blank): void
     {
         $this->fakeCreatableBoard();
         $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'description' => $blank]];
@@ -285,14 +292,12 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
         $http = $this->throughHttpDoor($call);
         $ssh = $this->throughSshDoor($call);
 
-        $this->assertTrue($http['ok'], 'HTTP door: '.json_encode($http['body']));
-        $this->assertTrue($ssh['ok'], 'ssh door: '.json_encode($ssh['body']));
-
-        $httpWrite = $this->writesIn($http['requests'])[0];
-        $sshWrite = $this->writesIn($ssh['requests'])[0];
-        $this->assertArrayNotHasKey('description', $httpWrite['body']);
-        $this->assertArrayNotHasKey('description', $sshWrite['body'], 'the ssh door wrote a body of invisible characters');
-        $this->assertSame($httpWrite['body'], $sshWrite['body']);
+        $this->assertFalse($http['ok'], 'HTTP door: '.json_encode($http['body']));
+        $this->assertFalse($ssh['ok'], 'ssh door wrote a body of invisible characters: '.json_encode($ssh['body']));
+        $this->assertSame($http['body'], $ssh['body']);
+        $this->assertStringContainsString("the card's description states no IMPACT line", (string) $http['body']['error']);
+        $this->assertSame([], $this->writesIn($http['requests']));
+        $this->assertSame([], $this->writesIn($ssh['requests']));
     }
 
     // ─── board_correct_card: `name` ──────────────────────────────────────────
@@ -351,7 +356,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     public function test_a_visually_blank_tag_is_refused_on_both_doors(string $blank): void
     {
         $this->fakeCreatableBoard();
-        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'tags' => [$blank]]];
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'description' => PlainCardText::DESCRIPTION, 'tags' => [$blank]]];
 
         $http = $this->throughHttpDoor($call);
         $ssh = $this->throughSshDoor($call);
@@ -385,7 +390,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response(self::board422Body(), 422)]);
         $call = ['tool' => 'board_create_card', 'args' => [
-            'title' => str_repeat('t', 159), 'description' => str_repeat('d', 4000), 'tags' => ['priority:high'],
+            'title' => str_repeat('t', 80), 'description' => PlainCardText::DESCRIPTION."\n".str_repeat('d', 4000), 'tags' => ['priority:high'],
         ]];
 
         $http = $this->throughHttpDoor($call);
@@ -430,7 +435,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
 
             return Http::response(['data' => ['id' => 42]], 201);
         });
-        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'tags' => ['priority:high']]];
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'description' => PlainCardText::DESCRIPTION, 'tags' => ['priority:high']]];
 
         $http = $this->throughHttpDoor($call);
         $ssh = $this->throughSshDoor($call);
@@ -461,7 +466,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     {
         $this->fakeUncorrelatedBoard();
         $cap = KanbanFieldLimits::TAG_MAX - strlen('idem:me:');
-        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'idempotency_key' => str_repeat('k', $cap + 1)]];
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => str_repeat('k', $cap + 1)]];
 
         $http = $this->throughHttpDoor($call);
         $ssh = $this->throughSshDoor($call);
@@ -481,7 +486,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     public function test_a_title_over_the_mirrored_cap_is_refused_naming_the_cap_before_any_request_on_both_doors(): void
     {
         Http::fake(['*' => Http::response(self::board422Body(), 422)]);
-        $call = ['tool' => 'board_create_card', 'args' => ['title' => str_repeat('t', KanbanFieldLimits::NAME_MAX + 1)]];
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => str_repeat('t', KanbanFieldLimits::NAME_MAX + 1), 'description' => PlainCardText::DESCRIPTION]];
 
         $http = $this->throughHttpDoor($call);
         $ssh = $this->throughSshDoor($call);
@@ -591,17 +596,21 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
      */
     public function test_the_divergences_this_change_deliberately_does_not_close(): void
     {
-        $overLong = str_repeat('a', KanbanFieldLimits::NAME_MAX);
+        $plainLength = str_repeat('a', 80);
+        $padding = str_repeat(' ', KanbanFieldLimits::NAME_MAX);
         $creates = fn () => $this->fakeUncorrelatedBoard();
         $reads = fn () => $this->fakeReadableWindow();
 
         foreach ([
             // ── in the ARGUMENT VALUES, where the guards read the value as sent ──
-            'a padded idempotency_key' => [['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'idempotency_key' => '  abc  ']], true, false, $creates],
-            'a tag padded with invisible characters' => [['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'tags' => ["\u{00A0}needs-review"]]], true, false, $creates],
-            'a title at the cap, padded past it' => [['tool' => 'board_create_card', 'args' => ['title' => '  '.$overLong.'  ']], true, false, $creates],
+            'a padded idempotency_key' => [['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'description' => PlainCardText::DESCRIPTION, 'idempotency_key' => '  abc  ']], true, false, $creates],
+            'a tag padded with invisible characters' => [['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'description' => PlainCardText::DESCRIPTION, 'tags' => ["\u{00A0}needs-review"]]], true, false, $creates],
+            // A title within the plain-language rules (T1 caps it at 80), padded past kanban's cap:
+            // since card#11987 that is the only shape this row can take, as T1 refuses anything
+            // longer on both doors.
+            'a title within the rules, padded past the cap' => [['tool' => 'board_create_card', 'args' => ['title' => '  '.$plainLength.$padding, 'description' => PlainCardText::DESCRIPTION]], true, false, $creates],
             // ── in the request ENVELOPE, which is a different population entirely ──
-            'a padded `tool` key' => [['tool' => "board_create_card\u{00A0}", 'args' => ['title' => 'a real title']], true, false, $creates],
+            'a padded `tool` key' => [['tool' => "board_create_card\u{00A0}", 'args' => ['title' => 'a real title', 'description' => PlainCardText::DESCRIPTION]], true, false, $creates],
             'a `tool` key padded with ASCII spaces' => [['tool' => ' board_my_cards ', 'args' => []], true, false, $reads],
             // ── and the one the ssh door is the PERMISSIVE end of ──
             'a null `args`' => [['tool' => 'board_my_cards', 'args' => null], false, true, $reads],
@@ -641,7 +650,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     public function test_a_padded_client_version_is_recorded_on_one_door_and_dropped_on_the_other(): void
     {
         $this->fakeUncorrelatedBoard();
-        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title'], 'client_version' => " 0.9.20\u{00A0}"];
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'description' => PlainCardText::DESCRIPTION], 'client_version' => " 0.9.20\u{00A0}"];
 
         $http = $this->throughHttpDoor($call);
         $this->assertTrue($http['ok'], 'HTTP door: '.json_encode($http['body']));
@@ -667,7 +676,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     public function test_a_tag_padded_with_real_whitespace_is_stored_trimmed_on_both_doors(): void
     {
         $this->fakeCreatableBoard();
-        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'tags' => ['  needs-review  ']]];
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'description' => PlainCardText::DESCRIPTION, 'tags' => ['  needs-review  ']]];
 
         $http = $this->throughHttpDoor($call);
         $ssh = $this->throughSshDoor($call);

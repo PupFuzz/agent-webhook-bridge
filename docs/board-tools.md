@@ -22,8 +22,8 @@ The tools that ship today — the table is held against the bridge's own registr
 | Tool | Direction | What it does |
 | --- | --- | --- |
 | `board_my_cards` | read | Return YOUR own cards — every card ASSIGNED to you in any lane or in none, plus the UNASSIGNED cards in your product swimlane (card#11267 / DL-459), grouped by stage and ordered across lanes by stage rank (In Progress, pull columns, the rest, finished), then board position, then id, with a `triage` block giving the ONE order to work them in (High-priority cards first; card#11268 / DL-464) — and the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured. Read-proxied — the kanban token never leaves the bridge. |
-| `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass, and it is **assigned to you** (card#11267 / DL-459) — or left unassigned, with the response naming why. |
-| `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
+| `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass, and it is **assigned to you** (card#11267 / DL-459) — or left unassigned, with the response naming why. Its title and description are held to the **plain-language card rules** `kbcard` applies (card#11987), so a description is **required**. |
+| `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-written mint stamp (the `created_by` payload key, or the legacy `created-by:<you>` tag) **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). A new `name` or `description` is held to the plain-language card rules (card#11987). |
 | `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. Scoped to a lane you work, or a card already assigned to you in any lane (card#11267). ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
@@ -709,8 +709,8 @@ Kanban's own search endpoint answers every page as a paginated collection carryi
 
 | Arg | Required | Notes |
 | --- | --- | --- |
-| `title` | yes | Non-empty string, **stored trimmed**, **≤ 255 characters** (kanban's `name => string\|max:255`; an over-long title is **refused** (422) before any request is sent — card#8486, the same bound `board_correct_card` puts on `name`, through the same primitive). A title that is blank once trimmed — including one made only of invisible characters — is **refused**. ⚠ The cap reads the value **as sent**, padding included (see the normalisation rule at the top). |
-| `description` | no | String, **trimmed**. A description that is blank once trimmed is treated as **absent**: no `description` is written at all (a card being born has nothing to clear). |
+| `title` | yes | Non-empty string, **stored trimmed**, **≤ 255 characters** (kanban's `name => string\|max:255`; an over-long title is **refused** (422) before any request is sent — card#8486, the same bound `board_correct_card` puts on `name`, through the same primitive). A title that is blank once trimmed — including one made only of invisible characters — is **refused**. ⚠ The cap reads the value **as sent**, padding included (see the normalisation rule at the top). The trimmed title must then pass the **title rules T1-T6** — [§ The plain-language card rules](#the-plain-language-card-rules-card11987); T1's limit is far below kanban's cap. |
+| `description` | **yes** (card#11987) | String, **trimmed**, and it must pass the **filing bar and D1**: a plain-language summary, then the line `Technical notes (for agents)`, then below it the `IMPACT:` line — [§ The plain-language card rules](#the-plain-language-card-rules-card11987). An absent description, or one blank once trimmed, states no `IMPACT:` line and is **refused** with `reason: card_text_description`, as `kbcard create-card` refuses it. |
 | `tags` | no | List of strings, each **trimmed** and **≤ 64 characters** (kanban's `tags.* => string\|max:64`; an over-long tag is **refused** (422) before any request is sent). An entry that is blank once trimmed is **refused**. Reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and the bare tag `triaged` are **refused** (422), matched **case-insensitively** — `IDEM:`/`Triaged` are rejected too: whether the kanban tag search folds case is a per-driver collation fact, so the guard refuses every case variant rather than betting on the deployed collation. Every tag must also be **printable ASCII with no tag-search metacharacter** (`"`, `*`, `_`, `%`); non-ASCII or metachar tags are refused. Provenance/correlation/adoption tags are bridge-stamped, and `triaged` would defeat born-untriaged. ⛔ **The retired seat owner tag `owner:` is refused too** (card#10869, operator ruling B; case-insensitive), with a reason naming `board_take_card`: card ownership is the kanban assignee, and a caller-written tag would name a holder nobody is. (A non-reserved colon such as `priority:high` is fine.) |
 | `idempotency_key` | no (recommended) | `[A-Za-z0-9.-]{1,64}`, **and at most `64 − length("idem:<you>:")` characters**: the key is stored in the tag `idem:<you>:<key>` and kanban caps every tag at 64 (`tags.* => string\|max:64`), so the prefix your agent name makes comes out of the key's length (card#9588, DL-394). A longer key is **refused** (422) before any request is sent, naming your cap and the key's length; an agent name so long that `idem:<you>:` alone fills the cap is refused as an install fault. Other characters are refused (they are kanban tag-search metacharacters that could correlate the wrong card). The key is **lowercased** before use, so it correlates case-insensitively (`Report` and `report` are the same key). |
 
@@ -719,8 +719,10 @@ Any other key — a `swimlane_id`, an `assignee` — is **refused** (422) before
 **Behaviour:**
 
 - The card is created at your configured `create_stage_id`, in your configured
-  `swimlane_id` (forced — args cannot name a lane or stage), with payload `{}`.
-- The bridge stamps `created-by:<you>` as the audit tag.
+  `swimlane_id` (forced — args cannot name a lane or stage). The payload carries the bridge's own
+  stamps and nothing else — [§ Where the stamps live](#where-the-stamps-live-card11987).
+- The bridge stamps who filed the card: the `created_by` payload key holding your agent name on a
+  board that registers that key, else the legacy tag `created-by:<you>`.
 - **The card is ASSIGNED TO YOU** (card#11267 / DL-459): after the create, one PATCH writes your
   seat's kanban user — the coord roster's, never a value from your arguments, exactly as
   `board_take_card` writes it — into `assigned_user_id`. It is a **separate write after the
@@ -744,7 +746,8 @@ Any other key — a `swimlane_id`, an `assignee` — is **refused** (422) before
   (the read-back failed, or carried no integer-or-null `assigned_user_id`) is not written either,
   because it may be held, and answers `assignee_unreadable`.
 - **Pass an `idempotency_key`.** With one, the bridge runs the full duplicate-safe
-  pattern: it correlates on `idem:<you>:<key>` *before* creating (a repeat returns
+  pattern: it correlates on the key — under BOTH stamps, the `idempotency_key` payload key
+  (`<you>:<key>`) and the legacy tag `idem:<you>:<key>` — *before* creating (a repeat returns
   the same **live** card, `"idempotent_hit": true`, no second card), and after
   creating it re-reads and collapses any card a concurrent call raced in. Without
   a key, a retry (including any invisible MCP-client-layer retry) can
@@ -838,6 +841,60 @@ correct exactly until you needed it. Consequences for a caller:
   saw. What a divergence should make the tool *do* is a separate question from
   what it *reports*, and only the report changed here.
 
+### The plain-language card rules (card#11987)
+
+`board_create_card` and `board_correct_card` refuse the title and description text `kbcard`
+refuses, **with kbcard's own words** — the same findings, the same suggested rewrite, the same
+technical-notes line to paste — so a seat sees one answer from either writer. The rules are the
+toolkit's (its README § *Plain-language card text* owns them); this repo vendors the toolkit's rule
+file byte-for-byte at `resources/card-text-rules.json` and reads it through
+`App\Bridge\Support\CardTextCheck`. They are not restated here.
+
+- **Title** (`board_create_card`'s `title`, `board_correct_card`'s `name`): T1-T6. A refusal carries
+  `reason: card_text_title`.
+- **Description** (`board_create_card`'s `description`, always; `board_correct_card`'s `description`
+  when it writes text): the filing bar (the `IMPACT:` line, and the extra line `REQUESTED` /
+  `BELOW-BAR` need) and D1 (a plain-language summary above the `Technical notes (for agents)` line,
+  the `IMPACT:` line below it). A refusal carries `reason: card_text_description`. **Clearing** a
+  description with `board_correct_card` is not held to them, as `kbcard patch` checks only a
+  description it writes.
+- Both are checked **before any request**; a refusal sends nothing. Run `kbcard title-check` /
+  `kbcard description-check` to try text without a write — they give the same verdict.
+- ⚠ There is **no opt-out** on this door: `kbcard`'s per-board `KB_TITLE_BAR=off` / `KB_MINT_BAR=off`
+  are not read by the bridge.
+- Whether the two ends still agree is `docs/card-text-parity-corpus.json`'s to say: this repo's suite
+  holds the port to it, and `bin/card-text-parity.sh` holds a toolkit checkout's `kbcard` to it
+  (`CLAUDE_TESTING.md` § Tool runs outside the suite). Its `known_divergences` lists the one case
+  where the port follows the toolkit's README rather than `kbcard`.
+
+### Where the stamps live (card#11987)
+
+The bridge writes two stamps on a card it creates: **who filed it** and, with an `idempotency_key`,
+**the key**. Each is a **payload key** on a board that registers it and the **legacy tag** on one
+that does not, decided per create from that board's own custom-field read (kanban refuses an
+unregistered payload key with a 422, so nothing is written to a key the board does not register):
+
+| Stamp | Payload key (where registered) | Legacy tag (otherwise) |
+| --- | --- | --- |
+| who filed it | `created_by` = `<you>` (a `string` field) | `created-by:<you>` |
+| the idempotency key | `idempotency_key` = `<you>:<key>` (a `string` field kanban may **filter** on — `is_filterable`, since the key is searched) | `idem:<you>:<key>` |
+
+- **Every read accepts both**: `board_create_card`'s correlation, its archive-side refusal and its
+  raced-duplicate collapse search under the tag and (where the board registers the key) the payload
+  key; `board_correct_card` takes either spelling of your mint stamp as *minted*. So a card filed
+  before its board registered the keys is still yours and still correlates.
+- ⛔ **A keyed create whose custom-field read fails creates nothing**: it cannot tell where an earlier
+  attempt's card is stamped, so it answers the retryable 502 (or the board's permanent refusal), as an
+  unreadable idempotency search does (DL-297). An **unkeyed** create stamps the legacy tag instead and
+  goes ahead, logging a warning.
+- ⚠ Keep a populated `idempotency_key` field registered and filterable: the payload read follows the board's current registration, so de-registering it strands the cards already stamped there and a keyed retry can duplicate.
+- `created-by:` and `idem:` stay **reserved** caller-tag prefixes, because the legacy tags are still read.
+- **When can the tag read go?** `php artisan bridge:legacy-stamps` counts, per board-tools agent on
+  THIS install, the live and archived cards still tagged `created-by:<agent>` / `idem:<agent>:*` and
+  whether the board registers both keys. The tag read may be retired only when every install that
+  serves board tools reports none and every board registers both keys; the command exits non-zero
+  when any board could not be measured.
+
 ## `board_correct_card`
 
 **Correct a card that is YOURS — one you filed, or one assigned to you** (DL-326, card#8378;
@@ -851,8 +908,8 @@ that keys on one card per subject.
 | Arg | Required | Notes |
 | --- | --- | --- |
 | `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced: a coerced id names a different card, and this id selects the row the write lands on. |
-| `name` | no | Non-empty string, **stored trimmed**, **≤ 255 characters** (kanban's own `name => string\|max:255`; ⚠ the cap reads the value **as sent**, padding included). There is **no clear form** — a card cannot be left without a name, so a `name` that is blank once trimmed, including one made only of invisible characters, is refused (omit it to leave it alone). |
-| `description` | no | String, **trimmed**. **Present-and-empty CLEARS it**, and so does whitespace-only or invisible-characters-only (see the present/absent rule below). |
+| `name` | no | Non-empty string, **stored trimmed**, **≤ 255 characters** (kanban's own `name => string\|max:255`; ⚠ the cap reads the value **as sent**, padding included). There is **no clear form** — a card cannot be left without a name, so a `name` that is blank once trimmed, including one made only of invisible characters, is refused (omit it to leave it alone). It must pass the title rules T1-T6 — [§ The plain-language card rules](#the-plain-language-card-rules-card11987). |
+| `description` | no | String, **trimmed**. **Present-and-empty CLEARS it**, and so does whitespace-only or invisible-characters-only (see the present/absent rule below). A description that writes text must pass the filing bar and D1; a clear is not held to them. |
 | `tags` | no | List of strings — **your** tags, each **trimmed** and **≤ 64 characters** (kanban's `tags.* => string\|max:64`); an entry that is blank once trimmed is refused. The same reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`), the retired `owner:` tag and bare `triaged` `board_create_card` refuses are refused here too, case-insensitively, with the same printable-ASCII / no-metacharacter (`"`, `*`, `_`, `%`) charset rule. |
 
 > ⚠ **The two length caps are a MIRROR of rules that live in the kanban repo** (`App\Support\TaskWriteRules`), held in one place here (`KanbanFieldLimits`) and stated as a mirror: they are a **diagnostic**, not the safety. The safety is kanban's own 422 — which the tool maps to a named refusal rather than the retryable 502 — so a cap that goes stale degrades the *message*, never the outcome. `board_create_card` shares both caps (one policy, both tools: `name`/`title` at 255 through `BoardCallRefusal::overLongName()`, every tag at 64 through `CallerTagPolicy`).
@@ -877,9 +934,12 @@ same as omitting `tags`), and `description: ""` clears the body.
 A card is yours when **either** of two relations holds — and **both widen nothing a caller
 can forge** (DL-376, operator-approved 2026-09-13; before it, only the first existed):
 
-1. **You MINTED it** — it carries the tag the bridge stamps at create, **`created-by:<you>`**.
-   It is caller-unforgeable (`created-by:` is a reserved prefix on create and the guard
-   casefolds, so no caller can plant any case variant of another agent's stamp), and it is
+1. **You MINTED it** — it carries the stamp the bridge writes at create: the payload key
+   **`created_by` = `<you>`**, or on a board that does not register that key the tag
+   **`created-by:<you>`** (either is accepted — [§ Where the stamps live](#where-the-stamps-live-card11987)).
+   It is caller-unforgeable on this door (no tool takes a payload argument; `created-by:` is a
+   reserved prefix on create and the guard casefolds, so no caller can plant any case variant of
+   another agent's stamp), and it is
    the **only per-seat provenance a card carries** — kanban's `actor_type: service` covers
    the bridge and every CLI writer, and `actor_id` names the shared writeback **user**, so
    neither can answer *which seat filed this*.
@@ -1322,6 +1382,8 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `install_fault.roster_seat_absent` | `board_take_card` | the roster has no seat named your agent's seat (`identity.coord_seat`, else the agent name) |
 | `install_fault.no_kanban_user` | `board_take_card` | your seat carries no kanban user id for this kanban host (or the install's kanban API base names no host), so a seat with no id is refused by name, never moved unassigned |
 | `install_fault.no_agent` | the ssh door (exit 1) | the forced command passed no `--agent` |
+| `card_text_title` | `board_create_card` (`title`), `board_correct_card` (`name`) | the title breaks the plain-language title rules T1-T6; the message is `kbcard`'s, with the findings, a suggested rewrite and the technical-notes line to paste (card#11987) |
+| `card_text_description` | `board_create_card`, `board_correct_card` | the description breaks the filing bar or D1 — at create that includes an absent or blank one; the message is `kbcard`'s (card#11987) |
 | `repo_not_received` | `ci_await` | no agent on this install subscribes to that GitHub repo, so no `workflow_run` delivery would ever settle the await; nothing was stored |
 | `repo_not_ci` | `ci_await` | this install's operator declared the repo to have no CI (`BRIDGE_CI_AWAIT_NO_CI_REPOS`), so there is no run to wait for; nothing was stored and GitHub was not read. Not an install fault — but if the repo does run CI, tell your operator, who removes it from that list (card#11696) |
 | `repo_unreadable` | `ci_await` | this bridge cannot read the repo's workflow runs on GitHub — GitHub answered `404`, or no read token resolves for it for any reader (*Read failures* below) — so no read would ever settle the await; nothing was stored (on a refresh, your existing await on the head was removed, and the message says so). A `401` or `403` is never refused on one read. The message names the token's source and file and the operator's remedy (card#11600). Marked an install fault: no argument fixes it |

@@ -743,6 +743,35 @@ final class KanbanClient
     }
 
     /**
+     * How many cards on a board carry `$tag` — kanban's own count (`meta.total`) off a one-row page, on
+     * the live side or, with `$archivedOnly`, the archived one. `$tag` may be a `*` glob. A null total
+     * is a kanban that predates pagination answering: no count was taken.
+     */
+    public function tagTotal(int $boardId, string $tag, bool $archivedOnly = false): SearchTotal
+    {
+        $page = $this->searchPage($boardId, "tags:\"{$tag}\"", 1, $archivedOnly);
+
+        return new SearchTotal($page->total, $page->freeTextRan);
+    }
+
+    /**
+     * The card rows on a board whose payload custom field `$key` holds exactly `$value` — kanban's
+     * `custom_field_<key>:<value>` search term, an equality compare on the field's indexed
+     * `value_string` (kanban `QueryParser`, DL-029/DL-115). Paged like {@see cardRowsByTag}, with its
+     * degraded-read warning, and the same archive SWITCH.
+     *
+     * ⚠ kanban 422s the term when the field is registered but not `is_filterable`, and answers an
+     * empty list when the key is not registered at all, so a caller asks only after the board's
+     * custom-field read ({@see boardCustomFields}) says the key is registered and filterable.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function cardRowsByCustomField(int $boardId, string $key, string $value, bool $archivedOnly = false): array
+    {
+        return $this->pagedSearch($boardId, " custom_field_{$key}:\"{$value}\"", $archivedOnly, 'custom-field-row-search '.$key.($archivedOnly ? ' (archived)' : ''))->cards;
+    }
+
+    /**
      * How many LIVE cards on a board carry `$tag` and sit in one of `$swimlaneIds` — kanban's own
      * `swimlane_id=` predicate, counted server-side from `meta.total` with a one-row page.
      * `$stageIds`, when given, narrows the count to those columns.

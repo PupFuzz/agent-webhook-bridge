@@ -145,6 +145,15 @@ class ForeignRelayAdoptionTest extends TestCase
             'relays' => 1, 'escaped' => 0,
             'ruling' => '✔ NOT FOREIGN ×1 — a `JobSpecException` over options the operator typed.',
         ],
+        'Bridge/LegacyStampsCommand.php' => [
+            'relays' => 3, 'escaped' => 1,
+            'ruling' => '⛔ FOREIGN ×1 (card#11987) — the per-agent board measurement: a `RequestException` from '
+                .'the custom-field read or a tag count carries a kanban response body, so it is redacted and then '
+                .'escaped AT THE INTERPOLATION (`escaped => 1`). ✔ NOT FOREIGN ×2 — an agent config that will not '
+                .'load, and the writeback client factory\'s own token-file diagnosis, both composed by this app from '
+                .'this install\'s own files. The two `RuntimeException`s the measurement throws itself name only a '
+                .'kanban search and a count the body did not carry.',
+        ],
         'Bridge/ProvisionCommand.php' => [
             'relays' => 6, 'escaped' => 3,
             'ruling' => '⛔ FOREIGN ×1 — the `API error` arm, relaying the kanban response body from '
