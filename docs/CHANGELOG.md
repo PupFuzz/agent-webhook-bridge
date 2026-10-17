@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#12000 / DL-486** — **The standup digest can stop reporting a growing "unseen" count for a seat that has no inbox reader.** `unseen_inbox_intents` counted the staged lines a seat's `bridge:inbox` cursor had not consumed. For a seat nobody runs `bridge:inbox` for — a channel seat whose intents reach it live — that count only grew. New optional per-agent key **`surface.inbox_reader`** (bool, default `true`): set it to `false` on such a seat, and its digest row carries `inbox_reader: "none"` and the same count as `staged_inbox_intents`, with no `unseen_inbox_intents` key. A seat without the key reads exactly as before. A non-boolean value is refused at load, like `surface.silent_drop_warnings`. Nothing staged, pushed or accepted changes, and `bridge:inbox` is unchanged.
+
+### Upgrade warnings
+
+- **card#12000 — a `pm_standup` consumer that reads `seats[].unseen_inbox_intents` finds it absent on a seat whose YAML sets `surface.inbox_reader: false`.** Read `inbox_reader` first: when it is `none`, the count is in `staged_inbox_intents`. Nothing changes until an operator sets the key. To clear a channel-only seat's growing figure, set `surface.inbox_reader: false` in its YAML.
+
 ## [0.104.1] - 2026-10-16
 
 ### Changed

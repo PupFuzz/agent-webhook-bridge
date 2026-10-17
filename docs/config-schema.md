@@ -195,6 +195,7 @@ See [`docs/board-tools.md`](board-tools.md).
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `silent_drop_warnings` | bool | `true` | Warn when a `channel_push` target has no paired Intent. Non-bool throws. |
+| `inbox_reader` | bool | `true` | **card#12000 / DL-486.** `false` declares that nothing runs `bridge:inbox` for this agent — a channel seat whose intents reach it live, its inbox only a backstop. The standup digest then reports its row as `inbox_reader: "none"` with `staged_inbox_intents`, not as an ever-growing `unseen_inbox_intents`. Declared, never inferred: a seen-cursor exists after any one manual read, so its presence says nothing about a reader. Changes nothing staged, pushed or delivered, and not `bridge:inbox`. Non-bool throws. |
 
 ### `api:` (optional) — per-agent token-path override
 | Key | Type | Default | Notes |
