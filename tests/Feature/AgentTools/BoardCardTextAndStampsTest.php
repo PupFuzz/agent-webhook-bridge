@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Support\BoardCardTextRefusal;
 use App\Bridge\Tools\BoardCreateCardTool;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
@@ -169,6 +170,46 @@ class BoardCardTextAndStampsTest extends TestCase
         $this->assertStringContainsString('T4 (no card, PR, issue or DL number): card#11140', (string) $r['body']['error']);
         $this->assertStringContainsString('suggested title: Follow up on', (string) $r['body']['error']);
         Http::assertNothingSent();
+    }
+
+    /**
+     * kbcard's T5 hint tells the seat to "pass --component", which neither board tool accepts, and
+     * every refusal cites the toolkit's README as "README.md"; both get a bridge line after kbcard's.
+     */
+    public function test_a_bracket_prefixed_title_is_told_what_this_door_takes_instead_of_a_component_argument(): void
+    {
+        $this->board(self::fields(), ['id' => [['id' => 42, 'board_id' => self::BOARD, 'swimlane_id' => 4, 'tags' => ['created-by:me']]]]);
+
+        $create = $this->tool('board_create_card', ['title' => '[Bridge] Fix the login page', 'description' => PlainCardText::DESCRIPTION]);
+        $correct = $this->tool('board_correct_card', ['card_id' => 42, 'name' => '[Bridge] Fix the login page']);
+
+        foreach (['board_create_card' => $create, 'board_correct_card' => $correct] as $tool => $r) {
+            $this->assertSame(422, $r['status'], $tool);
+            $this->assertSame('card_text_title', $r['body']['reason'] ?? null, $tool);
+            $lines = explode("\n", (string) $r['body']['error']);
+            $t5 = array_search('  T5 (no leading [...] prefix): [Bridge] — that is the component field now: pass --component', $lines, true);
+            $this->assertIsInt($t5, "{$tool}: kbcard's T5 line is no longer in the refusal: ".$r['body']['error']);
+            $this->assertSame(BoardCardTextRefusal::T5_ON_THIS_DOOR, $lines[$t5 + 1] ?? null, "{$tool}: the T5 line must be followed by what this door takes instead");
+            $this->assertStringContainsString('take no component argument', $lines[$t5 + 1], $tool);
+            $this->assertStringContainsString('drop the prefix from the title', $lines[$t5 + 1], $tool);
+            $this->assertSame(BoardCardTextRefusal::README_POINTER, end($lines), "{$tool}: the refusal must say whose README it cites");
+            $this->assertStringContainsString("agent-board-toolkit's README", end($lines), $tool);
+            $this->assertStringContainsString('docs/board-tools.md § The plain-language card rules', end($lines), $tool);
+        }
+        Http::assertNotSent(fn (Request $r) => in_array($r->method(), ['POST', 'PATCH'], true));
+    }
+
+    public function test_a_title_breaking_no_t5_rule_carries_no_component_line_and_a_description_refusal_names_whose_readme(): void
+    {
+        $this->board(self::fields());
+
+        $title = (string) $this->tool('board_create_card', ['title' => 'Follow up on card#11140', 'description' => PlainCardText::DESCRIPTION])['body']['error'];
+        $this->assertStringNotContainsString(BoardCardTextRefusal::T5_ON_THIS_DOOR, $title);
+        $this->assertStringEndsWith("\n".BoardCardTextRefusal::README_POINTER, $title);
+
+        $description = (string) $this->tool('board_create_card', ['title' => 'Fix the login page', 'description' => 'Plain words only'])['body']['error'];
+        $this->assertStringContainsString('README.md §', $description);
+        $this->assertStringEndsWith("\n".BoardCardTextRefusal::README_POINTER, $description);
     }
 
     public function test_create_refuses_a_description_without_the_filing_bar_or_d1_and_sends_nothing(): void

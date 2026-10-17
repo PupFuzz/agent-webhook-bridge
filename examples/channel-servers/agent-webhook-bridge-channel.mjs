@@ -325,7 +325,8 @@ const TOOL_DEFINITIONS = [
       'description must pass the same plain-language card rules kbcard applies ' +
       '(title-check / description-check give the same verdict without a write); a ' +
       'refusal (reason card_text_title / card_text_description) is kbcard\'s own ' +
-      'text, with a suggested rewrite, and nothing is sent.',
+      'text, with a suggested rewrite, plus the bridge\'s own lines where kbcard\'s ' +
+      'advice does not fit this door, and nothing is sent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -334,9 +335,12 @@ const TOOL_DEFINITIONS = [
           description:
             "Card title (required, non-empty, at most 255 characters — kanban's own " +
             'limit). An over-long title is REFUSED (422) before any request is sent. ' +
-            'It must also pass the plain-language title rules (T1-T6: short, and no ' +
-            'file path, code identifier, card/PR/DL number, bracket tag or WORD: ' +
-            'prefix — those go in the description\'s technical notes).',
+            'It must also pass the plain-language title rules: T1 (at most 80 ' +
+            'characters), T2 (no file path), T3 (no code identifier), T4 (no card, PR, ' +
+            'issue or DL number), T5 (no leading [...] prefix), T6 (no WORD: prefix and ' +
+            'no process jargon). What they refuse goes in the description\'s technical ' +
+            'notes. No board tool takes a component: drop a leading [...] prefix ' +
+            'from the title yourself.',
         },
         description: {
           type: 'string',

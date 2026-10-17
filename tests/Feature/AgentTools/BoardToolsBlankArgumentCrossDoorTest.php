@@ -452,7 +452,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
             $error = (string) $r['body']['error'];
             $this->assertStringContainsString("`tags.{$index}`: The tags.{$index} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.', $error, $door);
             $this->assertStringContainsString('each tag you passed within '.KanbanFieldLimits::TAG_MAX, $error, $door);
-            $this->assertStringContainsString('`created-by:`', $error, "{$door}: the sentence must say the bridge's unchecked stamp is not checked");
+            $this->assertStringContainsString('its legacy `created-by:` tag, written only where the board does not register the `created_by` key', $error, "{$door}: the sentence must say the bridge's unchecked stamp is not checked, and that it is the legacy tag a payload-key board never gets");
             $this->assertStringNotContainsString('`idem:`', $error, "{$door}: the `idem:` stamp IS bounded before any request (card#9588), so naming it unchecked is false");
             $this->assertStringNotContainsString('something other than', $error, "{$door}: the checks do not establish what the board refused");
         }
