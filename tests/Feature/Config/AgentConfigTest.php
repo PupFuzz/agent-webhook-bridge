@@ -505,6 +505,24 @@ class AgentConfigTest extends TestCase
         AgentConfig::fromArray('a', $this->raw(['surface' => ['silent_drop_warnings' => 'yes']]));
     }
 
+    public function test_surface_inbox_reader_defaults_to_true(): void
+    {
+        $this->assertTrue(AgentConfig::fromArray('a', $this->raw([]))->surfaceInboxReader);
+    }
+
+    public function test_surface_inbox_reader_false_is_read(): void
+    {
+        $cfg = AgentConfig::fromArray('a', $this->raw(['surface' => ['inbox_reader' => false]]));
+        $this->assertFalse($cfg->surfaceInboxReader);
+    }
+
+    public function test_surface_inbox_reader_non_bool_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('surface.inbox_reader must be a boolean');
+        AgentConfig::fromArray('a', $this->raw(['surface' => ['inbox_reader' => 'none']]));
+    }
+
     public function test_non_mapping_classifier_section_throws(): void
     {
         // A plausible typo: `classifier: SomeName` instead of `{class: SomeName}`.

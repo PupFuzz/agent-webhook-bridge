@@ -68,7 +68,7 @@ class StandupPushWireTest extends TestCase
                     'summary' => 'standup: 1 seat(s), 0 board(s) with a Now lane, as of 2026-09-14T01:02:03+00:00 (delivery times, not activity)',
                     'payload' => [
                         'generated_at' => '2026-09-14T01:02:03+00:00',
-                        'seats' => [['agent' => 'pm', 'inbox_reader' => 'none_observed', 'staged_inbox_intents' => 0]],
+                        'seats' => [['agent' => 'pm', 'unseen_inbox_intents' => 0]],
                         'boards' => [],
                     ],
                 ],

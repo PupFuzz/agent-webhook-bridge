@@ -81,7 +81,7 @@ final class StandupService
                 agent: $cfg->agentName,
                 lastDeliveryAt: $lastDeliveries[$cfg->agentName] ?? null,
                 unseenInboxIntents: count(BridgePaths::unseenInboxLines($cfg->agentName)),
-                inboxReaderObserved: BridgePaths::seenCursorExists($cfg->agentName),
+                inboxReaderDeclared: $cfg->surfaceInboxReader,
             );
         }
 

@@ -18,8 +18,8 @@ namespace App\Bridge\Standup;
  *    thread lifecycle, and keeps no thread-state store, so it cannot say which threads
  *    are still open. `unseen_inbox_intents` is the neighbouring fact it CAN state
  *    (intents staged for that seat that its `bridge:inbox` cursor has not consumed) and
- *    it ships under that name, not under the one it is not — and only for a seat that HAS
- *    a cursor; a seat no reader has consumed for says so instead ({@see SeatSnapshot}).
+ *    it ships under that name, not under the one it is not — and only for a seat that has
+ *    a reader; a seat whose YAML declares none says so instead ({@see SeatSnapshot}).
  *
  * An EMPTY fleet renders as empty lists — `seats: []` / `boards: []` — never as
  * invented rows and never as an omitted section, so "nothing is configured" stays
