@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.105.0] - 2026-10-17
+
 ### Changed
 
 - **card#12002** — **The card-text parity corpus no longer publishes a known divergence from `kbcard`.** For a title ending in a flag that ends in `-` (`flag --x-`), `kbcard` reported `--x` and suggested `flag -`, while `board_create_card` and `board_correct_card` reported `--x-` and suggested `flag`. agent-board-toolkit PR #473 changed `kbcard` to answer as the bridge does. `docs/card-text-parity-corpus.json` drops the `known_divergences` entry and carries `flag --x-`, `--x--` and `--flag-` as ordinary vectors, measured against toolkit `94d0ede6`. The bridge's refusals are unchanged.
@@ -26,9 +28,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
-- **card#11987 — `board_create_card` now REQUIRES a `description`**, and refuses titles and descriptions it used to accept. A seat that files cards with a title only, or with a card number or file path in the title, gets a 422 with the reason and a rewrite. Its channel server's schema says so from version **0.9.66**; an older client still sends such calls and gets the same refusal.
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.67. Until you do, seats stay on client 0.9.65 and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+- **card#11987 — `board_create_card` now REQUIRES a `description`**, and refuses titles and descriptions it used to accept. A seat that files cards with a title only, or with a card number or file path in the title, gets a 422 with the reason and a rewrite. Its channel server's schema says so from version **0.9.66**; an older client still sends such calls and gets the same refusal. `board_correct_card` applies the same checks to a new title and to a non-empty new description, so a correction it used to accept can now get a 422; clearing a description is not checked.
 - **card#11987 — a keyed `board_create_card` (one with an `idempotency_key`) now also needs the board's custom-field read** (`GET /boards/{id}/custom_fields.json`, a read the create did not make before). If that read fails, the create answers the retryable 502 (or names the board's permanent refusal) and creates nothing. An unkeyed create goes ahead with the legacy tag.
-- **card#11987 — to move a board's stamps into the payload, register two custom fields on it:** `created_by` (type `string`) and `idempotency_key` (type `string`, filterable). Nothing changes on a board until it does.
+- **card#11987 — to move a board's stamps into the payload, register two custom fields on it:** `created_by` (type `string`) and `idempotency_key` (type `string`, filterable). Nothing changes on a board until it does. Once cards are stamped there, keep both fields registered and `idempotency_key` filterable, and do not roll the bridge back below 0.105.0 on that board: either lets a keyed retry file a duplicate (`docs/board-tools.md` § Where the stamps live).
 - **card#12000 — a `pm_standup` consumer that reads `seats[].unseen_inbox_intents` finds it absent on a seat whose YAML sets `surface.inbox_reader: false`.** Read `inbox_reader` first: when it is `none`, the count is in `staged_inbox_intents`. Nothing changes until an operator sets the key. To clear a channel-only seat's growing figure, set `surface.inbox_reader: false` in its YAML.
 
 ## [0.104.1] - 2026-10-16
