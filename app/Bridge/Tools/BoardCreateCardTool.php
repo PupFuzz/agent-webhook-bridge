@@ -3,8 +3,12 @@
 namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ToolRefusalException;
+use App\Bridge\Support\BoardCardTextRefusal;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\CardTextCheck;
 use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Writeback\BoardCustomFields;
+use App\Bridge\Writeback\BoardReadRefused;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -21,12 +25,25 @@ use Illuminate\Support\Facades\Log;
  * so a caller-supplied `triaged` tag is REFUSED.
  *
  * Provenance + correlation are bridge-stamped, never caller-forgeable:
- *  - `created-by:<agent>` — the audit stamp; a caller cannot forge another
- *    agent's stamp (the `created-by:` prefix is reserved).
- *  - `idem:<agent>:<key>` — when an idempotency_key is passed, the correlation
- *    key for the FULL DL-198 pattern (correlate-before-create + post-create
- *    re-read + CardCollapse); the `idem:` prefix is reserved so a caller cannot
- *    poison a future idempotency probe.
+ *  - the audit stamp — the payload key {@see CREATED_BY_KEY} holding the agent name, or,
+ *    on a board that does not register that key, the legacy tag `created-by:<agent>`;
+ *  - when an idempotency_key is passed, the correlation key for the FULL DL-198 pattern
+ *    (correlate-before-create + post-create re-read + CardCollapse) — the payload key
+ *    {@see IDEMPOTENCY_KEY} holding `<agent>:<key>`, or the legacy tag `idem:<agent>:<key>`.
+ *    Both prefixes stay reserved ({@see CallerTagPolicy}) because the legacy tags are still
+ *    READ: a caller must not forge an audit stamp or poison an idempotency probe.
+ *
+ * ⭐ WHICH STAMP IS WRITTEN IS DECIDED PER BOARD, FROM THE BOARD'S OWN REGISTRATION (card#11987,
+ * {@see stamps}): kanban 422s an unregistered payload key, so a key is written only where this
+ * create's `custom_fields.json` read says the board registers it, and the legacy tag is written
+ * otherwise — never a version compare. The idempotency READS look under BOTH stamps, so a key
+ * minted before a board registered the field still correlates; that legacy read stays until
+ * `bridge:legacy-stamps` reports no legacy stamp left.
+ *
+ * ⭐ THE TITLE AND DESCRIPTION ARE HELD TO THE PLAIN-LANGUAGE CARD RULES ({@see CardTextCheck}, the
+ * toolkit's shared rule file): T1-T6 on the title, the filing bar and D1 on the description — which
+ * is therefore REQUIRED, as on `kbcard create-card`. A refusal is kbcard's own text plus the lines
+ * {@see BoardCardTextRefusal} adds for a bridge seat, before any request.
  *
  * The idempotency probe reads BOTH sides of kanban's archive axis (DL-297),
  * because that axis is a SWITCH and not a widening: a live tag search cannot see
@@ -107,26 +124,40 @@ final class BoardCreateCardTool implements Tool
      */
     private const TITLE_REFUSAL = 'board_create_card: `title` is required and must be a non-empty string';
 
+    /** The payload key the audit stamp is written to, where the board registers it. */
+    public const CREATED_BY_KEY = 'created_by';
+
+    /** The payload key an `idempotency_key` is written to (as `<agent>:<key>`), where the board registers it. */
+    public const IDEMPOTENCY_KEY = 'idempotency_key';
+
+    /** What a plain-language refusal says happened — the tail kbcard's own refusal ends with. */
+    private const NOTHING_SENT = 'no card was created and nothing was sent to the board.';
+
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         $title = $this->requireTitle($args);
-        $description = $this->optionalDescription($args);
+        $description = $this->requireDescription($args);
         $callerTags = CallerTagPolicy::sanitize($args, $this->name());
         $idemKey = $this->validateIdempotencyKey($args, $agentName);
         $scope = SeatCardScope::forCallingSeat($this->name());
 
         $boardId = (int) $cfg->boardId;
-        $tags = $callerTags;
-        $tags[] = "created-by:{$agentName}";
+        $stamps = $this->stamps($client, $boardId, $agentName, $idemKey);
+        $tags = array_merge($callerTags, $stamps['tags']);
         $idemTag = null;
         if ($idemKey !== null) {
             $idemTag = self::idemTag($agentName, $idemKey);
-            $tags[] = $idemTag;
+            $idemValue = self::idemValue($agentName, $idemKey);
+            $payloadLeg = $stamps['search_idempotency_key'];
 
             // Correlate-before-create (DL-198 leg 1): a prior call with the same
-            // key already minted the card → return it, no second create.
+            // key already minted the card → return it, no second create. Under BOTH
+            // stamps, so a card minted before the board registered the key is found.
             try {
                 $existing = $client->cardsByTag($boardId, $idemTag);
+                if ($payloadLeg) {
+                    $existing = array_values(array_unique(array_merge($existing, array_keys(self::rowsById($client->cardRowsByCustomField($boardId, self::IDEMPOTENCY_KEY, $idemValue))))));
+                }
             } catch (RequestException $e) {
                 throw $this->lookupRefusal($e, $boardId, $agentName, 'idempotency correlation');
             }
@@ -149,7 +180,11 @@ final class BoardCreateCardTool implements Tool
             // retire. Placed here, on the last branch before the create, so it costs
             // one search per card actually minted and nothing at all on the hit path.
             try {
-                $retired = self::archivedIds($client->cardRowsByTag($boardId, $idemTag, true));
+                $archived = $client->cardRowsByTag($boardId, $idemTag, true);
+                if ($payloadLeg) {
+                    $archived = self::unionRows($archived, $client->cardRowsByCustomField($boardId, self::IDEMPOTENCY_KEY, $idemValue, true));
+                }
+                $retired = self::archivedIds($archived);
             } catch (RequestException $e) {
                 throw $this->lookupRefusal($e, $boardId, $agentName, 'archive-side idempotency probe');
             }
@@ -170,7 +205,7 @@ final class BoardCreateCardTool implements Tool
                 $boardId,
                 (int) $cfg->createStageId,
                 $title,
-                [],                       // payload {} in v1 — no by-ref keys, no origin (identity rides the tag)
+                $stamps['payload'],       // the bridge's own stamps, where the board registers them — nothing else
                 $tags,
                 (int) $cfg->swimlaneId,   // FORCED from config — a caller can never name a lane
                 $description,
@@ -200,7 +235,10 @@ final class BoardCreateCardTool implements Tool
             // it was, in the first cut of this change, and card#8523's review caught it — the
             // warning now lives in `cardRowsByTag` too, so this read still says so when kanban
             // answers 200 with no card collection instead of silently reading "no duplicates".
-            $live = self::rowsById($client->cardRowsByTag($boardId, $idemTag));
+            $live = self::rowsById(self::unionRows(
+                $client->cardRowsByTag($boardId, $idemTag),
+                $stamps['search_idempotency_key'] ? $client->cardRowsByCustomField($boardId, self::IDEMPOTENCY_KEY, self::idemValue($agentName, (string) $idemKey)) : [],
+            ));
             if (count($live) > 1) {
                 CardCollapse::toSurvivor($client, $live, 'board_create_card', '', ['agent' => $agentName, 'idem_tag' => $idemTag]);
                 // The collapse keeps the deterministic lowest id (so racing workers
@@ -473,6 +511,10 @@ final class BoardCreateCardTool implements Tool
         if ($tooLong !== null) {
             throw $tooLong;
         }
+        $refusal = BoardCardTextRefusal::title($trimmed, $this->name(), self::NOTHING_SENT);
+        if ($refusal !== null) {
+            throw new ToolRefusalException($refusal, reason: 'card_text_title');
+        }
 
         return $trimmed;
     }
@@ -495,7 +537,7 @@ final class BoardCreateCardTool implements Tool
      * what a 403/404 means is a property of the route ({@see BoardReadRoute}), and this tool
      * touches no board-scoped read at all.
      */
-    private function lookupRefusal(RequestException $e, int $boardId, string $agentName, string $leg): \Throwable
+    private function lookupRefusal(RequestException $e, int $boardId, string $agentName, string $leg, BoardReadRoute $route = BoardReadRoute::Search): \Throwable
     {
         $status = BoardCallRefusal::permanentOnRead($e);
         if ($status === null) {
@@ -508,7 +550,7 @@ final class BoardCreateCardTool implements Tool
 
         return BoardCallRefusal::readRefusal(
             $this->name(),
-            BoardReadRoute::Search,
+            $route,
             $status,
             "your board {$boardId} to run the `idempotency_key` {$leg}",
             'so NO card was created — the bridge does not create a card it could not correlate first',
@@ -554,24 +596,30 @@ final class BoardCreateCardTool implements Tool
     }
 
     /**
+     * The card's description, held to the filing bar and D1 ({@see CardTextCheck}) — so it is
+     * REQUIRED: an absent or blank one states no `IMPACT:` line and is refused with kbcard's own
+     * sentence for that, exactly as `kbcard create-card` refuses it.
+     *
+     * A description that is blank once the middleware's trim has run is the same thing as an ABSENT
+     * one — which is exactly what the HTTP door hands over, because `ConvertEmptyStringsToNull` nulls
+     * it there — so both doors give the one refusal. The TRIMMED value is what is checked, because
+     * it is what is written.
+     *
      * @param  array<string, mixed>  $args
      */
-    private function optionalDescription(array $args): ?string
+    private function requireDescription(array $args): string
     {
-        if (! array_key_exists('description', $args) || $args['description'] === null) {
-            return null;
+        $description = $args['description'] ?? null;
+        if ($description !== null && ! is_string($description)) {
+            throw new ToolRefusalException('board_create_card: `description` must be a string');
         }
-        $description = $args['description'];
-        if (! is_string($description)) {
-            throw new ToolRefusalException('board_create_card: `description` must be a string when provided');
+        $description = BoardToolArgs::trimmed($description ?? '');
+        $refusal = BoardCardTextRefusal::description($description, $this->name(), ucfirst(self::NOTHING_SENT));
+        if ($refusal !== null) {
+            throw new ToolRefusalException($refusal, reason: 'card_text_description');
         }
-        // A description that is blank once the middleware's trim has run is the same
-        // thing as an ABSENT one — which is exactly what the HTTP door hands over,
-        // because `ConvertEmptyStringsToNull` nulls it there. A card being born has
-        // nothing to clear, so there is no third meaning to preserve.
-        $description = BoardToolArgs::trimmed($description);
 
-        return $description === '' ? null : $description;
+        return $description;
     }
 
     /**
@@ -635,6 +683,122 @@ final class BoardCreateCardTool implements Tool
         }
 
         return $byId;
+    }
+
+    /**
+     * `$first`, plus every row of `$second` whose id `$first` does not already carry — the two
+     * idempotency reads (legacy tag, payload key) as one population. A row with no usable id is
+     * kept, as {@see archivedIds} needs it to be.
+     *
+     * @param  list<array<string, mixed>>  $first
+     * @param  list<array<string, mixed>>  $second
+     * @return list<array<string, mixed>>
+     */
+    private static function unionRows(array $first, array $second): array
+    {
+        $seen = array_keys(self::rowsById($first));
+        foreach ($second as $row) {
+            $id = $row['id'] ?? null;
+            if (! is_numeric($id) || ! in_array((int) $id, $seen, true)) {
+                $first[] = $row;
+            }
+        }
+
+        return $first;
+    }
+
+    /**
+     * Which of the bridge's own stamps this create writes as PAYLOAD KEYS and which as the legacy
+     * TAGS, decided from the board's own custom-field registration (card#11987): a key is written
+     * only where the board registers it and accepts the value ({@see BoardCustomFields::accepts}),
+     * because kanban 422s an unregistered payload key. Gated on the registration and never on a
+     * version, so each board switches when its own fields land.
+     *
+     * The idempotency key is also SEARCHED (`search_idempotency_key`), so it moves to the payload only
+     * where kanban may filter on the field; a registered-but-unfilterable field would 422 the search.
+     *
+     * ⛔ AN UNREADABLE REGISTRATION SPLITS ON WHETHER THE CREATE CORRELATES. Without an
+     * idempotency_key the stamp is all that rides on it, so the create goes ahead with the legacy tag
+     * every board accepts, and says so in the log. WITH one, the read is what says whether an earlier
+     * attempt's card sits under the payload key — so the create fails CLOSED exactly as an unreadable
+     * idempotency search does ({@see lookupRefusal}, DL-297): a create the bridge could not correlate
+     * is the duplicate the probes exist to prevent.
+     *
+     * @return array{payload: array<string, string>, tags: list<string>, search_idempotency_key: bool}
+     */
+    private function stamps(KanbanClient $client, int $boardId, string $agentName, ?string $idemKey): array
+    {
+        $error = null;
+        try {
+            $fields = $client->boardCustomFields($boardId);
+        } catch (RequestException $e) {
+            if ($idemKey !== null) {
+                // A BOARD-scoped read, not a search: membership IS a live 403 cause here (kanban authorizes the board).
+                throw $this->lookupRefusal($e, $boardId, $agentName, 'payload-key registration read', BoardReadRoute::BoardScoped);
+            }
+            $fields = null;
+            $error = RedactedErrorText::note($e);
+        } catch (ConnectionException $e) {
+            if ($idemKey !== null) {
+                throw $e;
+            }
+            $fields = null;
+            $error = RedactedErrorText::note($e);
+        }
+        if ($fields === null && $idemKey !== null) {
+            Log::warning('board_create_card: the custom-field read carried no collection, so this keyed create cannot tell where an earlier attempt\'s card is stamped — refusing, no card created', ['agent' => $agentName, 'board_id' => $boardId]);
+
+            throw new BoardReadRefused("board_create_card: board {$boardId}'s custom-field read carried no collection");
+        }
+
+        $payload = [];
+        $tags = [];
+        $legacy = [];
+        if ($fields !== null && $fields->accepts(self::CREATED_BY_KEY, $agentName)) {
+            $payload[self::CREATED_BY_KEY] = $agentName;
+        } else {
+            $tags[] = "created-by:{$agentName}";
+            $legacy[] = self::CREATED_BY_KEY;
+        }
+        $search = false;
+        if ($idemKey !== null) {
+            $value = self::idemValue($agentName, $idemKey);
+            $search = $fields->has(self::IDEMPOTENCY_KEY) && $fields->filterable(self::IDEMPOTENCY_KEY);
+            if (self::writesIdempotencyKeyToPayload($fields, $value)) {
+                $payload[self::IDEMPOTENCY_KEY] = $value;
+            } else {
+                $tags[] = self::idemTag($agentName, $idemKey);
+                $legacy[] = self::IDEMPOTENCY_KEY;
+            }
+        }
+
+        if ($fields === null) {
+            Log::warning('board_create_card: could NOT read which payload keys the board registers — stamping the legacy tag instead', [
+                'agent' => $agentName, 'board_id' => $boardId, 'keys' => $legacy, 'error' => $error ?? 'the custom-field read carried no collection',
+            ]);
+        } elseif ($legacy !== []) {
+            Log::info('board_create_card: the board does not register these payload keys (or will not take the value) — stamping the legacy tags instead', [
+                'agent' => $agentName, 'board_id' => $boardId, 'keys' => $legacy,
+            ]);
+        }
+
+        return ['payload' => $payload, 'tags' => $tags, 'search_idempotency_key' => $search];
+    }
+
+    /**
+     * Whether a create on a board with these fields stamps `$value` as the `idempotency_key` payload
+     * key rather than the legacy tag: the field is registered, kanban may filter on it (the key is
+     * searched) and it takes the value. ONE rule, asked by the create and by `bridge:legacy-stamps`.
+     */
+    public static function writesIdempotencyKeyToPayload(BoardCustomFields $fields, string $value): bool
+    {
+        return $fields->has(self::IDEMPOTENCY_KEY) && $fields->filterable(self::IDEMPOTENCY_KEY) && $fields->accepts(self::IDEMPOTENCY_KEY, $value);
+    }
+
+    /** The `idempotency_key` payload value: the key in this agent's namespace, as the legacy tag held it. */
+    public static function idemValue(string $agentName, string $key): string
+    {
+        return "{$agentName}:{$key}";
     }
 
     /**

@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
+use App\Bridge\Support\BoardCardTextRefusal;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Writeback\CardTags;
 use App\Bridge\Writeback\KanbanClient;
@@ -25,10 +26,13 @@ use Illuminate\Support\Facades\Log;
  *
  * ⭐ WHOSE CARD — the scoping question that decides this tool. Since DL-376 it has TWO
  * sufficient answers, each caller-unforgeable, and neither needed a new relation minted:
- *  1. MINTED — the card carries `created-by:<agent>`, the tag {@see BoardCreateCardTool}
- *     stamps at birth: bridge-written and caller-unforgeable (the `created-by:` prefix is
- *     reserved on create and the guard casefolds, so no caller can plant any case variant of
- *     another agent's stamp).
+ *  1. MINTED — the card carries the mint stamp {@see BoardCreateCardTool} writes at birth: the
+ *     payload key `created_by` holding the agent name, or on a board that does not register that
+ *     key the legacy tag `created-by:<agent>` (card#11987 — both are read). Bridge-written and
+ *     caller-unforgeable on this door: no tool takes a payload argument, the `created-by:` prefix
+ *     is reserved on create and the guard casefolds, so no caller can plant any case variant of
+ *     another agent's stamp. (A kanban user writing the card directly could set either; that
+ *     was as true of the tag as it is of the key.)
  *  2. ASSIGNED — the card's own `assigned_user_id` is, compared as a strict integer, the
  *     kanban user {@see SeatKanbanUser::declaredForCallingSeat} resolves for the seat the DOOR
  *     sealed ({@see CallingSeat}) — its seat's id in the coord roster (DL-450). A seat the roster
@@ -65,8 +69,8 @@ use Illuminate\Support\Facades\Log;
  * ⛔ The stamp compare is CASE-SENSITIVE, deliberately the narrow direction. Agent
  * names are filesystem-cased config names, so `me` and `ME` can be two seats and a
  * casefolded compare would let one correct the other's cards. Nothing is lost by
- * being narrower than the writer: the bridge is the only writer of a `created-by:`
- * tag and it writes the exact agent name.
+ * being narrower than the writer: the bridge is the only writer of the mint stamp
+ * (payload key or legacy tag) and it writes the exact agent name.
  *
  * ⭐ THE ID IS CALLER-SUPPLIED, SO IT IS ESTABLISHED BOARD-SCOPED BEFORE ANYTHING
  * READS IT. kanban's card id space is GLOBAL across every board on the instance,
@@ -107,7 +111,8 @@ use Illuminate\Support\Facades\Log;
  * that is somebody else's control ({@see CallerTagPolicy::isPreserved}) and lets the
  * caller's list replace only the rest. ⭐ THAT SET IS A SUPERSET OF THE TAGS A CALLER
  * MAY NOT SUPPLY, and the difference is the whole point: the bridge-stamped ones
- * (`created-by:` — losing it locks the seat out of its own card; `idem:` —
+ * (`created-by:` — on a card stamped with the legacy tag rather than the payload key,
+ * losing it locks the seat out of its own card; `idem:` —
  * re-opening duplicate minting under that key; `triaged`/`type:` — undoing the triage
  * pass) a caller could not restore because it may not supply them, but `no-automove`
  * and this install's `hold_marker_tags` are a HUMAN's pin on the card, forgeable and
@@ -117,11 +122,9 @@ use Illuminate\Support\Facades\Log;
  * destroy the other.
  *
  * ⚠ `kbcard` records the sharp edge of a read-merge-write on this field — an unreadable
- * tag list treated as "no tags" destroys every tag. On the MINTED arm an ABSENT list is
- * unreachable (the row's tags had to contain `created-by:<agent>`), though a list that is not a
- * plain list, or holds a non-string entry beside the stamp, is not, and is refused by the same
- * guard. ⛔ The
- * ASSIGNED arm authorizes without reading the tags, so there it is GUARDED
+ * tag list treated as "no tags" destroys every tag. The mint stamp is the payload key or the
+ * legacy tag, so a MINTED row need not carry a readable tag list either, and the ASSIGNED arm
+ * authorizes without reading the tags at all. ⛔ Both are therefore GUARDED
  * ({@see requireReadableTagList}): a `tags` correction on a row whose `tags` key is absent, is
  * not a list, or holds any entry that is not a string refuses, while present-null — kanban stores `tags` as a nullable json column, so
  * an untagged card can carry it — is an empty list and deletes nothing. The OPERATOR-declared half of the
@@ -159,7 +162,7 @@ use Illuminate\Support\Facades\Log;
  */
 final class BoardCorrectCardTool implements Tool
 {
-    /** `authorized_by`: the row carries the calling agent's own `created-by:` mint stamp. */
+    /** `authorized_by`: the row carries the calling agent's own mint stamp (payload key or legacy tag). */
     private const AUTHORIZED_BY_MINT = 'minted';
 
     /** `authorized_by`: the row's `assigned_user_id` is the calling seat's own kanban user. */
@@ -389,6 +392,10 @@ final class BoardCorrectCardTool implements Tool
             if ($tooLong !== null) {
                 throw $tooLong;
             }
+            $refusal = BoardCardTextRefusal::title($trimmed, $this->name(), 'nothing was written.');
+            if ($refusal !== null) {
+                throw new ToolRefusalException($refusal, reason: 'card_text_title');
+            }
             $fields['name'] = $trimmed;
         }
 
@@ -398,6 +405,14 @@ final class BoardCorrectCardTool implements Tool
                 throw new ToolRefusalException('board_correct_card: `description` must be a string, or null/"" to CLEAR it (omit `description` to leave it alone)');
             }
             $fields['description'] = BoardToolArgs::trimmed($description ?? '');
+            // A CLEAR is not held to the rules, as `kbcard patch` checks only a description it writes:
+            // the rules read the value being written, and an empty one writes no text.
+            if ($fields['description'] !== '') {
+                $refusal = BoardCardTextRefusal::description($fields['description'], $this->name(), 'Nothing was written.');
+                if ($refusal !== null) {
+                    throw new ToolRefusalException($refusal, reason: 'card_text_description');
+                }
+            }
         }
 
         return $fields;
@@ -565,18 +580,25 @@ final class BoardCorrectCardTool implements Tool
      */
     private function notYoursMessage(int $cardId, int $boardId): string
     {
-        return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards on your own board that YOU filed (the bridge's `created-by:` mint stamp) or that are ASSIGNED to you (the card's `assigned_user_id` is the kanban user your bridge identity resolves to). Nothing was written. ⚠ A board the bridge's writeback token is not a MEMBER of answers exactly the same way: kanban's search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe you filed this card or hold it, have your operator check that token's membership of board {$boardId}. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
+        return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards on your own board that YOU filed (the bridge's mint stamp: the `created_by` payload key, or the legacy `created-by:` tag) or that are ASSIGNED to you (the card's `assigned_user_id` is the kanban user your bridge identity resolves to). Nothing was written. ⚠ A board the bridge's writeback token is not a MEMBER of answers exactly the same way: kanban's search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe you filed this card or hold it, have your operator check that token's membership of board {$boardId}. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
     }
 
     /**
-     * Whether the row carries THIS agent's mint stamp. Case-SENSITIVE (class
-     * docblock), and a row whose `tags` are unreadable is not stamped — fail-closed,
-     * and the same read that makes the wholesale tag rewrite safe.
+     * Whether the row carries THIS agent's mint stamp — the payload key `created_by` holding the agent
+     * name, or the legacy `created-by:<agent>` tag that boards which do not register the key still get
+     * (card#11987). Case-SENSITIVE (class docblock), and a row whose `tags` / `payload` are unreadable
+     * is not stamped by that half — fail-closed, and the same read that makes the wholesale tag
+     * rewrite safe.
      *
      * @param  array<string, mixed>  $row
      */
     private function stampedBy(array $row, string $agentName): bool
     {
+        $payload = $row['payload'] ?? null;
+        if (is_array($payload) && ($payload[BoardCreateCardTool::CREATED_BY_KEY] ?? null) === $agentName) {
+            return true;
+        }
+
         return in_array("created-by:{$agentName}", $this->rowTags($row), true);
     }
 
@@ -604,9 +626,9 @@ final class BoardCorrectCardTool implements Tool
      * DELETE — every tag it could not read, holds and other agents' stamps included. It passes
      * only for present-null (a real, empty answer) or a list whose entries are ALL strings.
      *
-     * ⚠ Mostly reached through the ASSIGNED arm, whose authorization never reads the tags; a
-     * MINTED row's list at least holds the stamp that authorized it, but can still be a keyed
-     * object or carry an unreadable entry beside it, and it is refused the same way. It is refused by its own name
+     * ⚠ Reached through either arm: the ASSIGNED arm's authorization never reads the tags, and a
+     * MINTED row's stamp is the payload key or the legacy tag, so its list may hold no stamp at all,
+     * be a keyed object, or carry an unreadable entry beside one. It is refused by its own name
      * because the call is already authorized: the card is the caller's, so naming the cause
      * discloses nothing.
      *

@@ -58,6 +58,13 @@ final class AgentConfig
         public readonly ?string $idleNudgeSeatRecord = null,
         /** `idle_nudge.seat_agent` — the `agent` the seat record must carry; null ⇒ the agent name. */
         public readonly ?string $idleNudgeSeatAgent = null,
+        /**
+         * `surface.inbox_reader` — false ⇒ the operator declares that nothing runs `bridge:inbox`
+         * for this agent, so its staged lines are a backstop no reader consumes, never a backlog.
+         * Declared rather than inferred from the seen-cursor: one manual read writes a cursor,
+         * and a cursor-inferred signal then reports a reader that does not exist (DL-486).
+         */
+        public readonly bool $surfaceInboxReader = true,
     ) {}
 
     public static function load(string $agentName, string $configDir): self
@@ -125,6 +132,10 @@ final class AgentConfig
         if (! is_bool($silentDrop)) {
             throw new ConfigException('surface.silent_drop_warnings must be a boolean');
         }
+        $inboxReader = $surface['inbox_reader'] ?? true;
+        if (! is_bool($inboxReader)) {
+            throw new ConfigException('surface.inbox_reader must be a boolean');
+        }
 
         $classifierSection = self::requireMapping($raw, 'classifier');
         $classifierClass = self::resolveClassifierClass($classifierSection);
@@ -159,6 +170,7 @@ final class AgentConfig
             boardTools: $boardTools,
             idleNudgeSeatRecord: $seatRecord,
             idleNudgeSeatAgent: $seatAgent,
+            surfaceInboxReader: $inboxReader,
         );
     }
 

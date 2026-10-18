@@ -21,8 +21,8 @@ final class BoardCustomFields
     public const STRING_MAX_BYTES = 4096;
 
     /**
-     * @param  array<string, array{type: string|null, options: list<string>}>  $fieldsByKey  key => the
-     *                                                                                       field's type and, for an enum, its option values
+     * @param  array<string, array{type: string|null, options: list<string>, filterable: bool}>  $fieldsByKey  key => the
+     *                                                                                                         field's type, for an enum its option values, and whether kanban's search may filter on it
      */
     public function __construct(private readonly array $fieldsByKey) {}
 
@@ -44,7 +44,7 @@ final class BoardCustomFields
                     }
                 }
             }
-            $byKey[$f['key']] = ['type' => $type, 'options' => $values];
+            $byKey[$f['key']] = ['type' => $type, 'options' => $values, 'filterable' => ($f['is_filterable'] ?? null) === true];
         }
 
         return new self($byKey);
@@ -70,6 +70,16 @@ final class BoardCustomFields
     public function type(string $key): ?string
     {
         return $this->fieldsByKey[$key]['type'] ?? null;
+    }
+
+    /**
+     * Whether kanban's search may filter on the field (`is_filterable`): a `custom_field_<key>:` term
+     * over one that may not is a 422. An absent or non-boolean flag reads as NOT filterable, so a
+     * caller that would search the field does not stake the search on a flag it could not read.
+     */
+    public function filterable(string $key): bool
+    {
+        return $this->fieldsByKey[$key]['filterable'] ?? false;
     }
 
     public function accepts(string $key, string $value): bool

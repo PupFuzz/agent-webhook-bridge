@@ -591,6 +591,10 @@ php artisan bridge:github-owed [--fix] [--repo=owner/repo] [--limit=50]       # 
                                                       #   write only when a person asks. --fix exits NON-ZERO while anything
                                                       #   in scope is still owed; either mode exits NON-ZERO on a record it
                                                       #   cannot read. Run as the receiver's user (the record is 0600). docs/writeback.md
+php artisan bridge:legacy-stamps                      # how many cards on THIS install's board-tools boards still carry the
+                                                      # legacy created-by:/idem: stamp tags, and does each board register the
+                                                      # created_by/idempotency_key payload keys (card#11987)? Non-zero exit when
+                                                      # any board could not be measured. docs/board-tools.md § Where the stamps live
 php artisan bridge:writeback-exposure                 # is THIS install exposed to the one-repo-one-board writeback defect
                                                       # (card#9850 / DL-404)? Reads each mapping's repo's recently merged PRs,
                                                       # probes every cited card#  against that mapping's OWN declared boards
@@ -684,7 +688,7 @@ OK: retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry 
 | `standup.agent` | `BRIDGE_STANDUP_AGENT` | *(none)* | The recipient seat's `<agent>.yml` name; its own `channel` block is the endpoint and its `channel.auth.token_path` the bearer. **No default recipient.** A missing, non-string, or non-filename-shaped value (`../x`, `.hidden`) is REFUSED — the name is concatenated into a `<config_dir>/<agent>.yml` path. |
 | `standup.interval` | `BRIDGE_STANDUP_INTERVAL` | `86400` | Seconds between passes. ⚠ A **delivery** cadence: the pass runs on the first inbound webhook after this elapses, so a silent install pushes nothing. |
 
-⛔ **The digest carries only what the bridge measures.** Per seat: `last_delivery_at` (a DELIVERY time — the bridge has no per-seat activity or liveness signal, so there is no `last_activity` and no context-%) and `unseen_inbox_intents`. Per board: `now_depth`, and only for a board whose `writeback.json` mapping declares `coord_card_lane_stage_ids`. **A field it cannot source is ABSENT** — a seat with no delivered dispatch carries no `last_delivery_at` key, a board with no Now-lane model produces no row, and a failed or truncated board read produces a row whose depth is absent and whose `now_depth_unavailable` names the cause. Run `bridge:standup --dry-run` to see exactly what this install can answer for.
+⛔ **The digest carries only what the bridge measures.** Per seat: `last_delivery_at` (a DELIVERY time — the bridge has no per-seat activity or liveness signal, so there is no `last_activity` and no context-%) and `unseen_inbox_intents` — or, for a seat whose YAML declares `surface.inbox_reader: false` (nothing runs `bridge:inbox` for it), `inbox_reader: "none"` with the count as `staged_inbox_intents`, since "unseen" presupposes a reader (DL-486). Set that key on a channel-only seat; the bridge does not infer it. Per board: `now_depth`, and only for a board whose `writeback.json` mapping declares `coord_card_lane_stage_ids`. **A field it cannot source is ABSENT** — a seat with no delivered dispatch carries no `last_delivery_at` key, a board with no Now-lane model produces no row, and a failed or truncated board read produces a row whose depth is absent and whose `now_depth_unavailable` names the cause. Run `bridge:standup --dry-run` to see exactly what this install can answer for.
 
 A misconfigured posture pushes **nothing** and warns once per day, never per delivery; there is no partial digest and no fallback recipient.
 

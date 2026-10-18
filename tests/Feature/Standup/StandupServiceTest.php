@@ -171,6 +171,14 @@ class StandupServiceTest extends TestCase
             ['agent', 'last_delivery_at', 'unseen_inbox_intents'],
             array_keys($this->seatRow('busy-seat')),
         );
+
+        // The declared no-reader shape is pinned exactly too.
+        File::put($this->dir.'/channel-seat.yml', "identity:\n  kanban_user_id: 6\nsubscriptions: []\nsurface:\n  inbox_reader: false\n");
+        $this->dispatch('channel-seat', AgentDispatch::OUTCOME_DELIVERED, '2026-08-21 11:30:00');
+        $this->assertSame(
+            ['agent', 'last_delivery_at', 'inbox_reader', 'staged_inbox_intents'],
+            array_keys($this->seatRow('channel-seat')),
+        );
     }
 
     public function test_unseen_inbox_intents_counts_the_lines_the_cursor_has_not_consumed(): void
@@ -187,6 +195,70 @@ class StandupServiceTest extends TestCase
         File::put($this->dir.'/state/inbox-seen-pm.json', (string) json_encode(['a:pm:0']));
 
         $this->assertSame(1, $this->seatRow('pm')['unseen_inbox_intents']);
+    }
+
+    /** The prod-agent shape: a live channel seat whose YAML declares nobody reads its inbox. */
+    private function channelSeatYaml(string $agent): void
+    {
+        File::put($this->dir."/{$agent}.yml", "identity:\n  kanban_user_id: 3\nsubscriptions: []\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\EventDrivenClassifier\n"
+            ."channel:\n  socket: {$this->dir}/channel.sock\n"
+            ."surface:\n  inbox_reader: false\n");
+    }
+
+    /** @param  list<string>  $ids */
+    private function stage(string $agent, array $ids): void
+    {
+        File::put($this->dir.'/state/inbox.jsonl', implode('', array_map(
+            fn (string $id): string => (string) json_encode(['id' => $id, 'agent' => $agent, 'kind' => 'ci_settled'])."\n",
+            $ids,
+        )));
+    }
+
+    public function test_a_seat_declaring_no_inbox_reader_reports_staged_intents_not_unseen_ones(): void
+    {
+        // Nobody runs `bridge:inbox` for this seat, so every staged line stays "unseen"
+        // forever. Printed as `unseen_inbox_intents`, that reads as a backlog waiting on a
+        // reader the operator has said does not exist.
+        $this->channelSeatYaml('channel-seat');
+        $this->stage('channel-seat', ['a:channel-seat:0', 'b:channel-seat:0', 'b:channel-seat:0']);
+
+        $row = $this->seatRow('channel-seat');
+
+        $this->assertArrayNotHasKey('unseen_inbox_intents', $row);
+        $this->assertSame('none', $row['inbox_reader'] ?? null);
+        $this->assertSame(2, $row['staged_inbox_intents'] ?? null, 'the staged count is still measured, under its own name');
+    }
+
+    public function test_a_declared_no_reader_seat_stays_declared_after_a_one_off_inbox_read(): void
+    {
+        // The reason the signal is DECLARED: one manual or diagnostic `bridge:inbox` run
+        // writes a cursor, and a cursor-inferred signal then read this seat as having a
+        // reader for good, with its count regrowing from that read.
+        $this->channelSeatYaml('channel-seat');
+        $this->stage('channel-seat', ['a:channel-seat:0', 'b:channel-seat:0']);
+        File::put($this->dir.'/state/inbox-seen-channel-seat.json', (string) json_encode(['a:channel-seat:0']));
+
+        $row = $this->seatRow('channel-seat');
+
+        $this->assertArrayNotHasKey('unseen_inbox_intents', $row);
+        $this->assertSame('none', $row['inbox_reader'] ?? null);
+        $this->assertSame(1, $row['staged_inbox_intents'] ?? null);
+    }
+
+    public function test_an_undeclared_seat_no_reader_has_consumed_yet_keeps_its_unseen_count(): void
+    {
+        // The default is today's behaviour exactly: with no declaration the bridge does not
+        // infer a missing reader from a missing cursor — a reader wired but not yet run has
+        // none either, and its intents ARE the backlog this field reports.
+        $this->seatYaml('pm');
+        $this->stage('pm', ['a:pm:0', 'b:pm:0']);
+
+        $row = $this->seatRow('pm');
+
+        $this->assertSame(2, $row['unseen_inbox_intents'] ?? null);
+        $this->assertArrayNotHasKey('inbox_reader', $row);
+        $this->assertArrayNotHasKey('staged_inbox_intents', $row);
     }
 
     // --------------------------------------------------------------- boards

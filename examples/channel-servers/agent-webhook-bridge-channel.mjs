@@ -321,7 +321,12 @@ const TOOL_DEFINITIONS = [
       'response claims none; the card still exists and card_id is still the answer. ' +
       'A board fault that cannot clear (the bridge token revoked/rotated, its scope ' +
       'too narrow, or a value kanban itself rejects) is REFUSED (422) with NO card ' +
-      'created — not a retryable upstream error, so do not retry it.',
+      'created — not a retryable upstream error, so do not retry it. The title and ' +
+      'description must pass the same plain-language card rules kbcard applies ' +
+      '(title-check / description-check give the same verdict without a write); a ' +
+      'refusal (reason card_text_title / card_text_description) is kbcard\'s own ' +
+      'text, with a suggested rewrite, plus the bridge\'s own lines where kbcard\'s ' +
+      'advice does not fit this door, and nothing is sent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -329,9 +334,23 @@ const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             "Card title (required, non-empty, at most 255 characters — kanban's own " +
-            'limit). An over-long title is REFUSED (422) before any request is sent.',
+            'limit). An over-long title is REFUSED (422) before any request is sent. ' +
+            'It must also pass the plain-language title rules: T1 (at most 80 ' +
+            'characters), T2 (no file path), T3 (no code identifier), T4 (no card, PR, ' +
+            'issue or DL number), T5 (no leading [...] prefix), T6 (no WORD: prefix and ' +
+            'no process jargon). What they refuse goes in the description\'s technical ' +
+            'notes. No board tool takes a component: drop a leading [...] prefix ' +
+            'from the title yourself.',
         },
-        description: { type: 'string', description: 'Card body (optional).' },
+        description: {
+          type: 'string',
+          description:
+            'Card body (required). It must pass the filing bar and D1: a plain-language ' +
+            'summary first, then the line "Technical notes (for agents)", then below it ' +
+            'the agent detail and one "IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR" ' +
+            'line (REQUESTED also needs a "REQUESTED BY:" line, BELOW-BAR a ' +
+            '"BELOW-BAR REASON:" line).',
+        },
         tags: {
           type: 'array',
           items: { type: 'string' },
@@ -345,7 +364,8 @@ const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             'Optional but recommended: [A-Za-z0-9.-]{1,64}, and shorter for your agent: ' +
-            'the key is stored in the tag idem:<agent>:<key> and kanban caps a tag at ' +
+            'the key is stored in the tag idem:<agent>:<key> (or, on a board that ' +
+            'registers it, the idempotency_key payload key) and kanban caps a tag at ' +
             '64 characters, so the key may be at most 64 minus the length of ' +
             '"idem:<agent>:" for your agent name; a longer key is REFUSED (422) before ' +
             'any request is sent, naming your cap. Re-using it returns the ' +
@@ -354,7 +374,7 @@ const TOOL_DEFINITIONS = [
             'is a retire, so no replacement is created; pass a NEW key for new work.',
         },
       },
-      required: ['title'],
+      required: ['title', 'description'],
       additionalProperties: false,
     },
   },
@@ -363,7 +383,8 @@ const TOOL_DEFINITIONS = [
     description:
       'Correct a card that is YOURS — its name, description or tags — instead of ' +
       'minting a second card to say the first one is wrong. A card on your own ' +
-      'board is yours when it carries your own bridge-stamped created-by: tag OR ' +
+      'board is yours when it carries your own bridge-written mint stamp (the ' +
+      'created_by payload key, or the created-by: tag) OR ' +
       'is assigned to your own kanban user (resolved from your bridge identity — ' +
       'no argument names a user); the result says which one authorized the write ' +
       '(authorized_by: minted | assigned). Anything else is REFUSED, never ' +
@@ -396,12 +417,15 @@ const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             'Replacement title (non-empty, at most 255 characters — kanban\'s own ' +
-            'limit). There is no clear form — omit it to leave the title alone.',
+            'limit), held to the same plain-language title rules as board_create_card. ' +
+            'There is no clear form — omit it to leave the title alone.',
         },
         description: {
           type: 'string',
           description:
-            'Replacement body. Present-and-empty CLEARS it; omit it to leave it alone.',
+            'Replacement body, held to the same filing bar and D1 as board_create_card. ' +
+            'Present-and-empty CLEARS it (a clear is not held to them); omit it to ' +
+            'leave it alone.',
         },
         tags: {
           type: 'array',

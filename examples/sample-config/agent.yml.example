@@ -132,3 +132,5 @@ subscriptions:
 # ----------------------------------------------------------------------------
 # surface:
 #   silent_drop_warnings: true   # warn when a channel_push target has no paired Intent
+#   inbox_reader: true           # false = nothing runs bridge:inbox for this agent (channel-only
+#                                # seat); the standup reports its staged count, not "unseen"
