@@ -29,7 +29,8 @@ use Illuminate\Support\Facades\Log;
  * ⛔ THE COMMENTS COME FROM THE FULL TASK READ ({@see KanbanClient::getCard}) — kanban has no comment
  * read route (`GET` on `tasks/{id}/comments.json` is not routed; that path is POST-only), and the
  * task read returns the card's WHOLE comment history, unpaged, oldest first. So the paging here is
- * the bridge's own, over that one list, and every page costs the same two requests.
+ * the bridge's own, over that one list; what a page costs is `docs/board-tools.md` §
+ * `board_get_card_comments`' Cost paragraph.
  *
  * ⛔ A READ THAT FAILED IS NEVER AN EMPTY PAGE. A 2xx the comments cannot be read out of — no
  * `comments` list, a row without an integer id, a string body or a readable `created_at` — is refused
@@ -336,7 +337,7 @@ final class BoardGetCardCommentsTool implements Tool
         $decoded = is_string($raw) ? json_decode((string) base64_decode(strtr($raw, '-_', '+/'), true), true) : null;
         $at = is_array($decoded) && is_string($decoded['at'] ?? null) ? self::timestamp($decoded['at']) : null;
         if (! is_array($decoded) || array_keys($decoded) !== ['card', 'at', 'id'] || ! is_int($decoded['card']) || ! is_int($decoded['id']) || $at === null) {
-            throw new ToolRefusalException('board_get_card_comments: `cursor` is not one this tool issued — pass back the `next_cursor` of the previous page unchanged, or omit it for the first page. Nothing was sent to the board.', reason: 'bad_arguments');
+            throw new ToolRefusalException('board_get_card_comments: `cursor` is malformed — pass back the `next_cursor` of the previous page unchanged, or omit it for the first page. Nothing was sent to the board.', reason: 'bad_arguments');
         }
         if ($decoded['card'] !== $cardId) {
             throw new ToolRefusalException("board_get_card_comments: `cursor` was issued for card {$decoded['card']}, not card {$cardId} — a cursor continues the walk of the card it came from. Nothing was sent to the board.", reason: 'bad_arguments');

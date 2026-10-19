@@ -413,6 +413,21 @@ class BoardGetCardCommentsTest extends TestCase
         $this->assertNull($r['body']['result']['writeback_user_id']);
     }
 
+    public function test_the_writeback_user_is_asked_once_however_many_comments_carry_the_line(): void
+    {
+        $this->fakeBoard(task: self::task([
+            self::comment(1, '2026-10-01T00:00:00+00:00', "FROM: impl-a\n\none"),
+            self::comment(2, '2026-10-02T00:00:00+00:00', "FROM: impl-b\n\ntwo"),
+            self::comment(3, '2026-10-03T00:00:00+00:00', "FROM: impl-a\n\nthree", 5),
+        ]));
+
+        $r = $this->http(['card_id' => self::CARD]);
+
+        $this->assertSame('verified', $r['body']['result']['writer_check']);
+        // The board-scoped lookup, the card read, and ONE identity read.
+        Http::assertSentCount(3);
+    }
+
     public function test_a_page_with_no_attribution_line_does_not_ask_who_the_writeback_user_is(): void
     {
         $this->fakeBoard(task: self::task([self::comment(1, '2026-10-01T00:00:00+00:00', 'a plain note')]));
@@ -529,8 +544,8 @@ class BoardGetCardCommentsTest extends TestCase
             'a since with no offset' => [['card_id' => 42, 'since' => '2026-10-01T12:00:00'], '`since` must be an ISO-8601 timestamp'],
             'a since on a day that does not exist' => [['card_id' => 42, 'since' => '2026-02-30T12:00:00Z'], '`since` must be an ISO-8601 timestamp'],
             'a numeric since' => [['card_id' => 42, 'since' => 1760000000], '`since` must be an ISO-8601 timestamp'],
-            'a garbage cursor' => [['card_id' => 42, 'cursor' => 'not-a-cursor'], '`cursor` is not one this tool issued'],
-            'a non-string cursor' => [['card_id' => 42, 'cursor' => 5], '`cursor` is not one this tool issued'],
+            'a garbage cursor' => [['card_id' => 42, 'cursor' => 'not-a-cursor'], '`cursor` is malformed'],
+            'a non-string cursor' => [['card_id' => 42, 'cursor' => 5], '`cursor` is malformed'],
         ];
     }
 

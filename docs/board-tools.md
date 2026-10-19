@@ -1649,7 +1649,7 @@ operator to re-run tests whose results were already on the card.
 | --- | --- | --- |
 | `card_id` | yes | A positive **integer**: the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced. |
 | `limit` | no | Comments per page, an integer from 1 to `BoardGetCardCommentsTool::MAX_LIMIT`; omitted ⇒ `BoardGetCardCommentsTool::DEFAULT_LIMIT` (the schema's `maximum` and prose state both, and a test holds them to the constants). Both are **chosen, not measured**: a kanban comment can be 65535 characters, so no count bounds the answer's size, and a smaller page is how you bound it. |
-| `cursor` | no | The previous page's `next_cursor`, passed back unchanged. Opaque. A cursor this tool did not issue, or one issued for another card, is **refused**. |
+| `cursor` | no | The previous page's `next_cursor`, passed back unchanged. Opaque. A malformed cursor, or one issued for another card, is **refused**. |
 | `since` | no | Only comments created **after** this instant (strictly after: a comment at exactly that time is left out). An ISO-8601 date-time **with** a time and an offset — `2026-10-19T14:00:00Z`, `2026-10-19T16:00:00+02:00`, optionally with a fraction of a second. A date alone, a time with no offset, or a day that does not exist (`2026-02-30`) is **refused** rather than guessed at. |
 
 That is the whole accepted set; any other key is **refused** (422) before any request: see
@@ -1730,7 +1730,8 @@ Every other comment has `writer: null`. `writer_check` says what was checked:
 **⚠ How the pages are made.** kanban has no comment read route (a `GET` on the comments path is not
 routed; it is POST-only). Its full card read, `GET /tasks/{id}.json`, carries the card's **whole**
 comment history, oldest first and not paged — the same array `kbcard comments` prints. So every call
-reads that whole list and the bridge pages over it: each page costs the same as the first. The cursor
+reads that whole list and the bridge pages over it, so a later page is no cheaper than the first
+(the Cost paragraph below has the requests). The cursor
 holds the last returned comment's time and id, not an offset, so a comment posted between your pages is
 not returned twice and does not push an older one off your walk; it appears in `total`, and at the head
 of a fresh walk. A comment deleted mid-walk is simply absent.
