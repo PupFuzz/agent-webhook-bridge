@@ -18,7 +18,7 @@ import { readServedToolsCache, SERVED_TOOLS_FILE } from '../channel-lib.mjs';
 
 const TARGET = 'bridge@testhost';
 const opts = { name: 'served-test', runtimePrefix: 'served-rt-' };
-const ALL = ['board_my_cards', 'board_create_card', 'board_correct_card', 'board_take_card', 'board_comment_card', 'board_get_cards', 'board_search', 'ci_await', 'ci_await_cancel'];
+const ALL = ['board_my_cards', 'board_create_card', 'board_correct_card', 'board_take_card', 'board_comment_card', 'board_get_cards', 'board_get_card_comments', 'board_search', 'ci_await', 'ci_await_cancel'];
 const CI = ['ci_await', 'ci_await_cancel'];
 const THIS_LAUNCH = 'launch-now';
 

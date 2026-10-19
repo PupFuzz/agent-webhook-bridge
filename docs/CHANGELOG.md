@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#12010 / DL-490** — **New board tool `board_get_card_comments`: read one card's comments, newest first, a page at a time.** A seat can now read back the results it, or another seat, recorded with `board_comment_card`. It takes `card_id`, and optionally `limit` (default 10, at most 50), `cursor` (the previous page's `next_cursor`) and `since` (an ISO-8601 time with an offset; only newer comments are returned). Each comment carries its id, its kanban author's user id, its time, its body, and `writer`: the seat named by the `FROM: <seat>` line `board_comment_card` writes first, or `null` for any other body. It reads any card on the seat's own board, live or archived, in any lane, and refuses anything else (`reason: out_of_scope`). A read that fails is a refusal with a reason (`comments_unreadable`, `card_gone`, `board_read_failed`) or the retryable 502, never an empty list; a card with no comments is an empty page. It is served wherever `board_get_cards` is: every pm, solo or impl seat whose `board_tools` block has a board scope. A scope-less block gets neither. Channel-server snapshot `0.9.67` → `0.9.68`, because the tool is new in its tool list. `docs/board-tools.md` § `board_get_card_comments`.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.68. Until you do, seats stay on the client they have, do not list `board_get_card_comments`, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+
 ## [0.105.0] - 2026-10-17
 
 ### Changed

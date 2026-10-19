@@ -67,8 +67,8 @@ final class KanbanClient
      * answer is what the belongs-to-mapped-board compare then reads. That is fine only
      * where the id has ALREADY been established as this install's — which is what
      * {@see cardRowsOnBoard} is for, and what both token-resolved arms — `kanban_move_card`
-     * (card#8375) and the `kanban_block_reason` draft overlay (card#8415) — now do before they
-     * call this. A new caller reaching this with an author-supplied id and no such check is the
+     * (card#8375) and the `kanban_block_reason` draft overlay (card#8415) — and the board tools'
+     * comment read (`board_get_card_comments`, card#12010) do before they call this. A new caller reaching this with an author-supplied id and no such check is the
      * defect those cards name, not a shortcut.
      *
      * @return array<string, mixed>

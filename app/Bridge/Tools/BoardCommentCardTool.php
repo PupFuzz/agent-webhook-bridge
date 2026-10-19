@@ -34,7 +34,7 @@ use Illuminate\Support\Facades\Log;
  *
  * ⛔ ATTRIBUTION IS THE BRIDGE'S. Every seat writes through the one writeback user, so the
  * comment's kanban author says nothing about which seat wrote it. The body's FIRST line is
- * `FROM: <agent>`, where the agent is the name the front door derived — the same value
+ * `FROM: <agent>` ({@see CommentAttribution}, which `board_get_card_comments` reads back), where the agent is the name the front door derived — the same value
  * `board_create_card` stamps as its mint stamp (payload key or legacy tag) — and no argument
  * can name it ({@see ATTRIBUTION_ARGS} only picks the refusal's message). A caller may write its own `FROM:` line in
  * the text; it lands after the bridge's and cannot displace it.
@@ -159,7 +159,7 @@ final class BoardCommentCardTool implements Tool
             throw new ToolRefusalException(self::CONTENT_REFUSAL);
         }
 
-        $attribution = "FROM: {$agentName}\n\n";
+        $attribution = CommentAttribution::prefix($agentName);
         $room = KanbanFieldLimits::COMMENT_MAX - mb_strlen($attribution);
         if (mb_strlen($content) > $room) {
             $max = KanbanFieldLimits::COMMENT_MAX;

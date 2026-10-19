@@ -17,7 +17,7 @@ serves both (DL-465 corrects DL-460's wording here).
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
-(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381; the by-id read since DL-435; the search since DL-437; the CI-await pair since DL-452):
+(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381; the by-id read since DL-435; the search since DL-437; the comment read since DL-490; the CI-await pair since DL-452):
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
@@ -27,6 +27,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. Scoped to a lane you work, or a card already assigned to you in any lane (card#11267). ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
+| `board_get_card_comments` | read | **Read the comments on one card on YOUR board, newest first, a page at a time** (card#12010 / DL-490) — the way to read back results recorded with `board_comment_card`. Any card on your board, live or archived, in any lane; each comment carries its kanban author's user id, its time, its body, and `writer`: the seat the bridge's `FROM: <seat>` first line names, else `null`. `since` returns only newer comments. A read that failed is **refused with a reason**, never answered as "no comments". |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none` / `unrouted` — the unassigned cards in no home lane, the PM's routing queue, card#11267) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused — except `unrouted`'s unassigned test, which the board has no term for and the bridge applies to the rows it returns; the window says `total`, `truncated` and `total_is_lower_bound`. |
 | `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA that a commit started (`push`, `pull_request`) is terminal, you get ONE `ci_settled` event on your channel — a `schedule` or `workflow_dispatch` run on the same SHA neither holds it open nor turns it red (card#11958 / DL-485); if that does not happen before the wait expires, ONE `ci_await_expired`. If it has not happened by the repo's normal CI time (`overdue_at` in the answer — derived from the repo's recent heads, or yours via `overdue_after_seconds`), you get ONE `ci_await_overdue` first and the wait stays (card#11674 / DL-471): that event, not polling, is your cue to check CI by hand. A repo the operator declared to have no CI is refused (`repo_not_ci`, card#11696). A repo this bridge's GitHub token cannot read is refused (`repo_unreadable`), and a wait whose later read finds that ends with ONE `ci_await_unreadable` (card#11600; a `401` or `403` must be confirmed by a second read first). **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
 | `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it. Never touches another seat's. |
@@ -76,8 +77,8 @@ The tools that ship today — the table is held against the bridge's own registr
 
 If your channel server advertises tools, your MCP client lists `board_my_cards`,
 `board_create_card`, `board_correct_card`, `board_take_card`, `board_comment_card`,
-`board_get_cards`, `board_search`, `ci_await` and `ci_await_cancel`, and the
-server's own `instructions` string names them (it derives the names from the same tool list it
+`board_get_cards`, `board_get_card_comments`, `board_search`, `ci_await` and `ci_await_cancel`,
+and the server's own `instructions` string names them (it derives the names from the same tool list it
 advertises). ⚠ **A tool your seat's copy of the channel server
 predates is invisible to you and reports as missing** — the tool set is restated in that
 server's inline MCP schema (there is no pointer a model can follow), so a seat on an older
@@ -665,6 +666,8 @@ configured board. Elsewhere this doc and the code point here rather than repeati
   home-lane row is dropped and logged. See § *`lane: "unrouted"`*.
 - **`board_get_cards`** (DL-435): the cards whose ids you name, in any lane. A card on another
   board is a status with no content. See § `board_get_cards`.
+- **`board_get_card_comments`** (DL-490): the comments of the one card you name, in any lane. A
+  card on another board is refused with nothing of it read. See § `board_get_card_comments`.
 - **`board_my_cards`' `tag` read** (DL-383): the cards carrying the one exact tag you name, in any
   lane. See § Cards carrying a tag, in any lane.
 - **`board_my_cards`' assigned arm** (card#11267): walks your whole board and keeps **only the rows
@@ -1356,7 +1359,7 @@ takeover both refusals name the holder the write was sent over, so it is never l
 }
 ```
 
-**Refusal codes.** A start's refusals — and every `ci_await` / `ci_await_cancel` refusal — carry a machine-readable `reason` beside `error` in the
+**Refusal codes.** A start's refusals — and every `ci_await` / `ci_await_cancel` refusal, and every refusal `board_get_card_comments` builds (each site's code is asserted by an arm of `BoardGetCardCommentsTest`, not by the census below) — carry a machine-readable `reason` beside `error` in the
 `{ok: false, error, reason}` body — branch on it, never on the wording. Which refusal sites a test
 holds to carrying a code, and that check's bounds, are stated in ONE place:
 `BoardTakeCardRefusalReasonCoverageTest`'s class docblock — read it there; it is not restated here.
@@ -1367,8 +1370,8 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | --- | --- | --- |
 | `bad_request` | the door, any tool | the request body is not a JSON object, is not labelled JSON (HTTP), names no `tool`, or (ssh) could not be read from stdin |
 | `unknown_tool` | the door, any tool | no such tool |
-| `bad_arguments` | the door and every tool | an undeclared argument, a malformed one (`card_id` not a positive integer, `start` not a boolean, a `ci_await` `repo` not `owner/name`, a `head_sha` not a full 40-hex SHA, `pr` not a positive integer, `overdue_after_seconds` not a whole number from 60 to 604800), or a value over kanban's own bound |
-| `out_of_scope` | `board_take_card` | not a card on your board in a lane you work or assigned to you (or a board the writeback token cannot see — one answer) |
+| `bad_arguments` | the door and every tool | an undeclared argument, a malformed one (`card_id` not a positive integer, `start` not a boolean, a `ci_await` `repo` not `owner/name`, a `head_sha` not a full 40-hex SHA, `pr` not a positive integer, `overdue_after_seconds` not a whole number from 60 to 604800, a `board_get_card_comments` `limit`, `since` or `cursor` it cannot use), or a value over kanban's own bound |
+| `out_of_scope` | `board_take_card`, `board_get_card_comments` | the take: not a card on your board in a lane you work or assigned to you; the comment read: not a card on your board at all, or one that moved off it mid-call. Either way, a board the writeback token cannot see gives the same answer |
 | `archived` | `board_take_card` | the card is archived |
 | `holder_unreadable` | `board_take_card` | the row says nothing readable about who holds the card |
 | `broken_read` | every card-id tool | the board-scoped lookup answered a row that is not this card |
@@ -1380,7 +1383,8 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `program_parent` | start | a `program` parent card would have to move |
 | `not_stored` | start | the board answered 2xx and the read-back shows something else |
 | `not_confirmed` | start | the board answered 2xx and the read-back did not answer (it failed, was a broken read, or the card is no longer live): whether it landed is unknown (calling again is safe); a takeover's names the displaced holder |
-| `card_gone` | `board_take_card` write | the card was removed between the check and the write |
+| `card_gone` | `board_take_card` write, `board_get_card_comments` | the card was removed (or trashed) between the check and the write or read |
+| `comments_unreadable` | `board_get_card_comments` | the card read answered `2xx` but the comments could not be read out of it (no `comments` list, or a comment without a readable id, author, body or `created_at`), so the bridge cannot say what comments the card has; an INSTALL fault, never an empty page |
 | `board_rejected` | `board_take_card` write | a board 422 (an enforced WIP limit on In Progress is one) |
 | `install_fault.write_forbidden` | `board_take_card` write | 403 on the write |
 | `install_fault.token_rejected` | `board_take_card` write | 401 on the write |
@@ -1631,6 +1635,94 @@ which costs fewer than 3 reads, so a call where every id misses never pays it �
 per-minute budget the writeback's own card moves draw on. A 429 that lands on a writeback move
 while that budget is exhausted is currently handled as a PERMANENT failure rather than retried, not
 something this tool fixes — tracked separately as card#10849.
+
+## `board_get_card_comments`
+
+**Read the comments on one card on your own board, newest first** (card#12010, DL-490). A seat that
+records its results as card comments (`board_comment_card`) could not read them back: no other tool
+returns comments. One seat derived its owed work from repository searches instead and asked its
+operator to re-run tests whose results were already on the card.
+
+**Arguments:**
+
+| Arg | Required | Notes |
+| --- | --- | --- |
+| `card_id` | yes | A positive **integer**: the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced. |
+| `limit` | no | Comments per page, an integer from 1 to `BoardGetCardCommentsTool::MAX_LIMIT`; omitted ⇒ `BoardGetCardCommentsTool::DEFAULT_LIMIT` (the schema's `maximum` and prose state both, and a test holds them to the constants). Both are **chosen, not measured**: a kanban comment can be 65535 characters, so no count bounds the answer's size, and a smaller page is how you bound it. |
+| `cursor` | no | The previous page's `next_cursor`, passed back unchanged. Opaque. A cursor this tool did not issue, or one issued for another card, is **refused**. |
+| `since` | no | Only comments created **after** this instant (strictly after: a comment at exactly that time is left out). An ISO-8601 date-time **with** a time and an offset — `2026-10-19T14:00:00Z`, `2026-10-19T16:00:00+02:00`, optionally with a fraction of a second. A date alone, a time with no offset, or a day that does not exist (`2026-02-30`) is **refused** rather than guessed at. |
+
+That is the whole accepted set; any other key is **refused** (422) before any request: see
+§ [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379).
+There is deliberately **no text or prefix filter**, and nothing on this door edits or deletes a comment.
+
+**⭐ Which cards: any card on your own board, live or archived, in any lane** — the cards
+`board_get_cards` returns as `found` or `archived`, established the same way (the board-scoped search
+`q=board_id=<yours> id=<n>`, live side first, archived side only on a live miss; DL-323). The answer's
+`card_status` says which. Refused, with nothing of the card read (`reason: out_of_scope`):
+
+- **a card on any other board**, the coordination board included;
+- **a card in kanban's trash**, or an id no card has. `board_get_cards` tells these apart from another
+  board's card with one more read; this refusal names no status, so it does not pay for that read.
+  ⚠ A board the bridge's writeback token is not a **member** of answers the same way (zero rows, not
+  an error), and the refusal says so;
+- **a card that moved to another board** between the bridge's board check and its read of the card.
+
+⚠ An archived card is read here, unlike `board_comment_card`, which refuses to comment on one: a
+read changes nothing, and an archived card's comments are often the results you are looking for.
+
+**Returns:**
+
+```jsonc
+{
+  "card_id": 42,
+  "board_id": 10,              // observed: the card read answered this board
+  "card_status": "found",      // or "archived"
+  "since": null,               // the `since` you sent, as you sent it
+  "comments": [                // newest first: created_at descending, then id descending
+    {
+      "id": 310,
+      "author": { "user_id": 8 },   // the kanban user that posted it; null for a deleted account
+      "created_at": "2026-10-19T11:00:00+00:00",
+      "body": "FROM: impl\n\n12 passed, 0 failed",
+      "writer": "impl"              // the seat the first line names, or null
+    }
+  ],
+  "total": 1,                  // every comment matching `since`, across all pages
+  "next_cursor": null          // a string while there is another page
+}
+```
+
+**⛔ `writer` reads the bridge's attribution line, and only that.** Every seat posts through the one
+writeback user, so `author` does not say which seat wrote a comment. `board_comment_card` writes
+`FROM: <your seat>`, a blank line, then your text; `writer` is that seat when a body **starts** with
+exactly that line and blank line, and `null` otherwise. A `FROM:` anywhere else in the body — a second
+line, mid-text, decorated (`FROM: impl (re-run)`), lower-case — gives `null`. One class owns the
+format, `CommentAttribution`, for the writer and the reader both. ⚠ **It is a claim in the text, not an
+authentication:** anyone who can comment on the board, a person with their own kanban account
+included, can open a comment with that line. A comment the bridge wrote is one whose `author` is the
+writeback user **and** whose `writer` is set; this tool reports both and does not combine them.
+
+**⛔ A read that failed is never an empty page.** A card with no comments answers `comments: []`,
+`total: 0`. Every failure is a refusal or a `502`:
+
+| What happened | You get |
+| --- | --- |
+| kanban answered the card read `2xx`, but it carries no `comments` list, or a comment without an integer `id`, an integer-or-null `user_id`, a string body or a readable `created_at`, or it is not the card asked for | **422**, `reason: comments_unreadable` — an INSTALL fault |
+| the card was removed or trashed after the board check (the card read answered 404) | **422**, `reason: card_gone` |
+| a permanent board 4xx on the board check or the card read | **422**, `reason: board_read_failed` — § [A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339) |
+| a kanban 5xx, another non-permanent status, or no answer | **502** (retryable), the door's one upstream body |
+
+**⚠ How the pages are made.** kanban has no comment read route (a `GET` on the comments path is not
+routed; it is POST-only). Its full card read, `GET /tasks/{id}.json`, carries the card's **whole**
+comment history, oldest first and not paged — the same array `kbcard comments` prints. So every call
+reads that whole list and the bridge pages over it: each page costs the same as the first. The cursor
+holds the last returned comment's time and id, not an offset, so a comment posted between your pages is
+not returned twice and does not push an older one off your walk; it appears in `total`, and at the head
+of a fresh walk. A comment deleted mid-walk is simply absent.
+
+**Cost:** two requests on a live card (one board-scoped lookup, one card read), three on an archived
+one; two reads and nothing else on an id not on your board.
 
 ## `board_search`
 
@@ -2388,6 +2480,8 @@ two route classes are authorized differently:
 | **403** on a **board-scoped** read (`boards/{id}/preload.json`) | **422 refusal**, naming the abilities **and** board **membership** | this route authorizes the BOARD itself, so a writeback user that is not a member of it is refused here — the one cause the search row above rules out. `board_my_cards` is the only tool that reads this route (its stage names, on your board and on the coord board). |
 | **403** on a WRITE | **422 refusal**, naming **every gate that can answer it** | the token's abilities, the writeback user's board role (`task.create` for a create, `task.update` for a correction **or a take**, `comment.create` for a comment), **and kanban's board write gate** — an archived or trashed board refuses every write whatever the token and role allow. `BoardCallRefusal::writeGatesClause()` is the ONE place they are enumerated (count them there, not here); a 403 cannot say which refused. |
 | **404** on a card **SEARCH** | **422 refusal**, "API-surface fault" | the ROUTE answered 404, which is a statement about the API surface rather than about a card (a card that is simply not yours is a different refusal, with its own message). |
+| **403** on the **card read** (`tasks/{id}.json`, `board_get_card_comments`) | **422 refusal**, naming the abilities **and** the right to **view the card's board** | kanban authorizes this read on the card's BOARD (`TaskPolicy::view`) as well as the token's `read` ability; a 403 cannot say which refused. |
+| **404** on the **card read** | **422 refusal**, `card_gone` | the board-scoped search placed the card on your board a moment earlier, so a 404 here is a card removed or trashed in between. |
 | **404** on a **board-scoped** read | **422 refusal**, "the BOARD itself" | the configured board id does not resolve on that route: no board carries it, or it is in the trash (that route does not resolve trashed boards). A missing API surface is the other, less likely candidate. |
 | **422** on a WRITE | **422 refusal**, ending with **the board's own reason** | the board refused a value in the write. Deterministic — and this is what keeps the mirrored length caps safe to go stale. The bridge's sentence says only what its own checks established, and the board's field errors follow it, redacted and bounded: [§ What a board 422 relays](#what-a-board-422-relays-dl-384) (DL-384). |
 | **422** on a READ | **502** (retryable) | a read sends no value for a validator to reject, so a 422 there is a malformed-query/API-surface fault the bridge has no cause to name. Deliberately NOT in the set above. Nothing of the board's body is relayed. |
