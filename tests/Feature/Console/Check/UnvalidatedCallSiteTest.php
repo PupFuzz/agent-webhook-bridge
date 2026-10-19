@@ -159,6 +159,10 @@ class UnvalidatedCallSiteTest extends TestCase
         //     deliberately has NO site here. That set is defined by the criterion, never by
         //     a roll-call that a fourth arm would silently falsify: the DL-204 one carries
         //     the ruling and every later arm of the shape inherits it.
+        // PLUS (card#12050 / DL-489) the per-LEG orphan's two disclosures, in
+        // WritebackMappingConfigCheck: the scope-map shape above for an unread agent, and a
+        // second limb (c) where the comparand is a subscribed classifier implementing only
+        // the bare EmitsWritebackReactions marker — it may drive the leg, and nothing says.
         // PLUS the card#5698 idList() slice's three sites — again ONE shape, not three
         // decisions, and a DIFFERENT shape from the scope-map ones above. Each reads a
         // kanban collection whose ABSENCE the parser used to render as an empty list, so
@@ -177,7 +181,7 @@ class UnvalidatedCallSiteTest extends TestCase
         // and its own site only so the finding names the board that could not be read
         // rather than the mapped board.
         'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 11,
-        'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 7,
+        'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 9,
         // Board / cache / channel reads that did not complete (DL-251 (a)). The THIRD site on
         // the source-coverage leg is card#5701 / DL-258 and is a different limb from its two
         // neighbours: they are reads that FAILED (a throw, a page ceiling), while this one

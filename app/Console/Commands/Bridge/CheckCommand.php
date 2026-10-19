@@ -84,6 +84,7 @@ use App\Bridge\Tools\ConfigSeenLedger;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackLeg;
 use Throwable;
 
 /**
@@ -287,11 +288,14 @@ class CheckCommand extends BridgeCommand
                 // out-of-process (DL-025) — AgentClassifierResolvableCheck's
                 // probeLoadable already passed above, so this child loads cleanly. Used
                 // after the loop to flag orphaned writeback.json mappings (a mapping no
-                // classifier drives).
+                // classifier drives) — and, per LEG, a mapping whose subscribed emitters
+                // drive only its other leg (card#12050). The leg probes are out of process
+                // too, and run only for an emitter.
                 if (ClassifierResolver::probeImplements($cfg->classifierClass, EmitsWritebackReactions::class)) {
                     foreach (CheckContext::githubScopes($cfg) as $scope) {
                         $ctx->writebackEmittingScopes[$scope] = true;
                     }
+                    $ctx->recordWritebackLegs($cfg, WritebackLeg::drivenBy($cfg->classifierClass));
                 }
 
                 // Gate 1 of all three coord-card families — the DL-198 create (card#8292),
