@@ -154,6 +154,7 @@ class CardWriteRosterCoverageTest extends TestCase
         'correlatePr' => 'read',
         'createCard' => 'task.create',
         'findCardsByRef' => 'read',
+        'currentUser' => 'read',
         'getCard' => 'read',
         'moveCard' => 'task.move',
         'patchCard' => 'task.update',

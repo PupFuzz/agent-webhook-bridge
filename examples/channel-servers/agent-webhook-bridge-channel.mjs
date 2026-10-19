@@ -601,6 +601,62 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'board_get_card_comments',
+    description:
+      'Read the COMMENTS on one card on YOUR board, NEWEST FIRST, a page at a time — the way to ' +
+      'read back results you (or another seat) recorded with board_comment_card. Any card on your ' +
+      'own board qualifies, live or archived, in any lane (card_status says which). A card on ' +
+      'another board (coord_cards included), a card in kanban\'s trash, or an id no card has is ' +
+      'REFUSED (422, reason out_of_scope) and nothing of it is returned. ' +
+      'Each comment carries id, author (the kanban user_id that posted it — every seat posts as ' +
+      'the bridge\'s ONE writeback user, so it does not say which seat), created_at, body, and ' +
+      'writer: the seat named by the bridge\'s own first line "FROM: <seat>" (exactly as ' +
+      'board_comment_card writes it), and ONLY when the comment\'s kanban author is that ' +
+      'writeback user — the same line typed by anyone else gives null. writer_check says ' +
+      'whether that was checked: verified, no_attribution_line, or unavailable (the bridge ' +
+      'could not tell who its writeback user is, so every writer is null). total counts every comment ' +
+      'that matches since, across all pages; next_cursor is null on the last page. ' +
+      'Read-only. A card with no comments is a successful empty page; a read that FAILED is ' +
+      'never one — it is refused (422) with a reason (comments_unreadable, card_gone, ' +
+      'board_read_failed) or answered 502 (retry). A board fault that cannot clear (the bridge ' +
+      'token revoked/rotated, or its scope too narrow to read) is REFUSED (422) naming the ' +
+      'INSTALL fault — do not retry it; tell your operator.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        card_id: {
+          type: 'integer',
+          description:
+            'The id of the card whose comments to read, as board_my_cards reports it. Must be ' +
+            'an integer — a decorated string is refused, never coerced.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 50,
+          description:
+            'How many comments in one page, newest first (at most 50; default 10). A comment can ' +
+            'be long, so a smaller page is the way to bound the answer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'The next_cursor of the previous page, passed back unchanged, for the next page. Omit ' +
+            'it for the first page. It belongs to the card it came from.',
+        },
+        since: {
+          type: 'string',
+          description:
+            'Return only comments created AFTER this instant: an ISO-8601 timestamp with a time ' +
+            'and an offset, e.g. 2026-10-19T14:00:00Z. A date alone or a time with no offset is ' +
+            'refused.',
+        },
+      },
+      required: ['card_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'board_search',
     description:
       'Search the cards on YOUR board by filter and get the MATCHES ONLY — no lane list, no column ' +

@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Provision\KanbanIdentityResolution;
+use App\Bridge\Provision\KanbanIdentityResolver;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\KanbanHttpClient;
 use Illuminate\Http\Client\PendingRequest;
@@ -67,8 +69,8 @@ final class KanbanClient
      * answer is what the belongs-to-mapped-board compare then reads. That is fine only
      * where the id has ALREADY been established as this install's — which is what
      * {@see cardRowsOnBoard} is for, and what both token-resolved arms — `kanban_move_card`
-     * (card#8375) and the `kanban_block_reason` draft overlay (card#8415) — now do before they
-     * call this. A new caller reaching this with an author-supplied id and no such check is the
+     * (card#8375) and the `kanban_block_reason` draft overlay (card#8415) — and the board tools'
+     * comment read (`board_get_card_comments`, card#12010) do before they call this. A new caller reaching this with an author-supplied id and no such check is the
      * defect those cards name, not a shortcut.
      *
      * @return array<string, mixed>
@@ -78,6 +80,18 @@ final class KanbanClient
         $data = $this->http()->get("/tasks/{$cardId}.json")->throw()->json('data');
 
         return is_array($data) ? $data : [];
+    }
+
+    /**
+     * WHICH KANBAN USER THIS CLIENT'S TOKEN IS — the author of every write it makes, a comment
+     * included (card#12010). Delegates to {@see KanbanIdentityResolver}, the one owner of that
+     * question (`GET /users/current.json`, DL-369), so the board tools ask it the way setup does
+     * without the token leaving this class. Fail-soft like the resolver: a failure is a
+     * resolution carrying its cause, never an exception.
+     */
+    public function currentUser(): KanbanIdentityResolution
+    {
+        return (new KanbanIdentityResolver)->resolve($this->baseUrl, $this->token);
     }
 
     /**

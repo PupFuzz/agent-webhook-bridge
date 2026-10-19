@@ -138,6 +138,12 @@ class GetCardTenantCheckCoverageTest extends TestCase
         // carry an id out of author-controlled text (DL-330 corrected an earlier claim that
         // named only the create).
         'Bridge/Tools/BoardCreateCardTool.php::readBack#1' => 'cardsByTag($cfg->boardId, …) on the idempotency-hit arm; createCard($cfg->boardId, …) or min(cardsByTag(…)) on the create arm (the one read-back placement and, on a hit, the holder are read off — card#11267)',
+        // The comment read (card#12010 / DL-490). The id is caller-supplied, and it is read only
+        // after `BoardScopedRow::lookUp` answered a row whose OWN `id` is that id and whose OWN
+        // `board_id` is the agent's configured board (`BoardScopedRow::forCard`), on the live or
+        // the archived side; anything else is refused before this read. The read's own
+        // `board_id` is compared again after it (`readComments`).
+        'Bridge/Tools/BoardGetCardCommentsTool.php::call#1' => 'BoardScopedRow::lookUp($client, $cfg->boardId, $cardId, …) — the row it answers carries this id on this board',
         // The per-card disposition of a coord card move. `$id` comes from the union of
         // `cardsByTag($mapping->boardId, "id:{$sid}")` and
         // `correlateIssue($mapping->boardId, …)`, and the row is re-checked through

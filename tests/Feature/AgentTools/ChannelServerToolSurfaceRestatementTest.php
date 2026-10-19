@@ -5,6 +5,7 @@ namespace Tests\Feature\AgentTools;
 use App\Bridge\Support\CardTextRules;
 use App\Bridge\Tools\BoardCardProjection;
 use App\Bridge\Tools\BoardCreateCardTool;
+use App\Bridge\Tools\BoardGetCardCommentsTool;
 use App\Bridge\Tools\BoardGetCardsTool;
 use App\Bridge\Tools\BoardSearchTool;
 use App\Bridge\Tools\BoardToolDispatcher;
@@ -85,6 +86,7 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
     private const CAPPED_UNTAGGED_TOOLS = [
         'board_comment_card' => "required: ['card_id', 'content']",
         'board_get_cards' => "required: ['ids']",
+        'board_get_card_comments' => "required: ['card_id'],\n      additionalProperties: false,\n    },\n  },\n  {\n    name: 'board_search'",
         // No argument is required, so its schema closes on the key after `properties`.
         'board_search' => '      additionalProperties: false,',
     ];
@@ -458,6 +460,20 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         $this->assertStringContainsString('maximum: '.BoardSearchTool::MAX_LIMIT.',', $block);
         $this->assertStringContainsString('at most '.BoardSearchTool::MAX_LIMIT.')', $block);
         $this->assertStringContainsString('default '.BoardSearchTool::DEFAULT_LIMIT.',', $block);
+    }
+
+    /**
+     * `board_get_card_comments` refuses a `limit` over {@see BoardGetCardCommentsTool::MAX_LIMIT} and
+     * defaults it to {@see BoardGetCardCommentsTool::DEFAULT_LIMIT}; the schema states the cap as
+     * `maximum` and both numbers in prose, so all three are held to the constants.
+     */
+    public function test_the_channel_server_advertises_the_comment_page_size_the_bridge_enforces(): void
+    {
+        $block = $this->property('board_get_card_comments', 'limit');
+
+        $this->assertStringContainsString('maximum: '.BoardGetCardCommentsTool::MAX_LIMIT.',', $block);
+        $this->assertStringContainsString('at most '.BoardGetCardCommentsTool::MAX_LIMIT.';', $block);
+        $this->assertStringContainsString('default '.BoardGetCardCommentsTool::DEFAULT_LIMIT.')', $block);
     }
 
     /** The `lane` enum IS {@see BoardSearchTool::LANES} restated inline, so it is held equal to it. */
