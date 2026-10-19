@@ -9,6 +9,7 @@ use App\Bridge\Support\CoordConfigPath;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\PrOutcome;
+use App\Bridge\Writeback\WritebackLeg;
 use App\Bridge\Writeback\WritebackMapping;
 
 /**
@@ -87,6 +88,8 @@ final class WritebackMappingConfigCheck implements Check
                 } else {
                     yield Finding::warn("writeback: mapping for {$repo} is ORPHANED — no agent runs a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) subscribed to github:{$repo}; the mapping is inert (no card will ever move) until an agent subscribes to it with that classifier");
                 }
+            } else {
+                yield from $this->undrivenLegs((string) $repo, $scope, $mapping, $ctx);
             }
             // ⛔ card#7124 review — THE SPELLING SPLIT, and the reason canonicalizing the
             // compare above is not the whole answer. The writeback matches a repo by
@@ -404,7 +407,46 @@ final class WritebackMappingConfigCheck implements Check
             }
         }
 
-        yield Silence::because('no mapping maps a merge outcome on any board it declares — neither its own `stages` nor any `boards.<id>` entry — (so the mention-vs-closure line has nothing to describe), every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it, and no half-configured optional leg — each of the WARNING legs above speaks only when a key is set without the key it needs, when a coord-card family is enabled without the mapping keys that family reads, or when two files spell one repo two ways');
+        yield Silence::because('no mapping maps a merge outcome on any board it declares — neither its own `stages` nor any `boards.<id>` entry — (so the mention-vs-closure line has nothing to describe), every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it and a subscribed driver for every leg it configures, and no half-configured optional leg — each of the WARNING legs above speaks only when a key is set without the key it needs, when a coord-card family is enabled without the mapping keys that family reads, or when two files spell one repo two ways');
+    }
+
+    /**
+     * card#12050: the ORPHANED question asked PER LEG, for a mapping some writeback-emitting
+     * classifier IS subscribed to. Before this, any such classifier counted as covering the
+     * whole mapping — so a repo served only by `CoordinationClassifier` read clean while its
+     * `stages` moved no card on any merge. Nothing at runtime reports that: the PR mover that
+     * is not subscribed never sees the event, so this setup-time line is the only place the
+     * gap can surface.
+     *
+     * THREE ANSWERS, by what this run established. A classifier on the scope that implements
+     * only the bare marker may be this leg's driver, and an agent this run did not finish
+     * reading may be too — both `unvalidated` (the leg could not answer, `Severity`'s rule).
+     * Otherwise every emitter on the scope declared its legs and none declared this one, which
+     * is a measured `warn`.
+     *
+     * Reached only where the whole-mapping ORPHANED arm did not fire, so a mapping with no
+     * emitter at all gets that one line and not one per leg as well.
+     *
+     * @return iterable<Finding>
+     */
+    private function undrivenLegs(string $repo, string $scope, WritebackMapping $mapping, CheckContext $ctx): iterable
+    {
+        foreach (WritebackLeg::cases() as $leg) {
+            $keys = $leg->configuredKeys($mapping);
+            if ($keys === [] || isset($ctx->writebackLegScopes[$leg->value][$scope])) {
+                continue;
+            }
+            $sets = implode(' / ', $keys);
+            $marker = $leg->marker();
+            $undeclared = array_values(array_unique($ctx->writebackUndeclaredLegClassifiers[$scope] ?? []));
+            if ($undeclared !== []) {
+                yield Finding::unvalidated("writeback: could NOT determine whether the {$leg->label()} of the mapping for {$repo} is ORPHANED — the mapping sets {$sets}, and the writeback-emitting classifier(s) subscribed to github:{$repo} (".implode(', ', $undeclared).') implement only the bare App\\Bridge\\Contracts\\EmitsWritebackReactions marker, which does not say which leg a classifier drives. Implement the marker of each leg it drives ('.$marker.' for this one) and re-run; until then this says nothing about whether that leg is inert.');
+            } elseif ($ctx->agentScopeCoverage->mayCover($scope)) {
+                yield Finding::unvalidated("writeback: could NOT determine whether the {$leg->label()} of the mapping for {$repo} is ORPHANED — ".$ctx->agentScopeCoverage->gapClause($scope).", so an agent this run never finished reading could be the one running a classifier that drives it ({$marker}) on github:{$repo}. Fix the error(s) above and re-run; until then this says nothing about whether that leg is inert.");
+            } else {
+                yield Finding::warn("writeback: the {$leg->label()} of the mapping for {$repo} is ORPHANED — the mapping sets {$sets}, but every writeback-emitting classifier subscribed to github:{$repo} drives only the other writeback leg, and none implements {$marker}. Until an agent running {$leg->shippedDriver()} (or another classifier implementing {$marker}) subscribes to github:{$repo}, {$leg->inertEffect()}. If that leg is not wanted on this repo, remove those keys from the mapping instead.");
+            }
+        }
     }
 
     /**

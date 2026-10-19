@@ -8,6 +8,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#12050** — **`bridge:check` now warns when no subscribed agent can move a mapped repo's cards on pull requests.** A `writeback.json` mapping counted as covered whenever any writeback-emitting classifier was subscribed to its repo, including `CoordinationClassifier`, which never moves a card on a PR. So a mapping with `stages` (or `boards`, or `create_dependabot_cards`) on a repo served only by `CoordinationClassifier` read clean while no merged PR moved its card, and nothing at runtime reported it. The check now judges each leg a mapping configures: the PR → card-move leg needs a subscribed `GitHubPrCardMoveClassifier` (or a classifier implementing the new `App\Bridge\Contracts\DrivesPrCardMoves` marker), and the coord-card leg (`create_coord_cards` / `move_coord_cards`) needs a subscribed `CoordinationClassifier` (or one implementing `DrivesCoordCards`). A leg with no driver gets a WARN naming the leg, the repo, its keys and the classifier to subscribe. It never fails the check, and dispatch is unchanged. After upgrading, an install whose coordination repo maps `stages` it never meant to use will see the new warning; remove those keys to clear it.
+- ⚠ **card#12050** — **A custom classifier implementing only `App\Bridge\Contracts\EmitsWritebackReactions` now gets its mapping legs reported `unvalidated`**, because that marker does not say which leg it drives. Its runtime behaviour is unchanged. Implement `DrivesPrCardMoves` and/or `DrivesCoordCards` (both extend `EmitsWritebackReactions`) to restore a verdict; `docs/customization.md` § Emitting writeback reactions.
+
 ## [0.105.0] - 2026-10-17
 
 ### Changed

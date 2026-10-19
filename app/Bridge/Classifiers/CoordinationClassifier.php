@@ -4,7 +4,7 @@ namespace App\Bridge\Classifiers;
 
 use App\Bridge\CiAwait\CiHeadRunTracker;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
-use App\Bridge\Contracts\EmitsWritebackReactions;
+use App\Bridge\Contracts\DrivesCoordCards;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
@@ -145,7 +145,7 @@ use App\Bridge\Writeback\WritebackMapping;
  * Stateless: `$agent`/config are read as call-locals (one cached instance serves
  * every agent in the per-agent dispatch loop — never stash on the instance).
  */
-class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresConsumedEvents, EmitsWritebackReactions
+class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresConsumedEvents, DrivesCoordCards
 {
     /** event_type prefix → the body-actions that represent a NEW coordination message worth waking on. */
     private const HANDLED = [

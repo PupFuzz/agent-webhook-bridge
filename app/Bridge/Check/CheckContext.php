@@ -10,6 +10,7 @@ use App\Bridge\Support\SharedIdentitiesFile;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackLeg;
 
 /**
  * The derived model of the install every {@see Check} asserts against (DL-242).
@@ -38,7 +39,10 @@ use App\Bridge\Writeback\WritebackConfig;
  * rule above is not read as broken: {@see self::recordCoordCardFamilies} owns the shape
  * the three coord-card family maps share, because handle() held that shape three times
  * over (card#8305). It is not a check and asserts nothing — it is the FILL of fields this
- * class already documents, in the key form this class already owns.
+ * class already documents, in the key form this class already owns. {@see self::recordWritebackLegs}
+ * is the same kind of fill, for the same reason: the per-leg maps share that shape, and
+ * it keeps the fill out of `handle()`'s measured predicate set (card#12050) — the PROBE
+ * that decides which legs a classifier drives stays in `handle()`.
  *
  * FIELDS ARE ADDED PER STAGE, as the checks that read them migrate. Each one is a
  * derivation some migrating check was MEASURED to need, never a guess at what checks
@@ -143,6 +147,34 @@ final class CheckContext
      * @var array<string, true>
      */
     public array $writebackEmittingScopes = [];
+
+    /**
+     * Per writeback LEG, the github scopes some agent covers with a classifier that DRIVES
+     * that leg (card#12050) — keyed by {@see WritebackLeg} value, then scope. Narrower than
+     * {@see self::$writebackEmittingScopes}: a scope present there and absent here for a leg
+     * has a writeback-emitting classifier subscribed, just not one that drives this leg, so a
+     * mapping configuring the leg is inert on it.
+     *
+     * Same accumulation timing and the same two traps as {@see self::$writebackEmittingScopes}
+     * (PARTIAL, not empty, inside the per-agent loop; short by any aborted agent — consult
+     * {@see self::$agentScopeCoverage}).
+     *
+     * @var array<string, array<string, true>>
+     */
+    public array $writebackLegScopes = [];
+
+    /**
+     * github scope => the classifier FQCNs subscribed to it that implement the bare
+     * `App\Bridge\Contracts\EmitsWritebackReactions` marker and NO leg marker
+     * (card#12050). Such a classifier emits writeback reactions without saying which leg, so
+     * a leg absent from {@see self::$writebackLegScopes} on its scope is UNDETERMINED, not
+     * orphaned: it may be the driver.
+     *
+     * Same timing and traps as the map above.
+     *
+     * @var array<string, list<string>>
+     */
+    public array $writebackUndeclaredLegClassifiers = [];
 
     /**
      * github scopes where an agent enables the coord-card-create family (card#8292) —
@@ -304,6 +336,27 @@ final class CheckContext
         $this->coordCardCreateScopes += self::familyScopes($cfg, 'coord-card-create');
         $this->coordCardMoveScopes += self::familyScopes($cfg, 'coord-card-move');
         $this->coordCardRelaneScopes += self::familyScopes($cfg, 'coord-card-relane');
+    }
+
+    /**
+     * Record which writeback legs $cfg's classifier drives, against every github scope it
+     * subscribes to (card#12050). Called only for a classifier the out-of-process probe
+     * found implementing `App\Bridge\Contracts\EmitsWritebackReactions`; `$legs`
+     * is that classifier's {@see WritebackLeg::drivenBy()}, probed by the caller. An empty
+     * `$legs` is the bare marker, recorded by class so a finding can name it.
+     *
+     * @param  list<WritebackLeg>  $legs
+     */
+    public function recordWritebackLegs(AgentConfig $cfg, array $legs): void
+    {
+        foreach (self::githubScopes($cfg) as $scope) {
+            foreach ($legs as $leg) {
+                $this->writebackLegScopes[$leg->value][$scope] = true;
+            }
+            if ($legs === []) {
+                $this->writebackUndeclaredLegClassifiers[$scope][] = $cfg->classifierClass;
+            }
+        }
     }
 
     /**
