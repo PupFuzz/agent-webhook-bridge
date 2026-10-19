@@ -13,10 +13,10 @@ use App\Bridge\Support\RecipientAddressing;
  * seat wrote it; the bridge puts the seat on the body's FIRST line instead, followed by a blank line,
  * then the caller's text.
  *
- * ⚠ THE READ IS A CLAIM IN THE TEXT, NOT AN AUTHENTICATION. Anyone who can comment on the board —
- * a human with their own kanban account included — can open a comment with the same line. What the
- * bridge itself wrote is a comment whose kanban author is the writeback user AND whose first line
- * parses here; the reader reports both and does not combine them.
+ * ⚠ {@see writer()} READS A CLAIM IN THE TEXT, NOT AN AUTHENTICATION. Anyone who can comment on
+ * the board — a human with their own kanban account included — can open a comment with the same
+ * line. A comment the bridge wrote is one whose kanban author is the writeback user AND whose first
+ * line parses here; {@see BoardGetCardCommentsTool} reports a writer only when both hold.
  *
  * ⛔ NOT {@see RecipientAddressing::author()}. That one serves the coordination
  * protocol: it takes the first `FROM:` line ANYWHERE in a body, lowercased and tokenised. This one

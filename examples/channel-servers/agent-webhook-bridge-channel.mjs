@@ -611,8 +611,10 @@ const TOOL_DEFINITIONS = [
       'Each comment carries id, author (the kanban user_id that posted it — every seat posts as ' +
       'the bridge\'s ONE writeback user, so it does not say which seat), created_at, body, and ' +
       'writer: the seat named by the bridge\'s own first line "FROM: <seat>" (exactly as ' +
-      'board_comment_card writes it), else null. writer is what the text says, not an ' +
-      'authentication: anyone who can comment can write that line. total counts every comment ' +
+      'board_comment_card writes it), and ONLY when the comment\'s kanban author is that ' +
+      'writeback user — the same line typed by anyone else gives null. writer_check says ' +
+      'whether that was checked: verified, no_attribution_line, or unavailable (the bridge ' +
+      'could not tell who its writeback user is, so every writer is null). total counts every comment ' +
       'that matches since, across all pages; next_cursor is null on the last page. ' +
       'Read-only. A card with no comments is a successful empty page; a read that FAILED is ' +
       'never one — it is refused (422) with a reason (comments_unreadable, card_gone, ' +

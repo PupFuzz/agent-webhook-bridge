@@ -40,6 +40,9 @@ class BoardGetCardCommentsTest extends TestCase
     /** @var array<string, mixed>|int what the task read answers: its `data`, or a status */
     private array|int $task = [];
 
+    /** @var int|array{status: int} who the writeback token is (`users/current.json`): a user id, or a status it answers with */
+    private int|array $whoami = self::WRITEBACK_USER;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -166,6 +169,9 @@ class BoardGetCardCommentsTest extends TestCase
             },
             // Read at request time, so a test can change what the card holds between two calls
             // (`Http::fake()` stacks: a second fake would never be reached).
+            '*/users/current.json' => fn () => is_int($this->whoami)
+                ? Http::response(['data' => ['id' => $this->whoami, 'name' => 'bridge writeback', 'email' => 'SENSITIVE-EMAIL']])
+                : Http::response(['message' => 'refused'], $this->whoami['status']),
             '*/tasks/'.self::CARD.'.json' => fn () => is_int($this->task)
                 ? Http::response(['message' => 'refused'], $this->task)
                 : Http::response(['data' => $this->task]),
@@ -349,6 +355,73 @@ class BoardGetCardCommentsTest extends TestCase
         $this->assertTrue($r['ok'], json_encode($r['body']) ?: '');
         $this->assertSame($writer, $r['body']['result']['comments'][0]['writer']);
         $this->assertSame($body, $r['body']['result']['comments'][0]['body']);
+    }
+
+    // ─── writer is authenticated by the kanban author ────────────────────────
+
+    public function test_writer_is_set_when_the_bridges_line_is_authored_by_the_writeback_user(): void
+    {
+        $this->fakeBoard(task: self::task([self::comment(1, '2026-10-01T00:00:00+00:00', "FROM: impl-a\n\nall green", self::WRITEBACK_USER)]));
+
+        $r = $this->http(['card_id' => self::CARD]);
+
+        $this->assertTrue($r['ok'], json_encode($r['body']) ?: '');
+        $this->assertSame('impl-a', $r['body']['result']['comments'][0]['writer']);
+        $this->assertSame('verified', $r['body']['result']['writer_check']);
+        $this->assertSame(self::WRITEBACK_USER, $r['body']['result']['writeback_user_id']);
+        $this->assertStringNotContainsString('SENSITIVE-EMAIL', (string) json_encode($r['body']));
+    }
+
+    public function test_the_same_line_authored_by_any_other_user_names_no_writer(): void
+    {
+        // A person, or any other kanban client, can type the bridge's line; only the writeback
+        // user's comments are the bridge's.
+        $this->fakeBoard(task: self::task([
+            self::comment(1, '2026-10-01T00:00:00+00:00', "FROM: impl-a\n\nforged", 5),
+            self::comment(2, '2026-10-02T00:00:00+00:00', "FROM: impl-a\n\nreal", self::WRITEBACK_USER),
+            self::comment(3, '2026-10-03T00:00:00+00:00', "FROM: impl-a\n\ndeleted account", null),
+        ]));
+
+        $r = $this->http(['card_id' => self::CARD]);
+
+        $this->assertTrue($r['ok'], json_encode($r['body']) ?: '');
+        $writers = array_column($r['body']['result']['comments'], 'writer', 'id');
+        $this->assertSame([3 => null, 2 => 'impl-a', 1 => null], $writers);
+        $this->assertSame('verified', $r['body']['result']['writer_check']);
+    }
+
+    /** @return array<string, array{array{status: int}|int}> */
+    public static function unresolvableWritebackUsers(): array
+    {
+        return ['a 5xx' => [['status' => 500]], 'a 401' => [['status' => 401]], 'a 403' => [['status' => 403]]];
+    }
+
+    /**
+     * @param  array{status: int}  $whoami
+     */
+    #[DataProvider('unresolvableWritebackUsers')]
+    public function test_when_the_writeback_user_cannot_be_resolved_no_comment_names_a_writer(array $whoami): void
+    {
+        $this->fakeBoard(task: self::task([self::comment(1, '2026-10-01T00:00:00+00:00', "FROM: impl-a\n\nall green", self::WRITEBACK_USER)]));
+        $this->whoami = $whoami;
+
+        $r = $this->http(['card_id' => self::CARD]);
+
+        $this->assertTrue($r['ok'], json_encode($r['body']) ?: '');
+        $this->assertNull($r['body']['result']['comments'][0]['writer']);
+        $this->assertSame('unavailable', $r['body']['result']['writer_check']);
+        $this->assertNull($r['body']['result']['writeback_user_id']);
+    }
+
+    public function test_a_page_with_no_attribution_line_does_not_ask_who_the_writeback_user_is(): void
+    {
+        $this->fakeBoard(task: self::task([self::comment(1, '2026-10-01T00:00:00+00:00', 'a plain note')]));
+
+        $r = $this->http(['card_id' => self::CARD]);
+
+        $this->assertSame('no_attribution_line', $r['body']['result']['writer_check']);
+        $this->assertNull($r['body']['result']['writeback_user_id']);
+        Http::assertNotSent(fn (Request $req): bool => str_contains($req->url(), '/users/current.json'));
     }
 
     // ─── reach ───────────────────────────────────────────────────────────────

@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Provision\KanbanIdentityResolution;
+use App\Bridge\Provision\KanbanIdentityResolver;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\KanbanHttpClient;
 use Illuminate\Http\Client\PendingRequest;
@@ -78,6 +80,18 @@ final class KanbanClient
         $data = $this->http()->get("/tasks/{$cardId}.json")->throw()->json('data');
 
         return is_array($data) ? $data : [];
+    }
+
+    /**
+     * WHICH KANBAN USER THIS CLIENT'S TOKEN IS — the author of every write it makes, a comment
+     * included (card#12010). Delegates to {@see KanbanIdentityResolver}, the one owner of that
+     * question (`GET /users/current.json`, DL-369), so the board tools ask it the way setup does
+     * without the token leaving this class. Fail-soft like the resolver: a failure is a
+     * resolution carrying its cause, never an exception.
+     */
+    public function currentUser(): KanbanIdentityResolution
+    {
+        return (new KanbanIdentityResolver)->resolve($this->baseUrl, $this->token);
     }
 
     /**

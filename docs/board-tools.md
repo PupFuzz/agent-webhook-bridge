@@ -27,7 +27,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. Scoped to a lane you work, or a card already assigned to you in any lane (card#11267). ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side — your seat's kanban user id in the coord roster (DL-450) — never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
-| `board_get_card_comments` | read | **Read the comments on one card on YOUR board, newest first, a page at a time** (card#12010 / DL-490) — the way to read back results recorded with `board_comment_card`. Any card on your board, live or archived, in any lane; each comment carries its kanban author's user id, its time, its body, and `writer`: the seat the bridge's `FROM: <seat>` first line names, else `null`. `since` returns only newer comments. A read that failed is **refused with a reason**, never answered as "no comments". |
+| `board_get_card_comments` | read | **Read the comments on one card on YOUR board, newest first, a page at a time** (card#12010 / DL-490) — the way to read back results recorded with `board_comment_card`. Any card on your board, live or archived, in any lane; each comment carries its kanban author's user id, its time, its body, and `writer`: the seat the bridge's `FROM: <seat>` first line names — **only on a comment the bridge's writeback user wrote**, else `null`. `since` returns only newer comments. A read that failed is **refused with a reason**, never answered as "no comments". |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none` / `unrouted` — the unassigned cards in no home lane, the PM's routing queue, card#11267) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused — except `unrouted`'s unassigned test, which the board has no term for and the bridge applies to the rows it returns; the window says `total`, `truncated` and `total_is_lower_bound`. |
 | `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA that a commit started (`push`, `pull_request`) is terminal, you get ONE `ci_settled` event on your channel — a `schedule` or `workflow_dispatch` run on the same SHA neither holds it open nor turns it red (card#11958 / DL-485); if that does not happen before the wait expires, ONE `ci_await_expired`. If it has not happened by the repo's normal CI time (`overdue_at` in the answer — derived from the repo's recent heads, or yours via `overdue_after_seconds`), you get ONE `ci_await_overdue` first and the wait stays (card#11674 / DL-471): that event, not polling, is your cue to check CI by hand. A repo the operator declared to have no CI is refused (`repo_not_ci`, card#11696). A repo this bridge's GitHub token cannot read is refused (`repo_unreadable`), and a wait whose later read finds that ends with ONE `ci_await_unreadable` (card#11600; a `401` or `403` must be confirmed by a second read first). **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
 | `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it. Never touches another seat's. |
@@ -1685,23 +1685,37 @@ read changes nothing, and an archived card's comments are often the results you 
       "author": { "user_id": 8 },   // the kanban user that posted it; null for a deleted account
       "created_at": "2026-10-19T11:00:00+00:00",
       "body": "FROM: impl\n\n12 passed, 0 failed",
-      "writer": "impl"              // the seat the first line names, or null
+      "writer": "impl"              // the seat the first line names — only when author is the writeback user
     }
   ],
+  "writer_check": "verified",  // or "no_attribution_line", or "unavailable" (every writer null)
+  "writeback_user_id": 8,      // the user the writeback token is; null unless "verified"
   "total": 1,                  // every comment matching `since`, across all pages
   "next_cursor": null          // a string while there is another page
 }
 ```
 
-**⛔ `writer` reads the bridge's attribution line, and only that.** Every seat posts through the one
-writeback user, so `author` does not say which seat wrote a comment. `board_comment_card` writes
-`FROM: <your seat>`, a blank line, then your text; `writer` is that seat when a body **starts** with
-exactly that line and blank line, and `null` otherwise. A `FROM:` anywhere else in the body — a second
-line, mid-text, decorated (`FROM: impl (re-run)`), lower-case — gives `null`. One class owns the
-format, `CommentAttribution`, for the writer and the reader both. ⚠ **It is a claim in the text, not an
-authentication:** anyone who can comment on the board, a person with their own kanban account
-included, can open a comment with that line. A comment the bridge wrote is one whose `author` is the
-writeback user **and** whose `writer` is set; this tool reports both and does not combine them.
+**⛔ `writer` is set only on a comment the BRIDGE wrote.** Every seat posts through the one
+writeback user, so `author` does not say which seat wrote a comment; `board_comment_card` writes
+`FROM: <your seat>`, a blank line, then your text. Anyone who can comment on the board — a person with
+their own kanban account, any other kanban client — can type that same line, so the line alone proves
+nothing. `writer` is the seat it names only when **both** hold:
+
+- the body **starts** with exactly that line and blank line (a `FROM:` anywhere else — a second line,
+  mid-text, decorated as `FROM: impl (re-run)`, lower-case — names nobody; `CommentAttribution` owns the
+  format, for the writer and the reader both); and
+- the comment's kanban `author.user_id` **is the writeback user** — the user the bridge's writeback
+  token resolves to, asked of kanban (`GET /users/current.json`, the same read `bridge:provision` uses)
+  on the call. `writeback.json`'s `identity_id` is not used: it is what an operator declared, not what
+  authored the comment.
+
+Every other comment has `writer: null`. `writer_check` says what was checked:
+
+| `writer_check` | Means |
+| --- | --- |
+| `verified` | the writeback user was resolved (`writeback_user_id`), and each `writer` is set only on its comments |
+| `no_attribution_line` | no comment on this page opens with the line, so nothing was asked; every `writer` is null |
+| `unavailable` | kanban did not say who the writeback token is (any failure of that read), so **every `writer` is null** — the comments are still returned. The bridge log's `board_get_card_comments: the writeback user could not be resolved` line carries the cause |
 
 **⛔ A read that failed is never an empty page.** A card with no comments answers `comments: []`,
 `total: 0`. Every failure is a refusal or a `502`:
@@ -1722,7 +1736,8 @@ not returned twice and does not push an older one off your walk; it appears in `
 of a fresh walk. A comment deleted mid-walk is simply absent.
 
 **Cost:** two requests on a live card (one board-scoped lookup, one card read), three on an archived
-one; two reads and nothing else on an id not on your board.
+one, plus one (`users/current.json`) when a comment on the page opens with the attribution line; two
+reads and nothing else on an id not on your board.
 
 ## `board_search`
 

@@ -36,6 +36,12 @@ use Illuminate\Support\Facades\Log;
  * `comments_unreadable`; an empty list is a card with none. That is the whole of the incident this
  * tool closes: an answer of "no comments" for a card whose comments were not read.
  *
+ * ⛔ `writer` IS AUTHENTICATED BY THE KANBAN AUTHOR, NOT BY THE TEXT. The `FROM: <seat>` line
+ * ({@see CommentAttribution}) can be typed by anyone who can comment, so a comment names a writer
+ * only when its kanban author is the user the writeback token resolves to — the author of every
+ * `board_comment_card` write ({@see writebackUser}). When that user cannot be resolved, no comment
+ * names one.
+ *
  * ⚠ THE CURSOR IS KEYED ON THE LAST COMMENT RETURNED — its `created_at` and its id — not on an
  * offset, so a comment posted between two pages is not returned twice and pushes nothing older off
  * the walk. A comment deleted mid-walk is simply not there.
@@ -50,6 +56,15 @@ final class BoardGetCardCommentsTool implements Tool
      * sizes its other reads to ({@see BoardMyCardsTool::DEFAULT_MAX_CARDS}).
      */
     public const DEFAULT_LIMIT = 10;
+
+    /** `writer_check`: the writeback user was resolved, and each `writer` was checked against it. */
+    public const WRITER_VERIFIED = 'verified';
+
+    /** `writer_check`: no comment on the page opens with the bridge's line, so nothing was asked. */
+    public const WRITER_NO_LINE = 'no_attribution_line';
+
+    /** `writer_check`: the writeback user could not be resolved, so every `writer` is null. */
+    public const WRITER_UNAVAILABLE = 'unavailable';
 
     /** The largest page a call may ask for — CHOSEN, for the same reason as {@see DEFAULT_LIMIT}. */
     public const MAX_LIMIT = 50;
@@ -101,6 +116,7 @@ final class BoardGetCardCommentsTool implements Tool
         }
         $page = array_slice($comments, 0, $limit);
         $last = $page === [] ? null : $page[array_key_last($page)];
+        [$writerCheck, $writebackUserId] = $this->writebackUser($client, $page, $cardId, $agentName);
 
         return [
             'card_id' => $cardId,
@@ -108,7 +124,11 @@ final class BoardGetCardCommentsTool implements Tool
             'board_id' => $boardId,
             'card_status' => $status,
             'since' => $sinceRaw,
-            'comments' => array_map(static fn (array $c): array => $c['out'], $page),
+            'comments' => array_map(static fn (array $c): array => $c['out'] + [
+                'writer' => $writebackUserId !== null && $c['out']['author']['user_id'] === $writebackUserId ? $c['claimed'] : null,
+            ], $page),
+            'writer_check' => $writerCheck,
+            'writeback_user_id' => $writebackUserId,
             'total' => $total,
             'next_cursor' => $last !== null && count($comments) > $limit ? self::encodeCursor($cardId, $last['at'], $last['id']) : null,
         ];
@@ -146,7 +166,7 @@ final class BoardGetCardCommentsTool implements Tool
      * this board, and one whose comments cannot be read.
      *
      * @param  array<string, mixed>  $task
-     * @return list<array{id: int, at: \DateTimeImmutable, out: array{id: int, author: array{user_id: ?int}, created_at: string, body: string, writer: ?string}}>
+     * @return list<array{id: int, at: \DateTimeImmutable, claimed: ?string, out: array{id: int, author: array{user_id: ?int}, created_at: string, body: string}}>
      */
     private function readComments(array $task, int $boardId, int $cardId, string $agentName): array
     {
@@ -180,16 +200,44 @@ final class BoardGetCardCommentsTool implements Tool
                 $this->unreadable($cardId, $agentName, 'a comment on the card read had no readable id, author, body or created_at');
             }
             /** @var string $createdAt */
-            $comments[] = ['id' => $id, 'at' => $at, 'out' => [
+            $comments[] = ['id' => $id, 'at' => $at, 'claimed' => CommentAttribution::writer($body), 'out' => [
                 'id' => $id,
                 'author' => ['user_id' => $userId],
                 'created_at' => $createdAt,
                 'body' => $body,
-                'writer' => CommentAttribution::writer($body),
             ]];
         }
 
         return $comments;
+    }
+
+    /**
+     * Whether the page's attribution lines can be believed, and the id they are believed for: a
+     * comment's `writer` is its claimed seat ONLY when its kanban author is the user the
+     * writeback token IS — the author of every `board_comment_card` write. That user is asked of
+     * kanban ({@see KanbanClient::currentUser}), never taken from `writeback.json`'s
+     * `identity_id`, which is a declaration an operator wrote and not what authored the comment.
+     * Asked once, and only when some comment on the page carries the line. A failure answers
+     * `unavailable` with no id, so no comment names a writer — it does not refuse the read.
+     *
+     * @param  list<array{claimed: ?string}>  $page
+     * @return array{string, ?int}
+     */
+    private function writebackUser(KanbanClient $client, array $page, int $cardId, string $agentName): array
+    {
+        if (array_filter($page, static fn (array $c): bool => $c['claimed'] !== null) === []) {
+            return [self::WRITER_NO_LINE, null];
+        }
+        $resolution = $client->currentUser();
+        if ($resolution->identity === null) {
+            Log::warning('board_get_card_comments: the writeback user could not be resolved, so no comment names a writer', [
+                'agent' => $agentName, 'card_id' => $cardId, 'cause' => $resolution->failure,
+            ]);
+
+            return [self::WRITER_UNAVAILABLE, null];
+        }
+
+        return [self::WRITER_VERIFIED, $resolution->identity->id];
     }
 
     private function unreadable(int $cardId, string $agentName, string $what): never
@@ -299,7 +347,8 @@ final class BoardGetCardCommentsTool implements Tool
 
     private static function encodeCursor(int $cardId, \DateTimeImmutable $at, int $id): string
     {
-        return rtrim(strtr(base64_encode((string) json_encode(['card' => $cardId, 'at' => $at->format('Y-m-d\TH:i:s.uP'), 'id' => $id])), '+/', '-_'), '=');
+        // base64url: padding only ever ends the string, so dropping every `=` is dropping the padding.
+        return str_replace('=', '', strtr(base64_encode((string) json_encode(['card' => $cardId, 'at' => $at->format('Y-m-d\TH:i:s.uP'), 'id' => $id])), '+/', '-_'));
     }
 
     /** An RFC 3339 date-time that names a real instant, or null — a rolled-over day (Feb 30) included. */
