@@ -1314,7 +1314,10 @@ class BridgeCommandsTest extends TestCase
         $out = $this->legCheckOutput();
 
         $this->assertMatchesRegularExpression('/^WARN: writeback: the PR → card-move leg of the mapping for owner\/repo is ORPHANED — the mapping '.preg_quote($keys, '/').'/mu', $out);
-        $this->assertStringContainsString('Until an agent running App\Bridge\Classifiers\GitHubPrCardMoveClassifier (or another classifier implementing App\Bridge\Contracts\DrivesPrCardMoves) subscribes to github:owner/repo, no pull request on this repo will move its card', $out);
+        $this->assertStringContainsString('Until an agent running App\Bridge\Classifiers\GitHubPrCardMoveClassifier (or another classifier implementing App\Bridge\Contracts\DrivesPrCardMoves) subscribes to github:owner/repo, merged PRs on this repo will not move their cards as they happen', $out);
+        // The keys have readers no subscription is involved in, so the only remedy is to subscribe.
+        $this->assertStringContainsString('Keep `stages` / `boards`: they also feed the board tools\' start and finished columns and `bridge:reconcile`', $out);
+        $this->assertStringNotContainsString('remove those keys', $out);
         $this->assertStringNotContainsString('mapping for owner/repo is ORPHANED — no agent runs', $out);
     }
 

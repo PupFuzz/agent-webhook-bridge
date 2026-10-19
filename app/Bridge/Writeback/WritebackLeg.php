@@ -10,13 +10,19 @@ use App\Bridge\Support\ClassifierResolver;
 
 /**
  * The independently-driven legs of one `writeback.json` mapping, each bound to the mapping
- * keys that switch it on and to the marker a classifier implements to drive it (card#12050).
+ * keys whose effect ON THAT LEG needs a subscribed driver, and to the marker a classifier
+ * implements to drive it (card#12050).
+ *
+ * ⛔ THE KEYS ARE NOT THE LEG'S ALONE. `stages` and `boards` also feed the board tools' start
+ * and finished columns (`StartColumns`, `FinishedStages`) and `bridge:reconcile`, none of
+ * which needs a classifier subscription — so a leg finding never tells the operator to
+ * remove them, only to subscribe the leg's driver.
  *
  * A mapping is not one thing to cover: its PR leg is driven by a classifier that reads
  * `pull_request` events, its coord-card leg by one that reads `issues`, and the two shipped
  * emitters each drive exactly one. `bridge:check` asks each leg a mapping configures whether
  * some subscribed classifier implements that leg's marker — the binding lives here so the
- * keys, the marker and the shipped driver a remedy names cannot drift apart per leg.
+ * keys, the marker and the shipped driver a finding names cannot drift apart per leg.
  */
 enum WritebackLeg: string
 {
@@ -68,14 +74,27 @@ enum WritebackLeg: string
     public function inertEffect(): string
     {
         return match ($this) {
-            self::PrCardMove => 'no pull request on this repo will move its card, a merge included',
+            self::PrCardMove => 'merged PRs on this repo will not move their cards as they happen (`bridge:reconcile --fix` can still move a card that carries a `pr_url`)',
             self::CoordCard => 'no coordination issue on this repo is carded or moved in real time',
         };
     }
 
     /**
-     * The keys of `$mapping` that switch this leg on, as an operator finds them in their
-     * own file. Empty when the mapping does not configure the leg.
+     * What ELSE reads this leg's keys without any classifier subscription, so a finding can
+     * say why the keys stay. Null where nothing else does.
+     */
+    public function otherReaders(): ?string
+    {
+        return match ($this) {
+            self::PrCardMove => 'Keep `stages` / `boards`: they also feed the board tools\' start and finished columns and `bridge:reconcile`, so a mapping that carries them only for those, with no PR mover on purpose, keeps this warning.',
+            self::CoordCard => null,
+        };
+    }
+
+    /**
+     * The keys of `$mapping` whose effect on THIS leg needs a subscribed driver, as an
+     * operator finds them in their own file. Empty when the mapping sets none of them. Not
+     * exclusive to the leg — see the enum docblock and {@see self::otherReaders()}.
      *
      * `move_coord_cards` is read as the PARSED flag, which the DL-204 fleet default turns
      * on wherever `coord_card_terminal_stage_id` is present — so it is named with that

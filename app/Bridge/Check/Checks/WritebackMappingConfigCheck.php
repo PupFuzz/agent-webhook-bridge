@@ -414,7 +414,7 @@ final class WritebackMappingConfigCheck implements Check
      * card#12050: the ORPHANED question asked PER LEG, for a mapping some writeback-emitting
      * classifier IS subscribed to. Before this, any such classifier counted as covering the
      * whole mapping — so a repo served only by `CoordinationClassifier` read clean while its
-     * `stages` moved no card on any merge. Nothing at runtime reports that: the PR mover that
+     * `stages` moved no card as PRs merged. Nothing at runtime reports that: the PR mover that
      * is not subscribed never sees the event, so this setup-time line is the only place the
      * gap can surface.
      *
@@ -426,6 +426,11 @@ final class WritebackMappingConfigCheck implements Check
      *
      * Reached only where the whole-mapping ORPHANED arm did not fire, so a mapping with no
      * emitter at all gets that one line and not one per leg as well.
+     *
+     * ⛔ THE ONLY REMEDY IS TO SUBSCRIBE THE LEG'S DRIVER. `stages` / `boards` are also read
+     * by the board tools' start and finished columns and by `bridge:reconcile`, so "remove the
+     * keys" would trade this warning for a broken board tool (DL-489, which also records the
+     * accepted bound: a mapping keeping them only for those readers keeps this warning).
      *
      * @return iterable<Finding>
      */
@@ -444,7 +449,7 @@ final class WritebackMappingConfigCheck implements Check
             } elseif ($ctx->agentScopeCoverage->mayCover($scope)) {
                 yield Finding::unvalidated("writeback: could NOT determine whether the {$leg->label()} of the mapping for {$repo} is ORPHANED — ".$ctx->agentScopeCoverage->gapClause($scope).", so an agent this run never finished reading could be the one running a classifier that drives it ({$marker}) on github:{$repo}. Fix the error(s) above and re-run; until then this says nothing about whether that leg is inert.");
             } else {
-                yield Finding::warn("writeback: the {$leg->label()} of the mapping for {$repo} is ORPHANED — the mapping sets {$sets}, but every writeback-emitting classifier subscribed to github:{$repo} drives only the other writeback leg, and none implements {$marker}. Until an agent running {$leg->shippedDriver()} (or another classifier implementing {$marker}) subscribes to github:{$repo}, {$leg->inertEffect()}. If that leg is not wanted on this repo, remove those keys from the mapping instead.");
+                yield Finding::warn(trim("writeback: the {$leg->label()} of the mapping for {$repo} is ORPHANED — the mapping sets {$sets}, whose effect on this leg needs a subscribed driver, but every writeback-emitting classifier subscribed to github:{$repo} drives only the other writeback leg, and none implements {$marker}. Until an agent running {$leg->shippedDriver()} (or another classifier implementing {$marker}) subscribes to github:{$repo}, {$leg->inertEffect()}. Subscribe one to github:{$repo}. ".($leg->otherReaders() ?? '')));
             }
         }
     }
