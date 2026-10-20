@@ -73,7 +73,9 @@ class CiAwaitOverdueTest extends TestCase
             'bridge.ci_await.read_cooldown' => 0,
         ]);
         Http::fake([
-            'api.github.com/repos/octo/widgets/actions/runs*' => fn () => Http::response(['total_count' => 1, 'workflow_runs' => [[
+            // Every run's jobs are finished (card#12072): this file is about the deadline, not the jobs read.
+            'api.github.com/repos/octo/widgets/actions/runs/*/jobs*' => Http::response(['total_count' => 1, 'jobs' => [['id' => 1001, 'name' => 'build', 'status' => 'completed', 'conclusion' => 'success']]]),
+            'api.github.com/repos/octo/widgets/actions/runs?*' => fn () => Http::response(['total_count' => 1, 'workflow_runs' => [[
                 'id' => 1, 'name' => 'CI', 'workflow_id' => 77, 'run_number' => 1, 'head_sha' => self::SHA, 'status' => $this->runStatus,
                 'conclusion' => $this->runStatus === 'completed' ? 'success' : null, 'event' => 'pull_request', 'run_attempt' => 1,
                 'html_url' => 'https://github.com/octo/widgets/actions/runs/1',

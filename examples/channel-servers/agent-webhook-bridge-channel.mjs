@@ -768,7 +768,8 @@ const TOOL_DEFINITIONS = [
     description:
       'Tell the bridge you are WAITING for CI on one commit, instead of polling GitHub. When every ' +
       'workflow run GitHub lists for that head SHA that a commit started (event push or ' +
-      'pull_request) is terminal (status completed), the bridge sends ' +
+      'pull_request) is terminal (status completed), and every job of each of those runs is completed ' +
+      'too (a run can read completed while a job of it still runs), the bridge sends ' +
       'you ONE ci_settled event on this channel, carrying each run\'s workflow, conclusion and url, ' +
       'and forgets the wait. A schedule or workflow_dispatch run on the same SHA neither holds the ' +
       'wait open nor turns it red, and is not listed; ci-read still reports it. ci_settled is NOT ' +

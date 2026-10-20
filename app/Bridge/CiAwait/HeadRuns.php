@@ -30,7 +30,8 @@ use Illuminate\Support\Carbon;
  * carries; the summary says so and names `ci-read` as the authoritative one.
  *
  * ⛔ SETTLED IS ONLY AS COMPLETE AS THE LIST IT JUDGES (card#11938). Over GitHub's own run list
- * (`ci_await`) it says every run a commit started on the head is terminal; over the runs the bridge was told of
+ * (`ci_await`) it says every run a commit started on the head is terminal — and `ci_await` reads
+ * each deciding run's jobs before it believes that (card#12072); over the runs the bridge was told of
  * (the per-head aggregate) it says only that those are — a workflow still queued that no delivery
  * has reported is not in that list. The payload's `basis` names which list it judged, and only a
  * GitHub read carries `all_terminal: true`.
@@ -69,7 +70,7 @@ final class HeadRuns
      */
     public const COMMIT_EVENTS = ['push', 'pull_request'];
 
-    /** `basis` of a `ci_settled` judged on GitHub's run list for the head: every run on it is terminal. */
+    /** `basis` of a `ci_settled` judged on GitHub's run list for the head: every run on it is terminal, and every job of each deciding run (card#12072). */
     public const BASIS_GITHUB_READ = 'github_read';
 
     /** `basis` of a `ci_settled` judged on the runs `workflow_run` deliveries reported: those are complete, nothing more. */
@@ -244,8 +245,12 @@ final class HeadRuns
             .'. Run-level only: ci-read stays the authoritative verdict (it reads jobs and the branch\'s required checks).';
     }
 
-    /** @return list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}> */
-    private function decidingRuns(): array
+    /**
+     * The latest run per workflow — the runs that decide {@see settled()} and {@see verdict()}.
+     *
+     * @return list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
+     */
+    public function decidingRuns(): array
     {
         return array_values(array_filter($this->runs, fn (array $r): bool => isset($this->deciding[$r['id']])));
     }

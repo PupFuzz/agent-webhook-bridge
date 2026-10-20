@@ -40,8 +40,8 @@ use UnexpectedValueException;
 /**
  * The `ci_settled` wake (card#11200 / DL-452): a seat declares that it is waiting for CI on one
  * head SHA, and the bridge tells it when every workflow run GitHub lists for that head that a commit
- * started (`push`, `pull_request` — {@see HeadRuns::COMMIT_EVENTS}, card#11958) is terminal — so the
- * seat stops polling GitHub for it.
+ * started (`push`, `pull_request` — {@see HeadRuns::COMMIT_EVENTS}, card#11958) is terminal, and
+ * every job of each deciding run with it (card#12072) — so the seat stops polling GitHub for it.
  *
  * ⭐ THE GUARANTEE. One terminal event per await (`ci_settled`, `ci_await_unreadable` or
  * `ci_await_expired`), written to the
@@ -56,7 +56,14 @@ use UnexpectedValueException;
  * aggregate applies to tracked runs (card#11667): the latest run per workflow decides, and every
  * deciding run must be `completed` — over the runs a commit started only ({@see HeadRuns::ofCommit()}):
  * a scheduled or dispatched run on the head neither holds it open nor turns it red, and is not in
- * the payload. The payload carries a RUN-LEVEL `runs_verdict`; the
+ * the payload.
+ *
+ * ⛔ AND EVERY JOB OF EVERY DECIDING RUN MUST BE `completed` TOO (card#12072, {@see openJobs()}).
+ * The run list can say a run is `completed` while that run's own jobs read still lists a job
+ * `in_progress` (reported on rt#638 from the Actions API: a `semgrep` job open two and a half minutes past its run). A `ci_settled` sent
+ * then is the await's ONE event, so it would never be followed by the real finish. Only once the
+ * run list says settled is each deciding run's jobs list read; a job still open keeps the await,
+ * and the next read — a delivery or the sweep — settles it. The payload carries a RUN-LEVEL `runs_verdict`; the
  * authoritative verdict stays `ci-read`'s (jobs and the base branch's required contexts), which
  * the summary names.
  *
@@ -586,7 +593,9 @@ final class CiAwaitService
     }
 
     /**
-     * Read the head once and settle every await on it when every run is terminal.
+     * Read the head once and settle every await on it when every deciding run, and every job of
+     * each, is terminal ({@see openJobs()}). A jobs read that fails is a failed read like the runs
+     * read, under the same rules below.
      *
      * ⚠ The awaits are loaded BEFORE the read, deliberately: the read is slow, and a concurrent
      * evaluation of the same head may claim them meanwhile — {@see claimAndEmit()} is what makes
@@ -632,6 +641,14 @@ final class CiAwaitService
         }
         try {
             $runs = $this->readRuns($repoName, $headSha);
+            if ($deliveredRun !== null) {
+                $runs = self::overlay($runs, $deliveredRun);
+            }
+            // Settled is HeadRuns' answer (card#11667) over the runs a commit started (card#11958):
+            // no such run at all is NOT settled, and a run a newer run of its workflow supersedes does
+            // not hold the head open. What it judged is what the answer counts (runs_total).
+            $head = HeadRuns::ofCommit($runs);
+            $openJobs = $head->settled() ? $this->openJobs($repoName, $head) : [];
         } catch (CiRunsReadException $e) {
             // The column holds 1000 characters; a longer error would fail the write that records it.
             $error = mb_substr($e->getMessage(), 0, 1000);
@@ -650,15 +667,12 @@ final class CiAwaitService
         }
         CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null, 'retry_not_before' => null, 'unconfirmed_status' => null]);
 
-        if ($deliveredRun !== null) {
-            $runs = self::overlay($runs, $deliveredRun);
+        if ($openJobs !== []) {
+            Log::info('bridge ci_await: every deciding run reads completed, but a job of one is still running — not settled; the ci_await sweep reads the head again', [
+                'repo' => $repoName, 'head_sha' => $headSha, 'open_jobs' => count($openJobs), 'first_open_job' => $openJobs[0],
+            ]);
         }
-
-        // Settled is HeadRuns' answer (card#11667) over the runs a commit started (card#11958):
-        // no such run at all is NOT settled, and a run a newer run of its workflow supersedes does
-        // not hold the head open. What it judged is what the answer counts (runs_total).
-        $head = HeadRuns::ofCommit($runs);
-        $allTerminal = $head->settled();
+        $allTerminal = $head->settled() && $openJobs === [];
         $emitFailed = [];
         if ($allTerminal) {
             foreach ($awaits as $await) {
@@ -811,6 +825,46 @@ final class CiAwaitService
         }
 
         return EmitResult::Emitted;
+    }
+
+    /**
+     * The jobs not yet `completed` of `$head`'s deciding runs, each `run <id>: <job name> (<status>)`
+     * — empty when every job of every deciding run is terminal (card#12072). One jobs read per
+     * deciding run, each GitHub's latest attempt, the list `ci-read` grades: the run list can say
+     * `completed` while that read still lists a job `in_progress` (reported on rt#638 from the Actions API), and a
+     * `ci_settled` sent then is never followed by another.
+     *
+     * ⚠ A 404 HERE IS NOT AN UNREADABLE REPO. The same token has just listed the run, which a token
+     * that cannot see the repo could not have done (a run deleted between the two reads is the
+     * likely cause, not measured); it is retryable, never {@see forgetUnreadable()}'s cause.
+     *
+     * @return list<string>
+     *
+     * @throws CiRunsReadException naming why a run's whole job list was not read
+     */
+    private function openJobs(string $repoName, HeadRuns $head): array
+    {
+        $open = [];
+        foreach ($head->decidingRuns() as $run) {
+            $jobs = self::githubRead($repoName, static function (GitHubReadClient $client) use ($repoName, $run): array {
+                try {
+                    return $client->workflowJobsForRun($repoName, $run['id']);
+                } catch (RequestException $e) {
+                    if ($e->response->status() === 404) {
+                        throw new UnexpectedValueException("GitHub answered HTTP 404 to the jobs read of run {$run['id']}, which the run list read with the same token had just listed — read again, not taken as an unreadable repo");
+                    }
+
+                    throw $e;
+                }
+            });
+            foreach ($jobs as $job) {
+                if ($job['status'] !== 'completed') {
+                    $open[] = "run {$run['id']}: {$job['name']} ({$job['status']})";
+                }
+            }
+        }
+
+        return $open;
     }
 
     /**
