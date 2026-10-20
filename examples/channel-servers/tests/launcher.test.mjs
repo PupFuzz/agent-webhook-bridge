@@ -228,7 +228,7 @@ test('start-claude.ps1 appends the client root\'s bin to the session Path before
   assert.ok(append < ps1.indexOf('Remove-Item Env:AWB_LAUNCHER_CLIENT_ROOT'), 'before the variable is removed');
 });
 
-test('start-claude.ps1 hands every Start-Process -ArgumentList one string from ConvertTo-WindowsCommandLine, never a bare array (card#12112)', () => {
+test('start-claude.ps1 hands every inline -ArgumentList one string from ConvertTo-WindowsCommandLine, never a bare array (card#12112; a splatted Start-Process is outside this check)', () => {
   // Text only. Start-Process quotes none of an array's elements, so a path with a space reaches the
   // child split; tests/start-claude-tunnel-args.test.ps1 runs the quoting on CI's Windows job.
   const ps1 = fs.readFileSync(path.join(HERE, '..', 'bin', 'start-claude.ps1'), 'utf8');

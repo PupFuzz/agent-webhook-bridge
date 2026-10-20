@@ -250,7 +250,7 @@ function ConvertTo-WindowsCommandLine {
   param([Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$Arguments)
   ($Arguments | ForEach-Object {
     if ($_ -and $_ -notmatch '[\s"]') { return $_ }
-    '"' + (($_ -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
+    '"' + (($_ -replace '(\\*)"', '$1$1\"') -replace '(\\+)\z', '$1$1') + '"'
   }) -join ' '
 }
 function Start-TunnelProcess {

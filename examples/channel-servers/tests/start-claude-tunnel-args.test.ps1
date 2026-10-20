@@ -54,6 +54,8 @@ $cases = @(
      SshKey = 'C:\Users\First Last\.ssh\bridge-channel-tunnel' }
   @{ Name = 'spaces in every value, a trailing backslash and an embedded quote'; Channel = 'chan with space'
      TunnelHost = 'agent@bridge host "x"'; SshKey = (Join-Path $dir 'key dir\') }
+  @{ Name = 'a backslash run before a quote, and a tab'; Channel = "tab`there"
+     TunnelHost = 'a\\"b'; SshKey = 'C:\keys\a\\"b' }
 )
 
 # Control: the pre-card#12112 construction, an array straight to -ArgumentList.
