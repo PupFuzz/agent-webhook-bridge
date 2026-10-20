@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#12072 / DL-491** — **A `ci_await` no longer gets a green `ci_settled` while a job of a finished-looking run is still running.** GitHub's run list can say a run is `completed` while that run's own jobs read still lists a job `in_progress`: reported on rt#638, a `semgrep` job ran two and a half minutes past its run's `completed` / `success`. The bridge settled on the run list alone, so the seat was sent GREEN, the await was deleted, and nothing followed when the job really finished; `ci-read` said PENDING. Once the run list says a head is settled, the bridge now reads each deciding run's jobs, and a job not yet `completed` keeps the await waiting. The sweep's next read after the job finishes sends the one `ci_settled`, up to one sweep interval later. This costs one more GitHub request per workflow (per 100 jobs) on the read that settles a head, and again on each read that finds a job still open. A `404` on a jobs read is retried, not ended as `ci_await_unreadable`. Why GitHub reports the run first is not established. The per-head aggregate (`basis: delivered_runs`) is unchanged.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.69. Until you do, seats stay on the client they have, whose `ci_await` description does not say the settle waits for every job, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+
 ## [0.106.0] - 2026-10-19
 
 ### Added

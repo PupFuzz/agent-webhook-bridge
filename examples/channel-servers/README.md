@@ -409,7 +409,7 @@ when the bridge's writeback user wrote it — a read that failed is refused, nev
 comments) and `board_search` (DL-437: the
 cards on your board matching filters, matches only, or `summary: true` for counts) and `ci_await` /
 `ci_await_cancel` (DL-452: wait for CI on one commit without polling — the bridge sends one
-`ci_settled` event when every workflow run a commit started on that head is terminal — card#11958 — and refuses a repo its GitHub
+`ci_settled` event when every workflow run a commit started on that head is terminal — card#11958 — and every job of each — card#12072 — and refuses a repo its GitHub
 token cannot read as `repo_unreadable` — card#11600 — and one its operator declared to have no CI
 as `repo_not_ci` — card#11696 — and one `ci_await_overdue` when a head runs
 past its repo's normal CI time — card#11674) — and acts as a
