@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.106.0] - 2026-10-19
+
 ### Added
 
 - **card#12010 / DL-490** — **New board tool `board_get_card_comments`: read one card's comments, newest first, a page at a time.** A seat can now read back the results it, or another seat, recorded with `board_comment_card`. It takes `card_id`, and optionally `limit` (default 10, at most 50), `cursor` (the previous page's `next_cursor`) and `since` (an ISO-8601 time with an offset; only newer comments are returned). Each comment carries its id, its kanban author's user id, its time, its body, and `writer`: the seat named by the `FROM: <seat>` line `board_comment_card` writes first, set only when the comment's kanban author is the bridge's writeback user (asked of kanban on the call). The same line typed by anyone else gives `null`, and so does every comment when kanban cannot say who the writeback user is (`writer_check: unavailable`). It reads any card on the seat's own board, live or archived, in any lane, and refuses anything else (`reason: out_of_scope`). A read that fails is a refusal with a reason (`comments_unreadable`, `card_gone`, `board_read_failed`) or the retryable 502, never an empty list; a card with no comments is an empty page. It is served wherever `board_get_cards` is: every pm, solo or impl seat whose `board_tools` block has a board scope. A scope-less block gets neither. Channel-server snapshot `0.9.67` → `0.9.68`, because the tool is new in its tool list. `docs/board-tools.md` § `board_get_card_comments`.
@@ -16,6 +18,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#12050** — **`bridge:check` now warns when no subscribed agent can move a mapped repo's cards on pull requests.** A `writeback.json` mapping counted as covered whenever any writeback-emitting classifier was subscribed to its repo, including `CoordinationClassifier`, which never moves a card on a PR. So a mapping with `stages` (or `boards`, or `create_dependabot_cards`) on a repo served only by `CoordinationClassifier` read clean while merged PRs did not move their cards, and nothing at runtime reported it. The check now judges each leg a mapping configures: the PR → card-move leg needs a subscribed `GitHubPrCardMoveClassifier` (or a classifier implementing the new `App\Bridge\Contracts\DrivesPrCardMoves` marker), and the coord-card leg (`create_coord_cards` / `move_coord_cards`) needs a subscribed `CoordinationClassifier` (or one implementing `DrivesCoordCards`). A leg with no driver gets a WARN naming the leg, the repo, its keys and the classifier to subscribe. It never fails the check, and dispatch is unchanged. Until such an agent subscribes, merged PRs on that repo do not move their cards as they happen (`bridge:reconcile --fix` can still move a card that carries a `pr_url`). The remedy is to subscribe the PR mover, not to remove the keys: `stages` and `boards` also feed the board tools' start and finished columns and `bridge:reconcile`. A mapping that keeps them only for those, with no PR mover on purpose, keeps this warning.
 - ⚠ **card#12050** — **A custom classifier implementing only `App\Bridge\Contracts\EmitsWritebackReactions` now gets its mapping legs reported `unvalidated`**, because that marker does not say which leg it drives. Its runtime behaviour is unchanged. Implement `DrivesPrCardMoves` and/or `DrivesCoordCards` (both extend `EmitsWritebackReactions`) to restore a verdict; `docs/customization.md` § Emitting writeback reactions.
+
+### Changed
+
+- **Dependency bumps (PRs #953-#959):** `laravel/framework` 13.35.0 → 13.37.0 and `symfony/yaml` 8.1.8 → 8.1.9 (`composer.lock`), `phpunit/phpunit` (dev) 13.4.1 → 13.4.3, and the SHA pins of four agent-board-toolkit workflow actions (`promote`, `release-tag-check`, `release-artifacts`, `changelog-gate`). Run `composer install` on deploy as usual.
 
 ### Upgrade warnings
 
