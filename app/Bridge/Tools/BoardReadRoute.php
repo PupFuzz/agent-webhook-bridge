@@ -18,9 +18,11 @@ use App\Bridge\Writeback\KanbanClient;
  * therefore names the route class it called, and a `try` block must not span two.
  *
  * ⚠ THESE ARE THE ROUTE CLASSES WHOSE REFUSALS THIS DOOR NAMES — NOT A CENSUS OF THE ROUTES IT
- * READS. `GET /tasks/{id}.json` is one omission, reached only by `BoardCreateCardTool`'s DL-299
- * placement read-back, which catches `\Throwable` and degrades: it composes no cause, so it has
- * no case here. A route that starts producing a named refusal needs one.
+ * READS. `GET /tasks/{id}/preload.json` is one omission: `board_get_cards` consumes its 403 and 404
+ * as statuses and leaves every other failure on the retryable 502, so it composes no cause.
+ * `BoardCreateCardTool`'s DL-299 placement read-back of `GET /tasks/{id}.json` catches `\Throwable`
+ * and degrades, so it composes none either; that route's case below is for the comment read. A
+ * route that starts producing a named refusal needs one.
  *
  * ⚠ THE DIFFERENCE IS KANBAN'S, NOT THIS REPO'S, AND THIS REPO CANNOT CHECK IT. Every case
  * below is source-read from the kanban-board tree, not measured against a live instance;
@@ -61,4 +63,14 @@ enum BoardReadRoute
      * KanbanClient::boardReadable}) and never reaches a cause string here.
      */
     case MembershipStatus;
+
+    /**
+     * `GET /api/v3/tasks/{id}.json` — the full task read, which carries the card's comments
+     * (`board_get_card_comments`, card#12010). kanban binds the task `->withTrashed()`, answers a
+     * trashed one 404 before authorizing (`TasksController::guardTrashedVisibility`), then
+     * authorizes `view` on the TASK's board (`TaskPolicy::view` → `BOARD_VIEW`). So a 404 is a
+     * card no longer there (no task has the id, or it is in the trash), and a 403 is the board
+     * gate or the token's `read` ability — not separable from the status.
+     */
+    case TaskDetail;
 }

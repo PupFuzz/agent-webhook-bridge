@@ -1264,6 +1264,137 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    // --- card#12050: the ORPHANED question asked per writeback LEG ---
+
+    /**
+     * A writeback.json with these mappings and no writeback token, so the board probe
+     * self-skips and only the config-only legs speak — the mapping check among them.
+     *
+     * @param  array<string, array<string, mixed>>  $mappings
+     */
+    private function writeLegMappings(array $mappings): void
+    {
+        $this->placeUsableGithubTokenFile();
+        File::put($this->dir.'/writeback.json', (string) json_encode(['identity_id' => 4242, 'mappings' => $mappings]));
+        Http::fake();
+    }
+
+    /** @return array<string, array{array<string, mixed>, string}> */
+    public static function prMoveLegShapes(): array
+    {
+        return [
+            'top-level stages' => [['board_id' => 8, 'stages' => ['merged' => 52]], 'sets stages,'],
+            'an added board only' => [['board_id' => 8, 'boards' => ['9' => ['merged' => 60]]], 'sets boards,'],
+            'dependabot cards only' => [['board_id' => 8, 'create_dependabot_cards' => true], 'sets create_dependabot_cards,'],
+        ];
+    }
+
+    /**
+     * `bridge:check`'s output, asserted to exit 0 — every leg here is a WARN or a
+     * disclosure, and neither may touch the exit. Read whole rather than through
+     * `expectsOutputToContain`, which lets one output line satisfy only one expectation.
+     */
+    private function legCheckOutput(): string
+    {
+        $this->assertSame(0, Artisan::call('bridge:check'));
+
+        return Artisan::output();
+    }
+
+    /** @param  array<string, mixed>  $mapping */
+    #[DataProvider('prMoveLegShapes')]
+    public function test_check_warns_the_pr_move_leg_is_orphaned_when_only_a_coordination_classifier_subscribes(array $mapping, string $keys): void
+    {
+        // The reported shape: the repo's only github subscriber is CoordinationClassifier,
+        // which IS a writeback emitter but drives the coord-card leg alone. Before card#12050
+        // that read as covered, while every merged PR on the repo left its card in place.
+        $this->writeGithubAgent('coord', 'App\\Bridge\\Classifiers\\CoordinationClassifier');
+        $this->writeLegMappings(['owner/repo' => $mapping]);
+
+        $out = $this->legCheckOutput();
+
+        $this->assertMatchesRegularExpression('/^WARN: writeback: the PR → card-move leg of the mapping for owner\/repo is ORPHANED — the mapping '.preg_quote($keys, '/').'/mu', $out);
+        $this->assertStringContainsString('Until an agent running App\Bridge\Classifiers\GitHubPrCardMoveClassifier (or another classifier implementing App\Bridge\Contracts\DrivesPrCardMoves) subscribes to github:owner/repo, merged PRs on this repo will not move their cards as they happen', $out);
+        // The keys have readers no subscription is involved in, so the only remedy is to subscribe.
+        $this->assertStringContainsString('Keep `stages` / `boards`: they also feed the board tools\' start and finished columns and `bridge:reconcile`', $out);
+        $this->assertStringNotContainsString('remove those keys', $out);
+        $this->assertStringNotContainsString('mapping for owner/repo is ORPHANED — no agent runs', $out);
+    }
+
+    public function test_check_no_leg_warning_when_a_pr_mover_also_subscribes(): void
+    {
+        $this->writeGithubAgent('coord', 'App\\Bridge\\Classifiers\\CoordinationClassifier');
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        $this->writeLegMappings(['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]]);
+
+        $out = $this->legCheckOutput();
+
+        // The witness that the mapping check walked this mapping to the end: the
+        // mention-vs-closure `ok` fires for every mapping carrying a merge stage.
+        $this->assertStringContainsString('moves a card on MERGE only when', $out);
+        $this->assertStringNotContainsString('ORPHANED', $out);
+    }
+
+    public function test_check_no_leg_warning_for_a_coord_card_only_mapping_served_by_a_coordination_classifier(): void
+    {
+        $this->writeGithubAgent('coord', 'App\\Bridge\\Classifiers\\CoordinationClassifier', 'coord-message, coord-card-create');
+        $this->writeLegMappings([
+            'owner/repo' => ['board_id' => 8, 'create_coord_cards' => true, 'coord_card_stage_id' => 21],
+            // Orphaned on purpose: its warn witnesses that the check reached the mapping
+            // loop, so the absence for owner/repo below is evidence.
+            'owner/other' => ['board_id' => 8, 'stages' => ['merged' => 52]],
+        ]);
+
+        $out = $this->legCheckOutput();
+
+        $this->assertStringContainsString('mapping for owner/other is ORPHANED', $out);
+        $this->assertStringNotContainsString('mapping for owner/repo is ORPHANED', $out);
+        $this->assertStringNotContainsString('leg of the mapping for owner/repo', $out);
+    }
+
+    public function test_check_warns_the_coord_card_leg_is_orphaned_when_only_a_pr_mover_subscribes(): void
+    {
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        $this->writeLegMappings(['owner/repo' => [
+            'board_id' => 8, 'stages' => ['merged' => 52], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+        ]]);
+
+        $out = $this->legCheckOutput();
+
+        $this->assertMatchesRegularExpression('/^WARN: writeback: the coord-card leg of the mapping for owner\/repo is ORPHANED — the mapping sets create_coord_cards,/mu', $out);
+        $this->assertStringContainsString('Until an agent running App\Bridge\Classifiers\CoordinationClassifier (or another classifier implementing App\Bridge\Contracts\DrivesCoordCards) subscribes to github:owner/repo, no coordination issue on this repo is carded or moved in real time', $out);
+        $this->assertStringNotContainsString('PR → card-move leg', $out);
+    }
+
+    public function test_check_a_mapping_with_no_emitter_at_all_gets_the_whole_mapping_orphan_line_only(): void
+    {
+        // The pre-card#12050 ORPHANED case still warns, once: a mapping configuring BOTH
+        // legs with no emitter subscribed is reported as the whole mapping, not once per leg.
+        $this->writeAgent();
+        $this->writeLegMappings(['owner/repo' => [
+            'board_id' => 8, 'stages' => ['merged' => 52], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+        ]]);
+
+        $out = $this->legCheckOutput();
+
+        $this->assertMatchesRegularExpression('/^WARN: writeback: mapping for owner\/repo is ORPHANED — no agent runs a writeback-emitting classifier/mu', $out);
+        $this->assertStringNotContainsString('leg of the mapping for owner/repo', $out);
+    }
+
+    public function test_check_cannot_judge_a_leg_when_the_subscribed_emitter_declares_no_leg(): void
+    {
+        // A custom classifier implementing only the bare EmitsWritebackReactions marker may
+        // drive either leg, so the leg is undetermined — never accused, never certified.
+        $this->writeGithubAgent('custom', 'Tests\\Fixtures\\WritebackEmittingClassifier');
+        $this->writeLegMappings(['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]]);
+
+        $out = $this->legCheckOutput();
+
+        $this->assertMatchesRegularExpression('/^UNVALIDATED: writeback: could NOT determine whether the PR → card-move leg of the mapping for owner\/repo is ORPHANED/mu', $out);
+        $this->assertStringContainsString('subscribed to github:owner/repo (Tests\Fixtures\WritebackEmittingClassifier) implement only the bare', $out);
+        $this->assertStringNotContainsString('WARN: writeback: the PR → card-move leg', $out);
+    }
+
     // --- card#4183 (DL-196): event-follows-consumer ---
 
     private function writeGithubAgent(string $name, string $classifierClass, ?string $familiesLine = null): void

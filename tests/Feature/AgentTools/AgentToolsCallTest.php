@@ -5674,6 +5674,12 @@ class AgentToolsCallTest extends TestCase
                 'args' => ['ids' => [42, 43], 'fields' => ['name', 'stage']],
                 'fake' => $this->getCardsFake(),
             ],
+            'board_get_card_comments' => [
+                'args' => ['card_id' => 42, 'limit' => 1, 'since' => '2026-01-01T00:00:00Z'],
+                'fake' => fn ($request) => str_contains($request->url(), '/tasks/search.json')
+                    ? Http::response(['data' => [$this->commentableCardRow()]])
+                    : Http::response(['data' => ['id' => 42, 'board_id' => 10, 'comments' => [['id' => 1, 'user_id' => 3, 'content' => 'x', 'created_at' => '2026-10-01T00:00:00+00:00']]]]),
+            ],
             'board_search' => [
                 'args' => ['tags_any' => ['a', 'b'], 'stage' => [50], 'include_archived' => true, 'lane' => 'mine', 'name_contains' => 'c', 'updated_since' => '2026-09-01', 'fields' => ['id', 'stage'], 'limit' => 5],
                 'fake' => $this->searchFake(),
@@ -5906,6 +5912,7 @@ class AgentToolsCallTest extends TestCase
             'board_take_card lookup misses into the archive side',
             'board_comment_card lookup misses into the archive side',
             'board_get_cards a 403 asks the membership control',
+            'board_get_card_comments on an archived card',
             'board_search by pr_number re-asks each candidate',
             'board_search summary counts',
         ] as $scenario) {
@@ -5941,6 +5948,10 @@ class AgentToolsCallTest extends TestCase
             'board_get_cards a 403 asks the membership control' => ['tool' => 'board_get_cards', 'args' => ['ids' => [44], 'fields' => []], 'fake' => $this->getCardsFake()],
             'board_search by pr_number re-asks each candidate' => ['tool' => 'board_search', 'args' => ['pr_number' => 7, 'lane' => 'mine'], 'fake' => $this->searchFake()],
             'board_search summary counts' => ['tool' => 'board_search', 'args' => ['summary' => true, 'summary_tags' => ['a']], 'fake' => $this->searchFake()],
+            'board_get_card_comments on an archived card' => ['tool' => 'board_get_card_comments', 'args' => ['card_id' => 42],
+                'fake' => fn ($request) => str_contains($request->url(), '/tasks/search.json')
+                    ? Http::response(['data' => str_contains(urldecode($request->url()), 'archived=1') ? [$this->commentableCardRow()] : []])
+                    : Http::response(['data' => ['id' => 42, 'board_id' => 10, 'comments' => []]])],
             default => ['tool' => $scenario] + $this->undeclaredKeyFixture($scenario),
         };
     }
@@ -5968,6 +5979,8 @@ class AgentToolsCallTest extends TestCase
             'board_comment_card' => ['status' => 200, 'sends' => ['#^POST \\S+/tasks/42/comments\\.json$#']],
             'board_get_cards' => ['status' => 200, 'sends' => ["#^GET {$search}.*id=43.*archived=1#", '#^GET \\S+/tasks/43/preload\\.json$#', '#^GET \\S+/boards/10/preload\\.json#']],
             'board_get_cards a 403 asks the membership control' => ['status' => 200, 'sends' => ['#^GET \\S+/tasks/44/preload\\.json$#', '#^GET \\S+/boards/10/status\\.json$#']],
+            'board_get_card_comments' => ['status' => 200, 'sends' => ["#^GET {$search}q=board_id=10 id=42&limit=1$#", '#^GET \\S+/tasks/42\\.json$#']],
+            'board_get_card_comments on an archived card' => ['status' => 200, 'sends' => ["#^GET {$search}q=board_id=10 id=42&limit=1&archived=1$#", '#^GET \\S+/tasks/42\\.json$#']],
             'board_search' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/preload\\.json#', "#^GET {$search}q=board_id=10 tags:\"b\" workflow_stage_id=50 .*swimlane_id=4&limit=5&archived=1$#"]],
             'board_search by pr_number re-asks each candidate' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/tasks/by-ref\\.json\\?system=github_pr&ref=7$#', "#^GET {$search}q=board_id=10 id=42 swimlane_id=4&limit=1$#"]],
             'board_search summary counts' => ['status' => 200, 'sends' => ["#^GET {$search}q=board_id=10 workflow_stage_id=50&limit=1$#", "#^GET {$search}q=board_id=10 tags:\"a\"&limit=1$#"]],
@@ -6039,8 +6052,9 @@ class AgentToolsCallTest extends TestCase
                 continue;
             }
 
-            if (preg_match('#^GET .*/tasks/\d+\.json$#', (string) $failed) === 1) {
-                $this->assertSame('board_create_card', $tool, "only the create's placement read-back keeps its own answer, and {$failed} is not it");
+            // Only the create's placement read-back keeps its own answer; every other tool's read of
+            // this route (the comment read's included) stays on the 502 below.
+            if ($tool === 'board_create_card' && preg_match('#^GET .*/tasks/\d+\.json$#', (string) $failed) === 1) {
                 $res->assertStatus($answered->status())->assertJsonPath('result.placement_observed', false);
 
                 continue;
@@ -6134,8 +6148,9 @@ class AgentToolsCallTest extends TestCase
                 continue;
             }
 
-            if (preg_match('#^GET .*/tasks/\d+\.json$#', $which) === 1) {
-                $this->assertSame('board_create_card', $tool, "only the create's placement read-back keeps its own answer, and {$which} is not it");
+            // Only the create's placement read-back keeps its own answer; every other tool's read of
+            // this route (the comment read's included) stays on the 502 below.
+            if ($tool === 'board_create_card' && preg_match('#^GET .*/tasks/\d+\.json$#', $which) === 1) {
                 $res->assertStatus($answered->status())->assertJsonPath('result.placement_observed', false);
 
                 continue;

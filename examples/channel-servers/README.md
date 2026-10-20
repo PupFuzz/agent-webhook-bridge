@@ -403,7 +403,10 @@ is refused; since card#11150 / DL-449, `start: true` also moves the card to In P
 the same write) and `board_comment_card` (DL-381: append a comment to
 a live card on your own board; the bridge writes the `FROM: <seat>` attribution line, and
 nothing is edited or deleted) and `board_get_cards` (DL-435: read known card ids in one call,
-each answered with an explicit status — never silently omitted) and `board_search` (DL-437: the
+each answered with an explicit status — never silently omitted) and `board_get_card_comments`
+(DL-490: read one card's comments, newest first and paged; a comment names its writing seat only
+when the bridge's writeback user wrote it — a read that failed is refused, never answered as no
+comments) and `board_search` (DL-437: the
 cards on your board matching filters, matches only, or `summary: true` for counts) and `ci_await` /
 `ci_await_cancel` (DL-452: wait for CI on one commit without polling — the bridge sends one
 `ci_settled` event when every workflow run a commit started on that head is terminal — card#11958 — and refuses a repo its GitHub

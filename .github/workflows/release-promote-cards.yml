@@ -85,7 +85,7 @@ jobs:
         # is not a refused release. ⇒ Do not tighten this from a figure written here — read the
         # worst case in `bin/release-tag-check`'s own header first.
         timeout-minutes: 10
-        uses: PupFuzz/agent-board-toolkit/release-tag-check@f7ea90fa4ac05a1843a81e344933cad2bea31dd3  # v0.45.0
+        uses: PupFuzz/agent-board-toolkit/release-tag-check@fcc1d09f6280d7554e091390a7c3b63943609aea  # v0.47.1
         with:
           before-sha: ${{ github.event.before }}
           after-sha: ${{ github.sha }}
@@ -113,7 +113,7 @@ jobs:
           fi
 
       - name: Promote tracking cards
-        uses: PupFuzz/agent-board-toolkit/promote@f7ea90fa4ac05a1843a81e344933cad2bea31dd3  # v0.45.0
+        uses: PupFuzz/agent-board-toolkit/promote@fcc1d09f6280d7554e091390a7c3b63943609aea  # v0.47.1
         with:
           writeback-token: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
           expected-host: ${{ vars.KANBAN_EXPECTED_HOST }}

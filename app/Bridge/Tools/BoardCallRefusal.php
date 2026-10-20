@@ -128,6 +128,10 @@ final class BoardCallRefusal
                 403 => "the board refused the read, and this route is authorized by TWO independent gates that both need auditing: the writeback token's abilities (kanban gates the API per token and a GET needs `read`), and the writeback USER's membership of that board. A 403 cannot say which of the two refused",
                 404 => 'the board answered 404 for the BOARD ITSELF — the configured id does not resolve to any board this route can see: no board carries it at all. A missing API surface is the other, less likely candidate',
             },
+            BoardReadRoute::TaskDetail => match ($status) {
+                403 => "the board refused the card read, and this route is authorized by TWO independent gates that both need auditing: the writeback token's abilities (kanban gates the API per token and a GET needs `read`), and the writeback USER's right to view the board the card is on. A 403 cannot say which of the two refused",
+                404 => 'the board answered 404 for the card itself — no card carries this id any more, or it is in the trash (this route does not show a trashed card)',
+            },
         };
     }
 

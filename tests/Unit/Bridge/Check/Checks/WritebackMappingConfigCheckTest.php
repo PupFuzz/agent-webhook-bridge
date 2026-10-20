@@ -10,6 +10,7 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackLeg;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Support\Facades\File;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -592,6 +593,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->writeback = new WritebackConfig(7, ['PupFuzz/kanban-board' => $this->mapping()]);
         $ctx->writebackEmittingScopes = ['pupfuzz/kanban-board' => true];
+        $this->coverEveryLeg($ctx, 'pupfuzz/kanban-board');
         $ctx->githubScopeSpellings = ['pupfuzz/kanban-board' => ['pupfuzz/kanban-board']];
 
         $findings = $this->warnings(array_map(
@@ -616,6 +618,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->writeback = new WritebackConfig(7, [self::REPO => $this->mapping()]);
         $ctx->writebackEmittingScopes = [self::REPO => true];
+        $this->coverEveryLeg($ctx, self::REPO);
         $ctx->githubScopeSpellings = [self::REPO => [self::REPO, self::REPO]];
 
         $findings = $this->findingsOf((new WritebackMappingConfigCheck), $ctx);
@@ -650,6 +653,46 @@ class WritebackMappingConfigCheckTest extends TestCase
         $this->assertCount(1, $messages);
         $this->assertStringContainsString('is ORPHANED', $messages[0]);
         $this->assertStringNotContainsString('SPELLING SPLIT', $messages[0]);
+    }
+
+    // ---- card#12050: the ORPHANED question per writeback LEG. The warn and the bare-marker
+    // ---- disclosure are measured end to end, through the real probe, in BridgeCommandsTest;
+    // ---- the unread-agent limb needs an aborted agent on the scope, which is set up here.
+
+    public function test_an_undriven_leg_is_a_disclosure_not_an_accusation_when_an_agent_on_its_scope_went_unread(): void
+    {
+        $ctx = new CheckContext;
+        $ctx->writeback = new WritebackConfig(7, [self::REPO => $this->mapping()]);
+        $ctx->writebackEmittingScopes = [self::REPO => true];
+        $ctx->writebackLegScopes = [WritebackLeg::CoordCard->value => [self::REPO => true]];
+        $ctx->agentScopeCoverage->recordUnread('pr-mover', [self::REPO]);
+
+        $findings = $this->warnings(array_map(
+            fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
+            $this->findingsOf((new WritebackMappingConfigCheck), $ctx),
+        ));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
+        $this->assertStringContainsString('could NOT determine whether the PR → card-move leg of the mapping for '.self::REPO.' is ORPHANED — agent pr-mover was not read to completion', $findings[0]['message']);
+    }
+
+    public function test_the_same_undriven_leg_is_accused_once_every_agent_on_its_scope_was_read(): void
+    {
+        // The control for the disclosure above: the identical context minus the unread agent.
+        $ctx = new CheckContext;
+        $ctx->writeback = new WritebackConfig(7, [self::REPO => $this->mapping()]);
+        $ctx->writebackEmittingScopes = [self::REPO => true];
+        $ctx->writebackLegScopes = [WritebackLeg::CoordCard->value => [self::REPO => true]];
+
+        $findings = $this->warnings(array_map(
+            fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
+            $this->findingsOf((new WritebackMappingConfigCheck), $ctx),
+        ));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $this->assertStringContainsString('the PR → card-move leg of the mapping for '.self::REPO.' is ORPHANED — the mapping sets stages,', $findings[0]['message']);
     }
 
     /**
@@ -791,6 +834,17 @@ class WritebackMappingConfigCheckTest extends TestCase
         );
     }
 
+    /**
+     * An emitter on $scope that drives every writeback leg (card#12050) — what `emitting`
+     * meant in this file before the orphan question was asked per leg.
+     */
+    private function coverEveryLeg(CheckContext $ctx, string $scope): void
+    {
+        foreach (WritebackLeg::cases() as $leg) {
+            $ctx->writebackLegScopes[$leg->value][$scope] = true;
+        }
+    }
+
     private function mapping(): WritebackMapping
     {
         return new WritebackMapping(8, ['merged' => 52]);
@@ -812,6 +866,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         $ctx->writeback = new WritebackConfig(7, [self::REPO => $mapping]);
         if ($emitting) {
             $ctx->writebackEmittingScopes = [self::REPO => true];
+            $this->coverEveryLeg($ctx, self::REPO);
         }
         if (in_array('coord-card-create', $families, true)) {
             $ctx->coordCardCreateScopes = [self::REPO => true];
