@@ -552,26 +552,10 @@ final class GitHubReadClient
      *
      * ⛔ IT ANSWERS THE WHOLE LIST OR THROWS. The caller decides "every run is terminal" from
      * this, and a partial list can make that true of a head where it is not — so a 200 whose body
-     * is not a readable run list, a run entry without a readable integer `id` or `status`, and a
-     * walk that reaches {@see self::RUNS_PAGE_LIMIT} each throw {@see UnexpectedValueException}
-     * rather than return what was seen. A non-2xx throws RequestException, like every read here.
-     *
-     * ⛔ AND THE WALK MUST BE CONSISTENT. Pages are separate requests, so a run created or deleted
-     * between them shifts rows across a page boundary: a created run pushes a row already seen onto
-     * the next page (a duplicate fills the count while the new, unfinished run is never seen), and
-     * a deleted one pulls an unseen row back onto a page already read. Three checks, all of which
-     * must hold or the walk throws:
-     *  - runs are keyed by `id`, and every page must report the SAME `total_count`;
-     *  - the distinct ids seen must equal that `total_count` (on a single page too, where it catches
-     *    a body whose count disagrees with its own rows);
-     *  - after a walk of more than one page, page 1 is READ AGAIN and must carry the same
-     *    `total_count` and the same set of ids. A run created and another deleted between pages
-     *    keep the count and the distinct-id total intact, but GitHub lists runs newest first, so
-     *    the created run lands on page 1 and changes its id set. A single-page list is not read
-     *    again: one response cannot shift against itself.
-     * What is NOT checked: that GitHub lists a new run at the top (taken from its newest-first
-     * ordering, not measured), and any change after the re-read — a run created then is a run the
-     * read did not see, the same as one created just after it.
+     * is not a readable run list, a run entry without a readable integer `id` or `status`, a list
+     * that moved while it was read, and a walk that reaches {@see self::RUNS_PAGE_LIMIT} each throw
+     * {@see UnexpectedValueException} rather than return what was seen; {@see self::wholeList()}
+     * owns the consistency checks. A non-2xx throws RequestException, like every read here.
      *
      * Each row carries the run's `run_attempt` (null when the body names none), so a caller can
      * tell a delivery for an earlier attempt of a re-run from one for the attempt now listed.
@@ -580,41 +564,13 @@ final class GitHubReadClient
      */
     public function workflowRunsForHead(string $repo, string $headSha): array
     {
-        $runs = [];
-        $total = null;
-        $firstPageIds = [];
-        for ($page = 1; $page <= self::RUNS_PAGE_LIMIT; $page++) {
-            [$pageTotal, $list] = $this->workflowRunsPage($repo, $headSha, $page);
-            if ($total !== null && $pageTotal !== $total) {
-                throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} changed while it was being read (total_count {$total}, then {$pageTotal} on page {$page}) — a run was created or deleted between pages, so the pages do not add up to one list");
-            }
-            $total = $pageTotal;
-            foreach ($list as $run) {
-                $runs[$run['id']] = $run;
-            }
-            if ($page === 1) {
-                $firstPageIds = array_column($list, 'id');
-            }
-
-            if (count($list) < self::RUNS_PAGE_SIZE || count($runs) >= $total) {
-                if (count($runs) !== $total) {
-                    throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} reported total_count {$total} and its pages carried ".count($runs).' distinct run(s) — the pages do not add up to one list, so whether every run is terminal is unknown');
-                }
-                if ($page > 1) {
-                    [$againTotal, $again] = $this->workflowRunsPage($repo, $headSha, 1);
-                    $againIds = array_column($again, 'id');
-                    sort($againIds);
-                    sort($firstPageIds);
-                    if ($againTotal !== $total || $againIds !== $firstPageIds) {
-                        throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} changed while it was being read (page 1, read again after the last page, no longer lists the same runs) — a run was created or deleted during the walk, so the pages do not add up to one list");
-                    }
-                }
-
-                return array_values($runs);
-            }
-        }
-
-        throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} did not end within ".self::RUNS_PAGE_LIMIT.' pages of '.self::RUNS_PAGE_SIZE.' — the list was not read to its end, so whether every run is terminal is unknown');
+        return $this->wholeList(
+            fn (int $page): array => $this->workflowRunsPage($repo, $headSha, $page),
+            self::RUNS_PAGE_SIZE,
+            self::RUNS_PAGE_LIMIT,
+            "the workflow-run list for {$repo}@{$headSha}",
+            'run',
+        );
     }
 
     /**
@@ -623,47 +579,93 @@ final class GitHubReadClient
      * — what `ci_settled` confirms a completed run with (card#12072): a run can read `completed`
      * while its own jobs read still lists a job `in_progress`.
      *
-     * ⛔ IT ANSWERS THE WHOLE LIST OR THROWS, like {@see self::workflowRunsForHead()}: a 200 whose
-     * body is not a job list, a job without a readable integer `id` or `status`, pages that do not
-     * report one `total_count`, distinct jobs that do not add up to it, and a walk that reaches
-     * {@see self::JOBS_PAGE_LIMIT} each throw {@see UnexpectedValueException}. Page 1 is not read
-     * again: unlike the run list, GitHub's ordering of a run's jobs is not relied on here.
+     * ⛔ IT ANSWERS THE WHOLE LIST OR THROWS, like {@see self::workflowRunsForHead()} and through
+     * the same walk ({@see self::wholeList()}): a 200 whose body is not a job list, a job without a
+     * readable integer `id` or `status`, a list that moved while it was read, and a walk that
+     * reaches {@see self::JOBS_PAGE_LIMIT} each throw {@see UnexpectedValueException}.
      *
      * @return list<array{id: int, name: string, status: string}>
      */
     public function workflowJobsForRun(string $repo, int $runId): array
     {
-        $jobs = [];
+        return $this->wholeList(
+            fn (int $page): array => $this->workflowJobsPage($repo, $runId, $page),
+            self::JOBS_PAGE_SIZE,
+            self::JOBS_PAGE_LIMIT,
+            "the job list of {$repo} run {$runId}",
+            'job',
+        );
+    }
+
+    /**
+     * Walk one GitHub list that reports a `total_count`, page by page, to its end — and answer the
+     * WHOLE list as one list, or throw {@see UnexpectedValueException}. Its callers decide "every
+     * row is terminal" from the answer, so a partial or mixed list is worse than none.
+     *
+     * ⛔ THE WALK MUST BE CONSISTENT. Pages are separate requests, so a row created or deleted
+     * between them shifts rows across a page boundary: a created row pushes a row already seen onto
+     * the next page (a duplicate fills the count while the new, unfinished row is never seen), and
+     * a deleted one pulls an unseen row back onto a page already read. Three checks, all of which
+     * must hold or the walk throws:
+     *  - rows are keyed by `id`, and every page must report the SAME `total_count`;
+     *  - the distinct ids seen must equal that `total_count` (on a single page too, where it catches
+     *    a body whose count disagrees with its own rows);
+     *  - after a walk of more than one page, page 1 is READ AGAIN and must carry the same
+     *    `total_count` and the same set of ids. It catches a change between the page reads that
+     *    keeps the count and the distinct-id total intact but alters page 1: on the run list, a run
+     *    created and another deleted (GitHub lists runs newest first, so the created run lands on
+     *    page 1); on a run's jobs list (`filter=latest`), a re-run between pages, whose later pages
+     *    then come from the new attempt while page 1 was read from the old one (card#12088). A
+     *    single-page list is not read again: one response cannot shift against itself.
+     * What is NOT checked: a change confined to pages after page 1 (so the run list relies on a new
+     * run being listed first, and the jobs list on a re-run attempt carrying job ids page 1 did
+     * not — both taken from GitHub's behaviour, not measured), and any change after the re-read —
+     * a row created then is a row the read did not see, the same as one created just after it.
+     *
+     * @template TRow of array{id: int}
+     *
+     * @param  \Closure(int): array{0: int, 1: list<TRow>}  $readPage  one page: its `total_count` and its validated rows
+     * @param  string  $list  how the messages name the list, e.g. "the job list of o/r run 5"
+     * @param  string  $noun  one row, e.g. "job"
+     * @return list<TRow>
+     */
+    private function wholeList(\Closure $readPage, int $pageSize, int $pageLimit, string $list, string $noun): array
+    {
+        $rows = [];
         $total = null;
-        for ($page = 1; $page <= self::JOBS_PAGE_LIMIT; $page++) {
-            $body = $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs/{$runId}/jobs", [
-                'per_page' => self::JOBS_PAGE_SIZE,
-                'page' => $page,
-            ])->throw()->json();
-            $list = is_array($body) ? ($body['jobs'] ?? null) : null;
-            if (! is_array($list) || ! array_is_list($list) || ! is_int($body['total_count'] ?? null)) {
-                throw new UnexpectedValueException("the job list of {$repo} run {$runId} returned a 200 whose body is not a job list with a total_count; ".self::UNREADABLE_BODY_CAUSE);
+        $firstPageIds = [];
+        for ($page = 1; $page <= $pageLimit; $page++) {
+            [$pageTotal, $pageRows] = $readPage($page);
+            if ($total !== null && $pageTotal !== $total) {
+                throw new UnexpectedValueException("{$list} changed while it was being read (total_count {$total}, then {$pageTotal} on page {$page}) — a {$noun} was created or deleted between pages, so the pages do not add up to one list");
             }
-            if ($total !== null && $body['total_count'] !== $total) {
-                throw new UnexpectedValueException("the job list of {$repo} run {$runId} changed while it was being read (total_count {$total}, then {$body['total_count']} on page {$page})");
+            $total = $pageTotal;
+            foreach ($pageRows as $row) {
+                $rows[$row['id']] = $row;
             }
-            $total = $body['total_count'];
-            foreach ($list as $job) {
-                if (! is_array($job) || ! is_int($job['id'] ?? null) || ! is_string($job['status'] ?? null)) {
-                    throw new UnexpectedValueException("the job list of {$repo} run {$runId} carries a job with no readable integer `id` or `status`, so whether every job is terminal is unknown; ".self::UNREADABLE_BODY_CAUSE);
+            if ($page === 1) {
+                $firstPageIds = array_column($pageRows, 'id');
+            }
+
+            if (count($pageRows) < $pageSize || count($rows) >= $total) {
+                if (count($rows) !== $total) {
+                    throw new UnexpectedValueException("{$list} reported total_count {$total} and its pages carried ".count($rows)." distinct {$noun}(s) — the pages do not add up to one list, so whether every {$noun} is terminal is unknown");
                 }
-                $jobs[$job['id']] = ['id' => $job['id'], 'name' => is_string($job['name'] ?? null) ? $job['name'] : '', 'status' => $job['status']];
-            }
-            if (count($list) < self::JOBS_PAGE_SIZE || count($jobs) >= $total) {
-                if (count($jobs) !== $total) {
-                    throw new UnexpectedValueException("the job list of {$repo} run {$runId} reported total_count {$total} and its pages carried ".count($jobs).' distinct job(s), so whether every job is terminal is unknown');
+                if ($page > 1) {
+                    [$againTotal, $again] = $readPage(1);
+                    $againIds = array_column($again, 'id');
+                    sort($againIds);
+                    sort($firstPageIds);
+                    if ($againTotal !== $total || $againIds !== $firstPageIds) {
+                        throw new UnexpectedValueException("{$list} changed while it was being read (page 1, read again after the last page, no longer lists the same {$noun}s) — a {$noun} was created or deleted during the walk, so the pages do not add up to one list");
+                    }
                 }
 
-                return array_values($jobs);
+                return array_values($rows);
             }
         }
 
-        throw new UnexpectedValueException("the job list of {$repo} run {$runId} did not end within ".self::JOBS_PAGE_LIMIT.' pages of '.self::JOBS_PAGE_SIZE.', so whether every job is terminal is unknown');
+        throw new UnexpectedValueException("{$list} did not end within {$pageLimit} pages of {$pageSize} — the list was not read to its end, so whether every {$noun} is terminal is unknown");
     }
 
     /**
@@ -713,6 +715,33 @@ final class GitHubReadClient
         }
 
         return [$body['total_count'], $runs];
+    }
+
+    /**
+     * One page of {@see self::workflowJobsForRun()}'s walk: its `total_count` and its jobs.
+     *
+     * @return array{0: int, 1: list<array{id: int, name: string, status: string}>}
+     */
+    private function workflowJobsPage(string $repo, int $runId, int $page): array
+    {
+        $body = $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs/{$runId}/jobs", [
+            'per_page' => self::JOBS_PAGE_SIZE,
+            'page' => $page,
+        ])->throw()->json();
+
+        $list = is_array($body) ? ($body['jobs'] ?? null) : null;
+        if (! is_array($list) || ! array_is_list($list) || ! is_int($body['total_count'] ?? null)) {
+            throw new UnexpectedValueException("the job list of {$repo} run {$runId} returned a 200 whose body is not a job list with a total_count; ".self::UNREADABLE_BODY_CAUSE);
+        }
+        $jobs = [];
+        foreach ($list as $job) {
+            if (! is_array($job) || ! is_int($job['id'] ?? null) || ! is_string($job['status'] ?? null)) {
+                throw new UnexpectedValueException("the job list of {$repo} run {$runId} carries a job with no readable integer `id` or `status`, so whether every job is terminal is unknown; ".self::UNREADABLE_BODY_CAUSE);
+            }
+            $jobs[] = ['id' => $job['id'], 'name' => is_string($job['name'] ?? null) ? $job['name'] : '', 'status' => $job['status']];
+        }
+
+        return [$body['total_count'], $jobs];
     }
 
     /**

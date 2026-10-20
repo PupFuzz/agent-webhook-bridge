@@ -2189,9 +2189,12 @@ read — or one whose own registration read saw a list that still lagged — is 
 grades — still lists a job `in_progress`: reported on rt#638 from the Actions API, a run read `completed` / `success`
 while its `semgrep` job ran for two and a half minutes more, and the seat was sent a green
 `ci_settled` it could never get a follow-up to. So once the run list says a head is settled, the
-bridge reads every deciding run's jobs, walked to the end of each list (one request per 100 jobs;
-pages that do not report one `total_count`, or whose distinct jobs do not add up to it, fail the
-read), and a job in any status but `completed` keeps every await on the head **waiting**, with no
+bridge reads every deciding run's jobs, walked to the end of each list (one request per 100 jobs)
+and checked exactly as the run list is: pages that do not report one `total_count`, distinct jobs
+that do not add up to it, or — after more than one page — a page 1 that no longer lists the same
+jobs when read again fail the read. That re-read is what catches a run re-run between two page
+reads (card#12088): its later pages then come from the new attempt while page 1 came from the old
+one, with the count unchanged. A job in any status but `completed` keeps every await on the head **waiting**, with no
 event. Nothing else is delivered for that run — it already said `completed` — so the **sweep's**
 next read of the head is what settles it once the job finishes: up to one sweep interval later
 (*The sweep* below). A head the run list holds open is not read for jobs at all. A jobs read that
@@ -2350,10 +2353,13 @@ whose channel was down (*What a seat can rely on* above). `subject_id` is `ci:<r
   can see some runs finished and others absent; it settles only when what is listed is all terminal.
 - ⚠ **A list that keeps moving.** On a head whose runs are created or deleted during every read, each
   read fails as inconsistent and the await waits for the next delivery or sweep read. No case of it is
-  measured. Taken from GitHub's REST documentation, not checked: that `total_count` counts exactly
-  what the pages carry, and that a new run is listed first (newest first), which is what the page-1
-  re-read relies on. A single-page list is checked only against its own `total_count`, and a run
-  created after the page-1 re-read is one the read did not see, like one created just after it.
+  measured. A deciding run's jobs list is checked the same way (one walk, `GitHubReadClient::wholeList`),
+  so a run re-run during every read fails the same way. Taken from GitHub's REST documentation or
+  behaviour, not checked: that `total_count` counts exactly what the pages carry, that a new run is
+  listed first (newest first), and that a re-run attempt's jobs carry ids page 1 did not, which is
+  what the page-1 re-read relies on. A single-page list is checked only against its own
+  `total_count`, and a run created after the page-1 re-read is one the read did not see, like one
+  created just after it.
 - ⚠ **The per-seat cap is soft under concurrency** (step 2 above).
 - ⚠ **Only a rate limit that names its reset is waited out.** One without either header is read
   again at the next delivery or sweep pass.
@@ -2366,7 +2372,7 @@ the `ci-await-sweep` interval (seconds) head reads per hour, install-wide — a 
 many seats await it, and one read within the interval is not repeated. Each read is one request per
 100 runs, plus one more for the page-1 re-read when the list spans more than one page — and, only on
 a read that finds the run list settled, one request per 100 jobs of each deciding run (card#12072),
-so a head of K workflows costs K more requests on the read that settles it, and again on each read
+plus the same page-1 re-read for a run of more than 100 jobs (card#12088), so a head of K workflows costs K more requests on the read that settles it, and again on each read
 that finds a job still open. Nothing for heads nobody awaits.
 
 ## Errors
