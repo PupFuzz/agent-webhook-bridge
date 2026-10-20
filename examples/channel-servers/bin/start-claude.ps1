@@ -241,13 +241,30 @@ Remove-Item Env:AWB_LAUNCHER_CLIENT_ROOT -ErrorAction SilentlyContinue
 # -WindowStyle Hidden, NOT Minimized: minimized = SW_SHOWMINIMIZED (2) ACTIVATES the window;
 # a delayed child then grabs focus seconds after launch and the user's first keystroke restores
 # it. Hidden has no taskbar window to steal/restore; teardown is by PID below.
+# Start-Process joins -ArgumentList's elements with a space and quotes none of them (Windows
+# PowerShell 5.1 and pwsh 7 alike), so a value with a space -- a profile under C:\Users\First Last --
+# reaches the child split. Every -ArgumentList here is one string built by this function, which
+# quotes each value the way the child's command-line parser (CommandLineToArgvW) splits it back:
+# backslashes are literal except in a run that ends at a double quote, which is doubled.
+function ConvertTo-WindowsCommandLine {
+  param([Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$Arguments)
+  ($Arguments | ForEach-Object {
+    if ($_ -and $_ -notmatch '[\s"]') { return $_ }
+    '"' + (($_ -replace '(\\*)"', '$1$1\"') -replace '(\\+)\z', '$1$1') + '"'
+  }) -join ' '
+}
+function Start-TunnelProcess {
+  param([string]$ScriptPath, [string]$Channel, [string]$SshKey, [int]$RemotePort, [int]$LocalPort, [string]$TunnelHost)
+  $argv = @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath,
+    '-Tunnel', '-Channel', $Channel, '-SshKey', $SshKey,
+    '-RemotePort', "$RemotePort", '-LocalPort', "$LocalPort", '-TunnelHost', $TunnelHost
+  )
+  Start-Process -FilePath 'powershell.exe' -ArgumentList (ConvertTo-WindowsCommandLine $argv) -WindowStyle Hidden -PassThru
+}
 Write-Host "Starting reverse tunnel ($RemotePort)..."
-$tunnelArgs = @(
-  '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
-  '-Tunnel', '-Channel', $Channel, '-SshKey', $SshKey,
-  '-RemotePort', "$RemotePort", '-LocalPort', "$LocalPort", '-TunnelHost', $TunnelHost
-)
-$tunnelProc = Start-Process -FilePath 'powershell.exe' -ArgumentList $tunnelArgs -WindowStyle Hidden -PassThru
+$tunnelProc = Start-TunnelProcess -ScriptPath $PSCommandPath -Channel $Channel -SshKey $SshKey `
+                -RemotePort $RemotePort -LocalPort $LocalPort -TunnelHost $TunnelHost
 
 # ===== 6. export the resolved identity so the channel server binds what we guarded =====
 # Mirrors the bash launcher's step 7: the server (.mjs) derives its port + marker from these,

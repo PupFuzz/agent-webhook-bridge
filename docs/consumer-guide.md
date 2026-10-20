@@ -161,7 +161,7 @@ job of each deciding run (card#12072), was seen terminal. One per await (inbox a
 |---|---|
 | `repo`, `head_sha`, `pr` | the awaited head |
 | `registered_at`, `expires_at` | when the await was first stored, and when it expired (UTC, milliseconds) |
-| `last_read_at` | when the bridge last read the run list for it, or null if it never did |
+| `last_read_at` | when the bridge last read the head for it — its run list, and once that read settled, its deciding runs' jobs — or null if it never did |
 | `last_error` | why that last read failed — the run list's read or a deciding run's jobs read, which the error names — or null when it answered; a null here with a non-null `last_read_at` means CI was still running at that read |
 | `open_jobs` | when that last read found every deciding run completed but a job still open (card#12089): `{count, first: {workflow, run_id, html_url, job, status}}` — how many jobs were open, and the first, with its run's url; null when it found none, read no jobs, or failed. The `summary` names that job. Lines written before card#12089 do not carry the key |
 
