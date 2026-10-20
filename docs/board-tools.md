@@ -2195,7 +2195,11 @@ that do not add up to it, or — after more than one page — a page 1 that no l
 jobs when read again fail the read. That re-read is what catches a run re-run between two page
 reads (card#12088): its later pages then come from the new attempt while page 1 came from the old
 one, with the count unchanged. A job in any status but `completed` keeps every await on the head **waiting**, with no
-event. Nothing else is delivered for that run — it already said `completed` — so the **sweep's**
+event; the read records on each of those awaits what it found open (`open_jobs`: how many, and the
+first one's job, status, workflow and run — card#12089), and `ci_await_overdue` and
+`ci_await_expired` carry it and name it in their summary, so a wait held by a job is not reported as
+one held by a run or by a failed read. The record is the last read's: one that finds no job open,
+or that fails, clears it. Nothing else is delivered for that run — it already said `completed` — so the **sweep's**
 next read of the head is what settles it once the job finishes: up to one sweep interval later
 (*The sweep* below). A head the run list holds open is not read for jobs at all. A jobs read that
 fails is a failed read (*Read failures*), except that a `404` there never ends a wait as
@@ -2372,8 +2376,9 @@ the `ci-await-sweep` interval (seconds) head reads per hour, install-wide — a 
 many seats await it, and one read within the interval is not repeated. Each read is one request per
 100 runs, plus one more for the page-1 re-read when the list spans more than one page — and, only on
 a read that finds the run list settled, one request per 100 jobs of each deciding run (card#12072),
-plus the same page-1 re-read for a run of more than 100 jobs (card#12088), so a head of K workflows costs K more requests on the read that settles it, and again on each read
-that finds a job still open. Nothing for heads nobody awaits.
+plus the same page-1 re-read for a run of more than 100 jobs (card#12088), so a head of K deciding
+runs costs at least K more requests on the read that settles it, and again on each read that finds
+the run list settled and a job still open. Nothing for heads nobody awaits.
 
 ## Errors
 

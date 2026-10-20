@@ -153,8 +153,8 @@ the base branch's required contexts — run `ci-read` once on the head before ac
 
 There is no `late_runs_possible` key; board-tools.md § *Limits* says why.
 
-**`ci_await_expired`** (card#11200 / DL-452) — the await reached its expiry before every run was seen
-terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` or `ci_await_unreadable` for the same await. `subject_id` as above.
+**`ci_await_expired`** (card#11200 / DL-452) — the await reached its expiry before every run, and every
+job of each deciding run (card#12072), was seen terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` or `ci_await_unreadable` for the same await. `subject_id` as above.
 `payload`:
 
 | key | meaning |
@@ -162,7 +162,8 @@ terminal. One per await (inbox at least once, by line `id`, as above), never aft
 | `repo`, `head_sha`, `pr` | the awaited head |
 | `registered_at`, `expires_at` | when the await was first stored, and when it expired (UTC, milliseconds) |
 | `last_read_at` | when the bridge last read the run list for it, or null if it never did |
-| `last_error` | why that last read failed, or null when it answered — a null here with a non-null `last_read_at` means CI was still running at that read |
+| `last_error` | why that last read failed — the run list's read or a deciding run's jobs read, which the error names — or null when it answered; a null here with a non-null `last_read_at` means CI was still running at that read |
+| `open_jobs` | when that last read found every deciding run completed but a job still open (card#12089): `{count, first: {workflow, run_id, html_url, job, status}}` — how many jobs were open, and the first, with its run's url; null when it found none, read no jobs, or failed. The `summary` names that job. Lines written before card#12089 do not carry the key |
 
 **`ci_await_overdue`** (card#11674 / DL-471) — the await passed its overdue deadline (`overdue_at`,
 the repo's normal CI time or the seat's own `overdue_after_seconds`; board-tools.md § *Overdue* owns how
@@ -176,7 +177,7 @@ line `id` `ci_await_overdue:<uuid>`), never after the await's ending event. `sub
 | `repo`, `head_sha`, `pr` | the awaited head |
 | `registered_at`, `overdue_at`, `expires_at` | when the await was first stored, when it became overdue, and when it will expire (UTC, milliseconds) |
 | `overdue_basis` | `history`, `default` or `override` — where `overdue_at` came from |
-| `last_read_at`, `last_error` | as on `ci_await_expired` |
+| `last_read_at`, `last_error`, `open_jobs` | as on `ci_await_expired` |
 | `runs_seen` | what the bridge last saw: each run its `workflow_run` deliveries reported for the head, `{workflow, status, conclusion, html_url}` — empty when none reached it, null when they could not be read; the `summary` names the runs still open |
 
 **`ci_await_unreadable`** (card#11600) — a read of the head's runs said this bridge cannot read the
