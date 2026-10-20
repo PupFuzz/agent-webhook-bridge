@@ -111,7 +111,7 @@ final class CiAwaitsCheck implements Check
 
         if ($failing->isNotEmpty()) {
             $latest = $failing->first();
-            yield Finding::warn("ci_await: the last workflow-run read FAILED for {$failing->count()} await(s), so none of them can settle until a read answers — most recent: {$latest->repo_name}@{$latest->head_sha}: {$latest->last_error}. The ci_await sweep reads each head again, and an await expires with the error if no read answers.");
+            yield Finding::warn("ci_await: the last GitHub read of the head (its run list, or a deciding run's jobs) FAILED for {$failing->count()} await(s), so none of them can settle until a read answers — most recent: {$latest->repo_name}@{$latest->head_sha}: {$latest->last_error}. The ci_await sweep reads each head again, and an await expires with the error if no read answers.");
         }
         foreach ($undeliverable as $row) {
             yield Finding::warn("ci_await: the bridge could not write ci_settled / ci_await_unreadable / ci_await_expired / ci_await_overdue to the inbox of agent `{$row->agent}` for {$row->awaits} await(s) (last attempt {$row->latest}) — each is kept and retried every sweep pass, and dropped undelivered ".CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS.' s past its expiry. Look for `bridge ci_await:` warnings naming that agent: its inbox file or state directory is not writable by the bridge.');

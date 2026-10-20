@@ -63,7 +63,8 @@ use UnexpectedValueException;
  * `in_progress` (reported on rt#638 from the Actions API: a `semgrep` job open two and a half minutes past its run). A `ci_settled` sent
  * then is the await's ONE event, so it would never be followed by the real finish. Only once the
  * run list says settled is each deciding run's jobs list read; a job still open keeps the await,
- * and the next read — a delivery or the sweep — settles it. The payload carries a RUN-LEVEL `runs_verdict`; the
+ * recorded as `open_jobs` (card#12089) for the overdue and expired events to name, and the next
+ * read — a delivery or the sweep — settles it. The payload carries a RUN-LEVEL `runs_verdict`; the
  * authoritative verdict stays `ci-read`'s (jobs and the base branch's required contexts), which
  * the summary names.
  *
@@ -150,6 +151,9 @@ final class CiAwaitService
 
     /** The rate-limiter key prefix of a seat's registration reads; `bridge:check` probes the same store. */
     public const SEAT_READ_LIMITER_PREFIX = 'ci-await-seat-reads:';
+
+    /** How a failed run-list read is named in its error ({@see githubRead()}). */
+    private const RUNS_READ = 'the workflow-run read';
 
     /** Inside the webhook's after-response callback and a job pass, never a human's patience. */
     public const TIMEOUT_SECONDS = 8;
@@ -458,7 +462,8 @@ final class CiAwaitService
      * due one, so one seat's broken inbox never fills the pass ahead of anyone else's. A send that
      * reached the inbox clears the mark — that inbox takes lines again.
      *
-     * The event carries what the bridge last saw: the await's own last runs read, and the runs the
+     * The event carries what the bridge last saw: the await's own last read (its error, and the job
+     * it found holding the head — `open_jobs`), and the runs the
      * head's `workflow_run` deliveries reported ({@see CiHeadRunTracker}) — no GitHub read is made.
      *
      * @return array{emitted: int, failed: int}
@@ -580,7 +585,7 @@ final class CiAwaitService
                 ] + RedactedErrorText::logContext($e));
                 try {
                     CiAwait::query()->where('repo', $head->repo)->where('head_sha', $head->head_sha)
-                        ->update(['last_read_at' => Carbon::now(), 'last_error' => mb_substr(RedactedErrorText::of($e), 0, 1000)]);
+                        ->update(['last_read_at' => Carbon::now(), 'last_error' => mb_substr(RedactedErrorText::of($e), 0, 1000), 'open_jobs' => null]);
                 } catch (Throwable $stamp) {
                     Log::warning('bridge ci_await: the failed read of a head could not be stamped, so it stays first in line', [
                         'repo' => $head->repo, 'head_sha' => $head->head_sha,
@@ -654,22 +659,24 @@ final class CiAwaitService
             $error = mb_substr($e->getMessage(), 0, 1000);
             $confirmed = $e->needsConfirmation && $awaits->contains(static fn (CiAwait $a): bool => $a->unconfirmed_status === $e->status
                 && $a->last_read_at !== null && $a->last_read_at->lte($measuredAt->copy()->subSeconds(self::CONFIRM_AFTER_SECONDS)));
-            CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => $error, 'retry_not_before' => $e->retryNotBefore,
+            CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => $error, 'open_jobs' => null, 'retry_not_before' => $e->retryNotBefore,
                 'unconfirmed_status' => $e->needsConfirmation ? $e->status : null]);
             if ($e->repoUnreadable || $confirmed) {
                 return ['error' => $error, 'read' => true, 'unreadable' => $e, 'emit_failed' => $this->forgetUnreadable($awaits, $e, $error, $silentAwaitId)] + self::noRead();
             }
-            Log::warning('bridge ci_await: the workflow-run read failed, so nothing was emitted — the await is kept, the ci_await sweep reads the head again, and it expires with this error if no read answers', [
+            Log::warning('bridge ci_await: a GitHub read of the head (its run list, or a deciding run\'s jobs — the error names which) failed, so nothing was emitted — the await is kept, the ci_await sweep reads the head again, and it expires with this error if no read answers', [
                 'repo' => $repoName, 'head_sha' => $headSha, 'awaits' => count($ids), 'error' => $error,
             ]);
 
             return ['error' => $error, 'retry_not_before' => $e->retryNotBefore === null ? null : Carbon::instance($e->retryNotBefore), 'read' => true] + self::noRead();
         }
-        CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null, 'retry_not_before' => null, 'unconfirmed_status' => null]);
+        $openRecord = $openJobs === [] ? null : ['count' => count($openJobs), 'first' => $openJobs[0]];
+        CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null, 'open_jobs' => $openRecord === null ? null : json_encode($openRecord, JSON_THROW_ON_ERROR),
+            'retry_not_before' => null, 'unconfirmed_status' => null]);
 
-        if ($openJobs !== []) {
+        if ($openRecord !== null) {
             Log::info('bridge ci_await: every deciding run reads completed, but a job of one is still running — not settled; the ci_await sweep reads the head again', [
-                'repo' => $repoName, 'head_sha' => $headSha, 'open_jobs' => count($openJobs), 'first_open_job' => $openJobs[0],
+                'repo' => $repoName, 'head_sha' => $headSha, 'open_jobs' => $openRecord['count'], 'first_open_job' => self::describeJob($openRecord['first']),
             ]);
         }
         $allTerminal = $head->settled() && $openJobs === [];
@@ -828,8 +835,8 @@ final class CiAwaitService
     }
 
     /**
-     * The jobs not yet `completed` of `$head`'s deciding runs, each `run <id>: <job name> (<status>)`
-     * — empty when every job of every deciding run is terminal (card#12072). One jobs read per
+     * The jobs not yet `completed` of `$head`'s deciding runs, in run order — empty when every job of
+     * every deciding run is terminal (card#12072). One jobs read per
      * deciding run, each GitHub's latest attempt, the list `ci-read` grades: the run list can say
      * `completed` while that read still lists a job `in_progress` (reported on rt#638 from the Actions API), and a
      * `ci_settled` sent then is never followed by another.
@@ -838,7 +845,7 @@ final class CiAwaitService
      * that cannot see the repo could not have done (a run deleted between the two reads is the
      * likely cause, not measured); it is retryable, never {@see forgetUnreadable()}'s cause.
      *
-     * @return list<string>
+     * @return list<array{workflow: string, run_id: int, html_url: string, job: string, status: string}>
      *
      * @throws CiRunsReadException naming why a run's whole job list was not read
      */
@@ -846,7 +853,7 @@ final class CiAwaitService
     {
         $open = [];
         foreach ($head->decidingRuns() as $run) {
-            $jobs = self::githubRead($repoName, static function (GitHubReadClient $client) use ($repoName, $run): array {
+            $jobs = self::githubRead($repoName, "the jobs read of run {$run['id']}", static function (GitHubReadClient $client) use ($repoName, $run): array {
                 try {
                     return $client->workflowJobsForRun($repoName, $run['id']);
                 } catch (RequestException $e) {
@@ -859,7 +866,7 @@ final class CiAwaitService
             });
             foreach ($jobs as $job) {
                 if ($job['status'] !== 'completed') {
-                    $open[] = "run {$run['id']}: {$job['name']} ({$job['status']})";
+                    $open[] = ['workflow' => $run['workflow'], 'run_id' => $run['id'], 'html_url' => $run['html_url'], 'job' => $job['name'], 'status' => $job['status']];
                 }
             }
         }
@@ -874,7 +881,7 @@ final class CiAwaitService
      */
     private function readRuns(string $repoName, string $headSha): array
     {
-        return self::githubRead($repoName, static fn (GitHubReadClient $client): array => $client->workflowRunsForHead($repoName, $headSha));
+        return self::githubRead($repoName, self::RUNS_READ, static fn (GitHubReadClient $client): array => $client->workflowRunsForHead($repoName, $headSha));
     }
 
     /**
@@ -885,7 +892,7 @@ final class CiAwaitService
     public static function probeRunsRead(string $repoName): ?CiRunsReadException
     {
         try {
-            self::githubRead($repoName, static function (GitHubReadClient $client) use ($repoName): void {
+            self::githubRead($repoName, self::RUNS_READ, static function (GitHubReadClient $client) use ($repoName): void {
                 $client->probeWorkflowRuns($repoName);
             });
         } catch (CiRunsReadException $e) {
@@ -897,7 +904,8 @@ final class CiAwaitService
 
     /**
      * Resolve `$repoName`'s read token as the receiver does and make `$read` with it, turning every
-     * way it can fail into a {@see CiRunsReadException} of its class (card#11600):
+     * way it can fail into a {@see CiRunsReadException} of its class (card#11600), whose message names
+     * the read by `$label` (card#12089: a failed jobs read must not be reported as the run list's):
      *  - NOT READABLE — reading again cannot answer: no token resolved for any reader
      *    ({@see noTokenForAnyReader()}), or GitHub answered 404 (its answer to a token that cannot
      *    see a private repo). Its message names the token's source and file, never the token.
@@ -907,7 +915,7 @@ final class CiAwaitService
      *    briefly, so it is retryable with `retryNotBefore` {@see CONFIRM_AFTER_SECONDS} out, and
      *    final only when that later read answers the same status ({@see evaluate()}).
      *  - RETRYABLE — a rate limit (a 429, or a 403 that says so), any other status, no answer, or
-     *    a 200 whose body is not a run list.
+     *    a 200 whose body is not a run list (that message names its list itself).
      *
      * @template T
      *
@@ -916,7 +924,7 @@ final class CiAwaitService
      *
      * @throws CiRunsReadException
      */
-    private static function githubRead(string $repoName, callable $read): mixed
+    private static function githubRead(string $repoName, string $label, callable $read): mixed
     {
         $token = (new GitHubTokenResolver)->resolveFor($repoName);
         if (! $token->ok()) {
@@ -940,7 +948,7 @@ final class CiAwaitService
             $confirm = ! $limited && in_array($status, [401, 403], true);
 
             throw new CiRunsReadException(
-                "GitHub answered HTTP {$status} to the workflow-run read"
+                "GitHub answered HTTP {$status} to {$label}"
                     .($limited ? ' (rate limited'.($resetAt === null ? '' : ' until '.self::instant($resetAt)).')' : '')
                     .($unreadable || $confirm ? ' ('.self::tokenOrigin($token).')' : ''),
                 $confirm ? Carbon::now()->addSeconds(self::CONFIRM_AFTER_SECONDS) : $resetAt,
@@ -948,7 +956,9 @@ final class CiAwaitService
                 status: $status,
                 needsConfirmation: $confirm,
             );
-        } catch (ConnectionException|UnexpectedValueException $e) {
+        } catch (ConnectionException $e) {
+            throw new CiRunsReadException("GitHub did not answer {$label}: ".RedactedErrorText::of($e));
+        } catch (UnexpectedValueException $e) {
             throw new CiRunsReadException(RedactedErrorText::of($e));
         }
     }
@@ -1105,6 +1115,7 @@ final class CiAwaitService
             'expires_at' => self::instant($await->expires_at),
             'last_read_at' => $await->last_read_at === null ? null : self::instant($await->last_read_at),
             'last_error' => $await->last_error,
+            'open_jobs' => $await->open_jobs,
         ];
     }
 
@@ -1124,6 +1135,7 @@ final class CiAwaitService
             'expires_at' => self::instant($await->expires_at),
             'last_read_at' => $await->last_read_at === null ? null : self::instant($await->last_read_at),
             'last_error' => $await->last_error,
+            'open_jobs' => $await->open_jobs,
             'runs_seen' => $runs === null ? null : array_map(static fn (array $r): array => [
                 'workflow' => $r['workflow'], 'status' => $r['status'], 'conclusion' => $r['conclusion'], 'html_url' => $r['html_url'],
             ], $runs),
@@ -1137,23 +1149,44 @@ final class CiAwaitService
         $seen = match (true) {
             $runs === null => 'the runs its workflow_run deliveries reported could not be read',
             $runs === [] => 'no workflow_run delivery for this head has reached the bridge',
-            $open === [] => 'every run its workflow_run deliveries reported is completed, but no read has settled the head yet',
+            $open === [] => 'every run its workflow_run deliveries reported is completed'.($await->open_jobs === null ? ', but no read has settled the head yet' : ''),
             default => 'by the workflow_run deliveries the bridge received, still open: '.implode(', ', array_map(static fn (array $r): string => "{$r['workflow']} ({$r['status']}, {$r['html_url']})", $open)),
         };
 
         return "CI on {$await->repo_name}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
             .' is OVERDUE — past '.($await->overdue_basis === OverdueDeadline::BASIS_OVERRIDE ? 'the deadline you set' : "this repo's normal CI time")
-            .' and not yet seen finished; '.$seen
-            .($await->last_error === null ? '' : " (last runs read failed: {$await->last_error})")
+            .' and not yet seen with every run and job finished; '.$seen
+            .self::openJobsClause($await)
+            .($await->last_error === null ? '' : " (last read failed: {$await->last_error})")
             .'. Check it once now with ci-read. The wait stays registered, and its ending event (ci_settled, ci_await_unreadable or ci_await_expired) still follows.';
     }
 
     private static function expiredSummary(CiAwait $await): string
     {
         return "Stopped waiting for CI on {$await->repo_name}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
-            .' — the await expired before every workflow run was seen terminal'
+            .' — the await expired before every run and job was seen terminal'
+            .self::openJobsClause($await)
             .($await->last_error === null ? '' : " (last read failed: {$await->last_error})")
             .'. Run ci-read on this head, or re-register with ci_await.';
+    }
+
+    /** What the await's last read found holding it (card#12089), as a summary clause — empty when nothing was recorded. */
+    private static function openJobsClause(CiAwait $await): string
+    {
+        $open = $await->open_jobs;
+        if ($open === null) {
+            return '';
+        }
+        $more = $open['count'] - 1;
+
+        return "; the bridge's last read found every run completed but {$open['count']} job".($open['count'] === 1 ? '' : 's').' still open: '
+            .self::describeJob($open['first']).($more > 0 ? ", plus {$more} more" : '');
+    }
+
+    /** @param  array{workflow: string, run_id: int, html_url: string, job: string, status: string}  $job */
+    private static function describeJob(array $job): string
+    {
+        return "{$job['job']} ({$job['status']}) in {$job['workflow']} run {$job['run_id']} ({$job['html_url']})";
     }
 
     /** @return array<string, mixed> */

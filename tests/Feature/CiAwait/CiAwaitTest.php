@@ -18,6 +18,7 @@ use App\Models\CiAwait;
 use App\Models\ScheduledJob;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -65,7 +66,7 @@ class CiAwaitTest extends TestCase
      */
     private array $jobs = [];
 
-    /** @var array<int, int> run id => the HTTP status its jobs read is refused with */
+    /** @var array<int, int> run id => the HTTP status its jobs read is refused with; 0: no answer at all */
     private array $jobsRefused = [];
 
     protected function setUp(): void
@@ -97,6 +98,10 @@ class CiAwaitTest extends TestCase
         // Registered first, so it answers every jobs read: a later fake's catch-all cannot take one.
         Http::fake([self::JOBS_URL => function (Request $r) {
             $runId = (int) explode('/', (string) parse_url($r->url(), PHP_URL_PATH))[6];
+
+            if (($this->jobsRefused[$runId] ?? null) === 0) {
+                throw new ConnectionException('cURL error 28: Operation timed out');
+            }
 
             return isset($this->jobsRefused[$runId])
                 ? Http::response(['message' => 'refused'], $this->jobsRefused[$runId])
@@ -773,6 +778,67 @@ class CiAwaitTest extends TestCase
         $this->assertChannelPushes(['seat-a' => ['ci_settled']]);
     }
 
+    /**
+     * card#12089: a job that holds the wait is recorded on the await, and the expiry names it — it
+     * does not say a run was unfinished, nor that a read failed.
+     */
+    public function test_an_await_held_by_an_open_job_records_it_and_its_expiry_names_the_job(): void
+    {
+        $this->seedAwait('seat-a', pr: 3);
+        $this->jobs = [1 => ['completed', 'in_progress', 'queued']];
+        $this->fakeGitHub([[$this->runs([['SAST + secret scan', 'completed', 'success']])]]);
+
+        $this->runSweep();
+
+        $open = ['count' => 2, 'first' => [
+            'workflow' => 'SAST + secret scan', 'run_id' => 1, 'html_url' => 'https://github.com/octo/widgets/actions/runs/1', 'job' => 'job-1', 'status' => 'in_progress',
+        ]];
+        $await = CiAwait::query()->sole();
+        $this->assertNull($await->last_error);
+        $this->assertEquals($open, $await->open_jobs);
+
+        Carbon::setTestNow('2026-10-03T16:00:00.000Z');
+        $this->runSweep();
+
+        $lines = $this->inbox();
+        $this->assertSame(['ci_await_expired'], array_column($lines, 'kind'));
+        $this->assertEquals($open, $lines[0]['payload']['open_jobs']);
+        $this->assertNull($lines[0]['payload']['last_error']);
+        $summary = $lines[0]['summary'];
+        $this->assertStringContainsString('every run and job', $summary);
+        $this->assertStringContainsString('job-1 (in_progress)', $summary);
+        $this->assertStringContainsString('SAST + secret scan', $summary);
+        $this->assertStringContainsString('1 more', $summary);
+        $this->assertStringNotContainsString('every workflow run', $summary);
+        $this->assertStringNotContainsString('failed', $summary);
+    }
+
+    /** The record is the LAST read's: a later read that finds no job open, or that fails, clears it. */
+    public function test_a_later_read_that_finds_no_open_job_or_fails_clears_the_record(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->jobs = [1 => ['in_progress']];
+        $completed = [$this->runs([['CI', 'completed', 'success']])];
+        $this->fakeGitHub([$completed, $completed, $completed, [$this->runs([['CI', 'in_progress', null, 2]])]]);
+
+        $this->sweepAt('2026-10-03T10:00:00.000Z');
+        $this->assertSame(1, CiAwait::query()->sole()->open_jobs['count'] ?? null);
+
+        $this->jobsRefused = [1 => 502];
+        $this->sweepAt('2026-10-03T10:05:00.000Z');
+        $await = CiAwait::query()->sole();
+        $this->assertNull($await->open_jobs, 'a failed read found nothing open');
+        $this->assertNotNull($await->last_error);
+
+        $this->jobsRefused = [];
+        $this->sweepAt('2026-10-03T10:10:00.000Z');
+        $this->assertSame(1, CiAwait::query()->sole()->open_jobs['count'] ?? null);
+
+        $this->sweepAt('2026-10-03T10:15:00.000Z');
+        $this->assertNull(CiAwait::query()->sole()->open_jobs, 'a re-run holds the head open by its run, not by the old job');
+        $this->assertSame([], $this->inbox());
+    }
+
     /** Only the deciding runs' jobs are read, and only once the run list already says settled. */
     public function test_jobs_are_read_only_for_deciding_runs_of_a_head_the_run_list_says_is_settled(): void
     {
@@ -804,7 +870,19 @@ class CiAwaitTest extends TestCase
         $this->postRunCompleted(self::SHA)->assertOk();
 
         $this->assertSame([], $this->inbox());
-        $this->assertStringContainsString('HTTP 502', (string) CiAwait::query()->sole()->last_error);
+        $this->assertSame('GitHub answered HTTP 502 to the jobs read of run 1', CiAwait::query()->sole()->last_error);
+    }
+
+    public function test_a_jobs_read_github_does_not_answer_names_the_jobs_read(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->jobsRefused = [1 => 0];
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSame([], $this->inbox());
+        $this->assertSame('GitHub did not answer the jobs read of run 1: cURL error 28: Operation timed out', CiAwait::query()->sole()->last_error);
     }
 
     /**
@@ -1816,6 +1894,7 @@ class CiAwaitTest extends TestCase
             'expires_at' => '2026-10-03T16:00:00.000Z',
             'last_read_at' => '2026-10-03T10:00:00.000Z',
             'last_error' => null,
+            'open_jobs' => null,
         ], $lines[0]['payload']);
         $this->assertChannelPushes(['seat-a' => ['ci_await_expired']]);
         $this->assertSame(0, CiAwait::query()->count());
@@ -1847,6 +1926,13 @@ class CiAwaitTest extends TestCase
     private function seedAwait(string $agent, ?int $pr = null, string $sha = self::SHA, int $expiresIn = 21600): void
     {
         CiAwait::query()->create(['agent' => $agent, 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => $sha, 'pr' => $pr, 'expires_at' => Carbon::now()->addSeconds($expiresIn)]);
+    }
+
+    private function sweepAt(string $at): JobOutcome
+    {
+        Carbon::setTestNow($at);
+
+        return $this->runSweep();
     }
 
     private function runSweep(): JobOutcome

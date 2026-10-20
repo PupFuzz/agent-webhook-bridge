@@ -485,11 +485,13 @@ return [
     | read is at least one sweep interval old, oldest first, so its GitHub cost
     | is at most sweep_reads × 3600 / the sweep's interval head reads per hour.
     |
-    | seat_reads_per_hour — how many GitHub runs reads ONE agent's registrations
-    | may cause per FIXED one-hour window, which opens at that agent's first
+    | seat_reads_per_hour — how many head reads ONE agent's registrations may
+    | cause per FIXED one-hour window, which opens at that agent's first
     | counted read (RateLimiter::hit, 3600s decay) — not a rolling hour, so up to
     | twice this can land around a window boundary (default 60, 1..10000;
-    | card#11283). Past it the
+    | card#11283). A head read is a budget unit, not one GitHub request: its
+    | run list, plus each deciding run's jobs once that list reads settled
+    | (card#12072). Past it the
     | await is still STORED and its own read is skipped (`read_skipped:
     | seat_read_limited`, with the instant the budget frees) — the sweep and a
     | workflow_run delivery settle it. A register/cancel loop, or a stream of
