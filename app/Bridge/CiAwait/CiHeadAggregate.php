@@ -40,7 +40,8 @@ use Throwable;
  * settles again and the agent gets a second event — never silence, never the same state twice.
  *
  * ⛔ AN AGENT WITH A `ci_await` ON THE HEAD GETS NOTHING FROM HERE (card#11938). Its await promises
- * a `ci_settled` when every run GITHUB lists that a commit started is terminal, and the partial view above broke that
+ * a `ci_settled` when every run GITHUB lists that a commit started is terminal (and every job of each — card#12072),
+ * and the partial view above broke that
  * promise: a seat was woken green over one workflow of two. So the aggregate neither stages, pushes
  * nor records a state for an awaited agent, and the await's own settle on its GitHub read is the one
  * it gets — never silenced by the ledger, which the await writes but does not consult. ⚠ The check

@@ -75,6 +75,12 @@ final class GitHubReadClient
      */
     private const RUNS_PAGE_LIMIT = 10;
 
+    /** GitHub's maximum page size for `GET /repos/{repo}/actions/runs/{id}/jobs`. */
+    private const JOBS_PAGE_SIZE = 100;
+
+    /** How many job pages {@see self::workflowJobsForRun} walks before it throws — a bound on a loop, as RUNS_PAGE_LIMIT. */
+    private const JOBS_PAGE_LIMIT = 10;
+
     /**
      * @param  string  $token  an already-resolved GitHub read token (resolution is the caller's — GitHubTokenResolver)
      * @param  ?int  $timeoutSeconds  per-request timeout override — the SYNCHRONOUS promote-on-release
@@ -609,6 +615,55 @@ final class GitHubReadClient
         }
 
         throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} did not end within ".self::RUNS_PAGE_LIMIT.' pages of '.self::RUNS_PAGE_SIZE.' — the list was not read to its end, so whether every run is terminal is unknown');
+    }
+
+    /**
+     * Every job of one workflow run's LATEST attempt (`GET /repos/{repo}/actions/runs/{id}/jobs`,
+     * GitHub's default `filter=latest` — the read `ci-read` grades), walked to the end of the list
+     * — what `ci_settled` confirms a completed run with (card#12072): a run can read `completed`
+     * while its own jobs read still lists a job `in_progress`.
+     *
+     * ⛔ IT ANSWERS THE WHOLE LIST OR THROWS, like {@see self::workflowRunsForHead()}: a 200 whose
+     * body is not a job list, a job without a readable integer `id` or `status`, pages that do not
+     * report one `total_count`, distinct jobs that do not add up to it, and a walk that reaches
+     * {@see self::JOBS_PAGE_LIMIT} each throw {@see UnexpectedValueException}. Page 1 is not read
+     * again: unlike the run list, GitHub's ordering of a run's jobs is not relied on here.
+     *
+     * @return list<array{id: int, name: string, status: string}>
+     */
+    public function workflowJobsForRun(string $repo, int $runId): array
+    {
+        $jobs = [];
+        $total = null;
+        for ($page = 1; $page <= self::JOBS_PAGE_LIMIT; $page++) {
+            $body = $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs/{$runId}/jobs", [
+                'per_page' => self::JOBS_PAGE_SIZE,
+                'page' => $page,
+            ])->throw()->json();
+            $list = is_array($body) ? ($body['jobs'] ?? null) : null;
+            if (! is_array($list) || ! array_is_list($list) || ! is_int($body['total_count'] ?? null)) {
+                throw new UnexpectedValueException("the job list of {$repo} run {$runId} returned a 200 whose body is not a job list with a total_count; ".self::UNREADABLE_BODY_CAUSE);
+            }
+            if ($total !== null && $body['total_count'] !== $total) {
+                throw new UnexpectedValueException("the job list of {$repo} run {$runId} changed while it was being read (total_count {$total}, then {$body['total_count']} on page {$page})");
+            }
+            $total = $body['total_count'];
+            foreach ($list as $job) {
+                if (! is_array($job) || ! is_int($job['id'] ?? null) || ! is_string($job['status'] ?? null)) {
+                    throw new UnexpectedValueException("the job list of {$repo} run {$runId} carries a job with no readable integer `id` or `status`, so whether every job is terminal is unknown; ".self::UNREADABLE_BODY_CAUSE);
+                }
+                $jobs[$job['id']] = ['id' => $job['id'], 'name' => is_string($job['name'] ?? null) ? $job['name'] : '', 'status' => $job['status']];
+            }
+            if (count($list) < self::JOBS_PAGE_SIZE || count($jobs) >= $total) {
+                if (count($jobs) !== $total) {
+                    throw new UnexpectedValueException("the job list of {$repo} run {$runId} reported total_count {$total} and its pages carried ".count($jobs).' distinct job(s), so whether every job is terminal is unknown');
+                }
+
+                return array_values($jobs);
+            }
+        }
+
+        throw new UnexpectedValueException("the job list of {$repo} run {$runId} did not end within ".self::JOBS_PAGE_LIMIT.' pages of '.self::JOBS_PAGE_SIZE.', so whether every job is terminal is unknown');
     }
 
     /**

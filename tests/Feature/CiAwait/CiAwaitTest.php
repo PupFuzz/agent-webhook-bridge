@@ -48,11 +48,25 @@ class CiAwaitTest extends TestCase
 
     private const OTHER_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
 
-    private const RUNS_URL = 'api.github.com/repos/octo/widgets/actions/runs*';
+    /** The run list only — `?` is literal to `Str::is`, so a run's jobs read is not matched. */
+    private const RUNS_URL = 'api.github.com/repos/octo/widgets/actions/runs?*';
+
+    private const JOBS_URL = 'api.github.com/repos/octo/widgets/actions/runs/*/jobs*';
 
     private const HOOK_SECRET = 'ci-await-hook-secret'; // gitleaks:allow — test fixture
 
     private string $dir;
+
+    /**
+     * What a run's jobs read answers: `run id => [job status, …]`. A run not named here answers one
+     * completed job, so a test that is not about jobs reads every job as finished.
+     *
+     * @var array<int, list<string>>
+     */
+    private array $jobs = [];
+
+    /** @var array<int, int> run id => the HTTP status its jobs read is refused with */
+    private array $jobsRefused = [];
 
     protected function setUp(): void
     {
@@ -80,6 +94,14 @@ class CiAwaitTest extends TestCase
             'bridge.ci_await.ttl' => 21600,
         ]);
         Carbon::setTestNow('2026-10-03T10:00:00.000Z');
+        // Registered first, so it answers every jobs read: a later fake's catch-all cannot take one.
+        Http::fake([self::JOBS_URL => function (Request $r) {
+            $runId = (int) explode('/', (string) parse_url($r->url(), PHP_URL_PATH))[6];
+
+            return isset($this->jobsRefused[$runId])
+                ? Http::response(['message' => 'refused'], $this->jobsRefused[$runId])
+                : Http::response($this->jobsOf($runId));
+        }]);
     }
 
     protected function tearDown(): void
@@ -666,6 +688,139 @@ class CiAwaitTest extends TestCase
         $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
         $this->assertSame('green', $lines[0]['payload']['runs_verdict']);
         $this->assertCount(1, $lines[0]['payload']['runs']);
+    }
+
+    // ---- a completed run whose job is still running (card#12072) --------------------------
+
+    /**
+     * rt#638, as reported from the Actions API: the run list said `completed` / `success` while the run's own jobs read
+     * still had a job `in_progress` — the read `ci-read` makes. A registration then must wait, not
+     * send a GREEN ci_settled and forget the await.
+     */
+    public function test_a_registration_whose_run_is_completed_but_a_job_still_runs_waits_and_sends_nothing(): void
+    {
+        $this->jobs = [1 => ['completed', 'in_progress']];
+        $this->fakeGitHub([[$this->runs([['SAST + secret scan', 'completed', 'success']])]]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertSame('waiting', $out->body()['result']['state'], json_encode($out->body()) ?: '');
+        $this->assertSame([], $this->inbox());
+        $this->assertNoChannelPush();
+        $this->assertSame(1, CiAwait::query()->count(), 'the await is kept for the read that sees the job finish');
+        $this->assertCount(1, Http::recorded(fn (Request $r): bool => str_contains($r->url(), '/actions/runs/1/jobs')));
+    }
+
+    /** @return array<string, array{0: string}> every job status GitHub documents besides `completed` */
+    public static function openJobStatuses(): array
+    {
+        return ['queued' => ['queued'], 'in_progress' => ['in_progress'], 'waiting' => ['waiting'], 'requested' => ['requested'], 'pending' => ['pending']];
+    }
+
+    /** Any status but `completed` holds the await: the test is "is it completed", not a list of open ones. */
+    #[DataProvider('openJobStatuses')]
+    public function test_a_job_in_any_status_but_completed_holds_the_await(string $status): void
+    {
+        $this->jobs = [1 => [$status]];
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+
+        $this->assertSame('waiting', $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA])->body()['result']['state']);
+        $this->assertSame([], $this->inbox());
+    }
+
+    /** The same sequence on a delivery: the run's completion arrives while its job still runs. */
+    public function test_a_delivery_whose_run_is_completed_but_a_job_still_runs_sends_nothing(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->jobs = [1 => ['in_progress']];
+        $this->fakeGitHub([[$this->runs([['SAST + secret scan', 'completed', 'success']])]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSame([], $this->inbox());
+        $this->assertNoChannelPush();
+        $await = CiAwait::query()->sole();
+        $this->assertNotNull($await->last_read_at);
+        $this->assertNull($await->last_error);
+    }
+
+    /**
+     * The follow-up the report lost: nothing more is delivered once the run has said `completed`,
+     * so the sweep's read after the job finishes is what settles it — exactly once, and a later
+     * pass and a re-delivery send nothing more.
+     */
+    public function test_once_the_job_finishes_the_sweep_sends_exactly_one_ci_settled(): void
+    {
+        $this->jobs = [1 => ['completed', 'in_progress']];
+        $this->fakeGitHub(array_fill(0, 4, [$this->runs([['SAST + secret scan', 'completed', 'success']])]));
+        $this->assertSame('waiting', $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA])->body()['result']['state']);
+
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
+        $this->runSweep();
+        $this->assertSame([], $this->inbox(), 'the job is still running at this pass');
+
+        $this->jobs = [1 => ['completed', 'completed']];
+        Carbon::setTestNow('2026-10-03T10:10:00.000Z');
+        $this->runSweep();
+        Carbon::setTestNow('2026-10-03T10:15:00.000Z');
+        $this->runSweep();
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSame(0, CiAwait::query()->count());
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertSame('green', $lines[0]['payload']['runs_verdict']);
+        $this->assertChannelPushes(['seat-a' => ['ci_settled']]);
+    }
+
+    /** Only the deciding runs' jobs are read, and only once the run list already says settled. */
+    public function test_jobs_are_read_only_for_deciding_runs_of_a_head_the_run_list_says_is_settled(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->fakeGitHub([
+            [$this->runs([['CI', 'in_progress', null]])],
+            [$this->runs([['CI', 'completed', 'failure', 1, 1], ['CI', 'completed', 'success', 1, 2], ['Nightly', 'completed', 'success', 1, 3, 'schedule']])],
+        ]);
+
+        $this->runSweep();
+        $this->assertSentRunsReads(1);
+        $this->assertCount(0, Http::recorded(fn (Request $r): bool => str_contains($r->url(), '/jobs')), 'a head the run list holds open needs no jobs read');
+
+        CiAwait::query()->update(['last_read_at' => null]);
+        $this->runSweep();
+
+        $jobReads = array_map(static fn (array $pair): string => (string) parse_url($pair[0]->url(), PHP_URL_PATH), Http::recorded(fn (Request $r): bool => str_contains($r->url(), '/jobs'))->all());
+        $this->assertSame(['/repos/octo/widgets/actions/runs/2/jobs'], array_values($jobReads), 'run 1 is superseded by run 2 and run 3 no commit started');
+        $this->assertSame(['ci_settled'], array_column($this->inbox(), 'kind'));
+    }
+
+    /** A jobs read that fails is a failed read: nothing is sent and the await is kept with the error. */
+    public function test_a_jobs_read_that_fails_keeps_the_await_and_sends_nothing(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->jobsRefused = [1 => 502];
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSame([], $this->inbox());
+        $this->assertStringContainsString('HTTP 502', (string) CiAwait::query()->sole()->last_error);
+    }
+
+    /**
+     * A 404 on a jobs read is NOT the repo being unreadable: the same token just listed the run, so
+     * the run went away between the reads. It is retried, never ended as `ci_await_unreadable`.
+     */
+    public function test_a_jobs_read_answering_404_is_retried_not_ended_as_unreadable(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->jobsRefused = [1 => 404];
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSame([], $this->inbox(), 'no ci_await_unreadable');
+        $this->assertStringContainsString('404', (string) CiAwait::query()->sole()->last_error);
     }
 
     // ---- the level-triggered sweep (round 4) ---------------------------------------------
@@ -1706,7 +1861,7 @@ class CiAwaitTest extends TestCase
             parse_str((string) parse_url($pair[0]->url(), PHP_URL_QUERY), $query);
 
             return (string) $query['head_sha'];
-        }, Http::recorded(fn (Request $r): bool => str_contains($r->url(), '/repos/octo/widgets/actions/runs'))->all()));
+        }, Http::recorded(fn (Request $r): bool => str_contains($r->url(), '/repos/octo/widgets/actions/runs?'))->all()));
     }
 
     /**
@@ -1743,6 +1898,18 @@ class CiAwaitTest extends TestCase
         }
 
         return ['total_count' => $total ?? count($list), 'workflow_runs' => $list];
+    }
+
+    /** @return array<string, mixed> run `$runId`'s jobs, as GitHub's jobs read answers them ({@see $jobs}) */
+    private function jobsOf(int $runId): array
+    {
+        $list = [];
+        foreach ($this->jobs[$runId] ?? ['completed'] as $i => $status) {
+            $id = $runId * 1000 + $i;
+            $list[] = ['id' => $id, 'run_id' => $runId, 'name' => "job-{$i}", 'status' => $status, 'conclusion' => $status === 'completed' ? 'success' : null, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}/job/{$id}"];
+        }
+
+        return ['total_count' => count($list), 'jobs' => $list];
     }
 
     /**
@@ -1795,7 +1962,7 @@ class CiAwaitTest extends TestCase
 
     private function assertSentRunsReads(int $n, string $message = ''): void
     {
-        $this->assertCount($n, Http::recorded(fn (Request $r): bool => str_contains($r->url(), '/repos/octo/widgets/actions/runs')), $message);
+        $this->assertCount($n, Http::recorded(fn (Request $r): bool => str_contains($r->url(), '/repos/octo/widgets/actions/runs?')), $message);
     }
 
     private function assertSentRunsReadsMatching(string $path, int $n): void
