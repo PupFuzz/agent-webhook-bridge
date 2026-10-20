@@ -220,10 +220,23 @@ test('a launch from a copied launcher (no client root) leaves PATH as it was', {
 });
 
 test('start-claude.ps1 appends the client root\'s bin to the session Path before it drops AWB_LAUNCHER_CLIENT_ROOT', () => {
-  // Text only: no PowerShell runs here (CI's Windows job parses the .ps1; a Windows device agent runs it).
+  // Text only: no PowerShell runs here (CI's Windows job parses the .ps1 and runs its tunnel start; a Windows device agent runs it).
   const ps1 = fs.readFileSync(path.join(HERE, '..', 'bin', 'start-claude.ps1'), 'utf8');
   const append = ps1.indexOf("$rootBin = Join-Path $env:AWB_LAUNCHER_CLIENT_ROOT 'bin'");
   assert.ok(append > 0, 'the .ps1 computes <root>\\bin');
   assert.match(ps1, /\$env:Path = \(@\(\$env:Path, \$rootBin\) \| Where-Object \{ \$_ \}\) -join ';'/);
   assert.ok(append < ps1.indexOf('Remove-Item Env:AWB_LAUNCHER_CLIENT_ROOT'), 'before the variable is removed');
+});
+
+test('start-claude.ps1 hands every Start-Process -ArgumentList one string from ConvertTo-WindowsCommandLine, never a bare array (card#12112)', () => {
+  // Text only. Start-Process quotes none of an array's elements, so a path with a space reaches the
+  // child split; tests/start-claude-tunnel-args.test.ps1 runs the quoting on CI's Windows job.
+  const ps1 = fs.readFileSync(path.join(HERE, '..', 'bin', 'start-claude.ps1'), 'utf8');
+  const code = ps1.split(/\r?\n/).filter((line) => !/^\s*#/.test(line));
+  const passes = code.filter((line) => /-ArgumentList\b/.test(line));
+  assert.ok(passes.length > 0, 'the .ps1 starts its tunnel process with Start-Process -ArgumentList');
+  for (const line of passes) {
+    assert.match(line, /-ArgumentList \(ConvertTo-WindowsCommandLine /, line.trim());
+  }
+  assert.ok(code.some((line) => /^function ConvertTo-WindowsCommandLine \{/.test(line)), 'the quoting function is defined in the launcher');
 });
