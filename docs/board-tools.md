@@ -2157,10 +2157,19 @@ running: the list API can lag the webhook. ⛔ **A list that does not carry a ru
 the head is partial, and a failed read** (card#12197 / DL-492): GitHub's head-SHA list has answered
 a head whose eight runs existed with none, and with one, each self-consistent (its `total_count`
 matched its rows). A run is known when an earlier complete read of the head counted it (kept on the
-await, `known_run_ids`), when a `workflow_run` delivery reported it (`requested` and `in_progress`
-included), or when it is the run this delivery reports — so the delivered run is never added to a
-list that lacks it, and nothing settles on it alone. Such a read sends nothing and is recorded like
-any failed read (*Read failures*); the sweep reads the head again. ⚠ A run the bridge was never told
+await, `known_run_ids` — merged under a lock on the head's await rows, and each read judged against
+the merged set, so two overlapping reads cannot shrink it or pass on what they loaded before
+reading), when a `workflow_run` delivery reported it (`requested` and `in_progress` included), or
+when it is the run this delivery reports — so the delivered run is never added to a list that lacks
+it, and nothing settles on it alone. Such a read sends nothing and is recorded like any failed read
+(*Read failures*); the sweep reads the head again. **A deleted run** (the UI, `gh run delete`, a
+retention job) leaves the list for good, so when no more known runs are missing than
+`CiAwaitService::MISSING_RUNS_LOOKED_UP`, each is read on its own (`GET
+/repos/{repo}/actions/runs/{id}`, one request each): a `404` means it is gone — it is dropped from
+`known_run_ids` and the rest of the list is judged as usual — while any other answer, a `200` or a
+failure, keeps the read failed. More missing than that, none is read. A run the bridge knows only
+from a delivery stays known through that delivery, so a deleted one of those is read again on each
+read of the head. ⚠ A run the bridge was never told
 of — no read listed it, no delivery reported it — cannot be missed, so a short list can still settle
 then. ⚠ **Except a later attempt:** a re-run keeps the run's id
 and raises its `run_attempt`, so when the list shows a LATER attempt than the delivery reports (a
@@ -2250,7 +2259,7 @@ neither header, and then it waits at least a minute; the body is read for that t
 any other status but those below (on a run's jobs read, a `404` too), no answer, a
 read token THIS process could not read or determine (the sweep can run from `bridge:tick` as another
 OS user than the receiver's), a 200 whose body is not a run list (or a job list), a list that does not end within the
-read's page bound, a list that changed between pages — on the run list or on a deciding run's jobs (*Jobs* above) — or a run list that omits a run already known on the head (*How it settles* above) **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
+read's page bound, a list that changed between pages — on the run list or on a deciding run's jobs (*Jobs* above) — a run list carrying a row whose `head_sha` is not the head's, or a run list that omits a run already known on the head (*How it settles* above) **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
 logged naming it, and the head is read again on its next completed run and by the sweep. A
 rate-limited read that names when its quota returns records that instant on every await on the head, and **no read of that head is made before it** — not
 by a delivery, a registration or the sweep; the error says until when, and a registration in that
