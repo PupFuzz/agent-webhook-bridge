@@ -97,13 +97,25 @@ use UnexpectedValueException;
  * whose own read ends them is refused as `repo_unreadable`: a seat must not wait six hours on a repo this install's token cannot see.
  *
  * ⭐ THE DELIVERED RUN IS OVERLAID. The list API can lag the webhook: the run whose completion was
- * just delivered may still read `in_progress` (or be absent) in the list read for that delivery. A
- * last run lost that way would strand the wake until the TTL, so the read for a delivery treats the
- * delivered run, keyed by id, as completed with the delivery's conclusion — unless the list already
- * shows a LATER attempt of it (`run_attempt`): a re-run keeps the run's id, and a delivery for an
- * earlier attempt (a late one, or one an operator redelivered by hand) must not finish the new one.
- * The delivered run carries its `event`, so one the list does not show yet is counted only when a
- * commit started it, like a listed run (card#11958).
+ * just delivered may still read `in_progress` in the list read for that delivery, so the read for a
+ * delivery treats the listed row of the delivered run, keyed by id, as completed with the
+ * delivery's conclusion — unless the list already shows a LATER attempt of it (`run_attempt`): a
+ * re-run keeps the run's id, and a delivery for an earlier attempt (a late one, or one an operator
+ * redelivered by hand) must not finish the new one.
+ *
+ * ⛔ A LIST MISSING A RUN ALREADY KNOWN ON THE HEAD IS A FAILED READ (card#12197). GitHub has
+ * answered a head with eight runs with one run, or none ({@see partialList()}). A run a commit
+ * started that an earlier complete read of the head counted (`known_run_ids`), that a
+ * `workflow_run` delivery reported (`requested` and `in_progress` included), or that this read's
+ * own delivery names, and that the list does not carry, makes the read partial: nothing is
+ * settled, the error is recorded, and the sweep reads the head again — unless GitHub answers 404
+ * for that run, which is then gone ({@see goneRuns()}, at most {@see MISSING_RUNS_LOOKED_UP} looked
+ * up per read). `known_run_ids` is merged under a lock on the head's await rows, and a read is
+ * judged against the merged set, so overlapping reads cannot shrink it or pass on a stale snapshot
+ * ({@see recordKnownRuns()}). The delivered run is never
+ * ADDED to a list that lacks it — that is how an empty list settled GREEN on the one run just
+ * delivered (rt#590). ⚠ What the bridge was never told of it cannot miss: a run no read listed and
+ * no delivery reported is outside this guard.
  *
  * ⚠ A RATE-LIMITED HEAD IS NOT READ BEFORE ITS RESET. A read that GitHub refused as rate limited and
  * that named when the quota returns records it as `retry_not_before`; until then no read of that
@@ -151,6 +163,13 @@ final class CiAwaitService
 
     /** The rate-limiter key prefix of a seat's registration reads; `bridge:check` probes the same store. */
     public const SEAT_READ_LIMITER_PREFIX = 'ci-await-seat-reads:';
+
+    /**
+     * At most this many runs already known on a head and missing from its list are looked up one by
+     * one in a read ({@see goneRuns()}) — one GitHub request each — to tell a deleted run from a
+     * partial list (card#12197). More missing is a partial list without a lookup.
+     */
+    public const MISSING_RUNS_LOOKED_UP = 3;
 
     /** How a failed run-list read is named in its error ({@see githubRead()}). */
     private const RUNS_READ = 'the workflow-run read';
@@ -644,8 +663,14 @@ final class CiAwaitService
 
             return ['retry_not_before' => Carbon::instance($limiting->retry_not_before), 'unconfirmed' => $limiting->unconfirmed_status !== null] + self::noRead();
         }
+        $known = self::knownRunIds($repoName, $headSha, $awaits, $deliveredRun);
         try {
             $runs = $this->readRuns($repoName, $headSha);
+            // Judged on the list AS GITHUB ANSWERED IT, before the overlay: the delivered run is a
+            // known run, so a list that does not carry it is partial (card#12197).
+            $listed = array_column(HeadRuns::ofCommit($runs)->runs, 'id');
+            $gone = self::goneRuns($repoName, $headSha, array_values(array_diff($known, $listed)));
+            self::recordKnownRuns($awaits, $known, $gone, $listed, $repoName, $headSha);
             if ($deliveredRun !== null) {
                 $runs = self::overlay($runs, $deliveredRun);
             }
@@ -693,6 +718,133 @@ final class CiAwaitService
         return ['runs' => $head->runs, 'error' => null, 'all_terminal' => $allTerminal, 'retry_not_before' => null, 'read' => true, 'emit_failed' => $emitFailed, 'unreadable' => null, 'unconfirmed' => false];
     }
 
+    /**
+     * The ids of the runs a commit started that are already KNOWN on the head (card#12197): every
+     * one a complete read for any of `$awaits` counted ({@see CiAwait::$known_run_ids}), and every
+     * one a `workflow_run` delivery reported ({@see CiHeadRunTracker} — `requested` and
+     * `in_progress` as well as `completed`), and the run this read was made for, `$deliveredRun` —
+     * already tracked unless that write failed — each filtered by {@see HeadRuns::ofCommit()}, the
+     * same rule the settle applies, so a nightly run is never held against a list the settle would
+     * not count it in.
+     *
+     * @param  Collection<int, CiAwait>  $awaits
+     * @param  ?array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}  $deliveredRun
+     * @return list<int>
+     */
+    private static function knownRunIds(string $repoName, string $headSha, Collection $awaits, ?array $deliveredRun): array
+    {
+        $tracked = CiHeadRunTracker::runsOf($repoName, $headSha);
+        if ($deliveredRun !== null) {
+            $tracked[] = $deliveredRun + ['status' => 'completed'];
+        }
+        $ids = array_column(HeadRuns::ofCommit($tracked)->runs, 'id');
+        foreach ($awaits as $await) {
+            array_push($ids, ...array_map('intval', $await->known_run_ids ?? []));
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    /**
+     * Of the runs already known on the head that this read's list omits, the ones GitHub says are
+     * GONE — the run read answers 404: deleted in the UI, by `gh run delete`, or by a retention job.
+     * A gone run is no run of the head any more, so it does not make the list partial.
+     *
+     * ⛔ EVERY OTHER ANSWER FAILS CLOSED (card#12197). A missing run GitHub still has (any 200) or
+     * that could not be read leaves the list partial: {@see partialList()}, or the run read's own
+     * failure. More than {@see MISSING_RUNS_LOOKED_UP} missing is not looked up one by one at all: it
+     * bounds what one read of the head costs, and a list missing that many is the partial answer
+     * GitHub was seen to give (rt#590: seven of eight), not a cleanup.
+     *
+     * @param  list<int>  $missing
+     * @return list<int> the missing runs that are gone
+     *
+     * @throws CiRunsReadException when a missing run is not shown to be gone
+     */
+    private static function goneRuns(string $repoName, string $headSha, array $missing): array
+    {
+        if ($missing === []) {
+            return [];
+        }
+        if (count($missing) > self::MISSING_RUNS_LOOKED_UP) {
+            throw self::partialList($repoName, $headSha, $missing, 'more than '.self::MISSING_RUNS_LOOKED_UP.' are missing, so none was looked up');
+        }
+        $gone = [];
+        $present = [];
+        foreach ($missing as $runId) {
+            $sha = self::githubRead($repoName, "the read of run {$runId}", static fn (GitHubReadClient $client): ?string => $client->workflowRunHeadSha($repoName, $runId));
+            if ($sha === null) {
+                $gone[] = $runId;
+            } else {
+                $present[] = $runId;
+            }
+        }
+        if ($present !== []) {
+            throw self::partialList($repoName, $headSha, $present, 'GitHub still has each of them');
+        }
+
+        return $gone;
+    }
+
+    /**
+     * Merge this read into what every await on the head already knows, and judge the read against
+     * the MERGED set — both under a lock on the head's await rows (card#12197).
+     *
+     * ⛔ `$known` IS A SNAPSHOT taken before the GitHub read, which is slow. A read of the same head
+     * that answered meanwhile may have recorded more runs; judging this read on the snapshot alone,
+     * and writing the snapshot plus this list over the column, let a list that omits them pass and
+     * then erase them, and a third read of that short list settle (review of PR #969). So the rows
+     * are locked, their CURRENT `known_run_ids` are read, a run there that this list omits — and that
+     * this read did not find gone — makes it a partial list (thrown, rolling the transaction back),
+     * and the column is written as the union: overlapping reads merge, and the set only grows, except
+     * by a run found gone.
+     *
+     * @param  Collection<int, CiAwait>  $awaits
+     * @param  list<int>  $known
+     * @param  list<int>  $gone
+     * @param  list<int>  $listed
+     *
+     * @throws CiRunsReadException naming the runs the list omits
+     */
+    private static function recordKnownRuns(Collection $awaits, array $known, array $gone, array $listed, string $repoName, string $headSha): void
+    {
+        $awaitIds = $awaits->modelKeys();
+        DB::transaction(static function () use ($awaitIds, $known, $gone, $listed, $repoName, $headSha): void {
+            $current = $known;
+            foreach (CiAwait::query()->whereKey($awaitIds)->lockForUpdate()->get(['id', 'known_run_ids']) as $await) {
+                array_push($current, ...array_map('intval', $await->known_run_ids ?? []));
+            }
+            $current = array_values(array_diff(array_unique($current), $gone));
+            $missing = array_values(array_diff($current, $listed));
+            if ($missing !== []) {
+                throw self::partialList($repoName, $headSha, $missing, 'another read of the head recorded some of them while this one was reading');
+            }
+            $merged = array_values(array_unique([...$current, ...$listed]));
+            sort($merged);
+            CiAwait::query()->whereKey($awaitIds)->update(['known_run_ids' => json_encode($merged, JSON_THROW_ON_ERROR)]);
+        });
+    }
+
+    /**
+     * ⛔ A LIST THAT OMITS A RUN ALREADY KNOWN ON THE HEAD IS PARTIAL, NOT SETTLED (card#12197).
+     * GitHub's `actions/runs?head_sha=` has answered a head whose eight runs exist with one run, and
+     * with none (rt#590), and that list is self-consistent — its `total_count` matches its rows — so
+     * {@see GitHubReadClient::workflowRunsForHead()} cannot tell. The one-run list was complete and
+     * green by {@see HeadRuns::settled()}, and the await was settled while seven runs were queued. A
+     * run leaves a head's list when it is deleted, which {@see goneRuns()} asks GitHub about; any
+     * other known run missing is a failed read: retryable, recorded, and read again by the sweep —
+     * {@see evaluate()}'s failed-read path, never a settle.
+     *
+     * @param  list<int>  $missing
+     */
+    private static function partialList(string $repoName, string $headSha, array $missing, string $why): CiRunsReadException
+    {
+        sort($missing);
+        $named = implode(', ', array_map(static fn (int $id): string => "run {$id}", array_slice($missing, 0, 5))).(count($missing) > 5 ? ', …' : '');
+
+        return new CiRunsReadException("the workflow-run list for {$repoName}@{$headSha} omits ".count($missing)." run(s) already known on this head ({$named}) from an earlier read of it or a workflow_run delivery — {$why} — so it is a partial list and whether every run is terminal is unknown; read again");
+    }
+
     /** @return array{runs: null, error: null, all_terminal: false, retry_not_before: null, read: false, emit_failed: list<int>, unreadable: null, unconfirmed: false} */
     private static function noRead(): array
     {
@@ -732,10 +884,16 @@ final class CiAwaitService
 
     /**
      * The list as it stands once the delivered run is known to be completed: its row is marked
-     * completed (taking the delivery's conclusion where the list has none), or appended when the
-     * list does not carry it yet. A listed row whose `run_attempt` is LATER than the delivered one,
-     * or where either attempt is unknown, is left as listed: the delivery may be for an earlier
-     * attempt of a run that has since been re-run.
+     * completed (taking the delivery's conclusion where the list has none). A listed row whose
+     * `run_attempt` is LATER than the delivered one, or where either attempt is unknown, is left as
+     * listed: the delivery may be for an earlier attempt of a run that has since been re-run.
+     *
+     * ⛔ A DELIVERED RUN THE LIST DOES NOT CARRY IS NOT ADDED (card#12197). A run a commit started is
+     * refused before this as a partial list unless GitHub says it is gone ({@see partialList()},
+     * {@see goneRuns()}); one no commit started is
+     * not counted by the settle either way. Appending it is how an EMPTY list read for a delivery
+     * became a one-run list — the delivered run, completed — and settled GREEN with the head's
+     * other runs still queued (rt#590).
      *
      * @param  list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
      * @param  array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}  $delivered
@@ -754,7 +912,6 @@ final class CiAwaitService
                 return $runs;
             }
         }
-        $runs[] = $delivered + ['status' => 'completed'];
 
         return $runs;
     }
