@@ -31,7 +31,8 @@ use Illuminate\Support\Carbon;
  *
  * ⛔ SETTLED IS ONLY AS COMPLETE AS THE LIST IT JUDGES (card#11938). Over GitHub's own run list
  * (`ci_await`) it says every run a commit started on the head is terminal — and `ci_await` reads
- * each deciding run's jobs before it believes that (card#12072); over the runs the bridge was told of
+ * each deciding run's jobs before it believes that (card#12072), and refuses a list that omits a run
+ * it already knows on the head as partial before it judges one (card#12197); over the runs the bridge was told of
  * (the per-head aggregate) it says only that those are — a workflow still queued that no delivery
  * has reported is not in that list. The payload's `basis` names which list it judged, and only a
  * GitHub read carries `all_terminal: true`.

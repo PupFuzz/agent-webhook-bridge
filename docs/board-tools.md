@@ -2153,8 +2153,16 @@ The answer:
 least one await, the bridge makes **one** read — `GET /repos/{repo}/actions/runs?head_sha=<sha>`,
 walked page by page to the end of the list — after the delivery has been answered. The run that
 delivery reports is counted as completed, with its conclusion, even when the list still shows it
-running or does not show it yet: the list API can lag the webhook, and a last run lost that way
-would strand the wait until it expired. ⚠ **Except a later attempt:** a re-run keeps the run's id
+running: the list API can lag the webhook. ⛔ **A list that does not carry a run already known on
+the head is partial, and a failed read** (card#12197 / DL-492): GitHub's head-SHA list has answered
+a head whose eight runs existed with none, and with one, each self-consistent (its `total_count`
+matched its rows). A run is known when an earlier complete read of the head counted it (kept on the
+await, `known_run_ids`), when a `workflow_run` delivery reported it (`requested` and `in_progress`
+included), or when it is the run this delivery reports — so the delivered run is never added to a
+list that lacks it, and nothing settles on it alone. Such a read sends nothing and is recorded like
+any failed read (*Read failures*); the sweep reads the head again. ⚠ A run the bridge was never told
+of — no read listed it, no delivery reported it — cannot be missed, so a short list can still settle
+then. ⚠ **Except a later attempt:** a re-run keeps the run's id
 and raises its `run_attempt`, so when the list shows a LATER attempt than the delivery reports (a
 late delivery, or one an operator redelivered by hand from the webhook's settings), or either
 attempt is unknown, the list's row stands. ⛔ **Only the runs a commit started are judged** —
@@ -2242,7 +2250,7 @@ neither header, and then it waits at least a minute; the body is read for that t
 any other status but those below (on a run's jobs read, a `404` too), no answer, a
 read token THIS process could not read or determine (the sweep can run from `bridge:tick` as another
 OS user than the receiver's), a 200 whose body is not a run list (or a job list), a list that does not end within the
-read's page bound, or a list that changed between pages — on the run list or on a deciding run's jobs (*Jobs* above) — **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
+read's page bound, a list that changed between pages — on the run list or on a deciding run's jobs (*Jobs* above) — or a run list that omits a run already known on the head (*How it settles* above) **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
 logged naming it, and the head is read again on its next completed run and by the sweep. A
 rate-limited read that names when its quota returns records that instant on every await on the head, and **no read of that head is made before it** — not
 by a delivery, a registration or the sweep; the error says until when, and a registration in that
