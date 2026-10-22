@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.106.1] - 2026-10-22
+
 ### Fixed
 
 - **card#12144** — **npm/fast-uri 3.1.8 → 3.1.9 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk → ajv; repository advisories GHSA-333x-w4r6-6crp, GHSA-wjr9-j795-jxcr, GHSA-xhq7-xmqj-769h and GHSA-w74x-v6f9-j3xg on fastify/fast-uri, each patched in 3.1.9). The daily dependency advisory ref matrix was red on `main` and `dev` on them. 3.1.9 is in range for ajv's `^3.0.1`, so `npm update fast-uri` sufficed and no override was added. Channel-server snapshot 0.9.70 → 0.9.71.
