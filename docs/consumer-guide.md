@@ -105,7 +105,8 @@ is *superseded*: it holds nothing open and decides nothing. Two senders:
 
 - **Your `ci_await`** — for a head you registered; decided on a read of GitHub's run list
   (`basis: "github_read"`), over the runs a COMMIT started only — `push` and `pull_request`; a
-  `schedule` or `workflow_dispatch` run on the head is not judged and not listed (card#11958 / DL-485;
+  `schedule` or `workflow_dispatch` run on the head is not judged and not listed (card#11958 / DL-485),
+  and sent only once every job of each deciding run reads `completed` too (card#12072;
   [`board-tools.md`](board-tools.md) § *`ci_await` and `ci_await_cancel`* owns the rule). One terminal event per await, and while you hold the await it is the only
   `ci_settled` you get for that head (card#11938) — except for an await registered while a delivery is settling the head, whose seat can still be sent the aggregate's event, saying `basis: "delivered_runs"`.
 - **The per-head aggregate** — sent to an agent whose `impl-ci-wake` family stages CI
@@ -145,23 +146,24 @@ the base branch's required contexts — run `ci-read` once on the head before ac
 | `repo`, `head_sha`, `pr` | the head; `pr` as registered for an await (null when none was given), and for the aggregate the PR the runs' deliveries named, else null |
 | `basis` | which run list was judged: `github_read` (your `ci_await` read GitHub's list for the head) or `delivered_runs` (the per-head aggregate judged the runs `workflow_run` deliveries reported — a run not yet delivered is not in it) |
 | `runs` | every run seen on the head — on `basis: github_read`, every run a commit started (`push`, `pull_request`) — each `{workflow, conclusion, html_url, superseded}` — `workflow` is the run's workflow name, `conclusion` GitHub's string for it, `superseded` true for a run a newer run of its workflow decides instead |
-| `all_terminal` | `true` on `basis: github_read` — every run GitHub lists for the head that a commit started is terminal; `null` on `basis: delivered_runs` — not known, since no full list was read (it was `true` on both before card#11938) |
+| `all_terminal` | `true` on `basis: github_read` — every run GitHub lists for the head that a commit started is terminal, and every job of each deciding run (card#12072); `null` on `basis: delivered_runs` — not known, since no full list was read (it was `true` on both before card#11938) |
 | `runs_verdict` | `green` when every deciding run concluded `success`, `neutral` or `skipped` (`ci-read`'s `BENIGN_CONCLUSIONS`), else `red` — a `cancelled` run with no newer run of its workflow is red, as is a conclusion GitHub adds later |
 | `non_success_runs` | each deciding run whose conclusion is neither `success` nor `skipped`, `{workflow, conclusion, html_url}` — what a red `ci_settled` asks you to look at; the `summary` names them with their urls too |
 | `measured_at` | when the bridge read the run list, or decided the aggregate (UTC, milliseconds) |
 
 There is no `late_runs_possible` key; board-tools.md § *Limits* says why.
 
-**`ci_await_expired`** (card#11200 / DL-452) — the await reached its expiry before every run was seen
-terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` or `ci_await_unreadable` for the same await. `subject_id` as above.
+**`ci_await_expired`** (card#11200 / DL-452) — the await reached its expiry before every run, and every
+job of each deciding run (card#12072), was seen terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` or `ci_await_unreadable` for the same await. `subject_id` as above.
 `payload`:
 
 | key | meaning |
 |---|---|
 | `repo`, `head_sha`, `pr` | the awaited head |
 | `registered_at`, `expires_at` | when the await was first stored, and when it expired (UTC, milliseconds) |
-| `last_read_at` | when the bridge last read the run list for it, or null if it never did |
-| `last_error` | why that last read failed, or null when it answered — a null here with a non-null `last_read_at` means CI was still running at that read |
+| `last_read_at` | when the bridge last read the head for it — its run list, and once that read settled, its deciding runs' jobs — or null if it never did |
+| `last_error` | why that last read failed — the run list's read or a deciding run's jobs read, which the error names — or null when it answered; a null here with a non-null `last_read_at` means CI was still running at that read |
+| `open_jobs` | when that last read found every deciding run completed but a job still open (card#12089): `{count, first: {workflow, run_id, html_url, job, status}}` — how many jobs were open, and the first, with its run's url; null when it found none, read no jobs, or failed. The `summary` names that job. Lines written before card#12089 do not carry the key |
 
 **`ci_await_overdue`** (card#11674 / DL-471) — the await passed its overdue deadline (`overdue_at`,
 the repo's normal CI time or the seat's own `overdue_after_seconds`; board-tools.md § *Overdue* owns how
@@ -175,7 +177,7 @@ line `id` `ci_await_overdue:<uuid>`), never after the await's ending event. `sub
 | `repo`, `head_sha`, `pr` | the awaited head |
 | `registered_at`, `overdue_at`, `expires_at` | when the await was first stored, when it became overdue, and when it will expire (UTC, milliseconds) |
 | `overdue_basis` | `history`, `default` or `override` — where `overdue_at` came from |
-| `last_read_at`, `last_error` | as on `ci_await_expired` |
+| `last_read_at`, `last_error`, `open_jobs` | as on `ci_await_expired` |
 | `runs_seen` | what the bridge last saw: each run its `workflow_run` deliveries reported for the head, `{workflow, status, conclusion, html_url}` — empty when none reached it, null when they could not be read; the `summary` names the runs still open |
 
 **`ci_await_unreadable`** (card#11600) — a read of the head's runs said this bridge cannot read the

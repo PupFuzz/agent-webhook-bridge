@@ -29,6 +29,7 @@ use Illuminate\Support\Str;
  * @property Carbon|null $overdue_at
  * @property string|null $overdue_basis
  * @property Carbon|null $overdue_sent_at
+ * @property array{count: int, first: array{workflow: string, run_id: int, html_url: string, job: string, status: string}}|null $open_jobs
  */
 class CiAwait extends Model
 {
@@ -49,6 +50,7 @@ class CiAwait extends Model
         'overdue_at',
         'overdue_basis',
         'overdue_sent_at',
+        'open_jobs',
     ];
 
     protected $casts = [
@@ -60,6 +62,7 @@ class CiAwait extends Model
         'emit_failed_at' => 'datetime',
         'overdue_at' => 'datetime',
         'overdue_sent_at' => 'datetime',
+        'open_jobs' => 'array',
     ];
 
     /** The row's identity across table recreation, minted at insert; `docs/board-tools.md` § `ci_await` defines its use as the inbox line id. */

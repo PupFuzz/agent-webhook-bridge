@@ -29,7 +29,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 | `board_get_card_comments` | read | **Read the comments on one card on YOUR board, newest first, a page at a time** (card#12010 / DL-490) — the way to read back results recorded with `board_comment_card`. Any card on your board, live or archived, in any lane; each comment carries its kanban author's user id, its time, its body, and `writer`: the seat the bridge's `FROM: <seat>` first line names — **only on a comment the bridge's writeback user wrote**, else `null`. `since` returns only newer comments. A read that failed is **refused with a reason**, never answered as "no comments". |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none` / `unrouted` — the unassigned cards in no home lane, the PM's routing queue, card#11267) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused — except `unrouted`'s unassigned test, which the board has no term for and the bridge applies to the rows it returns; the window says `total`, `truncated` and `total_is_lower_bound`. |
-| `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA that a commit started (`push`, `pull_request`) is terminal, you get ONE `ci_settled` event on your channel — a `schedule` or `workflow_dispatch` run on the same SHA neither holds it open nor turns it red (card#11958 / DL-485); if that does not happen before the wait expires, ONE `ci_await_expired`. If it has not happened by the repo's normal CI time (`overdue_at` in the answer — derived from the repo's recent heads, or yours via `overdue_after_seconds`), you get ONE `ci_await_overdue` first and the wait stays (card#11674 / DL-471): that event, not polling, is your cue to check CI by hand. A repo the operator declared to have no CI is refused (`repo_not_ci`, card#11696). A repo this bridge's GitHub token cannot read is refused (`repo_unreadable`), and a wait whose later read finds that ends with ONE `ci_await_unreadable` (card#11600; a `401` or `403` must be confirmed by a second read first). **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
+| `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA that a commit started (`push`, `pull_request`) is terminal — and every job of each with it (card#12072) — you get ONE `ci_settled` event on your channel — a `schedule` or `workflow_dispatch` run on the same SHA neither holds it open nor turns it red (card#11958 / DL-485); if that does not happen before the wait expires, ONE `ci_await_expired`. If it has not happened by the repo's normal CI time (`overdue_at` in the answer — derived from the repo's recent heads, or yours via `overdue_after_seconds`), you get ONE `ci_await_overdue` first and the wait stays (card#11674 / DL-471): that event, not polling, is your cue to check CI by hand. A repo the operator declared to have no CI is refused (`repo_not_ci`, card#11696). A repo this bridge's GitHub token cannot read is refused (`repo_unreadable`), and a wait whose later read finds that ends with ONE `ci_await_unreadable` (card#11600; a `401` or `403` must be confirmed by a second read first). **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
 | `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it. Never touches another seat's. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
@@ -2131,10 +2131,12 @@ The answer:
 }
 ```
 
-- **`settled`** — every run was already terminal, or a concurrent read settled your await while you
+- **`settled`** — every run, and every job of each, was already terminal, or a concurrent read settled your await while you
   registered: `ci_settled` has been sent to you and nothing is stored.
 - **`waiting`** — stored; at least one run is not finished, **or there are no runs yet** (CI not
-  queued yet looks exactly like that, so an empty list is never treated as settled). A head whose
+  queued yet looks exactly like that, so an empty list is never treated as settled), or every run
+  reads `completed` but a job of one does not yet (card#12072) — then `runs_completed` equals
+  `runs_total` and the state is still `waiting`. A head whose
   only runs are `schedule` or `workflow_dispatch` runs has no run a commit started, so it is the
   same: it waits, and `ci_await_overdue` and then `ci_await_expired` end it unless a commit's run
   appears (card#11958).
@@ -2164,8 +2166,10 @@ the summary counts how many were left out. Dropped first, so a workflow that run
 `schedule` is decided by its push run, not by the newer nightly one. When the head is **settled** —
 at least one such run, and the LATEST run of every workflow (by `workflow_id`, ranked by `run_number` then id, as `ci-read` ranks
 them) has `status: completed`; an older run of a workflow with a newer run on the head is superseded
-and holds nothing open — every seat awaiting that head gets **one** `ci_settled` and its await is
-deleted. `App\Bridge\CiAwait\HeadRuns` is that predicate, and the per-head aggregate (below) uses it too. ⛔ **A list that moved
+and holds nothing open — the bridge then reads **each deciding run's jobs** (*Jobs* below), and only
+when every job of every deciding run reads `completed` too does every seat awaiting that head get
+**one** `ci_settled`, its await deleted. `App\Bridge\CiAwait\HeadRuns` is the run predicate, and the
+per-head aggregate (below) uses it too, without the jobs read. ⛔ **A list that moved
 while it was read is not an answer:** pages are separate requests, and a run created or deleted
 between them shifts rows across a page boundary (a duplicate can fill the count while a new,
 unfinished run is never seen). Runs are keyed by id, and the read fails unless every page reported
@@ -2179,6 +2183,30 @@ emit first deletes its await row in a transaction and only the one whose delete 
 The same claim decides between a settle, an unreadable repo and an expiry, so an await gets exactly one of them.
 ⚠ **A delivery's read settles only the awaits it loaded before reading**, so an await stored while it
 read — or one whose own registration read saw a list that still lagged — is left for the sweep.
+
+**Jobs (card#12072).** A run can read `completed` in the run list while its own jobs read —
+`GET /repos/{repo}/actions/runs/{id}/jobs`, GitHub's default `filter=latest`, the read `ci-read`
+grades — still lists a job `in_progress`: reported on rt#638 from the Actions API, a run read `completed` / `success`
+while its `semgrep` job ran for two and a half minutes more, and the seat was sent a green
+`ci_settled` it could never get a follow-up to. So once the run list says a head is settled, the
+bridge reads every deciding run's jobs, walked to the end of each list (one request per 100 jobs)
+and checked exactly as the run list is: pages that do not report one `total_count`, distinct jobs
+that do not add up to it, or — after more than one page — a page 1 that no longer lists the same
+jobs when read again fail the read. That re-read is what catches a run re-run between two page
+reads (card#12088): its later pages then come from the new attempt while page 1 came from the old
+one, with the count unchanged. A job in any status but `completed` keeps every await on the head **waiting**, with no
+event; the read records on each of those awaits what it found open (`open_jobs`: how many, and the
+first one's job, status, workflow and run — card#12089), and `ci_await_overdue` and
+`ci_await_expired` carry it and name it in their summary, so a wait held by a job is not reported as
+one held by a run or by a failed read. The record is the last read's: one that finds no job open,
+or that fails, clears it. Nothing else is delivered for that run — it already said `completed` — so the **sweep's**
+next read of the head is what settles it once the job finishes: up to one sweep interval later
+(*The sweep* below). A head the run list holds open is not read for jobs at all. A jobs read that
+fails is a failed read (*Read failures*), except that a `404` there never ends a wait as
+unreadable: the same token has just listed the run, so the repo is readable, and the read is retried. Why GitHub reports a run
+complete before its job is **not established here**: no `run_attempt`, `updated_at` or job payload
+from that run was available to the bridge, and GitHub's REST description says nothing of an order
+between the two reads.
 
 **The authoritative verdict is `ci-read`'s.** `ci_settled` carries a RUN-LEVEL `runs_verdict`
 (card#11667 / DL-470): `green` when every deciding run concluded `success`, `neutral` or `skipped`
@@ -2211,10 +2239,10 @@ one (a re-run, a late run) is.
 **Read failures.** A read that fails — a rate limit (a 429, or a 403 with `X-RateLimit-Remaining: 0`
 or with `Retry-After`, or whose body's message names a rate limit: GitHub's secondary limit can carry
 neither header, and then it waits at least a minute; the body is read for that test and never printed),
-any other status but those below, no answer, a
+any other status but those below (on a run's jobs read, a `404` too), no answer, a
 read token THIS process could not read or determine (the sweep can run from `bridge:tick` as another
-OS user than the receiver's), a 200 whose body is not a run list, a list that does not end within the
-read's page bound, or a list that changed between pages — **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
+OS user than the receiver's), a 200 whose body is not a run list (or a job list), a list that does not end within the
+read's page bound, or a list that changed between pages — on the run list or on a deciding run's jobs (*Jobs* above) — **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
 logged naming it, and the head is read again on its next completed run and by the sweep. A
 rate-limited read that names when its quota returns records that instant on every await on the head, and **no read of that head is made before it** — not
 by a delivery, a registration or the sweep; the error says until when, and a registration in that
@@ -2279,7 +2307,7 @@ in each case no further event touches the await. So the `ci-await-sweep` periodi
 the first registration, is **level-triggered** — each pass first reads up to
 `BRIDGE_CI_AWAIT_SWEEP_READS` (default 10) unexpired heads whose **oldest** read is at least one sweep
 interval old (or that were never read), oldest first, skipping a head that is rate limited, and
-settles every await on a head it finds all terminal; then it sends `ci_await_overdue` once per await
+settles every await on a head it finds all terminal, jobs included; then it sends `ci_await_overdue` once per await
 past its overdue deadline (up to 50 a pass); then it emits `ci_await_expired` once per await
 past its expiry. A head is read once per pass however many seats await it. Deliveries, the read
 cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
@@ -2294,7 +2322,7 @@ while the await is held (card#11938), except for an await registered while a del
 (its line id is `ci_await:<uuid>` for EVERY terminal kind the await itself emits — the per-head aggregate's own `ci_settled` carries its own id, above — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
 written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
 it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the
-wake on each. Once every run on a head is terminal, `ci_settled` comes at the latest from the first
+wake on each. Once every run on a head, and every job of each deciding run, is terminal, `ci_settled` comes at the latest from the first
 sweep pass that starts at least one sweep interval after the head's oldest read (at once, when no await on it was ever read) — later by one pass
 for every `BRIDGE_CI_AWAIT_SWEEP_READS` eligible heads ahead of it — provided the sweep runs. An event
 that cannot be written to your inbox keeps the await, logged naming you and shown by `bridge:check`,
@@ -2329,10 +2357,13 @@ whose channel was down (*What a seat can rely on* above). `subject_id` is `ci:<r
   can see some runs finished and others absent; it settles only when what is listed is all terminal.
 - ⚠ **A list that keeps moving.** On a head whose runs are created or deleted during every read, each
   read fails as inconsistent and the await waits for the next delivery or sweep read. No case of it is
-  measured. Taken from GitHub's REST documentation, not checked: that `total_count` counts exactly
-  what the pages carry, and that a new run is listed first (newest first), which is what the page-1
-  re-read relies on. A single-page list is checked only against its own `total_count`, and a run
-  created after the page-1 re-read is one the read did not see, like one created just after it.
+  measured. A deciding run's jobs list is checked the same way (one walk, `GitHubReadClient::wholeList`),
+  so a run re-run during every read fails the same way. Taken from GitHub's REST documentation or
+  behaviour, not checked: that `total_count` counts exactly what the pages carry, that a new run is
+  listed first (newest first), and that a re-run attempt's jobs carry ids page 1 did not, which is
+  what the page-1 re-read relies on. A single-page list is checked only against its own
+  `total_count`, and a run created after the page-1 re-read is one the read did not see, like one
+  created just after it.
 - ⚠ **The per-seat cap is soft under concurrency** (step 2 above).
 - ⚠ **Only a rate limit that names its reset is waited out.** One without either header is read
   again at the next delivery or sweep pass.
@@ -2343,8 +2374,11 @@ whose channel was down (*What a seat can rely on* above). `subject_id` is `ci:<r
 per completed run on an awaited head, and the sweep's: at most `BRIDGE_CI_AWAIT_SWEEP_READS` × 3600 /
 the `ci-await-sweep` interval (seconds) head reads per hour, install-wide — a head counts once however
 many seats await it, and one read within the interval is not repeated. Each read is one request per
-100 runs, plus one more for the page-1 re-read when the list spans more than one page. Nothing for
-heads nobody awaits.
+100 runs, plus one more for the page-1 re-read when the list spans more than one page — and, only on
+a read that finds the run list settled, one request per 100 jobs of each deciding run (card#12072),
+plus the same page-1 re-read for a run of more than 100 jobs (card#12088), so a head of K deciding
+runs costs at least K more requests on the read that settles it, and again on each read that finds
+the run list settled and a job still open. Nothing for heads nobody awaits.
 
 ## Errors
 

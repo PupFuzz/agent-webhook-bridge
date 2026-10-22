@@ -53,6 +53,9 @@ class CiAwaitOverdueTest extends TestCase
     /** What the faked runs read reports for the awaited head's one run. */
     private string $runStatus = 'in_progress';
 
+    /** What the faked jobs read reports for that run's one job, `build`. */
+    private string $jobStatus = 'completed';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -73,7 +76,11 @@ class CiAwaitOverdueTest extends TestCase
             'bridge.ci_await.read_cooldown' => 0,
         ]);
         Http::fake([
-            'api.github.com/repos/octo/widgets/actions/runs*' => fn () => Http::response(['total_count' => 1, 'workflow_runs' => [[
+            // The run's job is finished unless a test says otherwise (card#12072, card#12089).
+            'api.github.com/repos/octo/widgets/actions/runs/*/jobs*' => fn () => Http::response(['total_count' => 1, 'jobs' => [[
+                'id' => 1001, 'name' => 'build', 'status' => $this->jobStatus, 'conclusion' => $this->jobStatus === 'completed' ? 'success' : null,
+            ]]]),
+            'api.github.com/repos/octo/widgets/actions/runs?*' => fn () => Http::response(['total_count' => 1, 'workflow_runs' => [[
                 'id' => 1, 'name' => 'CI', 'workflow_id' => 77, 'run_number' => 1, 'head_sha' => self::SHA, 'status' => $this->runStatus,
                 'conclusion' => $this->runStatus === 'completed' ? 'success' : null, 'event' => 'pull_request', 'run_attempt' => 1,
                 'html_url' => 'https://github.com/octo/widgets/actions/runs/1',
@@ -186,6 +193,31 @@ class CiAwaitOverdueTest extends TestCase
 
         $this->assertSame(['ci_await_overdue'], $this->kinds());
         $this->assertNotNull(CiAwait::query()->sole()->overdue_sent_at);
+    }
+
+    /**
+     * card#12089: every run is completed and only a job holds the wait. The overdue event names the
+     * job the last read found open, and does not say no read has settled the head or that a run is open.
+     */
+    public function test_an_overdue_event_held_by_an_open_job_names_the_job(): void
+    {
+        $this->runStatus = 'completed';
+        $this->jobStatus = 'in_progress';
+        $this->trackSettledRun(1);
+        $this->assertSame('waiting', $this->register(['overdue_after_seconds' => 600])->body()['result']['state']);
+
+        $this->sweepAt('2026-10-10T10:10:00.000Z');
+
+        $this->assertSame(['ci_await_overdue'], $this->kinds());
+        $overdue = $this->inbox()[0];
+        $this->assertEquals(['count' => 1, 'first' => [
+            'workflow' => 'CI', 'run_id' => 1, 'html_url' => 'https://github.com/octo/widgets/actions/runs/1', 'job' => 'build', 'status' => 'in_progress',
+        ]], $overdue['payload']['open_jobs']);
+        $this->assertNull($overdue['payload']['last_error']);
+        $this->assertStringContainsString('every run and job', $overdue['summary']);
+        $this->assertStringContainsString('build (in_progress)', $overdue['summary']);
+        $this->assertStringNotContainsString('no read has settled', $overdue['summary']);
+        $this->assertStringNotContainsString('still open: W1', $overdue['summary']);
     }
 
     public function test_a_head_settled_once_and_then_re_run_gets_an_overdue_event_for_the_re_run(): void

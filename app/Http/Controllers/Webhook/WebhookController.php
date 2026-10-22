@@ -108,8 +108,9 @@ class WebhookController extends Controller
         $this->ciHeadRuns->record($provider, $event->eventType, $scopeId, $payload);
         $this->dispatcher->dispatch($provider, $scopeId, $event, $payload);
 
-        // A seat awaiting CI on this run's head is told once every run there is terminal
-        // (card#11200 / DL-452). Install-wide, after the response, and only for an awaited head.
+        // A seat awaiting CI on this run's head is told once CI there is finished — CiAwaitService
+        // owns what that means (card#11200 / DL-452). Install-wide, after the response, and only
+        // for an awaited head.
         $this->ciAwaitGate->schedule($provider, $event->eventType, $scopeId, $payload);
 
         // Only this path stores an event, so only this path can have grown the

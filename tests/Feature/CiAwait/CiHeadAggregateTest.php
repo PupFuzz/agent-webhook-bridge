@@ -430,7 +430,11 @@ class CiHeadAggregateTest extends TestCase
     private function fakeGitHub(): void
     {
         if ($this->github === null) {
-            Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => fn () => is_int($this->github) ? Http::response('unavailable', $this->github) : Http::response($this->github)]);
+            Http::fake([
+                // Every run's jobs are finished (card#12072): the await's jobs read is not this file's subject.
+                'api.github.com/repos/octo/widgets/actions/runs/*/jobs*' => Http::response(['total_count' => 1, 'jobs' => [['id' => 1001, 'name' => 'build', 'status' => 'completed', 'conclusion' => 'success']]]),
+                'api.github.com/repos/octo/widgets/actions/runs?*' => fn () => is_int($this->github) ? Http::response('unavailable', $this->github) : Http::response($this->github),
+            ]);
         }
     }
 

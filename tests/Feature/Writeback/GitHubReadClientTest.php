@@ -279,4 +279,73 @@ class GitHubReadClientTest extends TestCase
         $this->expectException(RequestException::class);
         (new GitHubReadClient('ghp_x'))->recentlyMergedPullRequests('o/r', 50);
     }
+    // ---- a run's jobs (card#12072) ------------------------------------------------------
+
+    /** @return list<array<string, mixed>> `$n` jobs numbered from `$from` */
+    private static function jobs(int $from, int $n, string $status = 'completed'): array
+    {
+        return array_map(static fn (int $i): array => ['id' => $i, 'name' => "job-{$i}", 'status' => $status], range($from, $from + $n - 1));
+    }
+
+    public function test_a_runs_jobs_are_read_to_the_last_page_of_its_latest_attempt(): void
+    {
+        Http::fake(['https://api.github.com/repos/o/r/actions/runs/5/jobs*' => Http::sequence()
+            ->push(['total_count' => 101, 'jobs' => self::jobs(1, 100)])
+            ->push(['total_count' => 101, 'jobs' => self::jobs(101, 1, 'in_progress')])
+            ->push(['total_count' => 101, 'jobs' => self::jobs(1, 100)])]);
+
+        $jobs = (new GitHubReadClient('ghp_x'))->workflowJobsForRun('o/r', 5);
+
+        $this->assertCount(101, $jobs);
+        $this->assertSame(['id' => 101, 'name' => 'job-101', 'status' => 'in_progress'], $jobs[100]);
+        Http::assertSent(fn (Request $r): bool => (string) $r['page'] === '2' && ! isset($r['filter']));
+        $this->assertCount(2, Http::recorded(fn (Request $r): bool => (string) $r['page'] === '1'), 'a walk of more than one page reads page 1 again (card#12088)');
+    }
+
+    public function test_job_pages_that_do_not_add_up_to_their_total_are_a_failed_read(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response(['total_count' => 2, 'jobs' => self::jobs(1, 1)])]);
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('reported total_count 2 and its pages carried 1 distinct job(s)');
+        (new GitHubReadClient('ghp_x'))->workflowJobsForRun('o/r', 5);
+    }
+
+    public function test_job_pages_whose_total_changes_between_pages_are_a_failed_read(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::sequence()
+            ->push(['total_count' => 101, 'jobs' => self::jobs(1, 100)])
+            ->push(['total_count' => 102, 'jobs' => self::jobs(101, 2)])]);
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('changed while it was being read');
+        (new GitHubReadClient('ghp_x'))->workflowJobsForRun('o/r', 5);
+    }
+
+    /**
+     * card#12088: a run of more than 100 jobs re-run between the page-1 and page-2 reads. GitHub's
+     * default `filter=latest` then answers page 2 from the new attempt, whose job count and therefore
+     * `total_count` match the old one, so the per-page total and the distinct count both hold while
+     * page 1's rows are the OLD attempt's — all finished, where the new attempt's page 1 still runs.
+     * Only reading page 1 again tells the two apart.
+     */
+    public function test_a_run_re_run_between_job_pages_is_a_failed_read_not_a_mix_of_two_attempts(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::sequence()
+            ->push(['total_count' => 150, 'jobs' => self::jobs(1, 100)])
+            ->push(['total_count' => 150, 'jobs' => self::jobs(251, 50)])
+            ->push(['total_count' => 150, 'jobs' => self::jobs(151, 100, 'in_progress')])]);
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('page 1, read again after the last page, no longer lists the same jobs');
+        (new GitHubReadClient('ghp_x'))->workflowJobsForRun('o/r', 5);
+    }
+
+    public function test_a_job_with_no_readable_status_is_a_failed_read(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response(['total_count' => 1, 'jobs' => [['id' => 1, 'name' => 'x']]])]);
+
+        $this->expectException(\UnexpectedValueException::class);
+        (new GitHubReadClient('ghp_x'))->workflowJobsForRun('o/r', 5);
+    }
 }

@@ -32,7 +32,9 @@ name: Channel-server supply chain
 #      on windows-latest: directory renames and the EPERM retry, the %TEMP% marker path,
 #      long node_modules paths, and the process.kill(pid, 0) liveness check the session
 #      guard rests on (card#10568, design §3.6). Only that file: the other suites drive a
-#      unix socket or a bash fake `ssh`, which have no Windows form.
+#      unix socket or a bash fake `ssh`, which have no Windows form. The same job parses the
+#      PowerShell launcher and runs tests/start-claude-tunnel-args.test.ps1, which starts the
+#      launcher's real tunnel-process code against a probe under a path with a space (card#12112).
 #
 # Cost-scoped on purpose: only fires when the example actually changes (PR path
 # filter) plus a weekly cron to catch newly-disclosed CVEs without a code change.
@@ -112,8 +114,7 @@ jobs:
       - name: Reproducible install
         run: npm ci --ignore-scripts
 
-      # The launcher's PowerShell half has no other automated check (card#11328): a parse
-      # error here is a seat that cannot start. Parse only — nothing is executed.
+      # A parse error here is a seat that cannot start (card#11328). Parse only — nothing is executed.
       - name: The PowerShell launcher and its compatibility stub parse
         shell: pwsh
         run: |
@@ -123,6 +124,20 @@ jobs:
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file).Path, [ref]$tokens, [ref]$errors)
             if ($errors) { $failed = $true; $errors | ForEach-Object { Write-Host "::error file=$file::$($_.Message) (line $($_.Extent.StartLineNumber))" } }
             else { Write-Host "$file parses" }
+          }
+          if ($failed) { exit 1 }
+
+      # Start-Process quotes none of -ArgumentList's elements, so a value with a space reached the
+      # hidden tunnel process split (card#12112). Run under both hosts the launcher can run in; the
+      # tunnel process it starts is powershell.exe either way.
+      - name: The launcher's tunnel process gets its arguments whole from a path with a space
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($exe in @('powershell.exe', 'pwsh')) {
+            Write-Host "== under $exe"
+            & $exe -NoProfile -ExecutionPolicy Bypass -File tests/start-claude-tunnel-args.test.ps1
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
           }
           if ($failed) { exit 1 }
 
