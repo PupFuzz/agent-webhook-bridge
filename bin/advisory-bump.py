@@ -536,6 +536,8 @@ def prior_decision(bump, same_branch_prs, open_prs):
     for pr in open_prs:
         head = pr.get("head", "")
         # The bare-version remainder is what keeps `express-rate-limit`'s branch out of `express`'s.
+        # It rests on branch versions being bare dotted numbers, which still_affected's refusal of an
+        # unorderable version guarantees; a prerelease version would slip past this check.
         if head.startswith(prefix) and VERSION_RE.fullmatch(head[len(prefix):]):
             return (f"another bump PR for {bump['package']} is open: #{pr['number']} ({pr['head']}) — one open bump "
                     "PR per package; close or update it")
