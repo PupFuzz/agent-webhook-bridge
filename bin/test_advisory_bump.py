@@ -6,9 +6,9 @@ become a PR, an empty audit output that must NOT read as "nothing to bump", a re
 NOT open a second PR, a missing token that must FAIL rather than skip or fall back.
 
 The plan cases run against a REAL temporary git repository (git is the boundary the branches are
-built on); only `npm` and `node` are replaced, by a shell that edits the fixture files the way
-`npm update` / `npm version` / the capabilities generator would. The open cases replace `gh` and
-`git push`, since those are the network.
+built on); `npm update`, `npm version` and the capabilities generator are replaced by `FakeTools`,
+whose edits are the test's input, not npm's. The open cases replace `gh` and `git push`, since those
+are the network.
 """
 
 import importlib.util
@@ -161,6 +161,29 @@ class InRange(unittest.TestCase):
         self.assertEqual(ab.dependency_path(lock, "body-parser"), ["@modelcontextprotocol/sdk", "express", "body-parser"])
 
 
+class Slug(unittest.TestCase):
+    NAMES = ["body-parser", "@scope/x", "scope-x", "scope--x", "scope__x", "scope_x", "@scope/x-y", "@scope-x/y",
+             "@a/b", "a--b", "a__b", "@a_/b", "a_5f__b", "lodash.merge", "a..b", "a._2eb", "JSONStream", "jsonstream",
+             "x~y", "x*y", "x(y)", "x!'y", "@hono/node-server", "hono-node-server", "hono"]
+
+    def test_no_two_packages_share_a_branch(self):
+        slugs = {}
+        for name in self.NAMES:
+            self.assertNotIn(ab.slug(name), slugs, f"{name} and {slugs.get(ab.slug(name))} share a branch")
+            slugs[ab.slug(name)] = name
+
+    def test_the_scope_stays_readable_and_a_plain_name_is_unchanged(self):
+        self.assertEqual(ab.slug("body-parser"), "body-parser")
+        self.assertEqual(ab.slug("lodash.merge"), "lodash.merge")
+        self.assertEqual(ab.slug("@hono/node-server"), "hono__node-server")
+
+    def test_every_branch_is_a_valid_git_ref(self):
+        for name in self.NAMES:
+            branch = f"{ab.BRANCH_PREFIX}{ab.slug(name)}-1.2.3"
+            rc = subprocess.run(["git", "check-ref-format", "--branch", branch], capture_output=True).returncode
+            self.assertEqual(rc, 0, f"{name} -> {branch} is not a valid branch name")
+
+
 class Changelog(unittest.TestCase):
     def test_the_bullet_goes_first_under_fixed_and_the_snapshot_line_moves(self):
         out = ab.edit_changelog(CHANGELOG, "- **npm/x 1 → 2** — b.", "0.9.73", "x", "1")
@@ -186,7 +209,12 @@ class Changelog(unittest.TestCase):
 
 
 class FakeTools(ab.Shell):
-    """Real git; `npm` and `node` edit the fixture files the way the real tools would."""
+    """Real git; `npm update`, `npm version` and `node bin/gen-client-capabilities.mjs` are faked.
+
+    The fake `npm update` sets the version the test names (`resolve_to`), so these cases test what
+    the tool does with npm's answer, never the answer: the in-range decision rests on npm's resolver,
+    which no test here runs.
+    """
 
     def __init__(self, resolve_to):
         self.resolve_to = resolve_to
@@ -349,6 +377,15 @@ class Open(unittest.TestCase):
         lines, _ = ab.open_bumps(gh, ".", PLAN, "tok", "o/r")
         self.assertIn("another bump PR for body-parser is open: #5", lines[0])
         self.assertFalse(any("push" in c for c in gh.calls))
+
+    def test_an_open_bump_of_a_package_whose_name_extends_this_one_is_not_this_package_s(self):
+        for other, pkg in (("express-rate-limit", "express"), ("@hono/node-server", "hono"), ("@hono/x", "hono")):
+            open_pr = {"number": 5, "head": f"{ab.BRANCH_PREFIX}{ab.slug(other)}-8.7.1", "url": "u"}
+            bump = dict(PLAN["bumps"][0], package=pkg, branch=f"{ab.BRANCH_PREFIX}{ab.slug(pkg)}-5.2.2")
+            self.assertIsNone(ab.prior_decision(bump, [], [open_pr]), f"{other}'s open PR blocked {pkg}")
+        same = {"number": 6, "head": f"{ab.BRANCH_PREFIX}{ab.slug('express')}-5.2.1", "url": "u"}
+        bump = dict(PLAN["bumps"][0], package="express", branch=f"{ab.BRANCH_PREFIX}{ab.slug('express')}-5.2.2")
+        self.assertIn("another bump PR for express is open: #6", ab.prior_decision(bump, [], [same]))
 
     def test_a_closed_bump_is_not_reopened(self):
         self.assertIn("closed without merging as #3",
