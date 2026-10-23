@@ -247,7 +247,22 @@ def lock_changes(before, after):
 
 
 def slug(package):
-    return re.sub(r"[^a-z0-9._-]+", "-", package.lower().lstrip("@")).strip("-")
+    """npm package name -> the name's part of its branch. Injective: two packages never share a branch.
+
+    `@scope/name` -> `scope__name`. Kept as written: a-z, 0-9, `-`, and a `.` that does not follow
+    another (`..` is not allowed in a git ref). Every other byte becomes `_` and two hex digits, so
+    `__` can only be the scope mark. `--` would not do: `a--b` is itself a valid npm name.
+    """
+    scope, _, name = package[1:].partition("/") if package.startswith("@") else ("", "", package)
+
+    def esc(text):
+        out = []
+        for ch in text:
+            keep = re.fullmatch(r"[a-z0-9-]", ch) or (ch == "." and not (out and out[-1] == "."))
+            out.append(ch if keep else "".join(f"_{b:02x}" for b in ch.encode("utf-8")))
+        return "".join(out)
+
+    return f"{esc(scope)}__{esc(name)}" if scope else esc(name)
 
 
 def group_candidates(rows, lock):
@@ -519,7 +534,11 @@ def prior_decision(bump, same_branch_prs, open_prs):
         return f"this exact bump was closed without merging as #{pr['number']}; not reopening it"
     prefix = f"{BRANCH_PREFIX}{slug(bump['package'])}-"
     for pr in open_prs:
-        if pr.get("head", "").startswith(prefix):
+        head = pr.get("head", "")
+        # The bare-version remainder is what keeps `express-rate-limit`'s branch out of `express`'s.
+        # It rests on branch versions being bare dotted numbers, which still_affected's refusal of an
+        # unorderable version guarantees; a prerelease version would slip past this check.
+        if head.startswith(prefix) and VERSION_RE.fullmatch(head[len(prefix):]):
             return (f"another bump PR for {bump['package']} is open: #{pr['number']} ({pr['head']}) — one open bump "
                     "PR per package; close or update it")
     return None
@@ -633,7 +652,7 @@ def main(argv=None, sh=None):
         lines, errors = [f"FAILED before any bump was tried: {exc}"], 1
     write_summary(summary, "## Advisory bump PRs\n\n" + "\n".join(lines) + "\n")
     if errors:
-        first = lines[0] if errors and len(lines) == 1 or not os.environ.get(TOKEN_ENV) else f"{errors} bump(s) failed to open"
+        first = lines[0] if (errors and len(lines) == 1) or not os.environ.get(TOKEN_ENV) else f"{errors} bump(s) failed to open"
         print(f"::error title=advisory bump::{first}")
         return 1
     return 0
