@@ -558,7 +558,9 @@ final class GitHubReadClient
      * owns the consistency checks. A non-2xx throws RequestException, like every read here.
      *
      * Each row carries the run's `run_attempt` (null when the body names none), so a caller can
-     * tell a delivery for an earlier attempt of a re-run from one for the attempt now listed.
+     * tell a delivery for an earlier attempt of a re-run from one for the attempt now listed. A row
+     * whose `head_sha` is not `$headSha` throws too (card#12197): the caller keeps every listed id
+     * as a run of that head.
      *
      * @return list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>
      */
@@ -571,6 +573,27 @@ final class GitHubReadClient
             "the workflow-run list for {$repo}@{$headSha}",
             'run',
         );
+    }
+
+    /**
+     * The `head_sha` of one workflow run (`GET /repos/{repo}/actions/runs/{id}`), or null when GitHub
+     * answers 404 — the run is gone (deleted in the UI, by `gh run delete`, or by a retention job).
+     * `ci_await` asks it of a run the head's list stopped carrying (card#12197). Any other non-2xx
+     * throws RequestException, and a 200 whose body names no `head_sha` throws
+     * {@see UnexpectedValueException}.
+     */
+    public function workflowRunHeadSha(string $repo, int $runId): ?string
+    {
+        $response = $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs/{$runId}");
+        if ($response->status() === 404) {
+            return null;
+        }
+        $body = $response->throw()->json();
+        if (! is_array($body) || ! is_string($body['head_sha'] ?? null)) {
+            throw new UnexpectedValueException("the read of {$repo} run {$runId} returned a 200 whose body is not a run with a head_sha; ".self::UNREADABLE_BODY_CAUSE);
+        }
+
+        return $body['head_sha'];
     }
 
     /**
@@ -700,6 +723,11 @@ final class GitHubReadClient
         foreach ($list as $run) {
             if (! is_array($run) || ! is_int($run['id'] ?? null) || ! is_string($run['status'] ?? null)) {
                 throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} carries a run with no readable integer `id` or `status`, so whether every run is terminal is unknown; ".self::UNREADABLE_BODY_CAUSE);
+            }
+            // card#12197: the caller records every listed id as a run of THIS head, for the life of
+            // the await, and refuses a later list that omits one — a row of another head would hold it.
+            if (! is_string($run['head_sha'] ?? null) || strtolower($run['head_sha']) !== strtolower($headSha)) {
+                throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} carries run {$run['id']}, whose head_sha is not the one asked for, so it is not that head's list; ".self::UNREADABLE_BODY_CAUSE);
             }
             $runs[] = [
                 'id' => $run['id'],

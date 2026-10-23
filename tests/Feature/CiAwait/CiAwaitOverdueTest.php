@@ -555,11 +555,15 @@ class CiAwaitOverdueTest extends TestCase
         ]);
     }
 
-    /** One tracked run on the awaited head, as the `workflow_run` deliveries would leave it. */
+    /**
+     * One tracked run on the awaited head, as the `workflow_run` deliveries would leave it. It is a
+     * run the faked list carries, by id: a delivered run the head's list omits makes that list a
+     * partial one, a failed read (card#12197).
+     */
     private function trackSettledRun(int $runId): void
     {
         DB::table('ci_head_runs')->insert([
-            'run_id' => 500 + $runId, 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA,
+            'run_id' => $runId, 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => self::SHA,
             'workflow_id' => 70 + $runId, 'workflow' => "W{$runId}", 'run_number' => 1, 'run_attempt' => 1, 'event' => 'push',
             'status' => 'completed', 'conclusion' => 'success',
             'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}", 'pr' => null,

@@ -44,8 +44,9 @@ final class CiAwaitGate
             return;
         }
 
-        // The delivered run, so the read for this delivery can count it completed even where the
-        // list API still lags the webhook (CiAwaitService's overlay). No readable id, no overlay.
+        // The delivered run, so the read for this delivery can count its listed row completed even
+        // where the list API still lags the webhook (CiAwaitService's overlay), and refuses a list
+        // that does not carry it at all as partial (card#12197). No readable id, neither.
         $delivered = is_int($run['id'] ?? null) ? [
             'id' => $run['id'],
             'workflow' => is_string($run['name'] ?? null) ? $run['name'] : '',

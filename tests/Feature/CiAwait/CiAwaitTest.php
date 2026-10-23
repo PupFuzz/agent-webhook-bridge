@@ -69,6 +69,14 @@ class CiAwaitTest extends TestCase
     /** @var array<int, int> run id => the HTTP status its jobs read is refused with; 0: no answer at all */
     private array $jobsRefused = [];
 
+    /**
+     * What a one-run read (`GET …/actions/runs/{id}`, card#12197) answers: `run id => HTTP status`.
+     * A run not named here answers 200 on {@see SHA} — it still exists.
+     *
+     * @var array<int, int>
+     */
+    private array $runReads = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -106,6 +114,13 @@ class CiAwaitTest extends TestCase
             return isset($this->jobsRefused[$runId])
                 ? Http::response(['message' => 'refused'], $this->jobsRefused[$runId])
                 : Http::response($this->jobsOf($runId));
+        }]);
+        // A run's own read; registered after the jobs fake, so a jobs URL never reaches it.
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs/*' => function (Request $r) {
+            $runId = (int) explode('/', (string) parse_url($r->url(), PHP_URL_PATH))[6];
+            $status = $this->runReads[$runId] ?? 200;
+
+            return Http::response($status === 200 ? ['id' => $runId, 'head_sha' => self::SHA, 'status' => 'in_progress'] : ['message' => 'Not Found'], $status);
         }]);
     }
 
@@ -185,7 +200,7 @@ class CiAwaitTest extends TestCase
     public function test_fresh_shas_past_the_seat_budget_are_stored_and_not_read_and_another_seat_is_unaffected(): void
     {
         config(['bridge.ci_await.seat_reads_per_hour' => 1]);
-        $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null]])], [$this->runs([['CI', 'in_progress', null]])]]);
+        $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null]])], [$this->runs([['CI', 'in_progress', null]], sha: self::OTHER_SHA)]]);
 
         $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
         $second = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::OTHER_SHA]);
@@ -575,12 +590,21 @@ class CiAwaitTest extends TestCase
         $this->assertSame(['success', 'failure'], array_column($lines[0]['payload']['runs'], 'conclusion'));
     }
 
-    public function test_the_delivered_run_is_counted_where_the_list_does_not_carry_it_yet(): void
+    /**
+     * card#12197: a list that does not carry the run just delivered is partial — it is not added to
+     * the list and settled on. The sweep's read, once the list carries it, settles the head.
+     */
+    public function test_a_list_that_does_not_carry_the_delivered_run_is_a_failed_read_and_the_sweep_settles_it(): void
     {
         $this->seedAwait('seat-a');
-        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])], [$this->runs([['CI', 'completed', 'success'], ['E2E', 'completed', 'success', 1, 7]])]]);
 
         $this->postRunCompleted(self::SHA, runId: 7)->assertOk();
+
+        $this->assertSame([], $this->inbox());
+        $this->assertStringContainsString('omits 1 run(s) already known on this head (run 7)', (string) CiAwait::query()->sole()->last_error);
+
+        $this->sweepAt('2026-10-03T10:05:00.000Z');
 
         $lines = $this->inbox();
         $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
@@ -693,6 +717,320 @@ class CiAwaitTest extends TestCase
         $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
         $this->assertSame('green', $lines[0]['payload']['runs_verdict']);
         $this->assertCount(1, $lines[0]['payload']['runs']);
+    }
+
+    // ---- a run list missing runs already known on the head (card#12197) ---------------------
+
+    /** Eight runs: run 1 completed, runs 2-8 still going — what the first read of sola-backend#950 saw. */
+    private function eightRunsMostlyOpen(): array
+    {
+        return $this->runs(array_map(static fn (int $i): array => ["W{$i}", $i === 1 ? 'completed' : 'in_progress', $i === 1 ? 'success' : null], range(1, 8)));
+    }
+
+    /**
+     * rt#590 (sola-backend#950): a read saw eight runs, a later read of the same head listed only one
+     * of them, completed. That one-run list is not the head's CI finishing, so nothing is sent; the
+     * await is kept, recorded as a failed read, and read again.
+     */
+    public function test_a_later_read_listing_fewer_runs_than_an_earlier_one_is_a_failed_read_not_a_settle(): void
+    {
+        $this->fakeGitHub([[$this->eightRunsMostlyOpen()], [$this->runs([['DL traceability', 'completed', 'success', 1, 3]])]]);
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->assertSame('waiting', $out->body()['result']['state']);
+        $this->assertSame(8, $out->body()['result']['runs_total']);
+
+        $this->sweepAt('2026-10-03T10:05:00.000Z');
+
+        $this->assertSentRunsReads(2);
+        $this->assertSame([], $this->inbox(), 'a one-run list for a head with eight known runs settled the await');
+        $this->assertNoChannelPush();
+        $await = CiAwait::query()->sole();
+        $this->assertStringContainsString('omits 7 run(s) already known on this head', (string) $await->last_error);
+        $this->assertStringContainsString('run 1, run 2, run 4', (string) $await->last_error);
+    }
+
+    /** An empty list for a head that had runs settles nothing, and is recorded as the failed read it is. */
+    public function test_an_empty_list_after_a_non_empty_read_is_a_failed_read_not_a_settle(): void
+    {
+        $this->fakeGitHub([[$this->eightRunsMostlyOpen()], [$this->runs([])]]);
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->sweepAt('2026-10-03T10:05:00.000Z');
+
+        $this->assertSame([], $this->inbox());
+        $this->assertStringContainsString('omits 8 run(s) already known on this head', (string) CiAwait::query()->sole()->last_error);
+    }
+
+    /**
+     * The delivered run was appended to a list that did not carry it, so an EMPTY list read for a
+     * delivery became a one-run list holding just the delivered run — completed, and so settled.
+     * All eight runs known on the head, the delivered one included, make it a failed read instead.
+     */
+    public function test_an_empty_list_read_for_a_delivery_does_not_settle_on_the_delivered_run_alone(): void
+    {
+        $this->fakeGitHub([[$this->eightRunsMostlyOpen()], [$this->runs([])]]);
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->postRunCompleted(self::SHA, runId: 3)->assertOk();
+
+        $this->assertSentRunsReads(2);
+        $this->assertSame([], $this->inbox(), 'the delivered run alone settled a head with eight known runs');
+        $this->assertSame(1, CiAwait::query()->count());
+        $this->assertStringContainsString('omits 8 run(s) already known on this head', (string) CiAwait::query()->sole()->last_error);
+    }
+
+    /**
+     * A run the bridge was told of by a `workflow_run` delivery is known before any read: a list that
+     * omits it — here the registration's own read — is a failed read, answered `unmeasured`.
+     */
+    public function test_a_run_a_delivery_reported_that_the_list_omits_holds_the_await(): void
+    {
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+        $this->postWorkflowRun('requested', self::SHA, runId: 5)->assertOk();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertSame('unmeasured', $out->body()['result']['state'], json_encode($out->body()) ?: '');
+        $this->assertStringContainsString('omits 1 run(s) already known on this head', (string) $out->body()['result']['read_error']);
+        $this->assertStringContainsString('run 5', (string) $out->body()['result']['read_error']);
+        $this->assertSame([], $this->inbox());
+        $this->assertSame(1, CiAwait::query()->count());
+    }
+
+    /** A delivered run no commit started (a nightly) is not held against the list: the settle never counts it. */
+    public function test_a_delivered_scheduled_run_the_list_omits_does_not_hold_the_await(): void
+    {
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+        $this->postWorkflowRun('requested', self::SHA, runId: 5, event: 'schedule')->assertOk();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertSame('settled', $out->body()['result']['state'], json_encode($out->body()) ?: '');
+    }
+
+    /**
+     * rt#590 c-6344280919: every early ci_settled carried ONE run, the one whose completion had just
+     * been delivered, and the list read for it was empty. No earlier read saw any run here — the
+     * registration read an empty list too — yet the delivered run itself is known, so an empty list
+     * is partial.
+     */
+    public function test_an_empty_list_read_for_a_delivery_with_no_earlier_read_of_any_run_does_not_settle(): void
+    {
+        $this->fakeGitHub([[$this->runs([])], [$this->runs([])]]);
+        $this->assertSame('waiting', $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA])->body()['result']['state']);
+
+        $this->postRunCompleted(self::SHA, runId: 1)->assertOk();
+
+        $this->assertSentRunsReads(2);
+        $this->assertSame([], $this->inbox(), 'the delivered run alone settled the head');
+        $this->assertStringContainsString('omits 1 run(s) already known on this head (run 1)', (string) CiAwait::query()->sole()->last_error);
+    }
+
+    /**
+     * The same shape where the list DOES carry the delivered run, and only it. Runs 2-8 are known
+     * only because their `workflow_run.requested` deliveries reached the bridge, which records every
+     * delivery on the head (ci_head_runs) — without those deliveries nothing the bridge holds says
+     * they exist, and this guard cannot see them.
+     */
+    public function test_a_list_of_only_the_delivered_run_does_not_settle_while_requested_runs_are_missing(): void
+    {
+        $this->fakeGitHub([[$this->runs([])], [$this->runs([['W1', 'completed', 'success']])]]);
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        foreach (range(2, 8) as $runId) {
+            $this->postWorkflowRun('requested', self::SHA, runId: $runId)->assertOk();
+        }
+
+        $this->postRunCompleted(self::SHA, runId: 1)->assertOk();
+
+        $this->assertSentRunsReads(2);
+        $this->assertSame([], $this->inbox(), 'a list of only the delivered run settled a head with seven requested runs');
+        $this->assertStringContainsString('omits 7 run(s) already known on this head', (string) CiAwait::query()->sole()->last_error);
+    }
+
+    /**
+     * The toolkit reproduction: the registration read four runs, none completed; the read for the
+     * first run's completion listed only that run. The registration's own read made the other three
+     * known.
+     */
+    public function test_runs_the_registration_read_are_known_to_the_read_a_later_delivery_makes(): void
+    {
+        $fourOpen = $this->runs([['CI', 'in_progress', null], ['Lint', 'queued', null], ['Changelog card entry', 'in_progress', null], ['Docs', 'queued', null]]);
+        $this->fakeGitHub([[$fourOpen], [$this->runs([['Changelog card entry', 'completed', 'success', 1, 3]])]]);
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->assertSame(4, $out->body()['result']['runs_total']);
+        $this->assertSame(0, $out->body()['result']['runs_completed']);
+        $this->assertSame([1, 2, 3, 4], CiAwait::query()->sole()->known_run_ids);
+
+        $this->postRunCompleted(self::SHA, runId: 3)->assertOk();
+
+        $this->assertSentRunsReads(2);
+        $this->assertSame([], $this->inbox(), 'a one-run list settled a head whose registration read four runs');
+        $this->assertStringContainsString('omits 3 run(s) already known on this head (run 1, run 2, run 4)', (string) CiAwait::query()->sole()->last_error);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function outerRunStatuses(): array
+    {
+        return ['the outer list\'s run is open' => ['in_progress'], 'the outer list\'s run is completed' => ['completed']];
+    }
+
+    /**
+     * Review of PR #969: two reads of one head overlap. The inner one answers eight runs and records
+     * them; the outer one, which loaded the await before that, answers one open run. Its write must
+     * not replace the eight with its one — or a third read listing that one run completed settles
+     * with seven still open — and its own read must be judged against the eight, read under the
+     * lock, or an outer list of that one run already completed settles on the stale snapshot.
+     */
+    #[DataProvider('outerRunStatuses')]
+    public function test_an_overlapping_read_neither_shrinks_the_known_runs_nor_passes_on_its_stale_snapshot(string $outerStatus): void
+    {
+        $this->seedAwait('seat-a');
+        $service = $this->app->make(CiAwaitService::class);
+        $reads = 0;
+        Http::fake([
+            self::RUNS_URL => function () use ($service, &$reads, $outerStatus) {
+                $n = ++$reads;
+                if ($n === 1) {
+                    $service->onWorkflowRunCompleted(self::REPO, self::SHA);
+                }
+
+                return Http::response(match ($n) {
+                    1 => $this->runs([['W1', $outerStatus, $outerStatus === 'completed' ? 'success' : null]]),
+                    2 => $this->eightRunsMostlyOpen(),
+                    default => $this->runs([['W1', 'completed', 'success']]),
+                });
+            },
+            '127.0.0.1:*' => Http::response('ok', 200),
+        ]);
+
+        $service->onWorkflowRunCompleted(self::REPO, self::SHA);
+        $this->assertSame(2, $reads, 'the inner read never ran inside the outer one, so this measured nothing');
+        $this->assertSame([], $this->inbox(), 'the outer read settled on its stale snapshot with seven runs open');
+
+        $service->onWorkflowRunCompleted(self::REPO, self::SHA);
+
+        $this->assertSame(3, $reads);
+        $this->assertSame([], $this->inbox(), 'a one-run list settled a head with eight known runs');
+        $await = CiAwait::query()->sole();
+        $this->assertSame([1, 2, 3, 4, 5, 6, 7, 8], $await->known_run_ids, 'an overlapping read replaced what the other recorded');
+        $this->assertStringContainsString('omits 7 run(s) already known on this head', (string) $await->last_error);
+    }
+
+    /**
+     * A run deleted after it was seen (the UI, `gh run delete`, a retention job) leaves the head's
+     * list for good. GitHub answers 404 for it, so it is gone: dropped from what is known, and the
+     * rest of the list settles the head.
+     */
+    public function test_a_known_run_github_answers_404_for_is_gone_and_the_rest_of_the_list_settles(): void
+    {
+        $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null], ['Flaky', 'in_progress', null]])], [$this->runs([['CI', 'completed', 'success']])]]);
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->runReads[2] = 404;
+
+        $this->sweepAt('2026-10-03T10:05:00.000Z');
+
+        $this->assertSentRunsReadsMatching('/actions/runs/2', 1);
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertSame(['CI'], array_column($lines[0]['payload']['runs'], 'workflow'));
+    }
+
+    /** @return array<string, array{int, string}> */
+    public static function missingRunAnswers(): array
+    {
+        return [
+            'GitHub still has it' => [200, 'GitHub still has each of them'],
+            'the run read fails' => [502, 'GitHub answered HTTP 502 to the read of run 2'],
+        ];
+    }
+
+    /** Fail closed: a missing known run that GitHub still has, or that could not be read, keeps the list partial. */
+    #[DataProvider('missingRunAnswers')]
+    public function test_a_missing_known_run_not_shown_gone_keeps_the_read_failed(int $status, string $error): void
+    {
+        $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null], ['E2E', 'in_progress', null]])], [$this->runs([['CI', 'completed', 'success']])]]);
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->runReads[2] = $status;
+
+        $this->sweepAt('2026-10-03T10:05:00.000Z');
+
+        $this->assertSame([], $this->inbox());
+        $await = CiAwait::query()->sole();
+        $this->assertStringContainsString($error, (string) $await->last_error);
+        $this->assertSame([1, 2], $await->known_run_ids, 'a run not shown gone is still known');
+    }
+
+    /** More missing runs than the lookup bound: a partial list, with no run read at all. */
+    public function test_more_missing_runs_than_the_lookup_bound_are_not_looked_up(): void
+    {
+        $this->fakeGitHub([[$this->eightRunsMostlyOpen()], [$this->runs([['W1', 'completed', 'success']])]]);
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->sweepAt('2026-10-03T10:05:00.000Z');
+
+        $this->assertSame([], $this->inbox());
+        $this->assertStringContainsString('more than '.CiAwaitService::MISSING_RUNS_LOOKED_UP.' are missing, so none was looked up', (string) CiAwait::query()->sole()->last_error);
+        $this->assertSentRunsReadsMatching('/actions/runs/', 0);
+    }
+
+    /** A row of another head in the head's list is not that head's list — and its id is never recorded as one of its runs. */
+    public function test_a_list_row_of_another_head_is_a_failed_read_and_records_nothing(): void
+    {
+        $this->fakeGitHub([[['total_count' => 2, 'workflow_runs' => [
+            ...$this->runs([['CI', 'completed', 'success']])['workflow_runs'],
+            ...$this->runs([['Other', 'completed', 'success', 1, 9]], sha: self::OTHER_SHA)['workflow_runs'],
+        ]]]]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertSame('unmeasured', $out->body()['result']['state'], json_encode($out->body()) ?: '');
+        $this->assertStringContainsString('carries run 9, whose head_sha is not the one asked for', (string) $out->body()['result']['read_error']);
+        $this->assertSame([], $this->inbox());
+        $this->assertNull(CiAwait::query()->sole()->known_run_ids);
+    }
+
+    /** The normal path: every known run listed again, each terminal — one ci_settled, carrying all eight. */
+    public function test_a_read_listing_every_known_run_terminal_settles_once(): void
+    {
+        $allDone = $this->runs(array_map(static fn (int $i): array => ["W{$i}", 'completed', 'success'], range(1, 8)));
+        $this->fakeGitHub([[$this->eightRunsMostlyOpen()], [$allDone]]);
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->sweepAt('2026-10-03T10:05:00.000Z');
+        $this->sweepAt('2026-10-03T10:10:00.000Z');
+
+        $this->assertSentRunsReads(2);
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertCount(8, $lines[0]['payload']['runs']);
+        $this->assertChannelPushes(['seat-a' => ['ci_settled']]);
+    }
+
+    /**
+     * The partial list's way out: once a read lists every known run again and
+     * each is terminal, the await settles — exactly once, carrying all eight.
+     */
+    public function test_once_every_known_run_is_listed_and_terminal_the_await_settles_once(): void
+    {
+        $allDone = $this->runs(array_map(static fn (int $i): array => ["W{$i}", 'completed', 'success'], range(1, 8)));
+        $this->fakeGitHub([[$this->eightRunsMostlyOpen()], [$this->runs([['W3', 'completed', 'success', 1, 3]])], [$allDone]]);
+        $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->assertSame([1, 2, 3, 4, 5, 6, 7, 8], CiAwait::query()->sole()->known_run_ids);
+
+        $this->sweepAt('2026-10-03T10:05:00.000Z');
+        $this->assertSame([], $this->inbox());
+        $this->assertSame([1, 2, 3, 4, 5, 6, 7, 8], CiAwait::query()->sole()->known_run_ids, 'a partial list must not shrink what is known');
+
+        $this->sweepAt('2026-10-03T10:10:00.000Z');
+        $this->sweepAt('2026-10-03T10:15:00.000Z');
+
+        $this->assertSentRunsReads(3);
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertCount(8, $lines[0]['payload']['runs']);
+        $this->assertSame('green', $lines[0]['payload']['runs_verdict']);
+        $this->assertChannelPushes(['seat-a' => ['ci_settled']]);
+        $this->assertSame(0, CiAwait::query()->count());
     }
 
     // ---- a completed run whose job is still running (card#12072) --------------------------
@@ -1270,7 +1608,7 @@ class CiAwaitTest extends TestCase
         $this->assertSame(2, CiAwait::query()->count());
         Http::assertNothingSent();
 
-        $this->fakeGitHub([[$this->runs([['CI', 'queued', null]], firstId: 1)]]);
+        $this->fakeGitHub([[$this->runs([['CI', 'queued', null]], firstId: 1, sha: self::OTHER_SHA)]]);
         $refresh = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::OTHER_SHA]);
         $this->assertTrue($refresh->ok);
         $this->assertTrue($refresh->body()['result']['refreshed']);
@@ -1974,13 +2312,13 @@ class CiAwaitTest extends TestCase
      * @param  list<array{0: string, 1: string, 2: ?string, 3?: int, 4?: int, 5?: string}>  $runs
      * @return array<string, mixed>
      */
-    private function runs(array $runs, ?int $total = null, int $firstId = 1): array
+    private function runs(array $runs, ?int $total = null, int $firstId = 1, string $sha = self::SHA): array
     {
         $list = [];
         foreach (array_values($runs) as $i => $run) {
             [$name, $status, $conclusion] = $run;
             $id = $run[4] ?? $firstId + $i;
-            $list[] = ['id' => $id, 'name' => $name, 'head_sha' => self::SHA, 'status' => $status, 'conclusion' => $conclusion, 'event' => $run[5] ?? 'pull_request', 'run_attempt' => $run[3] ?? 1, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$id}"];
+            $list[] = ['id' => $id, 'name' => $name, 'head_sha' => $sha, 'status' => $status, 'conclusion' => $conclusion, 'event' => $run[5] ?? 'pull_request', 'run_attempt' => $run[3] ?? 1, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$id}"];
         }
 
         return ['total_count' => $total ?? count($list), 'workflow_runs' => $list];
