@@ -230,6 +230,14 @@ fi
 grep -q 'POPULATION STATEMENT' "$TMP/step_summary" \
   && ok "…and it reaches the step summary, not only stdout" \
   || fail "the statement never reached GITHUB_STEP_SUMMARY (the aimla lesson: a summary written after an exit is a summary nobody sees)"
+# THIS REPO ONLY (card#12198): the AFFECTED rows exported in machine form, which the `bump` job
+# reads instead of the log. Gated on jq's exit status, so an absent output is a NO.
+s2a() { sed -n 's/^source2_affected=//p' "$TMP/gh_output"; }
+jq -e 'length == 4 and all(.[]; .ecosystem == "composer" and .package == "league/commonmark"
+         and .version == "2.9.0" and (.patched | type == "string") and (.range | type == "string"))
+       and any(.[]; .ghsa == "GHSA-f8fg-pg57-v4j8")' <<< "$(s2a)" >/dev/null 2>&1 \
+  && ok "…and source2_affected exports the same four rows in machine form" \
+  || fail "source2_affected should carry the four commonmark rows, got '$(s2a)'"
 
 out="$(run_audit "$CLEAN" "$(seam "$OSV_CLEAN" "$ADV_FIXTURE" "$REG_NONE")")"; rc=$?
 if [ "$rc" -eq 0 ] && has "$out" 'VERDICT: GREEN'; then
@@ -241,6 +249,10 @@ fi
   && [ "$(pop resolved)" = "1" ] && [ "$(pop unresolved)" = "1" ] \
   && ok "…and the population output names what was read (1 lockfile, 2 production packages, 1 resolved, 1 not)" \
   || fail "clean-leg population wrong: $(sed -n 's/^population=//p' "$TMP/gh_output")"
+# THIS REPO ONLY (card#12198): the clean leg still EXPORTS the field, as an empty array.
+[ "$(s2a)" = "[]" ] \
+  && ok "…and source2_affected is [] — exported, and empty" \
+  || fail "the clean leg's source2_affected should be [], got '$(s2a)'"
 has "$out" 'commonmark-devonly' \
   && fail "a packages-dev entry leaked into the production population" \
   || ok "…and the dev-only package is excluded (2 packages, not 3)"

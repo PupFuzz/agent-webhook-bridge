@@ -57,6 +57,12 @@ jobs:
     uses: PupFuzz/agent-webhook-bridge/.github/workflows/dependency-audit.yml@dev
     with:
       ref: ${{ matrix.ref }}
+      # This repo only (card#12198): the integration leg opens the in-range lockfile bump PRs.
+      # The release leg never does: main is fixed by a release, not bumped directly.
+      bump_prs: ${{ matrix.ref == 'dev' }}
+    # Named, not `inherit`: the callee gets this one secret and no other.
+    secrets:
+      ADVISORY_BUMP_TOKEN: ${{ secrets.ADVISORY_BUMP_TOKEN }}
 
   report:
     # `needs:` + `if: always()` — the reporting job must run when a leg FAILED, since a failed
