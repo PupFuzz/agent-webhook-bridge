@@ -9189,3 +9189,39 @@ diagnostic on the failure path.
 - **Alternatives rejected.** (a) *Log through `laravel.log`.* Its lines carry Monolog's prefix and share the file with diagnostics, so a count needs a filter that drifts. (b) *Off by default.* See Decision 3. (c) *A per-client logger in each GitHub client.* A second copy of one behaviour; the shared builder exists so they cannot drift (DL-390).
 
 - **Consequences.** New: `app/Bridge/Support/GitHubRequestLog.php`, `tests/Feature/Support/GitHubRequestLogTest.php`, `tests/Feature/Support/GitHubRequestLogIsolationTest.php`, the `github_requests` channel. Changed: `app/Bridge/Writeback/GitHubApi.php`; `tests/TestCase.php` points the channel at a per-test temp dir, so the suite never writes the checkout's request log. Docs: `CLAUDE_DEPLOYMENT.md`, `CLAUDE_TESTING.md` § Temporary config dirs, `docs/CHANGELOG.md`.
+
+---
+
+## DL-495 — Correction to DL-493: the dependency audit's bump job is given the findings of BOTH sources, in one `affected` output, and a global advisory's fix is read from its OSV record (card#12309)
+
+- **Date:** 2026-10-24
+- **Status:** implemented (card#12309). Repository CI only: no runtime, config or client change. DL-493 stays frozen; this entry changes its Decision 2 and its unclosed item (d).
+
+- **Context.** DL-493 exported only source 2's AFFECTED rows (`source2_affected`), and listed "source 1 findings" among what is not bumped. In fact they were not listed either: nothing exported them, so the bump job never saw one. On its first live run (run 40090530682, 2026-10-24) the audit found zod 4.4.3 in the channel-server lockfile through source 1 alone (GHSA-mrhx-c7xc-m3w5, a global advisory, fixed in 4.6.6, in range for its declaring parents), and the bump job, given `[]`, reported "No bump to open". Dependabot security updates would not do it instead: their PRs miss the snapshot bump, the capabilities regen and the CHANGELOG bullet the version-bump guard requires.
+
+- **Decision 1 — one output, one row shape, both sources.** The callee's `source2_affected` output becomes `affected`. Both source blocks append to it, and every row names its `source` ("1" or "2"); a source 1 row has the same keys, with an empty `repo`. The bump job reads that one output; `bin/advisory-bump.py` refuses a row naming neither source. A second output for source 1 would have been a second wiring that can break on its own, which is what happened to source 1 here.
+
+- **Decision 2 — a source 1 fix is the lowest OSV `fixed` version above the flagged one.** The audit exports, as `patched in "<v>, ..."`, every `fixed` event of the record's SEMVER and ECOSYSTEM ranges for that package (a GIT range's events are commit hashes; another package's `affected` entry is not read). The planner's existing `fix_for` then picks the lowest version above the flagged one, as it already does for a source 2 patched list. A record with no `fixed` event (only `last_affected`, or no range) is exported naming none, and the planner lists it for a human.
+
+- **Decision 3 — one advisory reported by both sources is one row; a package is one bump.** Rows with the same package, version and GHSA ID are merged in the planner: the one naming a fix over one that does not, the higher fix between two. A package named by several rows, of either source, was already one bump (DL-493 Decision 4).
+
+- **Decision 4 — the verdict does not read the export.** The rows are written only where source 1 has already counted a finding, from the scanner output it already parsed, and nothing in the verdict or the population reads them. A selftest row asserts the live zod finding is still RED with `findings=1` and `errors=0` beside its export.
+
+- **What is NOT closed, named.** (a) A source 1 row does not say which lockfile it came from; the planner still bumps only the channel-server lockfile, and a package the scan flags elsewhere is listed for a human because that lockfile has no production entry of it (today the only npm lockfile is the channel server's). (b) A fixed version carrying a pre-release tag makes `fix_for` refuse the whole row, which is then listed for a human. (c) This is a difference from the coord plugin's template, which a template refresh must keep (`CLAUDE_TESTING.md` § CI); card#12251 carries the upstream ask that the shared framework job cover global-database findings too.
+
+- **Consequences.** Changed: `.github/workflows/dependency-audit.yml` (the `affected` output, written in the `dep-audit-source1`, `dep-audit-source2` and `dep-audit-report` blocks; the `bump` job's plan step), `bin/advisory-bump.py`, `bin/test_advisory_bump.py`, `.github/dependency-audit/dependency-audit.selftest.sh`. New: `.github/dependency-audit/fixtures/osv/` (the live scanner output, field-projected, and one synthetic file). Docs: `CLAUDE_TESTING.md` § CI, `.github/dependency-audit/fixtures/README.md`, `docs/CHANGELOG.md`.
+
+---
+
+## DL-496 — Correction to DL-493: a bump PR's body carries the `Built:` and `Coordinated in:` lines (card#12309)
+
+- **Date:** 2026-10-24
+- **Status:** implemented (card#12309). Repository CI only. DL-493 stays frozen; this entry reverses its unclosed item (e).
+
+- **Context.** DL-493 (e) left the two rows out of the bump PR body, on the ground that no seat built it, and accepted that the PR-body lint would name their absence. The job opens the PR as the `ADVISORY_BUMP_TOKEN` account, a user rather than a bot, so every bump PR would carry the `built-missing` and `coordinated-missing` warnings, and a reviewer would read the body as one an author forgot to finish rather than one with no author.
+
+- **Decision — state the absence instead of omitting it.** `bump_texts` in `bin/advisory-bump.py` writes `**Built:** unattestable — …; generated by the scheduled advisory-bump job, which dispatched no agent …` and `**Coordinated in:** none — opened by the scheduled dependency advisory job, no coordination thread`. `unattestable` is the coord plugin's `built-line.md` value for work no party can state (automation is not a party); `none — <reason>` is the form its review tooling reads as "no coordination thread". A test runs the vendored lint on the generated body as a user-authored PR.
+
+- **What is NOT closed, named.** The `Built:` value names the work as "this branch's bump commit", not its SHA as `built-line.md`'s rule words it, although the SHA is known before the body is written out. A fix-up commit pushed to a bump branch later is not covered by the line.
+
+- **Consequences.** Changed: `bin/advisory-bump.py`, `bin/test_advisory_bump.py`, `.github/pull_request_template.md` (its comment no longer restates when `unattestable` applies). Docs: `docs/CHANGELOG.md`.

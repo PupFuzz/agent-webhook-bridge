@@ -1,0 +1,47 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "package-lock.json",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "multi-pkg",
+            "version": "2.0.1",
+            "ecosystem": "npm"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-synt-h000-0001",
+              "affected": [
+                {
+                  "package": {"ecosystem": "npm", "name": "other-pkg"},
+                  "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "9.9.9"}]}]
+                },
+                {
+                  "package": {"ecosystem": "npm", "name": "multi-pkg"},
+                  "ranges": [
+                    {"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.2.3"}, {"introduced": "2.0.0"}, {"fixed": "2.0.5"}]},
+                    {"type": "GIT", "repo": "https://example.invalid/multi-pkg", "events": [{"introduced": "0"}, {"fixed": "0123456789abcdef0123456789abcdef01234567"}]}
+                  ]
+                }
+              ],
+              "database_specific": {"severity": "MODERATE"}
+            },
+            {
+              "id": "GHSA-synt-h000-0002",
+              "affected": [
+                {
+                  "package": {"ecosystem": "npm", "name": "multi-pkg"},
+                  "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"last_affected": "3.0.0"}]}]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -30,8 +30,16 @@ _SPEC.loader.exec_module(ab)
 
 def row(pkg="body-parser", ver="2.3.0", ghsa="GHSA-27r3-jxmh-p828", patched='patched in "2.4.0"',
         eco="npm", rng=">= 2.0.0, < 2.4.0", repo="expressjs/body-parser"):
-    return {"ecosystem": eco, "package": pkg, "version": ver, "ghsa": ghsa, "severity": "high",
+    """A SOURCE 2 row (a repository advisory), as the audit exports it."""
+    return {"source": "2", "ecosystem": eco, "package": pkg, "version": ver, "ghsa": ghsa, "severity": "high",
             "range": rng, "patched": patched, "repo": repo}
+
+
+def row1(pkg="body-parser", ver="2.3.0", ghsa="GHSA-27r3-jxmh-p828", patched='patched in "2.4.0"', rng="< 2.4.0"):
+    """A SOURCE 1 row (the OSV scan of the global advisory database), as the audit exports it: no repo,
+    and `patched` lists the `fixed` events of the OSV record."""
+    return {"source": "1", "ecosystem": "npm", "package": pkg, "version": ver, "ghsa": ghsa, "severity": "high",
+            "range": rng, "patched": patched, "repo": ""}
 
 
 def lockfile(bp_version="2.3.0", snapshot="0.9.72", express_range="^2.2.1"):
@@ -76,7 +84,7 @@ class Findings(unittest.TestCase):
         for raw in (None, "", "   "):
             with self.assertRaises(ab.BumpError) as cm:
                 ab.parse_findings(raw)
-            self.assertIn("exported no source2_affected", str(cm.exception))
+            self.assertIn("exported no affected output", str(cm.exception))
 
     def test_an_empty_array_is_the_audit_saying_nothing(self):
         self.assertEqual(ab.parse_findings("[]"), [])
@@ -85,6 +93,19 @@ class Findings(unittest.TestCase):
         for raw in ('{"a": 1}', "[1]", json.dumps([{"package": "x"}]), "not json"):
             with self.assertRaises(ab.BumpError):
                 ab.parse_findings(raw)
+
+    def test_a_row_that_names_no_known_source_is_refused(self):
+        no_source = {k: v for k, v in row().items() if k != "source"}
+        for bad in (no_source, dict(row(), source="3"), dict(row(), source=2)):
+            with self.assertRaises(ab.BumpError) as cm:
+                ab.parse_findings(json.dumps([bad]))
+            self.assertIn("source", str(cm.exception))
+
+    def test_a_source_1_row_is_printed_with_the_audit_s_source_1_prefix(self):
+        self.assertEqual(
+            ab.finding_line(row1(pkg="zod", ver="4.4.3", ghsa="GHSA-mrhx-c7xc-m3w5", patched='patched in "4.6.6"',
+                                 rng="< 4.6.6")),
+            'SOURCE1 npm:zod@4.4.3 GHSA-mrhx-c7xc-m3w5 high [< 4.6.6] patched in "4.6.6" (global advisory database)')
 
     def test_the_finding_line_is_the_audit_s_printed_shape(self):
         self.assertEqual(
@@ -128,6 +149,35 @@ class Candidates(unittest.TestCase):
     def test_the_same_advisory_on_two_lockfile_copies_is_one_row(self):
         cands, _ = ab.group_candidates([row(), row()], lockfile())
         self.assertEqual(len(cands["body-parser"]), 1)
+
+    def test_a_source_1_row_takes_the_lowest_osv_fix_above_the_flagged_version(self):
+        cands, manual = ab.group_candidates([row1(patched='patched in "1.2.3, 2.4.0, 3.0.1"')], lockfile())
+        self.assertEqual(manual, [])
+        self.assertEqual(cands["body-parser"][0]["fix"], "2.4.0")
+
+    def test_a_source_1_row_whose_record_names_no_fix_is_left_for_a_human(self):
+        cands, manual = ab.group_candidates([row1(patched="no fixed version in its OSV record")], lockfile())
+        self.assertEqual(cands, {})
+        self.assertIn("no fixed version in its OSV record", manual[0]["line"])
+
+    def test_one_advisory_both_sources_report_is_one_row_at_the_higher_fix(self):
+        for rows in ([row(patched='patched in "2.3.5"'), row1()], [row1(), row(patched='patched in "2.3.5"')]):
+            cands, manual = ab.group_candidates(rows, lockfile())
+            self.assertEqual(manual, [])
+            self.assertEqual([r["fix"] for r in cands["body-parser"]], ["2.4.0"])
+
+    def test_a_fix_from_one_source_outranks_the_other_source_s_refusal(self):
+        refused = row(patched='patched "2.4.0" overruled by an upper bound of the range, so not cleared')
+        for rows in ([refused, row1()], [row1(), refused]):
+            cands, manual = ab.group_candidates(rows, lockfile())
+            self.assertEqual(manual, [])
+            self.assertEqual(cands["body-parser"][0]["source"], "1")
+
+    def test_a_package_both_sources_flag_on_different_advisories_is_one_candidate(self):
+        cands, _ = ab.group_candidates([row(), row1(ghsa="GHSA-mrhx-c7xc-m3w5", patched='patched in "2.4.1"')],
+                                       lockfile())
+        self.assertEqual(list(cands), ["body-parser"])
+        self.assertEqual(sorted(r["ghsa"] for r in cands["body-parser"]), ["GHSA-27r3-jxmh-p828", "GHSA-mrhx-c7xc-m3w5"])
 
     def test_a_patched_list_takes_the_smallest_fix_above_the_flagged_version(self):
         self.assertEqual(ab.fix_for("2.0.1", "1.2.3, 2.0.5"), ("2.0.5", None))
@@ -295,6 +345,51 @@ class Plan(unittest.TestCase):
         self.assertNotIn("Co-Authored-By", b["body"])
         self.assertEqual(subprocess.run(["git", "-C", str(self.repo), "worktree", "list"], capture_output=True,
                                         text=True, check=True).stdout.count("\n"), 1, "a worktree was left behind")
+
+    def test_the_bump_body_passes_the_pr_body_lint_as_a_user_authored_pr(self):
+        """The job opens with a PAT, so the PR's `user.type` is `User` and the lint asks the body for
+        both audit rows. Run the vendored lint the way pr-body-lint.yml does, on the body and title
+        the job would open."""
+        b = ab.plan(FakeTools("2.4.0"), str(self.repo), [row()], "dev", "", str(self.work))["bumps"][0]
+        lint = Path(__file__).resolve().parent.parent / ".github" / "pr-body-lint" / "pr-body-lint.py"
+        res = subprocess.run(["python3", str(lint), "--body-file", "-", "--title", b["title"],
+                              "--author-type-env", "COORD_PR_AUTHOR_TYPE"],
+                             input=b["body"], capture_output=True, text=True,
+                             env={**os.environ, "COORD_PR_AUTHOR_TYPE": "User"})
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("\n**Built:** unattestable — ", b["body"])
+        self.assertIn("\n**Coordinated in:** none — ", b["body"])
+
+    def changelog_at(self, head):
+        return subprocess.run(["git", "-C", str(self.repo), "show", f"{head}:{ab.CHANGELOG}"],
+                              capture_output=True, text=True, check=True).stdout.split("## [0.1.0]")[0]
+
+    def test_a_source_1_only_finding_builds_the_same_bump(self):
+        p = ab.plan(FakeTools("2.4.0"), str(self.repo), [row1(ghsa="GHSA-mrhx-c7xc-m3w5")], "dev", "", str(self.work))
+        self.assertEqual((p["errors"], p["manual"]), ([], []))
+        self.assertEqual(len(p["bumps"]), 1)
+        b = p["bumps"][0]
+        self.assertEqual(b["branch"], "advisory-bump/npm-body-parser-2.4.0")
+        self.assertEqual(b["title"], "deps(channel-servers): bump body-parser to 2.4.0 (GHSA-mrhx-c7xc-m3w5)")
+        self.assertIn('`SOURCE1 npm:body-parser@2.3.0 GHSA-mrhx-c7xc-m3w5 high [< 2.4.0] patched in "2.4.0" '
+                      "(global advisory database)`", b["body"])
+        cl = self.changelog_at(b["head"])
+        self.assertIn("global advisory GHSA-mrhx-c7xc-m3w5 (high, range `< 2.4.0`, patched in 2.4.0)", cl)
+        self.assertNotIn("repository advisory", cl)
+
+    def test_a_package_both_sources_flag_is_one_bump_naming_both(self):
+        p = ab.plan(FakeTools("2.4.0"), str(self.repo), [row(), row1(ghsa="GHSA-mrhx-c7xc-m3w5")], "dev", "",
+                    str(self.work))
+        self.assertEqual(len(p["bumps"]), 1)
+        self.assertEqual(self.branches(), ["advisory-bump/npm-body-parser-2.4.0"])
+        b = p["bumps"][0]
+        self.assertEqual(b["ghsas"], ["GHSA-27r3-jxmh-p828", "GHSA-mrhx-c7xc-m3w5"])
+        self.assertEqual(b["title"], "deps(channel-servers): bump body-parser to 2.4.0 (GHSA-27r3-jxmh-p828 +1)")
+        self.assertIn("SOURCE2 body-parser@2.3.0 GHSA-27r3-jxmh-p828", b["body"])
+        self.assertIn("SOURCE1 npm:body-parser@2.3.0 GHSA-mrhx-c7xc-m3w5", b["body"])
+        cl = self.changelog_at(b["head"])
+        self.assertIn("repository advisory GHSA-27r3-jxmh-p828", cl)
+        self.assertIn("global advisory GHSA-mrhx-c7xc-m3w5", cl)
 
     def test_an_unmoved_copy_on_another_line_is_not_named_as_the_new_version(self):
         lock = lockfile()

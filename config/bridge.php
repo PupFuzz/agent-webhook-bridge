@@ -48,11 +48,11 @@ return [
     | Identical for every agent on one install, so they live here, not in each
     | per-agent YAML. receiver_base_url is this bridge's public webhook URL (used
     | by bridge:provision to register the callback). providers.<name>.api_base_url
-    | is the upstream API base for providers the bridge calls (only kanban is
-    | API-provisioned today; github's API base is constant and only relevant when
-    | a github adapter needs it). The kanban base is SECRET-BEARING (writeback
-    | bearer token + provision-time HMAC secret) — it must be https; cleartext
-    | http is rejected at every consumer except for loopback hosts (DL-175).
+    | is the upstream API base for providers the bridge calls (only kanban has
+    | one; GitHub calls use the fixed GitHubApi::BASE). The kanban base is
+    | SECRET-BEARING (writeback bearer token + provision-time HMAC secret) — it
+    | must be https; cleartext http is rejected at every consumer except for
+    | loopback hosts (DL-175).
     |
     */
 
@@ -61,7 +61,6 @@ return [
     'providers' => [
         'kanban' => ['api_base_url' => env('BRIDGE_KANBAN_API_BASE_URL')],
         'github' => [
-            'api_base_url' => env('BRIDGE_GITHUB_API_BASE_URL', 'https://api.github.com'),
             // Optional explicit path to the GitHub read token (DL-184). Absent →
             // the conventional <secret_dir>/github/token, with a GH_TOKEN fallback
             // for the CLI's resolveForCli() alone. Set this to reuse a centralized credential
