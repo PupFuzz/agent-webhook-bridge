@@ -346,6 +346,20 @@ class Plan(unittest.TestCase):
         self.assertEqual(subprocess.run(["git", "-C", str(self.repo), "worktree", "list"], capture_output=True,
                                         text=True, check=True).stdout.count("\n"), 1, "a worktree was left behind")
 
+    def test_the_bump_body_passes_the_pr_body_lint_as_a_user_authored_pr(self):
+        """The job opens with a PAT, so the PR's `user.type` is `User` and the lint asks the body for
+        both audit rows. Run the vendored lint the way pr-body-lint.yml does, on the body and title
+        the job would open."""
+        b = ab.plan(FakeTools("2.4.0"), str(self.repo), [row()], "dev", "", str(self.work))["bumps"][0]
+        lint = Path(__file__).resolve().parent.parent / ".github" / "pr-body-lint" / "pr-body-lint.py"
+        res = subprocess.run(["python3", str(lint), "--body-file", "-", "--title", b["title"],
+                              "--author-type-env", "COORD_PR_AUTHOR_TYPE"],
+                             input=b["body"], capture_output=True, text=True,
+                             env={**os.environ, "COORD_PR_AUTHOR_TYPE": "User"})
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("\n**Built:** unattestable — ", b["body"])
+        self.assertIn("\n**Coordinated in:** none — ", b["body"])
+
     def changelog_at(self, head):
         return subprocess.run(["git", "-C", str(self.repo), "show", f"{head}:{ab.CHANGELOG}"],
                               capture_output=True, text=True, check=True).stdout.split("## [0.1.0]")[0]
