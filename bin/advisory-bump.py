@@ -3,9 +3,20 @@
 
 The bump job of `.github/workflows/dependency-audit.yml` runs this on the integration-branch leg
 of the daily "Dependency advisory ref matrix" (card#12198, DL-493). It reads the audit's exported
-SOURCE 2 findings (the `source2_affected` output: one object per AFFECTED row, the same rows the
-audit prints as `SOURCE2 <pkg>@<ver> <GHSA> <sev> [range] patched in "<ver>" (repo-level on ...)`)
-and, per npm package, does what the hand-cut bumps did (PRs #834, #966, #968):
+findings of BOTH sources (the `affected` output: one object per AFFECTED row, each naming its
+`source`; card#12309):
+
+  * source "2", a repository advisory: the rows the audit prints as
+    `SOURCE2 <pkg>@<ver> <GHSA> <sev> [range] patched in "<ver>" (repo-level on ...)`.
+  * source "1", the OSV scan of the global advisory database: the rows the audit prints as
+    `SOURCE1 <eco>:<pkg>@<ver> <id>`, exported with `patched in "<v>, ..."` listing every `fixed`
+    version of the OSV record's ranges for that package, or a text naming none.
+
+Either way the fix is the lowest listed version above the flagged one (`fix_for`), and a row with
+no such version is left for a human. One advisory both sources report (same package, version and
+GHSA ID) is one row: the one that names a fix, the higher fix when both do. A package flagged by
+several rows, of either source, is one bump. Then, per npm package, it does what the hand-cut
+bumps did (PRs #834, #966, #968):
 
   * `npm update <pkg> --package-lock-only --ignore-scripts` in examples/channel-servers. npm's own
     resolver is the in-range oracle: it moves the package to the newest version every declaring
@@ -64,6 +75,8 @@ PATCHED_PIECE_RE = re.compile(r"^(?:>=|=>)?\s*(?P<v>\d+(?:\.\d+)*)$")
 SNAPSHOT_LINE_RE = re.compile(r"(publish client snapshot )(\d+\.\d+\.\d+)")
 # The shape the audit itself checks before building an API path from an ID (reviewed_records).
 GHSA_RE = re.compile(r"^GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$")
+# The audit's two sources, as each `affected` row names its own.
+SOURCES = ("1", "2")
 
 
 class BumpError(Exception):
@@ -113,25 +126,27 @@ def fix_for(flagged, patched_text):
 
 
 def parse_findings(raw):
-    """The audit's `source2_affected` output -> list of row dicts.
+    """The audit's `affected` output -> list of row dicts.
 
     EMPTY is not "no findings": an audit that exported nothing did not reach its verdict, or the
     output wiring broke, and reading it as zero bumps would be the green-over-nothing this audit
     exists to prevent. `[]` is the audit saying it found nothing to act on.
     """
     if raw is None or raw.strip() == "":
-        raise BumpError("the audit exported no source2_affected output — it did not reach its verdict, "
+        raise BumpError("the audit exported no affected output — it did not reach its verdict, "
                         "or the output is not wired; nothing was decided")
     try:
         rows = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise BumpError(f"source2_affected is not JSON: {exc}") from None
+        raise BumpError(f"affected is not JSON: {exc}") from None
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
-        raise BumpError("source2_affected is not a JSON array of objects")
+        raise BumpError("affected is not a JSON array of objects")
     for r in rows:
+        if r.get("source") not in SOURCES:
+            raise BumpError(f"an affected row names no source \"1\" or \"2\": {json.dumps(r)[:200]}")
         for key in ("ecosystem", "package", "version", "ghsa", "patched"):
             if not isinstance(r.get(key), str):
-                raise BumpError(f"a source2_affected row has no string '{key}': {json.dumps(r)[:200]}")
+                raise BumpError(f"an affected row has no string '{key}': {json.dumps(r)[:200]}")
         # `range` and `severity` are the advisory maintainer's free text and land in a commit, a
         # CHANGELOG line and a PR body: one line, no backticks to break the markdown they sit in.
         for key in ("range", "severity", "repo"):
@@ -140,7 +155,14 @@ def parse_findings(raw):
 
 
 def finding_line(row):
-    """The row as the audit prints it in its FINDINGS block."""
+    """The row on one line, led as the audit leads that source's line in its FINDINGS block.
+
+    A SOURCE2 line is the audit's own. The audit prints a SOURCE1 line only up to the ID; the
+    severity, range and fixes after it come from the exported row.
+    """
+    if row["source"] == "1":
+        return (f'SOURCE1 {row["ecosystem"]}:{row["package"]}@{row["version"]} {row["ghsa"]} {row.get("severity", "")} '
+                f'[{row.get("range", "")}] {row["patched"]} (global advisory database)')
     return (f'SOURCE2 {row["package"]}@{row["version"]} {row["ghsa"]} {row.get("severity", "")} '
             f'[{row.get("range", "")}] {row["patched"]} (repo-level on {row.get("repo", "?")})')
 
@@ -265,38 +287,50 @@ def slug(package):
     return f"{esc(scope)}__{esc(name)}" if scope else esc(name)
 
 
+def classify(row, lock):
+    """One row -> ("candidate", row + fix) or ("manual", {line, reason}).
+
+    A row is a candidate only when it is npm, its patched text is the audit's
+    `patched in "<versions>"` form, a fix above the flagged version is named, and the
+    channel-server lockfile carries that production package at that version.
+    """
+    line = finding_line(row)
+    if not GHSA_RE.match(row["ghsa"]):
+        return "manual", {"line": line, "reason": f'"{row["ghsa"]}" is not a GHSA ID'}
+    if row["ecosystem"].lower() != "npm":
+        return "manual", {"line": line, "reason": f'{row["ecosystem"]} findings are not automated; only the npm channel-server lockfile is'}
+    m = PATCHED_RE.match(row["patched"])
+    if not m:
+        return "manual", {"line": line, "reason": "the audit did not clear this to one fix (no `patched in \"<ver>\"`)"}
+    fix, why = fix_for(row["version"], m.group("text"))
+    if fix is None:
+        return "manual", {"line": line, "reason": why}
+    if not production_instance(lock, row["package"], row["version"]):
+        return "manual", {"line": line, "reason": f'{LOCKFILE} has no production entry {row["package"]}@{row["version"]}'}
+    return "candidate", dict(row, fix=fix)
+
+
 def group_candidates(rows, lock):
     """Rows -> ({package: [row + fix]}, [manual findings]). Pure: decides what to TRY, not what fits.
 
-    Each manual finding is {line, reason}. A row is a candidate only when it is npm, its patched
-    text is the audit's `patched in "<versions>"` form, a fix above the flagged version is named,
-    and the channel-server lockfile carries that production package at that version.
+    Each manual finding is {line, reason}. Rows naming one advisory on one package version (the
+    same GHSA ID, from either source or from two lockfile copies) are one row: a candidate over a
+    manual one, the higher fix between two candidates — a bump that reaches the higher fix clears
+    the lower one too, and still_affected holds every row kept to its fix.
     """
-    candidates, manual, seen = {}, [], set()
+    kept = {}
     for row in rows:
         ident = (row["package"].lower(), row["version"], row["ghsa"])
-        if ident in seen:
-            continue
-        seen.add(ident)
-        line = finding_line(row)
-        if not GHSA_RE.match(row["ghsa"]):
-            manual.append({"line": line, "reason": f'"{row["ghsa"]}" is not a GHSA ID'})
-            continue
-        if row["ecosystem"].lower() != "npm":
-            manual.append({"line": line, "reason": f'{row["ecosystem"]} findings are not automated; only the npm channel-server lockfile is'})
-            continue
-        m = PATCHED_RE.match(row["patched"])
-        if not m:
-            manual.append({"line": line, "reason": "the audit did not clear this to one fix (no `patched in \"<ver>\"`)"})
-            continue
-        fix, why = fix_for(row["version"], m.group("text"))
-        if fix is None:
-            manual.append({"line": line, "reason": why})
-            continue
-        if not production_instance(lock, row["package"], row["version"]):
-            manual.append({"line": line, "reason": f'{LOCKFILE} has no production entry {row["package"]}@{row["version"]}'})
-            continue
-        candidates.setdefault(row["package"], []).append(dict(row, fix=fix))
+        kind, value = classify(row, lock)
+        prev = kept.get(ident)
+        if prev is None or (kind == "candidate" and (prev[0] == "manual" or vkey(value["fix"]) > vkey(prev[1]["fix"]))):
+            kept[ident] = (kind, value)
+    candidates, manual = {}, []
+    for kind, value in kept.values():
+        if kind == "candidate":
+            candidates.setdefault(value["package"], []).append(value)
+        else:
+            manual.append(value)
     return candidates, manual
 
 
@@ -362,13 +396,24 @@ def edit_changelog(text, bullet, snapshot_to, pkg, old):
 
 
 def advisories_phrase(rows):
+    """The rows as the CHANGELOG bullet names them: a global advisory (source 1) by its ID, a
+    repository advisory (source 2) by its ID and the repository it is published on."""
+    global_rows = [r for r in rows if r["source"] == "1"]
     by_repo = {}
     for r in rows:
-        by_repo.setdefault(r.get("repo", "?"), []).append(
-            f'{r["ghsa"]} ({r.get("severity", "")}, range `{r.get("range", "")}`, patched in {r["fix"]})')
-    parts = [f'{"; ".join(v)} on {repo}' for repo, v in by_repo.items()]
-    noun = "repository advisory" if len(rows) == 1 else "repository advisories"
-    return f'{noun} {"; ".join(parts)}'
+        if r["source"] == "2":
+            by_repo.setdefault(r.get("repo", "?"), []).append(r)
+
+    def each(group):
+        return "; ".join(f'{r["ghsa"]} ({r.get("severity", "")}, range `{r.get("range", "")}`, patched in {r["fix"]})'
+                         for r in group)
+
+    parts = []
+    if global_rows:
+        parts.append(f'{"global advisory" if len(global_rows) == 1 else "global advisories"} {each(global_rows)}')
+    for repo, group in by_repo.items():
+        parts.append(f'{"repository advisory" if len(group) == 1 else "repository advisories"} {each(group)} on {repo}')
+    return "; ".join(parts)
 
 
 def bump_texts(pkg, rows, old, new, parents, chain, moved, snap_from, snap_to, base, run_url):
@@ -605,7 +650,7 @@ def main(argv=None, sh=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p1 = sub.add_parser("plan")
-    p1.add_argument("--findings-env", required=True, help="env var holding the audit's source2_affected JSON")
+    p1.add_argument("--findings-env", required=True, help="env var holding the audit's affected JSON")
     p1.add_argument("--base", required=True, help="the branch the bump PRs target")
     p1.add_argument("--plan-out", required=True)
     p1.add_argument("--repo", default=".")
