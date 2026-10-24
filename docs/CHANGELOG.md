@@ -8,6 +8,17 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.107.0] - 2026-10-24
+
+### Added
+
+- **card#12286** — **The bridge now logs one line per GitHub REST request**, so an operator can count its share of the account's API use by path (roundtable FR #643). **On by default, with no switch.** The file is `storage/logs/github-requests-YYYY-MM-DD.log`, one per UTC day (the newest 7 files are kept), separate from `laravel.log`. Each line is four tab-separated fields: UTC time, method, path, status (`ERR` when no response came back). It never holds a token, header, body, query string or fragment. A line that cannot be written is dropped, and the request is unaffected. Format, coverage and a counting command: `CLAUDE_DEPLOYMENT.md` § *GitHub request log*.
+- **card#12198 / DL-493** — **The daily dependency advisory ref matrix now opens the lockfile bump PR itself** when a transitive npm dependency of the channel server has a repository advisory whose fix the declaring parent's range admits: on the `dev` leg, one PR per package against `dev`, in the shape the hand-cut bumps had (the lockfile via `npm update`, the channel-server snapshot bump, the regenerated `resources/client-capabilities.json`, an `[Unreleased]` entry). A fix out of range is reported in the job summary and left for a human. A re-run does not open a second PR for a package that already has one. Repository CI only — nothing an install runs changes. It needs the repository secret `ADVISORY_BUMP_TOKEN` (a token that can push and open PRs on this repo; the workflow token cannot, because PRs it opens run no CI): with a bump to open and no secret, the job fails naming both. It first runs on the schedule once a release carries the updated `dependency-ref-matrix.yml` to `main`.
+
+### Fixed
+
+- **card#12237** — **The dependency audit's lockfile bump job (card#12198) no longer skips a package because another package whose name starts with it has a bump PR open, and no longer gives two packages one branch.** An open `express-rate-limit` bump made the job skip an `express` bump as "another bump PR for express is open", and an open `@hono/node-server` bump did the same to `hono`; both pairs are in the channel server's lockfile. An open PR now counts against a package only when the rest of its branch name is a bare version. The package part of the branch name was lower-cased, with the `@` dropped and the `/` turned into `-`, so `@scope/x` and `scope-x` got one branch and each read the other's PR history at the same version (a closed bump of one would have kept the other from opening); it is now one-to-one: a scoped package's branch is `advisory-bump/npm-<scope>__<name>-<version>`, an unscoped name made only of `a-z`, `0-9`, `-` and single `.`s keeps its branch. Repository CI only — nothing an install runs changes.
+
 ## [0.106.2] - 2026-10-22
 
 ### Fixed
