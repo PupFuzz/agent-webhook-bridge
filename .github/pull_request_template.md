@@ -23,8 +23,8 @@
      wrapping backtick reads as out-of-set. The value set, and when each value is legitimate,
      is owned by the coord plugin's `docs/built-line.md` § "The `Built:` line"; read it there —
      deliberately not restated here, because a second copy drifts. The values above are the four
-     a seat declares for its own work; the fifth, `unattestable — <reason>`, is restricted to two
-     conditions that doc owns and is not offered here. -->
+     a seat declares for its own work; `unattestable` is not offered here — when it applies is
+     that doc's to say. -->
 
 <!-- The card this work is coordinated on. Same line-anchored, unquoted, unbulleted shape as
      `Built:` above; the value is `card#NNNN`. Left EMPTY on purpose — a placeholder after the
