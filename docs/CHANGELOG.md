@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.107.0] - 2026-10-24
+
 ### Added
 
 - **card#12286** — **The bridge now logs one line per GitHub REST request**, so an operator can count its share of the account's API use by path (roundtable FR #643). **On by default, with no switch.** The file is `storage/logs/github-requests-YYYY-MM-DD.log`, one per UTC day (the newest 7 files are kept), separate from `laravel.log`. Each line is four tab-separated fields: UTC time, method, path, status (`ERR` when no response came back). It never holds a token, header, body, query string or fragment. A line that cannot be written is dropped, and the request is unaffected. Format, coverage and a counting command: `CLAUDE_DEPLOYMENT.md` § *GitHub request log*.
