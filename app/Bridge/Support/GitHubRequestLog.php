@@ -32,8 +32,12 @@ final class GitHubRequestLog
     public static function middleware(): callable
     {
         return static fn (callable $handler): callable => static function (RequestInterface $request, array $options) use ($handler): PromiseInterface {
-            // A transfer failure arrives either way: curl rejects the promise, while Laravel's
-            // fake (and its stray-request refusal) throws from inside the stack.
+            // A failure arrives as a rejected promise (curl's failed transfer) or as a throw from
+            // inside the stack: curl's handle and option setup (`CurlFactory::create()`) raises
+            // before anything is sent, and under `Http::fake()` the stub wrapper `wait()`s a
+            // rejected stub such as `Http::failedConnection()` to build its transfer stats, so
+            // that rejection is thrown here too, as is a stray-request refusal. A thrown attempt
+            // left unlogged would undercount.
             try {
                 /** @var PromiseInterface $promise */
                 $promise = $handler($request, $options);

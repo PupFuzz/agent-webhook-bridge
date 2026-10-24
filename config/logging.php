@@ -75,12 +75,14 @@ return [
         ],
 
         // One line per GitHub REST request (App\Bridge\Support\GitHubRequestLog): the line is
-        // the whole message, so the formatter writes nothing around it.
+        // the whole message, so the formatter writes nothing around it. Group-writable because
+        // each day's file belongs to whichever OS user writes first (FPM pool or an artisan run).
         'github_requests' => [
             'driver' => 'daily',
             'path' => storage_path('logs/github-requests.log'),
             'level' => 'info',
             'days' => 7,
+            'permission' => 0664,
             'formatter' => LineFormatter::class,
             'formatter_with' => ['format' => "%message%\n"],
         ],

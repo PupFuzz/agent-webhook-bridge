@@ -555,7 +555,7 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 
 The bridge writes one line for every GitHub REST request it makes, so an operator can count its share of the account's API use by path. It is **on by default, with no switch**: it is one short line appended per request.
 
-- **File:** `storage/logs/github-requests-YYYY-MM-DD.log` in the install, one file per UTC day. Files older than 7 days are deleted (the `github_requests` channel in `config/logging.php`). It is separate from `laravel.log`.
+- **File:** `storage/logs/github-requests-YYYY-MM-DD.log` in the install, one file per UTC day. The newest 7 daily files are kept: older ones are pruned only when a process creates a new day's file, so a day with no GitHub request prunes nothing (Monolog's `RotatingFileHandler`, configured by the `github_requests` channel in `config/logging.php`). It is separate from `laravel.log`.
 - **Line:** four tab-separated fields: UTC time (ISO-8601), HTTP method, request path, response status. The status is `ERR` when no response came back (a connection error or timeout). The path never includes the query string or fragment. No token, header or body is written.
 
   ```text
@@ -570,7 +570,7 @@ The bridge writes one line for every GitHub REST request it makes, so an operato
   ```
 
   For a time window, filter on the first field first (ISO-8601 times sort as text), e.g. `awk -F'\t' '$1 >= "2026-10-24T01:00:00Z" && $1 < "2026-10-24T01:10:00Z"'`.
-- ⚠ **A line that cannot be written is dropped, never an error**: the request goes on as if the log did not exist. The file is created by whichever OS user makes the day's first request (the PHP-FPM pool user or the operator running an artisan command), like `laravel.log`, so that file must be writable by both (a shared group and a group-writable umask), or the other user's lines are lost.
+- ⚠ **A line that cannot be written is dropped, never an error** (by design: a request never fails over a log line), so the count then UNDERSTATES without a signal. Unlike `laravel.log`, which is one `single` file, this channel is `daily`: each day's file is created, and owned, by whichever OS user makes that day's first request (the PHP-FPM pool user or the operator running an artisan command). If the other user cannot write that file, its lines for that day are lost. The channel creates each file mode `0664` (`'permission'` in `config/logging.php`, applied regardless of umask), so the two users must share the file's group: it is the creating user's group, or `storage/logs`'s own group where that directory is setgid.
 
 ## Commands
 

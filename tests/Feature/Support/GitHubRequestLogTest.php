@@ -11,6 +11,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Psr\Http\Message\RequestInterface;
+use RuntimeException;
 use Tests\TestCase;
 
 /**
@@ -20,24 +21,19 @@ use Tests\TestCase;
  */
 class GitHubRequestLogTest extends TestCase
 {
+    /** The per-test dir `Tests\TestCase` points the channel at; it deletes the dir too. */
     private string $dir;
 
     protected function setUp(): void
     {
         parent::setUp();
-        $this->dir = sys_get_temp_dir().'/github-request-log-'.bin2hex(random_bytes(6));
-        mkdir($this->dir);
-        config(['logging.channels.'.GitHubRequestLog::CHANNEL.'.path' => $this->dir.'/github-requests.log']);
+        $this->dir = dirname((string) config('logging.channels.'.GitHubRequestLog::CHANNEL.'.path'));
         Carbon::setTestNow('2026-10-23T14:05:09Z');
     }
 
     protected function tearDown(): void
     {
         Carbon::setTestNow();
-        foreach (glob($this->dir.'/*') ?: [] as $f) {
-            unlink($f);
-        }
-        rmdir($this->dir);
         parent::tearDown();
     }
 
@@ -48,6 +44,24 @@ class GitHubRequestLogTest extends TestCase
         GitHubApi::request('ghp_x', 5)->get(GitHubApi::BASE.'/repos/o/r/pulls/7');
 
         $this->assertSame(["2026-10-23T14:05:09Z\tGET\t/repos/o/r/pulls/7\t404"], $this->lines());
+    }
+
+    /** Each day's file belongs to whichever OS user writes first; the group can write it too. */
+    public function test_the_days_file_is_created_group_writable(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response([], 200)]);
+
+        // A umask that would strip group write, so the mode below is the channel's, not the host's.
+        $umask = umask(0022);
+        try {
+            GitHubApi::request('ghp_x', 5)->get(GitHubApi::BASE.'/repos/o/r');
+        } finally {
+            umask($umask);
+        }
+
+        $files = glob($this->dir.'/github-requests*.log') ?: [];
+        $this->assertCount(1, $files);
+        $this->assertSame('0664', sprintf('%04o', fileperms($files[0]) & 0777));
     }
 
     public function test_a_request_through_the_read_client_is_logged(): void
@@ -66,7 +80,9 @@ class GitHubRequestLogTest extends TestCase
         try {
             GitHubApi::request('ghp_x', 5)->post(GitHubApi::BASE.'/repos/o/r/issues/3/labels', ['labels' => ['x']]);
             $this->fail('the connection failure must still reach the caller');
-        } catch (ConnectionException) {
+        } catch (ConnectionException $e) {
+            $this->assertInstanceOf(ConnectException::class, $e->getPrevious());
+            $this->assertSame('cURL error 28: Operation timed out', $e->getPrevious()->getMessage());
         }
 
         $this->assertSame(["2026-10-23T14:05:09Z\tPOST\t/repos/o/r/issues/3/labels\tERR"], $this->lines());
@@ -75,17 +91,41 @@ class GitHubRequestLogTest extends TestCase
     /** The production transport's shape: curl answers a failed transfer with a rejected promise. */
     public function test_a_rejected_transfer_writes_err_and_still_throws(): void
     {
+        $reason = null;
         $request = GitHubApi::request('ghp_x', 5)
             ->allowStrayRequests([GitHubApi::BASE.'/*'])
-            ->setHandler(fn (RequestInterface $r) => Create::rejectionFor(new ConnectException('cURL error 7: Failed to connect', $r)));
+            ->setHandler(function (RequestInterface $r) use (&$reason) {
+                $reason = new ConnectException('cURL error 7: Failed to connect', $r);
+
+                return Create::rejectionFor($reason);
+            });
 
         try {
             $request->get(GitHubApi::BASE.'/repos/o/r/actions/runs');
             $this->fail('the connection failure must still reach the caller');
-        } catch (ConnectionException) {
+        } catch (ConnectionException $e) {
+            $this->assertSame($reason, $e->getPrevious());
         }
 
         $this->assertSame(["2026-10-23T14:05:09Z\tGET\t/repos/o/r/actions/runs\tERR"], $this->lines());
+    }
+
+    /** A handler can throw before anything is sent, rather than reject; that attempt is counted too. */
+    public function test_a_synchronous_throw_writes_err_and_rethrows_the_same_exception(): void
+    {
+        $thrown = new RuntimeException('raised before sending');
+        $request = GitHubApi::request('ghp_x', 5)
+            ->allowStrayRequests([GitHubApi::BASE.'/*'])
+            ->setHandler(fn () => throw $thrown);
+
+        try {
+            $request->delete(GitHubApi::BASE.'/repos/o/r/issues/4/labels/x');
+            $this->fail('the synchronous throw must still reach the caller');
+        } catch (RuntimeException $e) {
+            $this->assertSame($thrown, $e);
+        }
+
+        $this->assertSame(["2026-10-23T14:05:09Z\tDELETE\t/repos/o/r/issues/4/labels/x\tERR"], $this->lines());
     }
 
     public function test_no_token_query_string_header_or_body_reaches_the_line(): void
