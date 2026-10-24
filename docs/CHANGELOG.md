@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Removed
+
+- **`BRIDGE_GITHUB_API_BASE_URL` is removed.** It was documented as configurable, but nothing read it: every GitHub API call has always gone to `https://api.github.com`. Setting it had no effect, and now it is no longer offered. Delete it from your `.env` if you set it; an existing value is ignored, as before.
+
 ## [0.107.0] - 2026-10-24
 
 ### Added

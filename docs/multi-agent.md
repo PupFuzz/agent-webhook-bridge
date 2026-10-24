@@ -98,7 +98,7 @@ echo_suppression:
     # A name with no matching <name>.yml is a hard config error (fail-closed).
 ```
 
-Per-install settings are NOT in the YAML — they're the same for every agent on an install, so they live in Laravel's `.env` / `config/bridge.php`: the receiver public URL (`BRIDGE_RECEIVER_BASE_URL`), each provider's API base URL (`BRIDGE_KANBAN_API_BASE_URL`, …), and the one base dir (`BRIDGE_DIR`). The API token is read by convention from `<secret_dir>/<provider>/token`, and it is **this agent's own kanban account** — a different board user from the writeback service account at `<secret_dir>/<provider>/writeback-token`, not a second path for one credential. [`CLAUDE_DEPLOYMENT.md` § Required `.env`](../CLAUDE_DEPLOYMENT.md#required-env) contrasts the two.
+Per-install settings are NOT in the YAML — they're the same for every agent on an install, so they live in Laravel's `.env` / `config/bridge.php`: the receiver public URL (`BRIDGE_RECEIVER_BASE_URL`), the kanban API base URL (`BRIDGE_KANBAN_API_BASE_URL`), and the one base dir (`BRIDGE_DIR`). The API token is read by convention from `<secret_dir>/<provider>/token`, and it is **this agent's own kanban account** — a different board user from the writeback service account at `<secret_dir>/<provider>/writeback-token`, not a second path for one credential. [`CLAUDE_DEPLOYMENT.md` § Required `.env`](../CLAUDE_DEPLOYMENT.md#required-env) contrasts the two.
 
 ## Canonical reference install (two disjoint agents)
 

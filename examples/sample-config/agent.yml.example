@@ -13,7 +13,7 @@
 # install, so they live in the Laravel .env / config/bridge.php:
 #   - the database (DB_CONNECTION/DB_*)
 #   - the receiver public URL (BRIDGE_RECEIVER_BASE_URL)
-#   - each provider's API base URL (BRIDGE_KANBAN_API_BASE_URL, ...)
+#   - the kanban API base URL (BRIDGE_KANBAN_API_BASE_URL)
 #   - the secret + config base dir (BRIDGE_DIR)
 # The API token is read by convention from <secret_dir>/<provider>/token.
 
