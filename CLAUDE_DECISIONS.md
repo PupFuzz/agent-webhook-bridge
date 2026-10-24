@@ -9166,3 +9166,26 @@ diagnostic on the failure path.
 - **Consequences.** New: `bin/advisory-bump.py`, `bin/test_advisory_bump.py`. Changed: `.github/workflows/dependency-audit.yml` (the `bump_prs` input, the `ADVISORY_BUMP_TOKEN` secret, the `source2_affected` output, the `bump` job), `.github/workflows/dependency-ref-matrix.yml` (passes both), `.github/dependency-audit/dependency-audit.selftest.sh` (two rows). Docs: `CLAUDE_TESTING.md` § CI, `docs/CHANGELOG.md`. Operator action before the first real bump: create the `ADVISORY_BUMP_TOKEN` repository secret.
 
 *[Annotation, 2026-10-23 (card#12237) — CORRECTING, nothing above removed; this entry stays frozen as written.]* Two claims above are corrected. (1) **Decision 4's `advisory-bump/npm-<package>-<version>` and "another `advisory-bump/npm-<package>-` PR is open" were not what the code did.** The `<package>` part was a lossy slug (lower-cased, the `@` dropped and the `/` and every other character run turned into `-`), so `@scope/x` and `scope-x` got the same branch for the same version and each read the other's PR history; and the open-PR test was a bare prefix match, so an open `express-rate-limit` bump held back every `express` bump, and `@hono/node-server`'s held back `hono`'s. The `<package>` part is now `slug()` in `bin/advisory-bump.py`, whose docstring owns its shape (one-to-one, the scope kept as `<scope>__<name>`, a valid git ref), and an open PR counts against a package only when the rest of its branch after `advisory-bump/npm-<slug>-` is a bare version. The rule this decision made, one open bump PR per package, is unchanged. (2) **(f) understated what the tests fake.** Besides the GitHub calls, `bin/test_advisory_bump.py` fakes `npm update`, `npm version` and `gen-client-capabilities.mjs`: the fake `npm update` sets the version the test names. So Decision 3's in-range answer, which is npm's resolver, is run by no test; the plan cases test what the tool does with npm's answer, not the answer.
+
+## DL-494 — The bridge writes one line per GitHub REST request to its own daily log, on by default with no switch, so an install's share of the account's API use can be counted per path (card#12286)
+
+- **Date:** 2026-10-24
+- **Status:** implemented (card#12286). Runtime: a new log channel; no config key, no client change.
+
+- **Context.** Peer seats measuring GitHub REST use on the shared account (PupFuzz/agent-roundtable#643, for their CI-cost work) found about 2,000 calls an hour from callers no `gh` shim sees, with the bridges a main suspect (`ci_await` sweeps, event enrichment). The bridge recorded failures in `laravel.log` and nothing for successful calls, so its share could not be counted.
+
+- **Decision 1 — one Guzzle middleware on `GitHubApi::request()`.** That builder is the only route to `api.github.com` in `app/` (`GitHubReadClient`, `GitHubWriteClient` and every check or command that builds a read client); the audit of every outbound client is on card#12286. The middleware is `App\Bridge\Support\GitHubRequestLog`.
+
+- **Decision 2 — the line is four tab-separated fields and nothing else:** UTC time, method, the URI's PATH component, status (`ERR` when no response came back, whether the promise was rejected or the stack threw). Only the path is read, so a query string or fragment never reaches the line; no header, token or body is read.
+
+- **Decision 3 — on by default, no switch, 7 days.** A line is about 60 bytes, and a measurement that has to be turned on first is a measurement nobody has when they need it. Retention is fixed in `config/logging.php` (`github_requests`, `daily`, `days` 7). A switch, or a retention key, is a `BRIDGE_*` key plus a `docs/config-schema.md` row if one is ever wanted.
+
+- **Decision 4 — a line that cannot be written is dropped, never an error.** A count line is never worth a request: the write is wrapped and the response returns unchanged. Consequence, named: where the day's file is owned by another OS user (FPM pool vs an operator's artisan run), that user's lines are lost without a signal and the count UNDERSTATES. `CLAUDE_DEPLOYMENT.md` § GitHub request log says so.
+
+- **Decision 5 — only requests to the API host are logged.** Guzzle's redirect middleware sits outside this one, so each redirect hop passes through it; a hop to another host (a release asset's storage redirect) is not a REST call and is skipped. The request that answered with the redirect is logged.
+
+- **What is NOT covered, named.** A command the operator configures for `spawn_detached` that itself calls `gh` or `curl` runs outside the bridge's HTTP client and is not counted. The seat-side channel server (`examples/channel-servers`, Node) was not audited.
+
+- **Alternatives rejected.** (a) *Log through `laravel.log`.* Its lines carry Monolog's prefix and share the file with diagnostics, so a count needs a filter that drifts. (b) *Off by default.* See Decision 3. (c) *A per-client logger in each GitHub client.* A second copy of one behaviour; the shared builder exists so they cannot drift (DL-390).
+
+- **Consequences.** New: `app/Bridge/Support/GitHubRequestLog.php`, `tests/Feature/Support/GitHubRequestLogTest.php`, the `github_requests` channel. Changed: `app/Bridge/Writeback/GitHubApi.php`. Docs: `CLAUDE_DEPLOYMENT.md`, `docs/CHANGELOG.md`.
