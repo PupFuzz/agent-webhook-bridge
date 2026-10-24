@@ -534,6 +534,7 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 | What | Path |
 |---|---|
 | App + dispatch-warning logs | `storage/logs/laravel.log` |
+| GitHub REST request log — one line per request (card#12286) | `storage/logs/github-requests-YYYY-MM-DD.log` — § *GitHub request log* below |
 | Per-agent config | `<config_dir>/<agent>.yml` |
 | Shared-account declaration (optional) | `<config_dir>/shared-identities.json` |
 | Per-`(provider,scope)` HMAC secret | `<secret_dir>/<provider>/webhook-secret-scope-<scope>` (chmod 600) |
@@ -549,6 +550,27 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 | Detached-command logs (`spawn_detached`) | `…/state/spawn-<target>.log` |
 | Event / dispatch ledger | the DB (`webhook_events`, `agent_dispatches`) |
 | Writeback board divergences (DL-300) | the DB (`writeback_board_divergences`) — expected EMPTY; `bridge:stats` prints the counts on every run, and when there is anything to show, each divergence's first-seen / last-seen / observation count and its write site (DL-347) |
+
+### GitHub request log
+
+The bridge writes one line for every GitHub REST request it makes, so an operator can count its share of the account's API use by path. It is **on by default, with no switch**: it is one short line appended per request.
+
+- **File:** `storage/logs/github-requests-YYYY-MM-DD.log` in the install, one file per UTC day. Files older than 7 days are deleted (the `github_requests` channel in `config/logging.php`). It is separate from `laravel.log`.
+- **Line:** four tab-separated fields: UTC time (ISO-8601), HTTP method, request path, response status. The status is `ERR` when no response came back (a connection error or timeout). The path never includes the query string or fragment. No token, header or body is written.
+
+  ```text
+  2026-10-24T01:39:58Z	GET	/repos/o/r/actions/runs	200
+  ```
+
+- **What it covers:** every request built by `App\Bridge\Writeback\GitHubApi::request()`, which every GitHub REST client in `app/` uses (card#12286 audited the outbound HTTP clients in `app/`; none of the others reaches GitHub). A redirect to another host (a release asset's download from GitHub's storage host) is not a REST request and is not logged; the `api.github.com` request that answered the redirect is.
+- **Counting:** requests per method and path over today's file:
+
+  ```bash
+  awk -F'\t' '{print $2, $3}' storage/logs/github-requests-$(date -u +%F).log | sort | uniq -c | sort -rn
+  ```
+
+  For a time window, filter on the first field first (ISO-8601 times sort as text), e.g. `awk -F'\t' '$1 >= "2026-10-24T01:00:00Z" && $1 < "2026-10-24T01:10:00Z"'`.
+- ⚠ **A line that cannot be written is dropped, never an error**: the request goes on as if the log did not exist. The file is created by whichever OS user makes the day's first request (the PHP-FPM pool user or the operator running an artisan command), like `laravel.log`, so that file must be writable by both (a shared group and a group-writable umask), or the other user's lines are lost.
 
 ## Commands
 

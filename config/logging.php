@@ -1,5 +1,6 @@
 <?php
 
+use Monolog\Formatter\LineFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -71,6 +72,17 @@ return [
             'level' => env('LOG_LEVEL', 'debug'),
             'days' => env('LOG_DAILY_DAYS', 14),
             'replace_placeholders' => true,
+        ],
+
+        // One line per GitHub REST request (App\Bridge\Support\GitHubRequestLog): the line is
+        // the whole message, so the formatter writes nothing around it.
+        'github_requests' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/github-requests.log'),
+            'level' => 'info',
+            'days' => 7,
+            'formatter' => LineFormatter::class,
+            'formatter_with' => ['format' => "%message%\n"],
         ],
 
         'slack' => [
