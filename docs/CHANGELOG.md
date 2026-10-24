@@ -14,7 +14,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **npm/zod 4.4.3 → 4.6.7 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; global advisory GHSA-mrhx-c7xc-m3w5 (high, range `< 4.6.6`, patched in 4.6.6)). Opened by the daily dependency advisory ref matrix: 4.6.7 is in range for @modelcontextprotocol/sdk@1.32.1's `^3.25 || ^4.0`; zod-to-json-schema@3.25.2's `^3.25.28 || ^4`, so `npm update zod` sufficed and no override was added. Channel-server snapshot 0.9.72 → 0.9.73.
 - **card#12309** — **The daily dependency advisory ref matrix now opens the lockfile bump PR for an advisory in the global GitHub advisory database too, not only for one published on the dependency's own repository.** Its bump job (card#12198) was given only the repository-advisory findings, so a global advisory on an indirect channel-server dependency kept the check red every day with "No bump to open": the first live run found zod 4.4.3 (GHSA-mrhx-c7xc-m3w5, fixed in 4.6.6) that way. The audit now exports the findings of both its sources in one list, and a global finding's fix is the lowest fixed version its advisory record names above the flagged one; a record that names none is listed in the job summary for a human, with no PR. A package both sources flag gets one PR. A bump PR's body now also carries the `Built:` and `Coordinated in:` lines: the job opens it as a user account, so the PR-body lint asks for both and reported them missing. What makes the audit pass or fail is unchanged. Repository CI only — nothing an install runs changes.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.73. Until you do, seats stay on the client they have, whose lockfile pins zod 4.4.3, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.107.0] - 2026-10-24
 
