@@ -36,7 +36,6 @@ BRIDGE_DIR=/home/kanban/.config/agent-webhook-bridge-prod
 # Per-install endpoints (same for every agent on this install).
 BRIDGE_RECEIVER_BASE_URL=https://bridge.example.com/webhooks   # this bridge's public webhook URL
 BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API base (bridge:provision)
-# BRIDGE_GITHUB_API_BASE_URL=https://api.github.com            # defaults to api.github.com
 
 # The coord roster: the ONE place each agent's kanban user id is read from, at runtime (DL-450).
 # Absolute, the file itself (not a symlink), readable by the PHP-FPM pool user. Unset ⇒ takes

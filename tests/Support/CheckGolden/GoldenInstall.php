@@ -53,7 +53,6 @@ final class GoldenInstall
             'bridge.providers' => [
                 'kanban' => ['api_base_url' => 'https://kanban.example.com/api/v3'],
                 'github' => [
-                    'api_base_url' => 'https://api.github.com',
                     'token_path' => null,
                 ],
             ],
