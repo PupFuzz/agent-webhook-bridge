@@ -2,10 +2,13 @@
 
 namespace Tests;
 
+use App\Bridge\Support\GitHubRequestLog;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 use Illuminate\Http\Client\StrayRequestException;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use PDO;
 use Psr\Http\Message\RequestInterface;
 use Tests\Support\CallingSeatSeal;
@@ -78,12 +81,16 @@ abstract class TestCase extends BaseTestCase
      */
     private array $expectedStrayRequests = [];
 
+    /** The dir this test's GitHub request log is written to; deleted in `tearDown()`. */
+    private ?string $githubRequestLogDir = null;
+
     protected function setUp(): void
     {
         parent::setUp();
 
         $this->preventStrayHttpRequests();
         $this->pointConfigDirAwayFromTheRealInstall();
+        $this->pointGitHubRequestLogAwayFromTheRealInstall();
 
         // Every test starts as a freshly-started serving process would: with NO seat
         // established. The board-tools seat seal is write-once PER PROCESS (card#9170), and
@@ -154,6 +161,9 @@ abstract class TestCase extends BaseTestCase
             $this->assertNoStrayRequestWasSwallowed();
             $this->assertEveryDeclaredStrayActuallyStrayed();
         } finally {
+            if ($this->githubRequestLogDir !== null) {
+                (new Filesystem)->deleteDirectory($this->githubRequestLogDir);
+            }
             parent::tearDown();
         }
     }
@@ -350,6 +360,25 @@ abstract class TestCase extends BaseTestCase
             'bridge.config_dir' => self::NO_INSTALL_DIR,
             'bridge.secret_dir' => self::NO_INSTALL_DIR,
         ]);
+    }
+
+    /**
+     * ⛔ The `github_requests` log channel must never write into the checkout's `storage/logs`.
+     *
+     * Every request built by `GitHubApi::request()` writes a line to that channel
+     * ({@see GitHubRequestLog}), faked or not, so without this every test that stubs a GitHub
+     * call appended to the real `storage/logs/github-requests-*.log` — the operator's count of
+     * this install's API use, on a deployed checkout. Each test gets its own dir, so a test
+     * that reads the log back reads only its own lines. `forgetChannel()` drops a logger
+     * already resolved against the old path; a test that changes the path after a request was
+     * logged must do the same. `GitHubRequestLogIsolationTest` is the witness.
+     */
+    private function pointGitHubRequestLogAwayFromTheRealInstall(): void
+    {
+        $this->githubRequestLogDir = sys_get_temp_dir().'/bridge-tests-github-requests-'.bin2hex(random_bytes(6));
+        mkdir($this->githubRequestLogDir, 0700);
+        config(['logging.channels.'.GitHubRequestLog::CHANNEL.'.path' => $this->githubRequestLogDir.'/github-requests.log']);
+        Log::forgetChannel(GitHubRequestLog::CHANNEL);
     }
 
     /**

@@ -230,6 +230,15 @@ fi
 grep -q 'POPULATION STATEMENT' "$TMP/step_summary" \
   && ok "…and it reaches the step summary, not only stdout" \
   || fail "the statement never reached GITHUB_STEP_SUMMARY (the aimla lesson: a summary written after an exit is a summary nobody sees)"
+# THIS REPO ONLY (card#12198, card#12309): the AFFECTED rows of both sources exported in machine
+# form, which the `bump` job reads instead of the log. Gated on jq's exit status, so an absent
+# output is a NO.
+aff() { sed -n 's/^affected=//p' "$TMP/gh_output"; }
+jq -e 'length == 4 and all(.[]; .source == "2" and .ecosystem == "composer" and .package == "league/commonmark"
+         and .version == "2.9.0" and (.patched | type == "string") and (.range | type == "string"))
+       and any(.[]; .ghsa == "GHSA-f8fg-pg57-v4j8")' <<< "$(aff)" >/dev/null 2>&1 \
+  && ok "…and affected exports the same four rows in machine form, each marked source 2" \
+  || fail "affected should carry the four commonmark rows as source 2, got '$(aff)'"
 
 out="$(run_audit "$CLEAN" "$(seam "$OSV_CLEAN" "$ADV_FIXTURE" "$REG_NONE")")"; rc=$?
 if [ "$rc" -eq 0 ] && has "$out" 'VERDICT: GREEN'; then
@@ -241,6 +250,10 @@ fi
   && [ "$(pop resolved)" = "1" ] && [ "$(pop unresolved)" = "1" ] \
   && ok "…and the population output names what was read (1 lockfile, 2 production packages, 1 resolved, 1 not)" \
   || fail "clean-leg population wrong: $(sed -n 's/^population=//p' "$TMP/gh_output")"
+# THIS REPO ONLY (card#12198): the clean leg still EXPORTS the field, as an empty array.
+[ "$(aff)" = "[]" ] \
+  && ok "…and affected is [] — exported, and empty" \
+  || fail "the clean leg's affected should be [], got '$(aff)'"
 has "$out" 'commonmark-devonly' \
   && fail "a packages-dev entry leaked into the production population" \
   || ok "…and the dev-only package is excluded (2 packages, not 3)"
@@ -851,6 +864,49 @@ if [ "$rc" -ne 0 ] && grep -q 'SOURCE1 .*GHSA-glob-al00-0001' "$TMP/source1.out"
   ok "a SOURCE 1 finding reds on its own and is counted (source 1 is wired, not decorative)"
 else
   fail "a source-1 finding must red and be counted (rc=$rc): $out"
+fi
+# THIS REPO ONLY (card#12309): a source 1 finding reaches the bump job's input, not only the log.
+# The zod row is the live one (run 40090530682): the pinned scanner's own output for zod 4.4.3 in
+# the channel-server lockfile, field-projected (fixtures/README.md). The verdict is asserted beside
+# each export, so the export is seen not to move what makes the audit fail.
+jq -e 'length == 1 and .[0].source == "1" and .[0].ecosystem == "Packagist" and .[0].package == "some/pkg"
+         and .[0].ghsa == "GHSA-glob-al00-0001" and .[0].patched == "no fixed version in its OSV record"' \
+     <<< "$(aff)" >/dev/null 2>&1 \
+  && ok "…and affected carries it as a source 1 row, naming no fix where its record names none" \
+  || fail "the source-1 finding should be exported as one source 1 row, got '$(aff)'"
+OSV_ZOD='cat "$FIX/osv/zod-GHSA-mrhx-c7xc-m3w5.json";'
+out="$(run_audit "$CLEAN" "$(seam "$OSV_ZOD" "$ADV_FIXTURE" "$REG_NONE")")"; rc=$?
+if [ "$rc" -ne 0 ] && [ "$(pop findings)" = "1" ] && [ "$(pop errors)" = "0" ] \
+   && jq -e '. == [{source: "1", ecosystem: "npm", package: "zod", version: "4.4.3", repo: "",
+                    ghsa: "GHSA-mrhx-c7xc-m3w5", severity: "high", range: "< 4.6.6",
+                    patched: "patched in \"4.6.6\""}]' <<< "$(aff)" >/dev/null 2>&1; then
+  ok "the live zod 4.4.3 source 1 finding → RED as before (findings=1, errors=0), and exported with its OSV fix 4.6.6 for the bump job"
+else
+  fail "zod 4.4.3 should red on its one finding and be exported with fix 4.6.6 (rc=$rc, findings='$(pop findings)', errors='$(pop errors)', affected='$(aff)'): $out"
+fi
+OSV_MULTI='cat "$FIX/osv/synthetic-multi-pkg.json";'
+out="$(run_audit "$CLEAN" "$(seam "$OSV_MULTI" "$ADV_FIXTURE" "$REG_NONE")")"; rc=$?
+if [ "$rc" -ne 0 ] && [ "$(pop findings)" = "2" ] && [ "$(pop errors)" = "0" ] \
+   && jq -e 'length == 2
+             and .[0] == {source: "1", ecosystem: "npm", package: "multi-pkg", version: "2.0.1", repo: "",
+                          ghsa: "GHSA-synt-h000-0001", severity: "moderate",
+                          range: "< 1.2.3 || >= 2.0.0, < 2.0.5", patched: "patched in \"1.2.3, 2.0.5\""}
+             and .[1].ghsa == "GHSA-synt-h000-0002" and .[1].range == "<= 3.0.0"
+             and .[1].patched == "no fixed version in its OSV record"' <<< "$(aff)" >/dev/null 2>&1; then
+  ok "a source 1 record's fixes: every fixed event of this package's SEMVER ranges is listed; another package's range, a GIT range and a last_affected bound name no fix"
+else
+  fail "the synthetic multi-range record should export two rows, fixes 1.2.3 and 2.0.5 only on the first (rc=$rc, affected='$(aff)'): $out"
+fi
+# The wiring the live run lacked: the bump job's plan step must read the output the report writes.
+# A static read of the yml, since that job runs outside the extracted blocks.
+BUMP_JOB="$(sed -n '/^  bump:$/,$p' "$CALLEE")"
+fenv="$(sed -n 's/.*--findings-env \([A-Za-z_][A-Za-z0-9_]*\).*/\1/p' <<< "$BUMP_JOB" | head -n 1)"
+if [ -n "$fenv" ] && has "$BUMP_JOB" "$fenv: \${{ needs.audit.outputs.affected }}" \
+   && has "$(cat "$CALLEE")" "affected: \${{ steps.audit.outputs.affected }}" \
+   && has "$(extract "$CALLEE" dep-audit-report)" "printf 'affected=%s"; then
+  ok "the bump job's plan step reads --findings-env $fenv = needs.audit.outputs.affected, the output the report block writes"
+else
+  fail "the bump job's plan step must read the audit's affected output (findings env '${fenv:-none}')"
 fi
 
 # a seam that reads stdin must not eat the loop driving it — a truncated population is the

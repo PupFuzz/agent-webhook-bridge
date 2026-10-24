@@ -7,6 +7,10 @@
 # `dependency-ref-matrix.yml`, which must live on the DEFAULT branch — see that file.
 # The pair is documented in the coord plugin's `docs/DEPENDENCY-AUDIT.md`.
 #
+# THIS REPO ADDS ONE JOB AND ONE OUTPUT TO THE TEMPLATE (card#12198, card#12309): the `bump` job at
+# the end of this file, and the `affected` output it reads (the AFFECTED rows of BOTH sources).
+# CLAUDE_TESTING.md § CI owns the list of differences a template refresh must keep.
+#
 # WHY THE CALLEE LIVES ON THE INTEGRATION BRANCH. The caller couples to it with
 # `uses: …@<integration>` rather than a SHA pin, so this implementation can be iterated
 # without a release. That coupling is deliberate and is argued in the caller.
@@ -59,6 +63,21 @@ on:
         description: The git ref to audit (the caller passes one matrix leg per audited branch).
         required: true
         type: string
+      bump_prs:
+        description: >-
+          Open a lockfile bump PR against `ref` for each in-range npm finding of either source
+          (the `bump` job, bin/advisory-bump.py; card#12198, card#12309). The caller sets it on
+          the INTEGRATION leg only: the release ref is fixed by a release, never bumped directly.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      ADVISORY_BUMP_TOKEN:
+        description: >-
+          The token the `bump` job pushes and opens PRs with — NOT the workflow GITHUB_TOKEN,
+          because a PR opened with GITHUB_TOKEN runs no CI. Read only when `bump_prs` is true; absent
+          with a bump to open, that job FAILS naming it.
+        required: false
     outputs:
       population:
         description: >-
@@ -72,6 +91,14 @@ on:
       status:
         description: '`audited` only when both sources completed; `error` otherwise.'
         value: ${{ jobs.audit.outputs.status }}
+      affected:
+        description: >-
+          JSON array, one object per AFFECTED row of either source (source "1" or "2", ecosystem,
+          package, version, repo, ghsa, severity, range, patched) — the FINDINGS lines in machine
+          form, for the `bump` job. A source 1 row's `patched` lists the `fixed` versions of its
+          OSV record, and its `repo` is empty. `[]` when neither source reported one; EMPTY means
+          the audit never exported it.
+        value: ${{ jobs.audit.outputs.affected }}
 
 permissions:
   contents: read
@@ -86,6 +113,7 @@ jobs:
       population: ${{ steps.audit.outputs.population }}
       findings: ${{ steps.audit.outputs.findings }}
       status: ${{ steps.audit.outputs.status }}
+      affected: ${{ steps.audit.outputs.affected }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -680,6 +708,42 @@ jobs:
           # Source 1 is handed the DISCOVERED lockfiles explicitly; it is never pointed at the
           # repo root. That is what keeps committed SBOM directories out of it, independently of
           # whichever exclusion flag the current scanner version spells.
+          #
+          # THIS REPO ONLY (card#12198, card#12309): the AFFECTED rows of BOTH sources in machine
+          # form, exported as `affected` for the `bump` job. Created here, before any leg can
+          # fail, so the export is `[]` rather than absent on a run that stopped early — that run
+          # is RED on its own error, and the bump job reads `[]` as nothing to bump, never as a
+          # verdict. Nothing reads this file to decide the verdict.
+          : > "$WORK/affected.ndjson"
+          # One row per (package, vulnerability) of the scanner's results. `patched` lists every
+          # `fixed` event of the OSV record's SEMVER and ECOSYSTEM ranges for this package (a GIT
+          # range's events are commit hashes, not versions); the bump planner picks the lowest
+          # one above the flagged version. `range` is display text only.
+          S1_ROWS_JQ='
+            def addterm($t): (if length == 0 then [""] else . end)
+              | .[-1] |= (if . == "" then $t else . + ", " + $t end);
+            def interval_text:   # one OSV range -> one text per interval its events describe
+              reduce (.events // [])[] as $e ([];
+                if $e.introduced != null then
+                  . + [ (if $e.introduced == "0" then "" else ">= \($e.introduced)" end) ]
+                elif $e.fixed != null then addterm("< \($e.fixed)")
+                elif $e.last_affected != null then addterm("<= \($e.last_affected)")
+                elif $e.limit != null then addterm("< \($e.limit)")
+                else . end)
+              | map(if . == "" then "all versions" else . end);
+            .results[]? as $r | $r.packages[]? as $p | $p.vulnerabilities[]? as $v
+            | ($p.package.name // "") as $name | ($p.package.ecosystem // "") as $eco
+            | [ ($v.affected // [])[]
+                | select((.package.name // "" | ascii_downcase) == ($name | ascii_downcase))
+                | select((.package.ecosystem // "" | ascii_downcase) == ($eco | ascii_downcase))
+                | (.ranges // [])[] | select(.type == "SEMVER" or .type == "ECOSYSTEM") ] as $rs
+            | ([ $rs[] | (.events // [])[] | .fixed // empty ] | unique) as $fixed
+            | {source: "1", ecosystem: $eco, package: $name, version: ($p.package.version // ""),
+               repo: "", ghsa: ($v.id // ""),
+               severity: ($v.database_specific.severity // "" | ascii_downcase),
+               range: ([ $rs[] | interval_text[] ] | join(" || ")),
+               patched: (if $fixed == [] then "no fixed version in its OSV record"
+                         else "patched in \"\($fixed | join(", "))\"" end)}'
           run_source1() {
             local rc=0
             osv_scan "${MANIFESTS[@]}" > "$WORK/osv.json" 2> "$WORK/osv.err" || rc=$?
@@ -702,6 +766,7 @@ jobs:
             FINDINGS=$((FINDINGS + n))
             if [ "$n" -gt 0 ]; then
               FINDING_LINES="${FINDING_LINES}$(jq -r '.results[]?.packages[]? as $p | $p.vulnerabilities[]? | "  SOURCE1 \($p.package.ecosystem):\($p.package.name)@\($p.package.version) \(.id)"' "$WORK/osv.json")"$'\n'
+              jq -c "$S1_ROWS_JQ" "$WORK/osv.json" >> "$WORK/affected.ndjson"
             fi
           }
           # --- end dep-audit-source1
@@ -941,6 +1006,7 @@ jobs:
               elif [ "$n" -gt 0 ]; then
                 FINDINGS=$((FINDINGS + n))
                 FINDING_LINES="${FINDING_LINES}$(printf '%s' "$hits" | jq -r --arg p "$name" --arg v "$version" --arg r "$repo" '.[] | select(.verdict == "AFFECTED") | "  SOURCE2 \($p)@\($v) \(.ghsa) \(.severity) [\(.range)] \(.patched) (repo-level on \($r))"')"$'\n'
+                printf '%s' "$hits" | jq -c --arg e "$eco" --arg p "$name" --arg v "$version" --arg r "$repo" '.[] | select(.verdict == "AFFECTED") | {source: "2", ecosystem: $e, package: $p, version: $v, repo: $r, ghsa, severity, range, patched}' >> "$WORK/affected.ndjson"
               fi
             done < "$WORK/resolved.tsv"
           }
@@ -1007,6 +1073,7 @@ jobs:
               printf 'population=%s\n' "$POPULATION_JSON"
               printf 'findings=%s\n' "$FINDINGS"
               printf 'status=%s\n' "$status"
+              printf 'affected=%s\n' "$(jq -sc '.' "$WORK/affected.ndjson")"
             } >> "$GITHUB_OUTPUT"
           }
           verdict() {
@@ -1032,3 +1099,51 @@ jobs:
           emit_outputs
           verdict
           # --- end dep-audit-main
+
+  # THE LOCKFILE BUMP PR (card#12198, DL-493; card#12309) — this repo's addition to the template,
+  # not part of it. On the leg whose caller sets `bump_prs` (the integration branch), every
+  # in-range npm finding of EITHER source gets the PR a human used to cut by hand:
+  # `bin/advisory-bump.py`'s docstring owns what "in range" means, what the PR carries, how a
+  # package both sources flag becomes one bump, and when a run skips a package instead of opening
+  # a second PR. An out-of-range fix is reported in the job summary and left for a human.
+  # `!cancelled()` rather than the default `success()`, because the audit job is RED whenever it
+  # has a finding, which is exactly when this job has work; it reads the audit's `affected`
+  # output, never its log.
+  bump:
+    needs: audit
+    if: ${{ !cancelled() && inputs.bump_prs }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The workflow token stays read-only: the push and the PR go through ADVISORY_BUMP_TOKEN, in
+    # one step below, and nothing here falls back to GITHUB_TOKEN.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          # gen-client-capabilities.mjs reads dev's first-parent history and refs/remotes/origin/dev.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '20'
+      - name: Build one bump branch per in-range package (no token in this step)
+        id: plan
+        env:
+          AFFECTED: ${{ needs.audit.outputs.affected }}
+          BUMP_BASE: ${{ inputs.ref }}
+        run: >-
+          python3 bin/advisory-bump.py plan --findings-env AFFECTED
+          --base "$BUMP_BASE" --plan-out "$RUNNER_TEMP/advisory-bump-plan.json"
+      # ⛔ THE ONLY STEP THAT HOLDS THE TOKEN. To move to a GitHub App token, add an
+      # actions/create-github-app-token step before this one and point ADVISORY_BUMP_TOKEN at its
+      # output; nothing else changes. The script hands the value to `gh` (and to git through
+      # `gh auth git-credential`) in a child environment only — never on an argv, never echoed.
+      # Also after a plan step that failed on ONE package: the plan it wrote still carries the
+      # bumps that built, and the job is red on the plan step either way.
+      - name: Push and open the bump PRs (ADVISORY_BUMP_TOKEN)
+        if: ${{ !cancelled() && steps.plan.outcome != 'skipped' }}
+        env:
+          ADVISORY_BUMP_TOKEN: ${{ secrets.ADVISORY_BUMP_TOKEN }}
+        run: python3 bin/advisory-bump.py open --plan "$RUNNER_TEMP/advisory-bump-plan.json"

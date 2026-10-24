@@ -1,0 +1,52 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "examples/channel-servers/package-lock.json",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "zod",
+            "version": "4.4.3",
+            "ecosystem": "npm"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-mrhx-c7xc-m3w5",
+              "aliases": [
+                "CVE-2023-54404"
+              ],
+              "affected": [
+                {
+                  "package": {
+                    "ecosystem": "npm",
+                    "name": "zod",
+                    "purl": "pkg:npm/zod"
+                  },
+                  "ranges": [
+                    {
+                      "events": [
+                        {
+                          "introduced": "0"
+                        },
+                        {
+                          "fixed": "4.6.6"
+                        }
+                      ],
+                      "type": "SEMVER"
+                    }
+                  ]
+                }
+              ],
+              "database_specific": {
+                "severity": "HIGH"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
