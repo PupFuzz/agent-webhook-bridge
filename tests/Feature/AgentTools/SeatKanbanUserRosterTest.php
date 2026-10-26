@@ -12,6 +12,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\CoordRosterFixture;
 use Tests\Support\PastedTokenFixture;
+use Tests\Support\TempPath;
 use Tests\TestCase;
 
 /**
@@ -47,7 +48,7 @@ class SeatKanbanUserRosterTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->dir = sys_get_temp_dir().'/tools-roster-'.uniqid();
+        $this->dir = TempPath::unique('tools-roster');
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
         chmod($this->dir.'/kanban/writeback-token', 0o600);
