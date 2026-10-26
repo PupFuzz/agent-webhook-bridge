@@ -93,7 +93,7 @@ class DlCollisionGateTest extends TestCase
     {
         $on = $this->workflow()['on'] ?? null;
         $this->assertIsArray($on);
-        $this->assertSame(['opened', 'reopened', 'synchronize'], $on['pull_request']['types'] ?? null);
+        $this->assertSame(['opened', 'reopened', 'synchronize', 'edited'], $on['pull_request']['types'] ?? null, 'a base-branch retarget fires only `edited`');
         $this->assertArrayNotHasKey('paths', $on['pull_request'], 'a paths: filter that stops matching makes the gate ABSENT, not red');
         $this->assertArrayNotHasKey('paths-ignore', $on['pull_request']);
     }
