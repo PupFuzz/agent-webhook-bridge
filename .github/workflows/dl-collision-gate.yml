@@ -38,12 +38,14 @@ name: DL collision gate
 
 on:
   pull_request:
-    # `edited` is absent on purpose: this gate reads the decision log and the
-    # target branch, never the PR title, so a title edit changes none of its
-    # inputs. `synchronize` is load-bearing — a re-push is what re-reads the
-    # target branch tip, and re-reading it is the only way the second of two
-    # concurrently-minted numbers is ever caught.
-    types: [opened, reopened, synchronize]
+    # `edited` is load-bearing: retargeting a PR to another base branch fires
+    # ONLY `edited`, and the target branch is one of this gate's inputs, so
+    # without it a retargeted PR keeps a verdict judged against the old target.
+    # A title or body edit fires it too, which is harmless (a seconds-long job,
+    # no PR-controlled code run). `synchronize` is load-bearing — a re-push is
+    # what re-reads the target branch tip, and re-reading it is the only way the
+    # second of two concurrently-minted numbers is ever caught.
+    types: [opened, reopened, synchronize, edited]
 
 permissions:
   contents: read
