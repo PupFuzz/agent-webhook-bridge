@@ -14,7 +14,9 @@ namespace Tests\Support;
  * is about.
  *
  * ⚑ What this does NOT cover: the `sys_get_temp_dir()` prefix is the host's (`TMPDIR`), and a
- * host whose temp dir itself contains the needle still reds such a test, on every run.
+ * host whose temp dir itself contains the needle still reds such a test, on every run. And a
+ * needle made only of `g`–`z` letters (`only`, `worm`) CAN match inside the random part, so an
+ * absence assertion on such a word over output carrying this path is still a flake.
  */
 final class TempPath
 {
