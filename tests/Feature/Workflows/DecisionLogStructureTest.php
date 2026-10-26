@@ -22,8 +22,8 @@ use Tests\TestCase;
  *
  * ⚑ WHAT THIS DELIBERATELY DOES NOT DO. It is a structural pin, not a content one: it says
  * nothing about which entry a correction belongs in, and it is not a gate — no exit code and
- * no CI accept-set moves, because `decision-log.py`'s exit contract has machine consumers
- * (`dl-collision-gate.yml`) and widening what that gate REFUSES is not this card's to decide.
+ * no CI accept-set moves: the DL collision gate is agent-board-toolkit's (`dl-collision-gate.yml`
+ * runs it, card#12338), and widening what that gate REFUSES is not this card's to decide.
  * It lives beside {@see ChannelServerVersionAgreementTest}, the other real-tree invariant in
  * this directory.
  */

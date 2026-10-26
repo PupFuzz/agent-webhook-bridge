@@ -102,3 +102,6 @@ _stage/
 # plugin's `coord:init-solo` and re-synced by it; local to the machine that runs the agent, not
 # part of this project's published source. CLAUDE.md imports it where present.
 /CLAUDE_AGENTBOARD.md
+
+# agent-board-toolkit, checked out inside the workspace by .github/actions/agent-board-toolkit in CI (card#12338)
+.agent-board-toolkit/

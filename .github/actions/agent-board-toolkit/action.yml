@@ -1,0 +1,26 @@
+name: Check out agent-board-toolkit
+description: >-
+  Checks out PupFuzz/agent-board-toolkit at ONE pinned SHA into
+  .agent-board-toolkit/ under the workspace and exports AGENT_BOARD_TOOLKIT_DIR
+  to the rest of the job, for steps that run a toolkit bin/ tool from a plain
+  `run:` step rather than through one of its composite actions:
+  bin/pr-base-snapshot.sh, and bin/test_decision_log.py's copy of the toolkit
+  grammar (card#12338). This file is the ONE place that SHA is written for those
+  steps. dependabot does not bump a `ref:` input, so the SHA is held equal to the
+  `uses:` pin in .github/workflows/dl-collision-gate.yml by DlCollisionGateTest,
+  which reds while the two differ. The caller must run actions/checkout of THIS
+  repo first: a local composite action only exists in the workspace once the
+  repo is checked out.
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        repository: PupFuzz/agent-board-toolkit
+        ref: fa5a08b037afede671e57055e274e625cfc3e5d0  # v0.51.0
+        path: .agent-board-toolkit
+        persist-credentials: false
+
+    - name: Export AGENT_BOARD_TOOLKIT_DIR
+      shell: bash
+      run: echo "AGENT_BOARD_TOOLKIT_DIR=$GITHUB_WORKSPACE/.agent-board-toolkit" >> "$GITHUB_ENV"

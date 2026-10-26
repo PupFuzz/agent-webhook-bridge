@@ -243,17 +243,30 @@ class TheFixtureIsTheRealArtifact(unittest.TestCase):
                 self.assertIn('\n'.join(source[a:b + 1]), fixture)
 
 
+def _tracked_markdown() -> list[str]:
+    """Every `*.md` this repository TRACKS, as absolute paths.
+
+    "This checkout's docs" is the tracked set, not whatever sits under the work tree:
+    CI checks another repository out INSIDE it (agent-board-toolkit, at
+    `.agent-board-toolkit/`, card#12338), and that repository's docs are its own to
+    lint. Asking git which files are this repository's needs no exclusion list.
+    """
+    out = subprocess.run(['git', '-C', _REPO, 'ls-files', '-z', '--', '*.md'],
+                         capture_output=True, text=True, timeout=30, check=True)
+    return sorted(os.path.join(_REPO, p) for p in out.stdout.split('\0') if p)
+
+
 class ThisCheckoutIsGreen(unittest.TestCase):
     """GREEN, on the real surface — not on a copy of it."""
 
     def test_every_markdown_file_in_this_checkout_is_clean(self) -> None:
-        findings = lint.scan_paths([_REPO])
+        findings = lint.scan_paths(_tracked_markdown())
         self.assertEqual([], [f.render() for f in findings])
 
     def test_the_walk_actually_reached_the_docs_it_claims_to_have_read(self) -> None:
         """An empty result is a measurement that never happened until shown
         otherwise. The clean run above means nothing if the walk found no files."""
-        files = {os.path.relpath(p, _REPO) for p in lint.markdown_files([_REPO])}
+        files = {os.path.relpath(p, _REPO) for p in _tracked_markdown()}
         for must in ('docs/multi-host.md', 'docs/provider-adapters.md',
                      'docs/writeback.md', 'CLAUDE_DEPLOYMENT.md',
                      'docs/config-schema.md', 'docs/CHANGELOG.md'):

@@ -160,6 +160,10 @@ jobs:
         with:
           fetch-depth: 0   # need the merge commit's first parent, and the merge base, to diff base..head
 
+      # bin/pr-base-snapshot.sh, in the version-bump step below, runs the toolkit's
+      # tool from the checkout this action makes (card#12338).
+      - uses: ./.github/actions/agent-board-toolkit
+
       # Both files carry the snapshot version and only `npm version` /
       # `npm install` move them together, so a hand-edited manifest drifts the
       # lock silently — measured at 0.7.1 against a manifest that reached 0.8.3

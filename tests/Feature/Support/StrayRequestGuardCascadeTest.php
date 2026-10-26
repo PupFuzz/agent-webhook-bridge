@@ -2,7 +2,7 @@
 
 namespace Tests\Feature\Support;
 
-use Tests\Feature\Workflows\DlCollisionGateTest;
+use Tests\Feature\Workflows\PrTitleLintTest;
 use Tests\Support\NestedSuite;
 use Tests\TestCase;
 
@@ -25,7 +25,7 @@ use Tests\TestCase;
  * cascade begins after this test's own `tearDown()` returns. So the subject is a real run over
  * two throwaway `RefreshDatabase` classes, and the verdict is read from phpunit's own JUnit log
  * rather than from stdout — the log is phpunit's, not a printer's, so it cannot drift with one.
- * Same shape as {@see DlCollisionGateTest}, which executes the real CI
+ * Same shape as {@see PrTitleLintTest}, which executes the real CI
  * bash rather than re-implementing its predicate.
  *
  * ⚑ WHAT IT DOES NOT COVER. `parent::tearDown()` can itself throw — `Mockery::close()` raises

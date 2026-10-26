@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The bridge's DL-NNN allocator and its collision guard — one header grammar, two jobs.
+"""The bridge's DL-NNN allocator — `next`, with a veto over every local decision log.
 
 Until card#7157 this repo had NO way to mint a DL number. The only in-repo
 method was `max(^## DL-NNN) + 1` over this checkout's CLAUDE_DECISIONS.md, and
@@ -14,38 +14,42 @@ in an unrelated test failure, not because anything checked.
            counter does NOT cover — and it is not nothing — is stated on
            `cmd_next` and in DL-295's bounds; read it before trusting the word
            atomic.
-    check  refuse a decision log that uses one number twice — the CI backstop.
 
-Both read `## DL-NNN` headers through `header_numbers()`. A second spelling of
-that grammar is how the guard and the allocator would come to disagree about
-what an entry is, so there is exactly one.
+THE CI BACKSTOP AND THE HEADER GRAMMAR ARE THE TOOLKIT'S (card#12338).
+`.github/workflows/dl-collision-gate.yml` runs agent-board-toolkit's
+`dl-collision-gate` action, and the veto here reads headers through that
+toolkit's `bin/_decision-log.py`, path-loaded from beside the `next-dl` this
+command allocates with. One grammar, owned by one file: a second spelling of it
+is how the gate and the allocator would come to disagree about what an entry is.
+The import contract (`header_scan`'s return shape) is declared in that file's
+docstring; nothing here restates it.
 
 Exit codes are the contract:
   0 ok
-  2 usage, or an input that could not be read
-  3 (next)  no allocator on PATH — REFUSED, see the `next` docstring
-  4 (next)  the allocated number is already used in a local checkout
-  5 (check) the log at head uses one number twice
-  6 (check) a number this change adds is already in use on the target branch
-  7 (check) this change adds an entry whose header carries no number at all
+  2 usage, or the allocator failed or printed no number
+  3 no allocator on PATH, or no `_decision-log.py` beside it — REFUSED, see `cmd_next`
+  4 the allocated number is already used in a local checkout
 """
 
 import argparse
 import glob
+import importlib.util
 import os
 import re
 import shutil
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
+from types import ModuleType
+
+# Path-loading the grammar caches bytecode beside its TARGET — the toolkit's
+# bin/, which hosts glob onto PATH (toolkit card#6871). The flag only governs
+# loads made after it is set, so the entry point sets it.
+sys.dont_write_bytecode = True
 
 EXIT_USAGE = 2
 EXIT_NO_ALLOCATOR = 3
 EXIT_LOCAL_COLLISION = 4
-EXIT_DUPLICATE_AT_HEAD = 5
-EXIT_ALREADY_ON_TARGET = 6
-EXIT_UNNUMBERED_AT_HEAD = 7
 
 DECISION_LOG = "CLAUDE_DECISIONS.md"
 
@@ -56,262 +60,31 @@ DECISION_LOG = "CLAUDE_DECISIONS.md"
 ALLOCATOR = "next-dl"
 ALLOCATOR_PROJECT = "bridge"
 
+# The toolkit file that owns the `## DL-NNN` grammar, a sibling of `next-dl` in
+# the toolkit's bin/ since v0.51.0.
+GRAMMAR = "_decision-log.py"
+
 # Checkouts to veto an allocation against, beyond this clone's own worktrees.
 # Colon-separated globs; the default is the layout CLAUDE_DEPLOYMENT.md installs.
 CHECKOUT_GLOBS_ENV = "BRIDGE_DL_CHECKOUT_GLOBS"
 DEFAULT_CHECKOUT_GLOBS = "~/agent-webhook-bridge-*"
 
-# A DL ENTRY is an H2 whose text starts `DL-` followed by digits. Deliberately
-# not a search for `DL-\d+` anywhere: this log embeds kanban-board
-# cross-references ("Mirrors kanban-board DL-196") and correlation-token prose,
-# and a bare grep counts those as bridge entries — measured returning 197 when
-# the real max was 188. Leading zeros are stripped by `int()` so the log's own
-# two spellings (`## DL-031`, `## DL-291`) name the same number.
-_HEADER = re.compile(r"^##[ \t]+DL-0*(\d+)\b")
-# An H2 that opens a DL entry and carries NO number — `## DL-TBD`, the placeholder
-# an entry is drafted with before `next` has been run. `_HEADER` cannot see it (it
-# requires digits), so until card#9936 such an entry was invisible to BOTH of
-# `cmd_check`'s assertions AND absent from its population line: two changes could
-# each mint `## DL-TBD`, both pass, and the log ends up with two entries claiming
-# one non-identifier. Matched here so it is REFUSED rather than uncounted.
-_UNNUMBERED = re.compile(r"^##[ \t]+DL-(?!0*\d)")
-_FENCE = re.compile(r"^\s*(```|~~~)")
 
+def load_grammar(allocator: str) -> tuple[ModuleType | None, Path]:
+    """The toolkit grammar beside `allocator`, resolved through its symlink, and where it was looked for.
 
-def header_scan(text: str) -> tuple[list[tuple[int, int]], int, list[tuple[str, int]]]:
-    """(every DL entry header outside a code fence, how many were SKIPPED inside one, the UNNUMBERED ones).
-
-    Lines inside a fenced code block are skipped: a decision entry that shows
-    what a header looks like is documentation, not a second entry, and treating
-    it as one would refuse the very change that documents this file.
-
-    The second element is the population statement, and it exists because the
-    skip is unbounded in one direction: ONE unbalanced ``` or ~~~ swallows every
-    later `## DL-` header in the file, and a `check` over the remainder still
-    prints OK — a clean result over a population nobody named. It is reported
-    rather than assumed away. Control on this repo's own log, 2026-08-21:
-    fence-aware 181 == fence-blind 181, so nothing is skipped today; what makes
-    the day it moves visible is that the run prints the delta, not that a number
-    was written down here.
+    A PATH install links each toolkit tool into a directory such as
+    `~/.local/bin`, so the sibling is looked for in the directory the link
+    RESOLVES to: the toolkit checkout the allocator itself runs from, so the
+    grammar and the allocator come from the same checkout.
     """
-    found: list[tuple[int, int]] = []
-    unnumbered: list[tuple[str, int]] = []
-    skipped = 0
-    fence: str | None = None
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        m = _FENCE.match(line)
-        if m:
-            if fence is None:
-                fence = m.group(1)
-            elif line.strip().startswith(fence):
-                fence = None
-            continue
-        if _UNNUMBERED.match(line):
-            # Fenced the same way, and for the same reason: an entry shown as an
-            # EXAMPLE of a placeholder is documentation, not a placeholder.
-            if fence is None:
-                unnumbered.append((line.strip(), lineno))
-            else:
-                skipped += 1
-            continue
-        m = _HEADER.match(line)
-        if m is None:
-            continue
-        if fence is not None:
-            skipped += 1
-            continue
-        found.append((int(m.group(1)), lineno))
-    return found, skipped, unnumbered
-
-
-def header_numbers(text: str) -> list[tuple[int, int]]:
-    """`header_scan`'s entries alone, for the callers that do not report a population."""
-    return header_scan(text)[0]
-
-
-def _read(path: str, label: str) -> str:
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except OSError as exc:
-        print(f"decision-log: cannot read the {label} decision log {path}: {exc}", file=sys.stderr)
-        raise SystemExit(EXIT_USAGE) from exc
-
-
-def _scan(path: str, label: str) -> tuple[list[tuple[int, int]], int, list[tuple[str, int]]]:
-    """`header_scan` over a file, stating on stderr what the fences hid from it."""
-    entries, skipped, unnumbered = header_scan(_read(path, label))
-    if skipped:
-        print(
-            f"decision-log: WARNING: {skipped} `## DL-` line(s) in the {label} log {path} sit "
-            "inside a code fence and were NOT counted. That is correct for an entry quoted as an "
-            "example, and WRONG if a fence is unbalanced — one unclosed ``` or ~~~ hides every "
-            "later header, and this run's verdict would then cover a truncated population.",
-            file=sys.stderr,
-        )
-    return entries, skipped, unnumbered
-
-
-def _population(entries: list[tuple[int, int]], skipped: int, unnumbered: list[tuple[str, int]]) -> str:
-    """The head log's denominator, printed beside every OK so it is never implicit.
-
-    The unnumbered term is the third leg and it exists because it was MISSING: a
-    `## DL-TBD` header was neither counted nor skipped, so the two figures agreed
-    with each other while the population they described was short (card#9936).
-    """
-    total = len(entries) + skipped + len(unnumbered)
-    return (
-        f"population: {len(entries)} of {total} `## DL-` header lines counted, "
-        f"{skipped} skipped inside code fences, {len(unnumbered)} carrying no number"
-    )
-
-
-def _refuse_unnumbered(path: str, unnumbered: list[tuple[str, int]]) -> bool:
-    """Name every numberless DL header handed in, and say whether there were any."""
-    for text, lineno in unnumbered:
-        print(
-            f"decision-log: {path} line {lineno} opens a DL entry with NO NUMBER: {text}",
-            file=sys.stderr,
-        )
-    if unnumbered:
-        print(
-            "decision-log: a placeholder header is not an identifier. Two changes can each "
-            "write one, and neither this guard's duplicate assertion nor its target-branch "
-            "assertion can see it — both read `## DL-NNN`. Allocate the number with "
-            "`python3 bin/decision-log.py next` and renumber the entry, its CHANGELOG line, "
-            "its commit messages and the PR title together.",
-            file=sys.stderr,
-        )
-    return bool(unnumbered)
-
-
-def cmd_check(args: argparse.Namespace) -> int:
-    """Refuse a decision log that uses one DL number twice.
-
-    TWO assertions, and the SECOND is why `--target` exists:
-
-      1. The log AT HEAD must not repeat a number. Because the log is
-         append-only, a change that mints a number its own base already carries
-         shows up here — the entry it collides with is still in the file.
-
-      2. A number this change ADDS (present at head, absent at `--base`) must not
-         already be in use at `--target`, the LIVE tip of the branch being merged
-         into. Assertion 1 is blind to this: if the target branch gained the
-         colliding entry after the `--base` snapshot was taken, the file at head
-         does not contain it either.
-
-    WHAT `--base` MUST BE — a PAIRING with `--head`, not the fork point. "Present
-    at head, absent at base" means "this change minted it" only while head is a
-    snapshot containing base plus this change and nothing else. The CI caller
-    satisfies that by passing the FIRST PARENT of the merge commit it is running
-    on — `HEAD^1`, read by `bin/pr-base-snapshot.sh` — while `--head` is the
-    working tree at `github.sha`, that same merge. The two are ONE snapshot of the
-    base branch by construction, because the base end is the commit the head end
-    RECORDS as its parent; they must not be sourced independently.
-    `.github/workflows/dl-collision-gate.yml` owns that invariant and the measured
-    consequence of breaking it. Hand this command a base its head does not
-    contain — the merge base, say — and `added` silently gains the base branch's
-    OWN post-fork entries, which then read as this change's mints.
-
-    ⛔ NOT `github.event.pull_request.base.sha`, which the CI caller passed until
-    card#8527. GitHub does not refresh that field on every `synchronize`, so it
-    can LAG the base tip the merge commit was built on: measured 2026-09-02 on
-    PR #640 (run 33598959720), `base.sha` 549c894 against a merge commit whose
-    first parent was 7a11085. Paired that way this command returned 6 and the gate
-    refused an innocent PR, naming a number the base branch had minted itself.
-
-    STATED BOUND — this is the whole of what the guard claims, and it is
-    deliberately narrower than "no duplicate DL can be minted":
-
-      * It does NOT catch two OPEN changes that each mint the same NEW number.
-        Neither number is on the target branch yet and neither file contains the
-        other's entry, so both pass. The first to merge stays green; the second
-        reds only when it is re-checked AFTER that merge — which is a re-run, not
-        an automatic consequence of the merge. A change last checked before the
-        merge carries a stale green.
-      * It reads three files. It knows nothing about a number claimed from the
-        board counter but not yet written into any log, and nothing about a
-        checkout on another host. `next` is what covers those; this is the
-        backstop for when `next` was bypassed.
-      * The UNNUMBERED assertion below refuses a placeholder this change ADDS,
-        not every placeholder in the file — ON THE PAIRED `--base`/`--target`
-        INVOCATION, which is the one CI makes: one whose header line is IDENTICAL
-        (after `strip()`, which is what the budget is keyed on) to one on the
-        base snapshot is reported and allowed through, because refusing it would
-        red every innocent PR cut after it landed rather than the change that
-        wrote it — so a change that EDITS an inherited placeholder's own wording
-        is adding one by this predicate, and is refused. A HEAD-ONLY run refuses
-        EVERY placeholder in the file instead, because with no base snapshot it
-        cannot tell an added placeholder from an inherited one.
-    """
-    head_headers, head_skipped, head_unnumbered = _scan(args.head, "head")
-
-    seen: dict[int, int] = {}
-    for number, lineno in head_headers:
-        if number in seen:
-            print(
-                f"decision-log: DL-{number} is used TWICE in {args.head} "
-                f"(line {seen[number]} and line {lineno}).",
-                file=sys.stderr,
-            )
-            return EXIT_DUPLICATE_AT_HEAD
-        seen[number] = lineno
-
-    if (args.base is None) != (args.target is None):
-        # Half the inputs would run half the assertion and still print OK, which
-        # is the "clean result over an unnamed population" shape this guard is
-        # here to stop. Neither, or both.
-        print(
-            "decision-log: --base and --target are given together or not at all "
-            "(one alone would report OK having skipped assertion 2).",
-            file=sys.stderr,
-        )
-        return EXIT_USAGE
-
-    if args.base is None:
-        if _refuse_unnumbered(args.head, head_unnumbered):
-            return EXIT_UNNUMBERED_AT_HEAD
-        print(f"OK: {args.head} carries {len(head_headers)} DL entries, no number twice.")
-        print(f"({_population(head_headers, head_skipped, head_unnumbered)})")
-        print("(no --base/--target given — the target-branch assertion did not run)")
-        return 0
-
-    base_entries, _, base_unnumbered = _scan(args.base, "base")
-    base_numbers = {n for n, _ in base_entries}
-    target_numbers = {n for n, _ in _scan(args.target, "target")[0]}
-
-    # COUNTED, not set-membership: a change that adds a SECOND copy of a
-    # placeholder heading already on base is adding one, and a set would read the
-    # text as inherited and let both through — the two-entries-claiming-one-
-    # non-identifier shape this assertion exists to refuse.
-    budget = Counter(text for text, _ in base_unnumbered)
-    added_unnumbered = []
-    for text, lineno in head_unnumbered:
-        if budget[text]:
-            budget[text] -= 1
-            continue
-        added_unnumbered.append((text, lineno))
-    if _refuse_unnumbered(args.head, added_unnumbered):
-        return EXIT_UNNUMBERED_AT_HEAD
-
-    added = [(n, lineno) for n, lineno in head_headers if n not in base_numbers]
-    collisions = [(n, lineno) for n, lineno in added if n in target_numbers]
-    if collisions:
-        for number, lineno in collisions:
-            print(
-                f"decision-log: DL-{number} (added at {args.head} line {lineno}) is "
-                f"ALREADY IN USE on the target branch.",
-                file=sys.stderr,
-            )
-        return EXIT_ALREADY_ON_TARGET
-
-    added_desc = ", ".join(f"DL-{n}" for n, _ in added) if added else "none"
-    print(
-        f"OK: this change adds {len(added)} DL entries ({added_desc}); "
-        "no number it adds is already in use on the target branch, and the log "
-        "at head uses no number twice."
-    )
-    print(f"({_population(head_headers, head_skipped, head_unnumbered)})")
-    return 0
+    path = Path(allocator).resolve().parent / GRAMMAR
+    if not path.is_file():
+        return None, path
+    spec = importlib.util.spec_from_file_location("abtk_decision_log", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module, path
 
 
 def _worktree_dirs(repo_root: Path) -> tuple[list[Path], str | None]:
@@ -332,12 +105,14 @@ def _worktree_dirs(repo_root: Path) -> tuple[list[Path], str | None]:
     return [Path(line[len("worktree ") :]) for line in out.splitlines() if line.startswith("worktree ")], None
 
 
-def local_dl_headers(repo_root: Path) -> tuple[dict[int, list[str]], list[str]]:
-    """Every DL number written into a decision log this host can reach.
+def local_dl_headers(repo_root: Path, grammar: ModuleType) -> tuple[dict[int, list[str]], list[str]]:
+    """Every DL number written into a decision log this host can reach, read by the toolkit `grammar`.
 
     Returns (number -> the logs carrying it, warnings). The board counter cannot
     see any of these until they are pushed AND stamped, which is the hole this
-    veto exists to cover.
+    veto exists to cover. A log left inside an unclosed code fence hides every
+    heading after the fence from the grammar, so it is named in a warning rather
+    than vetoed over silently.
     """
     dirs, warning = _worktree_dirs(repo_root)
     warnings = [warning] if warning else []
@@ -364,7 +139,13 @@ def local_dl_headers(repo_root: Path) -> tuple[dict[int, list[str]], list[str]]:
         except OSError as exc:
             warnings.append(f"could not read {log} ({exc}) — an in-flight mint there is INVISIBLE to this veto")
             continue
-        for number, _ in header_numbers(text):
+        entries, _, _, unclosed_fence = grammar.header_scan(text)
+        if unclosed_fence is not None:
+            warnings.append(
+                f"{log} opens a code fence at line {unclosed_fence} that is never closed — a DL "
+                "heading after that line is INVISIBLE to this veto"
+            )
+        for number, _ in entries:
             found.setdefault(number, []).append(str(log))
     return found, warnings
 
@@ -377,7 +158,10 @@ def cmd_next(args: argparse.Namespace) -> int:
     written anywhere. When that allocator is absent this command REFUSES rather
     than falling back to a `max + 1` scan of the log: the offline scan is the
     method card#7157 indicts, and performing it under a tool's name would launder
-    the same hazard, not fix it.
+    the same hazard, not fix it. It refuses the same way when the toolkit's
+    `_decision-log.py` is not beside the allocator (a toolkit older than v0.51.0),
+    and BEFORE the allocator runs: a claim reserves a number, so refusing after it
+    would burn one for nothing.
 
     ⛔ THE ATOMICITY IS THE ALLOCATOR'S AND IT IS CONDITIONAL — nothing here can
     see which arm answered. `next-dl` claims atomically from the board's
@@ -414,6 +198,18 @@ def cmd_next(args: argparse.Namespace) -> int:
         )
         return EXIT_NO_ALLOCATOR
 
+    grammar, grammar_path = load_grammar(allocator)
+    if grammar is None:
+        print(
+            f"decision-log: REFUSING to mint — `{ALLOCATOR}` resolves to {Path(allocator).resolve()},\n"
+            f"but there is no {grammar_path}. The veto reads `## DL-NNN` headers through the\n"
+            "agent-board toolkit's own grammar (v0.51.0 or later), so that the CI gate and this\n"
+            "allocator agree on what an entry is. Upgrade the toolkit, re-run its PATH symlink\n"
+            "loop (the toolkit's docs/INSTALL.md section 2), then re-run.",
+            file=sys.stderr,
+        )
+        return EXIT_NO_ALLOCATOR
+
     cmd = [allocator, ALLOCATOR_PROJECT] + (["--peek"] if args.peek else [])
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.stderr.strip():
@@ -434,7 +230,7 @@ def cmd_next(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     number = int(m.group(1))
 
-    local, warnings = local_dl_headers(Path(args.repo_root))
+    local, warnings = local_dl_headers(Path(args.repo_root), grammar)
     for warning in warnings:
         print(f"decision-log: WARNING: {warning}", file=sys.stderr)
 
@@ -466,7 +262,7 @@ def cmd_next(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="decision-log.py",
-        description="Allocate a bridge DL number, or refuse a decision log that reuses one.",
+        description="Allocate a bridge DL number and veto it against local decision logs.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -482,17 +278,6 @@ def main(argv: list[str] | None = None) -> int:
         help="the checkout whose worktrees are scanned (default: this script's repo)",
     )
     p_next.set_defaults(func=cmd_next)
-
-    p_check = sub.add_parser("check", help="refuse a decision log that uses one number twice")
-    p_check.add_argument("--head", required=True, help="the decision log as this change leaves it")
-    p_check.add_argument(
-        "--base",
-        help="the decision log at the snapshot --head is the merge of; in CI the FIRST PARENT "
-        "of that merge commit (bin/pr-base-snapshot.sh), NOT the merge base and NOT the "
-        "pull_request event's base.sha (see the cmd_check docstring)",
-    )
-    p_check.add_argument("--target", help="the decision log at the live tip of the target branch")
-    p_check.set_defaults(func=cmd_check)
 
     args = parser.parse_args(argv)
     return args.func(args)
