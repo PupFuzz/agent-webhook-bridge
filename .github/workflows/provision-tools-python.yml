@@ -46,6 +46,10 @@ name: bin/ python unit tests
 # on the change that invalidates it is a decoration. The cost is this job running on
 # app/ PRs — seconds — and that is the correct price for the guarantee.
 #
+# `.github/actions/agent-board-toolkit/**` is in the filter because that action's
+# pinned SHA picks the toolkit grammar bin/test_decision_log.py runs against
+# (card#12338), and a toolkit bump touches no file under bin/.
+#
 # Node is set up because check-channel-snapshot.py's suite LAUNCHES a real channel
 # server: the tool's whole claim is that launching is more precise than enumerating
 # files, and a mocked launch would assert the mock. Its cases skip LOUDLY (a banner on
@@ -58,6 +62,7 @@ on:
       - 'app/**'
       - 'examples/channel-servers/**'
       - '.github/workflows/provision-tools-python.yml'
+      - '.github/actions/agent-board-toolkit/**'
   push:
     branches: [dev, main]
     paths:
@@ -65,6 +70,7 @@ on:
       - 'app/**'
       - 'examples/channel-servers/**'
       - '.github/workflows/provision-tools-python.yml'
+      - '.github/actions/agent-board-toolkit/**'
 
 permissions:
   contents: read
@@ -74,6 +80,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # bin/test_decision_log.py runs `next` against the toolkit's REAL
+      # `_decision-log.py`, read from this checkout (card#12338); without it the
+      # module errors rather than skips.
+      - uses: ./.github/actions/agent-board-toolkit
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '20'

@@ -47,7 +47,7 @@ jobs:
       # commit was built on — measured on PR #640, run 33598959720, 2026-09-02:
       # `base.sha` 549c894 against a merge commit whose first parent was 7a11085.
       # ⚠ THIS CALL SITE HAD NO LIVE RED ON THAT SHAPE, and it is moved for ONE
-      # derivation across four callers, not to fix one. The action's own contract
+      # derivation shared by each gate that needs a base, not to fix one. The action's own contract
       # (`action.yml` at the pinned sha) consumes `base-sha` ONLY through
       # `merge-base(base, head)`, and a lagging base cannot move that fork point
       # unless the PR branch has itself merged the base — measured: a branch cut
@@ -62,6 +62,10 @@ jobs:
       # identical `base-sha` input on the toolkit's and kanban-board's own
       # release-artifacts-gate.yml has that same NARROW exposure (branch merged the
       # base), not the PR #640 one; those are their repos' cards, at that shape.
+      # bin/pr-base-snapshot.sh runs the toolkit's tool from the checkout the step
+      # below makes (card#12338).
+      - uses: ./.github/actions/agent-board-toolkit
+
       - name: Derive the base snapshot from the checked-out merge commit
         id: pr-base
         shell: bash

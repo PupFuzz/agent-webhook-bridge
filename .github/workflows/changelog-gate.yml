@@ -33,7 +33,12 @@ jobs:
       # The base handed to the action is the merge commit's own first parent, not
       # `github.event.pull_request.base.sha`, which can lag it (card#8527; the
       # release-artifacts-gate.yml comment owns the measurement). A push event
-      # carries no PR, so the step is skipped and the action runs as a push run.
+      # carries no PR, so both steps are skipped and the action runs as a push run.
+      # bin/pr-base-snapshot.sh runs the toolkit's tool from the checkout this
+      # action makes (card#12338).
+      - uses: ./.github/actions/agent-board-toolkit
+        if: github.event_name == 'pull_request'
+
       - name: Derive the base snapshot from the checked-out merge commit
         if: github.event_name == 'pull_request'
         id: pr-base
