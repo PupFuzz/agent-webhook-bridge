@@ -163,20 +163,23 @@ def cmd_next(args: argparse.Namespace) -> int:
     and BEFORE the allocator runs: a claim reserves a number, so refusing after it
     would burn one for nothing.
 
-    ⛔ THE ATOMICITY IS THE ALLOCATOR'S AND IT IS CONDITIONAL — nothing here can
-    see which arm answered. `next-dl` claims atomically from the board's
-    DL-sequence endpoint when that endpoint answers, and falls back SILENTLY to
-    its own offline `max + 1` scan when the claim route is absent (404) or
-    unreachable: rc 0, a plausible number on stdout, an EMPTY stderr. Measured
-    2026-08-21 against a stub board answering 404 on the claim route — `next-dl
-    bridge` printed `DL-0294` at rc 0 with nothing on stderr, and this command
-    printed `DL-294` as an allocation. Two agents on that path get one number,
-    which is card#7157's defect wearing a tool's name. It is RECORDED, not
-    cross-checked here: the toolkit owns the distinction (card#7214 — a strict
-    mode that refuses when the counter did not answer), and a claim-vs-peek
-    compare in this file would agree exactly when the hazard is present, because
-    both routes degrade to the SAME offline scan. DL-295 bound (e) is the whole
-    statement, with the measurements.
+    ⛔ THE ATOMICITY IS THE ALLOCATOR'S AND IT IS CONDITIONAL. `next-dl` claims
+    atomically from the board's DL-sequence endpoint when that endpoint answers.
+    When the claim route is absent (404), or the board's config does not
+    resolve, it falls back to its own offline `max + 1` scan, which is NOT
+    atomic: two agents on that path can get one number, which is card#7157's
+    defect wearing a tool's name. The fallback still exits 0 with a plausible
+    number on stdout, as a claim does, but since toolkit card#7214 it is
+    ANNOUNCED on stderr, naming the cause, and this command relays `next-dl`'s
+    stderr onto its own. A caller reading only stdout and the exit code still
+    cannot tell a scanned number from a claimed one. On the claim, an
+    unreachable endpoint or a 2xx carrying no number refuses (toolkit
+    card#10230); under `--peek` those two fall back as well. `next-dl
+    --require-counter` refuses at rc 4 instead of falling back; this command
+    does not pass that flag. Nothing here inspects which arm answered: the
+    toolkit owns the distinction, and `next-dl`'s header states it per cause.
+    DL-295 bound (e) records the silent behaviour this replaced, with its
+    measurements, and that entry's card#12338 amendment records the change.
 
     The veto is the half the counter cannot do. A number written into a decision
     log on a branch that has not been pushed is invisible server-side, so an
@@ -191,8 +194,10 @@ def cmd_next(args: argparse.Namespace) -> int:
             "source that can see a number claimed by another agent moments ago. THIS\n"
             "COMMAND has deliberately no offline fallback: `max(^## DL-NNN) + 1` over this\n"
             "checkout cannot see an unpushed parallel mint, which is the defect card#7157\n"
-            f"filed. (`{ALLOCATOR}` itself HAS one and takes it silently when the board's\n"
-            "claim endpoint does not answer — DL-295 bound (e), toolkit card#7214.)\n"
+            f"filed. (`{ALLOCATOR}` itself HAS one: when the board's claim route is absent,\n"
+            "or the board's config does not resolve, it mints from a non-atomic scan and\n"
+            "says so on stderr; `--require-counter` makes it refuse instead — DL-295\n"
+            "bound (e), toolkit card#7214.)\n"
             f"Install the agent-board toolkit so `{ALLOCATOR}` resolves, then re-run.",
             file=sys.stderr,
         )
