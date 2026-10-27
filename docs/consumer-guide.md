@@ -118,7 +118,7 @@ is *superseded*: it holds nothing open and decides nothing. Two senders:
   says only that every run DELIVERED so far is complete**, not that the head is: a workflow GitHub has
   queued that no delivery has reported yet is not counted, so `all_terminal` is `null` and the summary
   says so. Not sent to you while you hold a `ci_await` on the head — your await answers it from
-  GitHub's list — except for an await registered while a delivery is settling the head, whose seat can still get this event. Pushed live where `impl_ci` was (`channel.route_intents: true`); staged to the inbox
+  GitHub's list — except for an await registered while a delivery is settling the head, whose seat can still get this event. Not sent to you either, for that head, once you cancel your `ci_await` on it with `cancelled: true`, until you register on it again (card#12430). Pushed live where `impl_ci` was (`channel.route_intents: true`); staged to the inbox
   either way. A failed run still sends its own `impl_ci_failed` at once, and a `cancelled` run with no newer run
   of its workflow still sends its own `impl_ci` (the head's `ci_settled` follows when it settles — red, unless a newer run of that workflow supersedes it — and is itself best-effort).
   ⚠ **The aggregate is per-head and best-effort.** It is edge-triggered from `workflow_run` deliveries
@@ -144,6 +144,7 @@ the base branch's required contexts — run `ci-read` once on the head before ac
 | key | meaning |
 |---|---|
 | `repo`, `head_sha`, `pr` | the head; `pr` as registered for an await (null when none was given), and for the aggregate the PR the runs' deliveries named, else null |
+| `source` | which sender sent it (card#12430): `wait` (your `ci_await`) or `aggregate` (the per-head aggregate) |
 | `basis` | which run list was judged: `github_read` (your `ci_await` read GitHub's list for the head) or `delivered_runs` (the per-head aggregate judged the runs `workflow_run` deliveries reported — a run not yet delivered is not in it) |
 | `runs` | every run seen on the head — on `basis: github_read`, every run a commit started (`push`, `pull_request`) — each `{workflow, conclusion, html_url, superseded}` — `workflow` is the run's workflow name, `conclusion` GitHub's string for it, `superseded` true for a run a newer run of its workflow decides instead |
 | `all_terminal` | `true` on `basis: github_read` — every run GitHub lists for the head that a commit started is terminal, and every job of each deciding run (card#12072); `null` on `basis: delivered_runs` — not known, since no full list was read (it was `true` on both before card#11938) |

@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Retention;
 
+use App\Bridge\CiAwait\CiAwaitCancellations;
 use App\Bridge\CiAwait\CiHeadSettlementLedger;
 use App\Bridge\Support\BridgePaths;
 use App\Models\CiHeadRun;
@@ -132,14 +133,16 @@ final class RetentionService
 
     /**
      * The per-head aggregate's bookkeeping (card#11667) on the events' window: tracked runs last
-     * touched before the cutoff, and settled-state rows written before it. Each table is bounded
+     * touched before the cutoff, and settled-state rows and cancelled-wait rows (card#12430)
+     * written before it. A head a seat cancelled on that runs again after its row is pruned is
+     * sent to that seat again. Each table is bounded
      * by `$batch` like the events leg. A head whose runs are pruned and that then runs again is
      * judged on the runs tracked from then on — a new state, so never a resend of an old one.
      */
     private function pruneCiHeadRows(Carbon $cutoff, bool $dry, ?int $batch): int
     {
         $deleted = 0;
-        foreach ([[(new CiHeadRun)->getTable(), 'coalesce(updated_at, created_at) < ?'], [CiHeadSettlementLedger::TABLE, 'created_at < ?']] as [$table, $older]) {
+        foreach ([[(new CiHeadRun)->getTable(), 'coalesce(updated_at, created_at) < ?'], [CiHeadSettlementLedger::TABLE, 'created_at < ?'], [CiAwaitCancellations::TABLE, 'created_at < ?']] as [$table, $older]) {
             $rows = DB::table($table)->whereRaw($older, [$cutoff]);
             if ($batch === null) {
                 $deleted += (clone $rows)->count();

@@ -77,6 +77,12 @@ final class HeadRuns
     /** `basis` of a `ci_settled` judged on the runs `workflow_run` deliveries reported: those are complete, nothing more. */
     public const BASIS_DELIVERED_RUNS = 'delivered_runs';
 
+    /** `source` of a `ci_settled` sent by the seat's own `ci_await` (card#12430). */
+    public const SOURCE_WAIT = 'wait';
+
+    /** `source` of a `ci_settled` sent by the per-head aggregate, {@see CiHeadAggregate} (card#12430). */
+    public const SOURCE_AGGREGATE = 'aggregate';
+
     /**
      * @param  list<array{id: int, workflow: string, workflow_id: ?int, run_number: ?int, status: string, conclusion: ?string, html_url: string, event: string, run_attempt: ?int}>  $runs
      * @param  array<int, true>  $deciding  the ids of the latest run per workflow
@@ -207,17 +213,19 @@ final class HeadRuns
 
     /**
      * The `ci_settled` payload both senders carry, judged on the list `$basis` names
-     * ({@see BASIS_GITHUB_READ} or {@see BASIS_DELIVERED_RUNS}). `all_terminal` is `true` only on a
+     * ({@see BASIS_GITHUB_READ} or {@see BASIS_DELIVERED_RUNS}) and naming its sender in `$source`
+     * ({@see SOURCE_WAIT} or {@see SOURCE_AGGREGATE}). `all_terminal` is `true` only on a
      * GitHub read; on delivered runs it is null — not known, because no list of every run was read.
      *
      * @return array<string, mixed>
      */
-    public function settledPayload(string $repoName, string $headSha, ?int $pr, DateTimeInterface $measuredAt, string $basis): array
+    public function settledPayload(string $repoName, string $headSha, ?int $pr, DateTimeInterface $measuredAt, string $basis, string $source): array
     {
         return [
             'repo' => $repoName,
             'head_sha' => $headSha,
             'pr' => $pr,
+            'source' => $source,
             'basis' => $basis,
             'runs' => $this->payloadRuns(),
             'all_terminal' => $basis === self::BASIS_GITHUB_READ ? true : null,

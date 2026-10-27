@@ -409,6 +409,7 @@ class CiAwaitTest extends TestCase
                 'runs_verdict' => 'red',
                 'non_success_runs' => [['workflow' => 'E2E', 'conclusion' => 'failure', 'html_url' => 'https://github.com/octo/widgets/actions/runs/2']],
                 'measured_at' => '2026-10-03T10:00:00.000Z',
+                'source' => 'wait',
             ],
         ], array_diff_key($a, ['id' => 1, 'ts' => 1, 'agent' => 1]));
         $this->assertChannelPushes(['seat-a' => ['ci_settled'], 'seat-b' => ['ci_settled']]);

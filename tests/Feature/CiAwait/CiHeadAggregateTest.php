@@ -407,6 +407,63 @@ class CiHeadAggregateTest extends TestCase
         $this->assertSame(['ci_settled', 'ci_settled'], $this->pushedKinds());
     }
 
+    public function test_a_cancelled_await_silences_the_aggregate_for_that_seat_but_not_for_a_seat_that_never_waited(): void
+    {
+        $this->writeSeat(name: 'seat-b');
+        $this->awaitHead();
+        $cancel = $this->callTool('ci_await_cancel', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->assertTrue($cancel->ok, json_encode($cancel->body()) ?: '');
+        $this->assertTrue($cancel->body()['result']['cancelled']);
+
+        $this->requestAll([1 => 'CI', 2 => 'Lint']);
+        $this->complete(1, 'CI', 'success');
+        $this->complete(2, 'Lint', 'success');
+        // A re-run is a new settled state of the head: still nothing for the seat that cancelled.
+        $this->deliver('requested', 1, 'CI', null, attempt: 2);
+        $this->complete(1, 'CI', 'success', attempt: 2);
+
+        $this->assertSame([], $this->kinds('seat-a'), 'the seat cancelled its wait on this head, so no ci_settled reaches it from either sender');
+        $this->assertSame(['ci_settled', 'ci_settled'], $this->kinds('seat-b'), 'a seat that never waited still gets the aggregate, once per settled state');
+        $this->assertSame(['aggregate', 'aggregate'], $this->settledSources('seat-b'));
+        $this->assertSame(['ci_settled', 'ci_settled'], $this->pushedKinds(), 'only seat-b\'s events are pushed');
+        $this->assertSame(0, DB::table('ci_head_settlements')->where('agent', 'seat-a')->count(), 'nothing is recorded as sent to the seat that cancelled');
+    }
+
+    public function test_a_cancel_that_removed_nothing_does_not_silence_the_aggregate(): void
+    {
+        $cancel = $this->callTool('ci_await_cancel', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->assertFalse($cancel->body()['result']['cancelled']);
+
+        $this->requestAll([1 => 'CI']);
+        $this->complete(1, 'CI', 'success');
+
+        $this->assertSame(['ci_settled'], $this->kinds('seat-a'), 'a hook may cancel unconditionally: cancelled: false mutes nothing');
+        $this->assertSame(['aggregate'], $this->settledSources('seat-a'));
+    }
+
+    public function test_a_new_ci_await_after_a_cancel_gets_events_again_from_both_senders(): void
+    {
+        $this->awaitHead();
+        $this->assertTrue($this->callTool('ci_await_cancel', ['repo' => self::REPO, 'head_sha' => self::SHA])->body()['result']['cancelled']);
+        $this->githubLists([[1, 'CI', 'queued', null]]);
+        $out = $this->callTool('ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->assertSame('waiting', $out->body()['result']['state'], json_encode($out->body()) ?: '');
+
+        $this->githubLists([[1, 'CI', 'completed', 'success']]);
+        $this->requestAll([1 => 'CI']);
+        $this->complete(1, 'CI', 'success');
+        $this->assertSame(['wait'], $this->settledSources('seat-a'), 'the new wait is answered from its own read');
+        $this->assertSame(['github_read'], $this->settledBases());
+
+        // The wait is answered and gone; registering again cleared the cancel, so the seat is like
+        // any other agent of the aggregate's and a new state of the head reaches it.
+        $this->deliver('requested', 1, 'CI', null, attempt: 2);
+        $this->complete(1, 'CI', 'success', attempt: 2);
+
+        $this->assertSame(['wait', 'aggregate'], $this->settledSources('seat-a'));
+        $this->assertSame(['ci_settled', 'ci_settled'], $this->pushedKinds());
+    }
+
     // ---- helpers -------------------------------------------------------------------------
 
     private function awaitHead(): void
@@ -447,9 +504,18 @@ class CiHeadAggregateTest extends TestCase
         ));
     }
 
-    private function writeSeat(?string $disposition = 'inbox_stage', bool $routeIntents = true, ?string $delivery = null): void
+    /** @return list<?string> the `source` of each `ci_settled` staged to `$agent`, in inbox order */
+    private function settledSources(string $agent): array
     {
-        File::put($this->dir.'/seat-a.yml', "subscriptions:\n  - provider: github\n    scopes: [".self::REPO."]\n"
+        return array_values(array_map(
+            static fn (array $l): ?string => $l['payload']['source'] ?? null,
+            array_filter($this->inbox(), static fn (array $l): bool => $l['kind'] === 'ci_settled' && $l['agent'] === $agent),
+        ));
+    }
+
+    private function writeSeat(?string $disposition = 'inbox_stage', bool $routeIntents = true, ?string $delivery = null, string $name = 'seat-a'): void
+    {
+        File::put($this->dir."/{$name}.yml", "subscriptions:\n  - provider: github\n    scopes: [".self::REPO."]\n"
             ."classifier:\n  class: '".CoordinationClassifier::class."'\n  config:\n    families: ['impl-ci-wake']\n"
             .($disposition === null ? '' : "    impl_non_wake_disposition: {$disposition}\n")
             .($delivery === null ? '' : "    impl_ci_delivery: {$delivery}\n")
@@ -525,10 +591,10 @@ class CiHeadAggregateTest extends TestCase
         return is_file($path) ? array_map(fn (string $l): array => (array) json_decode($l, true), file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []) : [];
     }
 
-    /** @return list<string> */
-    private function kinds(): array
+    /** @return list<string> every staged kind, or only `$agent`'s */
+    private function kinds(?string $agent = null): array
     {
-        return array_column($this->inbox(), 'kind');
+        return array_column(array_filter($this->inbox(), static fn (array $l): bool => $agent === null || $l['agent'] === $agent), 'kind');
     }
 
     /** @return array<string, mixed> */
