@@ -50,6 +50,11 @@ use Throwable;
  * await is answered and gone, the agent is like any other: a state the await already sent is not
  * sent again, and a new one (a re-run, a late run) is, with `basis: delivered_runs`.
  *
+ * ⛔ NOR DOES AN AGENT THAT CANCELLED ITS `ci_await` ON THE HEAD (card#12430). `cancelled: true`
+ * promises no further `ci_settled` for the head from either sender, so a cancel recorded in
+ * {@see CiAwaitCancellations} is checked in the same transaction as the await, and nothing is
+ * staged, pushed or recorded for that agent until it registers a new `ci_await` on the head.
+ *
  * Staged to the inbox always (as `impl_ci` was) and pushed live where `impl_ci` would have been —
  * `channel.route_intents: true`.
  */
@@ -76,13 +81,15 @@ final class CiHeadAggregate
             provider: 'bridge',
             actor: new Actor(id: null),
             summary: $head->settledSummary($repoName, $headSha, $pr, HeadRuns::BASIS_DELIVERED_RUNS),
-            payload: $head->settledPayload($repoName, $headSha, $pr, Carbon::now(), HeadRuns::BASIS_DELIVERED_RUNS),
+            payload: $head->settledPayload($repoName, $headSha, $pr, Carbon::now(), HeadRuns::BASIS_DELIVERED_RUNS, HeadRuns::SOURCE_AGGREGATE),
         );
 
         $awaited = false;
-        $emitted = DB::transaction(function () use ($agent, $key, $headSha, $fingerprint, $intent, &$awaited): bool {
+        $cancelled = false;
+        $emitted = DB::transaction(function () use ($agent, $key, $headSha, $fingerprint, $intent, &$awaited, &$cancelled): bool {
             $awaited = CiAwait::query()->where('agent', $agent->agentName)->where('repo', $key)->where('head_sha', $headSha)->exists();
-            if ($awaited || ! CiHeadSettlementLedger::claim($agent->agentName, $key, $headSha, $fingerprint)) {
+            $cancelled = ! $awaited && CiAwaitCancellations::holds($agent->agentName, $key, $headSha);
+            if ($awaited || $cancelled || ! CiHeadSettlementLedger::claim($agent->agentName, $key, $headSha, $fingerprint)) {
                 return false;
             }
             $this->intents->stageAuthored($agent->agentName, "ci_head:{$agent->agentName}:{$key}@{$headSha}:{$fingerprint}", microtime(true), $intent);
@@ -91,6 +98,9 @@ final class CiHeadAggregate
         });
         if ($awaited) {
             Log::info('bridge ci_head: ci_settled not sent — the agent has a ci_await on the head, which settles on its own GitHub read', ['agent' => $agent->agentName, 'repo' => $repoName, 'head_sha' => $headSha]);
+        }
+        if ($cancelled) {
+            Log::info('bridge ci_head: ci_settled not sent — the agent cancelled its ci_await on the head, and a new ci_await is what asks for events again', ['agent' => $agent->agentName, 'repo' => $repoName, 'head_sha' => $headSha]);
         }
         if (! $emitted) {
             return false;

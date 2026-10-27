@@ -394,14 +394,25 @@ final class CiAwaitService
         }
     }
 
-    /** Remove `$agent`'s own await on the head. Returns whether there was one. */
+    /**
+     * Remove `$agent`'s own await on the head. Returns whether there was one. When there was, the
+     * cancel is recorded in the same transaction ({@see CiAwaitCancellations}), so the per-head
+     * aggregate sends this agent no `ci_settled` for the head either (card#12430).
+     */
     public function cancel(string $agent, string $repo, string $headSha): bool
     {
-        return CiAwait::query()
-            ->where('agent', $agent)
-            ->where('repo', self::key($repo))
-            ->where('head_sha', $headSha)
-            ->delete() > 0;
+        return DB::transaction(static function () use ($agent, $repo, $headSha): bool {
+            $removed = CiAwait::query()
+                ->where('agent', $agent)
+                ->where('repo', self::key($repo))
+                ->where('head_sha', $headSha)
+                ->delete() > 0;
+            if ($removed) {
+                CiAwaitCancellations::record($agent, $repo, $headSha);
+            }
+
+            return $removed;
+        });
     }
 
     /**
@@ -708,7 +719,7 @@ final class CiAwaitService
         $emitFailed = [];
         if ($allTerminal) {
             foreach ($awaits as $await) {
-                $settled = $head->settledPayload($await->repo_name, $await->head_sha, $await->pr, $measuredAt, HeadRuns::BASIS_GITHUB_READ);
+                $settled = $head->settledPayload($await->repo_name, $await->head_sha, $await->pr, $measuredAt, HeadRuns::BASIS_GITHUB_READ, HeadRuns::SOURCE_WAIT);
                 if ($this->claimAndEmit($await, self::SETTLED, $settled, $head->settledSummary($await->repo_name, $await->head_sha, $await->pr, HeadRuns::BASIS_GITHUB_READ), $head->fingerprint()) === EmitResult::Failed) {
                     $emitFailed[] = $await->id;
                 }
@@ -1205,6 +1216,8 @@ final class CiAwaitService
 
     private function upsertRow(string $agent, string $repoName, string $headSha, ?int $pr, Carbon $expiresAt, OverdueDeadline $overdue): bool
     {
+        // Registering again on a head this seat cancelled on means it wants events for it again (card#12430).
+        CiAwaitCancellations::clear($agent, $repoName, $headSha);
         $mine = CiAwait::query()->where('agent', $agent)->where('repo', self::key($repoName))->where('head_sha', $headSha);
         // A re-registration WITHOUT a pr keeps the one already recorded; one with a pr replaces it.
         $refresh = ['expires_at' => $expiresAt] + ($pr === null ? [] : ['pr' => $pr]);

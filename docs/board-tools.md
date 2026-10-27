@@ -30,7 +30,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_get_card_comments` | read | **Read the comments on one card on YOUR board, newest first, a page at a time** (card#12010 / DL-490) — the way to read back results recorded with `board_comment_card`. Any card on your board, live or archived, in any lane; each comment carries its kanban author's user id, its time, its body, and `writer`: the seat the bridge's `FROM: <seat>` first line names — **only on a comment the bridge's writeback user wrote**, else `null`. `since` returns only newer comments. A read that failed is **refused with a reason**, never answered as "no comments". |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none` / `unrouted` — the unassigned cards in no home lane, the PM's routing queue, card#11267) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused — except `unrouted`'s unassigned test, which the board has no term for and the bridge applies to the rows it returns; the window says `total`, `truncated` and `total_is_lower_bound`. |
 | `ci_await` | write | **Tell the bridge you are waiting for CI on one commit, instead of polling GitHub** (card#11200 / DL-452). When every workflow run GitHub lists for that head SHA that a commit started (`push`, `pull_request`) is terminal — and every job of each with it (card#12072) — you get ONE `ci_settled` event on your channel — a `schedule` or `workflow_dispatch` run on the same SHA neither holds it open nor turns it red (card#11958 / DL-485); if that does not happen before the wait expires, ONE `ci_await_expired`. If it has not happened by the repo's normal CI time (`overdue_at` in the answer — derived from the repo's recent heads, or yours via `overdue_after_seconds`), you get ONE `ci_await_overdue` first and the wait stays (card#11674 / DL-471): that event, not polling, is your cue to check CI by hand. A repo the operator declared to have no CI is refused (`repo_not_ci`, card#11696). A repo this bridge's GitHub token cannot read is refused (`repo_unreadable`), and a wait whose later read finds that ends with ONE `ci_await_unreadable` (card#11600; a `401` or `403` must be confirmed by a second read first). **Not a verdict** — run `ci-read` once on the head for green/red. Reads and writes no board. Self-scoped: no argument names a seat. |
-| `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it. Never touches another seat's. |
+| `ci_await_cancel` | write | **Remove your own `ci_await`** on one head, so no event is sent for it, and no `ci_settled` from the per-head aggregate either until you register on that head again. Never touches another seat's. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
 > COUNTS AS EMPTY** (card#9155). The tools are reached through two front doors and only
@@ -2050,7 +2050,15 @@ door, including the `bridge-board-call` CLI card#11151 adds.
 **`ci_await_cancel` arguments:** `repo` and `head_sha`, with the same rules. It removes **your own**
 await on that head and answers `cancelled: true`, or `cancelled: false` when you had none there —
 never registered, already settled, ended as unreadable or expired, or only another seat awaits it — so a hook may call it
-unconditionally.
+unconditionally. ⛔ **`cancelled: true` also stops the per-head aggregate for you on that head**
+(card#12430 / DL-497): you get no further `ci_settled` for that repo and head from either sender —
+not for a re-run or a late run either — until you call `ci_await` on it again, which is how you ask
+for its events back. `cancelled: false` changes nothing, so an unconditional cancel mutes nothing.
+⚠ One event can still arrive: the aggregate pushes after it has staged, so an event it staged just
+before your cancel committed can be pushed to you just after the cancel answered.
+The cancel is recorded per seat and head (`ci_await_cancellations`) and pruned with the aggregate's
+other per-head records on the retention window (`bridge:prune`), so a head that runs again after
+that is sent to you again.
 
 That is the whole accepted set for each; any other key is refused, and a key that tries to name a
 seat (`agent`, `seat`, `user`, …) is told the await is always yours. ⛔ **No argument names a seat**:
@@ -2251,7 +2259,10 @@ promises a push, and on a `channel.route_intents: false` channel the aggregate's
 inbox line. The cost: on a `route_intents: true` channel, registering after the aggregate's event gets
 you the same state pushed twice. Once your await is answered and gone you are
 like any other agent of the aggregate's: a state your await already sent is not sent again, and a new
-one (a re-run, a late run) is.
+one (a re-run, a late run) is. ⛔ **Except an await you CANCELLED** (card#12430): then the aggregate
+sends you nothing for that head until you register on it again (`ci_await_cancel` above). Every
+`ci_settled` names its sender in `source`: `"wait"` for your await's, `"aggregate"` for the
+aggregate's.
 
 **Read failures.** A read that fails — a rate limit (a 429, or a 403 with `X-RateLimit-Remaining: 0`
 or with `Retry-After`, or whose body's message names a rate limit: GitHub's secondary limit can carry
@@ -2335,7 +2346,7 @@ cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
 **What a seat can rely on.** One terminal event per await — `ci_settled`, `ci_await_unreadable` or
 `ci_await_expired`, never two *from the await* — and before it, at most one `ci_await_overdue`, which ends nothing
 (its line id is `ci_await_overdue:<uuid>`, the same row uuid, not `ci_await:<uuid>`); and no `ci_settled` from the per-head aggregate for that head
-while the await is held (card#11938), except for an await registered while a delivery is settling the head, which can still get one saying `basis: "delivered_runs"`. It is written to your inbox **at least once**, idempotent by its line id
+while the await is held (card#11938), except for an await registered while a delivery is settling the head, which can still get one saying `basis: "delivered_runs"`; and, once you cancel it (`cancelled: true`), no `ci_settled` from either sender for that head until you register on it again (card#12430). It is written to your inbox **at least once**, idempotent by its line id
 (its line id is `ci_await:<uuid>` for EVERY terminal kind the await itself emits — the per-head aggregate's own `ci_settled` carries its own id, above — `<uuid>` is the await row's own, minted at insert, so a recreated table cannot reissue an id a seat's seen file holds, and a `ci_settled` whose append reached only part of the inbox files can never sit beside a `ci_await_expired` for the same await, because `bridge:inbox` collapses duplicate ids first-wins), and pushed live once after that line is
 written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
 it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the
