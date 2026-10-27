@@ -21,6 +21,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#12474** — **Dev dependency phpunit 13.4.3 → 13.4.5** (with sebastian/git-state 1.0.0 → 1.1.0, which phpunit requires), for advisory GHSA-9vw2-f4vp-x7gf (phpunit 13.4.0–13.4.3). It had turned `Security/composer audit` red on every PR. Test tooling only; nothing a running bridge loads changes.
 - **card#12417** — **Two tests no longer go red at random when their temp directory's name happens to contain the number they assert is absent.** `WritebackExposureCommandTest` and `SeatKanbanUserRosterTest` print their own temp path and assert a board or user id never appears in that output; the path's random part came from `uniqid()`, which is hex, and one CI run drew `wbexp-6adf29002cf99`, which contains the asserted `9002`. Both now name their dir through a new test helper, `Tests\Support\TempPath::unique()`, whose random part has no digit and no hex letter, and `CLAUDE_TESTING.md` points new tests at it. The assertions are unchanged and still red if the id leaks. Test-only — no runtime code, no behaviour change.
 
 ## [0.107.1] - 2026-10-24
