@@ -29,6 +29,7 @@ Exit codes are the contract:
   2 usage, or the allocator failed or printed no number
   3 no allocator on PATH, or no `_decision-log.py` beside it — REFUSED, see `cmd_next`
   4 the allocated number is already used in a local checkout
+  5 the board's DL counter could not be reached — REFUSED, nothing minted; retry
 """
 
 import argparse
@@ -50,6 +51,11 @@ sys.dont_write_bytecode = True
 EXIT_USAGE = 2
 EXIT_NO_ALLOCATOR = 3
 EXIT_LOCAL_COLLISION = 4
+EXIT_COUNTER_UNREACHABLE = 5
+
+# `next-dl --require-counter` exits this instead of minting from its non-atomic
+# offline scan. It is NOT this tool's EXIT_LOCAL_COLLISION, which shares the digit.
+ALLOCATOR_RC_COUNTER_REQUIRED = 4
 
 DECISION_LOG = "CLAUDE_DECISIONS.md"
 
@@ -163,23 +169,17 @@ def cmd_next(args: argparse.Namespace) -> int:
     and BEFORE the allocator runs: a claim reserves a number, so refusing after it
     would burn one for nothing.
 
-    ⛔ THE ATOMICITY IS THE ALLOCATOR'S AND IT IS CONDITIONAL. `next-dl` claims
-    atomically from the board's DL-sequence endpoint when that endpoint answers.
-    When the claim route is absent (404), or the board's config does not
-    resolve, it falls back to its own offline `max + 1` scan, which is NOT
-    atomic: two agents on that path can get one number, which is card#7157's
-    defect wearing a tool's name. The fallback still exits 0 with a plausible
-    number on stdout, as a claim does, but since toolkit card#7214 it is
-    ANNOUNCED on stderr, naming the cause, and this command relays `next-dl`'s
-    stderr onto its own. A caller reading only stdout and the exit code still
-    cannot tell a scanned number from a claimed one. On the claim, an
-    unreachable endpoint or a 2xx carrying no number refuses (toolkit
-    card#10230); under `--peek` those two fall back as well. `next-dl
-    --require-counter` refuses at rc 4 instead of falling back; this command
-    does not pass that flag. Nothing here inspects which arm answered: the
-    toolkit owns the distinction, and `next-dl`'s header states it per cause.
-    DL-295 bound (e) records the silent behaviour this replaced, with its
-    measurements, and that entry's card#12338 amendment records the change.
+    ⛔ THE ATOMICITY IS THE ALLOCATOR'S, SO THIS COMMAND REQUIRES IT. `next-dl`
+    claims atomically from the board's DL-sequence endpoint when that endpoint
+    answers; on some causes where it does not, it would fall back to its own
+    offline `max + 1` scan, which is NOT atomic — card#7157's defect wearing a
+    tool's name. This command always passes `--require-counter`, so `next-dl`
+    refuses at its rc 4 instead of minting from that scan, and this command
+    refuses at EXIT_COUNTER_UNREACHABLE, telling the author to retry. That holds
+    under `--peek` too. Which causes degrade is `next-dl`'s header's to state,
+    per cause, not this docstring's. There is deliberately no option here to
+    accept a scanned number. DL-295 bound (e) records the silent fallback this
+    replaced, and that entry's card#12338 amendments record the change.
 
     The veto is the half the counter cannot do. A number written into a decision
     log on a branch that has not been pushed is invisible server-side, so an
@@ -194,10 +194,8 @@ def cmd_next(args: argparse.Namespace) -> int:
             "source that can see a number claimed by another agent moments ago. THIS\n"
             "COMMAND has deliberately no offline fallback: `max(^## DL-NNN) + 1` over this\n"
             "checkout cannot see an unpushed parallel mint, which is the defect card#7157\n"
-            f"filed. (`{ALLOCATOR}` itself HAS one: when the board's claim route is absent,\n"
-            "or the board's config does not resolve, it mints from a non-atomic scan and\n"
-            "says so on stderr; `--require-counter` makes it refuse instead — DL-295\n"
-            "bound (e), toolkit card#7214.)\n"
+            f"filed. (`{ALLOCATOR}` itself has one, and this command always passes\n"
+            "`--require-counter` to refuse it — DL-295 bound (e), toolkit card#7214.)\n"
             f"Install the agent-board toolkit so `{ALLOCATOR}` resolves, then re-run.",
             file=sys.stderr,
         )
@@ -215,10 +213,20 @@ def cmd_next(args: argparse.Namespace) -> int:
         )
         return EXIT_NO_ALLOCATOR
 
-    cmd = [allocator, ALLOCATOR_PROJECT] + (["--peek"] if args.peek else [])
+    cmd = [allocator, ALLOCATOR_PROJECT, "--require-counter"] + (["--peek"] if args.peek else [])
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.stderr.strip():
         print(proc.stderr.rstrip(), file=sys.stderr)
+    if proc.returncode == ALLOCATOR_RC_COUNTER_REQUIRED:
+        print(
+            "decision-log: REFUSING to mint — the board's DL counter could not be reached\n"
+            f"(`{' '.join(cmd)}` exited {proc.returncode}; its cause is above). No number was\n"
+            f"allocated. `{ALLOCATOR}`'s offline `max + 1` scan is NOT atomic and cannot see a\n"
+            "number another agent claimed moments ago, so this command never mints from it\n"
+            "and has no option to (DL-295). Fix the cause if it is named above, then retry.",
+            file=sys.stderr,
+        )
+        return EXIT_COUNTER_UNREACHABLE
     if proc.returncode != 0:
         print(
             f"decision-log: `{' '.join(cmd)}` exited {proc.returncode} — no number was allocated.",
