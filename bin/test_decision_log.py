@@ -130,14 +130,14 @@ class NextAllocation(NextHarness):
 
         self.run_next()
 
-        self.assertEqual("bridge", (self.dir / "allocator-argv").read_text().strip())
+        self.assertEqual("bridge --require-counter", (self.dir / "allocator-argv").read_text().strip())
 
-    def test_peek_is_passed_through(self):
+    def test_peek_is_passed_through_and_still_requires_the_counter(self):
         self.plant_allocator("DL-0294\n")
 
         self.run_next("--peek")
 
-        self.assertEqual("bridge --peek", (self.dir / "allocator-argv").read_text().strip())
+        self.assertEqual("bridge --require-counter --peek", (self.dir / "allocator-argv").read_text().strip())
 
     def test_planted_positive_an_unpushed_local_mint_vetoes_the_allocation(self):
         # THE CARD'S INCIDENT. The counter cannot see a header on a branch that
@@ -205,6 +205,29 @@ class NextRefusals(NextHarness):
 
         self.assertEqual(2, proc.returncode)
         self.assertEqual("", proc.stdout)
+
+    def test_an_unreachable_counter_is_a_named_refusal_not_a_scanned_number(self):
+        # `next-dl --require-counter` exits 4 where it would otherwise mint from its
+        # non-atomic offline scan. That rc must not read as this tool's own exit 4
+        # (a local collision), and the author must be told to retry, not to look
+        # for a duplicate entry.
+        self.plant_allocator("", rc=4)
+
+        proc = self.run_next()
+
+        self.assertEqual(5, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("REFUSING to mint", proc.stderr)
+        self.assertIn("DL counter could not be reached", proc.stderr)
+        self.assertIn("retry", proc.stderr)
+        self.assertEqual("", proc.stdout)
+
+    def test_the_control_another_allocator_failure_is_not_named_as_an_unreachable_counter(self):
+        self.plant_allocator("", rc=1)
+
+        proc = self.run_next()
+
+        self.assertEqual(2, proc.returncode)
+        self.assertNotIn("DL counter could not be reached", proc.stderr)
 
     def test_an_allocator_printing_no_number_is_not_read_as_zero(self):
         self.plant_allocator("nothing useful\n")
