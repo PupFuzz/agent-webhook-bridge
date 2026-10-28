@@ -23,13 +23,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#12519** — **qs 6.16.1 → 6.16.2 in the channel-server client** (`examples/channel-servers`, transitive via @modelcontextprotocol/sdk through express and body-parser), for advisory GHSA-w4cr-vjpx-p82q (low: `qs.stringify` with `allowEmptyArrays` did not encode the keys of empty arrays). Both parents' ranges (`^6.14.0`, `^6.16.1`) admit 6.16.2, so only the lockfile moved; no other entry changed. Channel-server snapshot 0.9.74 → 0.9.75.
 - **card#12474** — **Dev dependency phpunit 13.4.3 → 13.4.5** (with sebastian/git-state 1.0.0 → 1.1.0, which phpunit requires), for advisory GHSA-9vw2-f4vp-x7gf (phpunit 13.4.0–13.4.3). It had turned `Security/composer audit` red on every PR. Test tooling only; nothing a running bridge loads changes.
 - **card#12417** — **Two tests no longer go red at random when their temp directory's name happens to contain the number they assert is absent.** `WritebackExposureCommandTest` and `SeatKanbanUserRosterTest` print their own temp path and assert a board or user id never appears in that output; the path's random part came from `uniqid()`, which is hex, and one CI run drew `wbexp-6adf29002cf99`, which contains the asserted `9002`. Both now name their dir through a new test helper, `Tests\Support\TempPath::unique()`, whose random part has no digit and no hex letter, and `CLAUDE_TESTING.md` points new tests at it. The assertions are unchanged and still red if the id leaks. Test-only — no runtime code, no behaviour change.
 
 ### Upgrade warnings
 
 - ⚠ **MIGRATION — run `php artisan migrate`** (new table `ci_await_cancellations`; card#12430). Until it runs, the per-head aggregate sends no `ci_settled` at all, and every `ci_await` and `ci_await_cancel` is refused as `install_fault.ci_await_store_unavailable` (which names `php artisan migrate`).
-- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.74. Until you do, seats stay on the client they have, whose `ci_await_cancel` description does not say the cancel also stops the summary `ci_settled` (card#12430), and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.75. Until you do, seats stay on the client they have, whose `ci_await_cancel` description does not say the cancel also stops the summary `ci_settled` (card#12430) and whose lockfile pins qs 6.16.1 (card#12519), and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.107.1] - 2026-10-24
 
