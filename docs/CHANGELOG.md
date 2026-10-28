@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.107.2] - 2026-10-28
+
 ### Changed
 
 - **card#12430 / DL-497** — **Cancelling a `ci_await` now stops every `ci_settled` for that commit, not only the wait's own.** `ci_await_cancel` answering `cancelled: true` promised no further `ci_settled` for the head, but the per-head summary `ci_settled` (the aggregate) stood aside only while the seat held a wait, so the cancel was what let it start: seats that cancel on a commit they abandoned were woken about it anyway (rt#652). Now a cancel that removed a wait is recorded per seat and head, and the aggregate sends that seat nothing more for the head, re-runs and late runs included, until the seat calls `ci_await` on it again (an aggregate event already staged when the cancel ran can still be pushed just after it). A `cancelled: false` changes nothing, so an unconditional cancel in a hook mutes nothing. Seats that never waited on the head are unaffected. The record is pruned with the aggregate's other per-head rows on the retention window (`BRIDGE_RETENTION_OLDER_THAN`, and `bridge:prune --older-than`, whose line now reads "tracked CI runs, settled-head and cancelled-wait records"); a head that runs again after that is sent to the seat again.
@@ -23,6 +25,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#12474** — **Dev dependency phpunit 13.4.3 → 13.4.5** (with sebastian/git-state 1.0.0 → 1.1.0, which phpunit requires), for advisory GHSA-9vw2-f4vp-x7gf (phpunit 13.4.0–13.4.3). It had turned `Security/composer audit` red on every PR. Test tooling only; nothing a running bridge loads changes.
 - **card#12417** — **Two tests no longer go red at random when their temp directory's name happens to contain the number they assert is absent.** `WritebackExposureCommandTest` and `SeatKanbanUserRosterTest` print their own temp path and assert a board or user id never appears in that output; the path's random part came from `uniqid()`, which is hex, and one CI run drew `wbexp-6adf29002cf99`, which contains the asserted `9002`. Both now name their dir through a new test helper, `Tests\Support\TempPath::unique()`, whose random part has no digit and no hex letter, and `CLAUDE_TESTING.md` points new tests at it. The assertions are unchanged and still red if the id leaks. Test-only — no runtime code, no behaviour change.
+
+### Upgrade warnings
+
+- ⚠ **MIGRATION — run `php artisan migrate`** (new table `ci_await_cancellations`; card#12430). Until it runs, the per-head aggregate sends no `ci_settled` at all, and every `ci_await` and `ci_await_cancel` is refused as `install_fault.ci_await_store_unavailable` (which names `php artisan migrate`).
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.74. Until you do, seats stay on the client they have, whose `ci_await_cancel` description does not say the cancel also stops the summary `ci_settled` (card#12430), and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.107.1] - 2026-10-24
 
