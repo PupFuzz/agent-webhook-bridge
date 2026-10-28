@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#12374** — **The release card-promote job (`release-promote-cards.yml`) now runs in the `kanban-writeback` GitHub environment, whose deployment branches are `main` only, and reads `KANBAN_WRITEBACK_TOKEN` from it.** The environment secret shadows the repository secret of the same name; the token stays out of pull-request workflows once that repository secret is deleted. The job now starts only on `main`: a `workflow_dispatch` from any other ref is refused by the environment's branch rule and never receives the token, so dispatch it from `main`. Release-CI only: no app code, config, route or `.env` change.
+
 ## [0.107.2] - 2026-10-28
 
 ### Changed
