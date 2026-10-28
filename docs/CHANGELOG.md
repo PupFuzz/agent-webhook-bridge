@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.107.2] - 2026-10-28
+
 ### Changed
 
 - **card#12430 / DL-497** — **Cancelling a `ci_await` now stops every `ci_settled` for that commit, not only the wait's own.** `ci_await_cancel` answering `cancelled: true` promised no further `ci_settled` for the head, but the per-head summary `ci_settled` (the aggregate) stood aside only while the seat held a wait, so the cancel was what let it start: seats that cancel on a commit they abandoned were woken about it anyway (rt#652). Now a cancel that removed a wait is recorded per seat and head, and the aggregate sends that seat nothing more for the head, re-runs and late runs included, until the seat calls `ci_await` on it again (an aggregate event already staged when the cancel ran can still be pushed just after it). A `cancelled: false` changes nothing, so an unconditional cancel in a hook mutes nothing. Seats that never waited on the head are unaffected. The record is pruned with the aggregate's other per-head rows on the retention window (`BRIDGE_RETENTION_OLDER_THAN`, and `bridge:prune --older-than`, whose line now reads "tracked CI runs, settled-head and cancelled-wait records"); a head that runs again after that is sent to the seat again.
@@ -27,7 +29,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
-- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.75. Until you do, seats stay on the client they have, whose lockfile pins qs 6.16.1, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+- ⚠ **MIGRATION — run `php artisan migrate`** (new table `ci_await_cancellations`; card#12430). Until it runs, the per-head aggregate sends no `ci_settled` at all, and every `ci_await` and `ci_await_cancel` is refused as `install_fault.ci_await_store_unavailable` (which names `php artisan migrate`).
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.75. Until you do, seats stay on the client they have, whose `ci_await_cancel` description does not say the cancel also stops the summary `ci_settled` (card#12430) and whose lockfile pins qs 6.16.1 (card#12519), and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.107.1] - 2026-10-24
 
