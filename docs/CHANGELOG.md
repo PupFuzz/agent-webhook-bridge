@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#12545** — **symfony/mime 8.1.7 → 8.1.10**, for advisory PKSA-wtxr-p26d-nn42 / CVE-2026-45070 (medium: email header injection via non-token characters; 8.1 is affected below 8.1.10). It had turned `Security/composer audit` red on every PR. Only that lockfile entry moved. It is a runtime dependency (through laravel/framework and symfony/mailer), so a deploy's `composer install` picks it up; the bridge sends no email of its own (`MAIL_MAILER` defaults to `log`).
+
 ## [0.107.2] - 2026-10-28
 
 ### Changed
