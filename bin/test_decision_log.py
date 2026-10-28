@@ -1,13 +1,18 @@
-"""Unit tests for bin/decision-log.py — the DL allocator and its collision guard.
+"""Unit tests for bin/decision-log.py — the DL allocator's `next`.
 
-Both halves of card#7157 are VACUOUS on a healthy tree: no duplicate DL exists
-today, so a guard that never fires still exits 0 and a `next` that returns
-whatever it is handed still prints a number. Every case here therefore plants
-the defect and asserts the REFUSAL, naming the number — a check seen to red is
-the only kind that witnesses anything.
+`next` is VACUOUS on a healthy tree: no duplicate DL exists today, so a `next`
+that returns whatever it is handed still prints a number. Every case here
+therefore plants the defect and asserts the REFUSAL, naming the number — a check
+seen to red is the only kind that witnesses anything.
+
+The collision gate and the `## DL-NNN` grammar are agent-board-toolkit's since
+card#12338, and their cases live in that repository's selftests. What is tested
+here is this tool's use of that grammar: it is path-loaded from beside `next-dl`,
+so every case runs against the REAL toolkit `_decision-log.py`, copied into a
+fake toolkit `bin/`. Its source is `$AGENT_BOARD_TOOLKIT_DIR/bin/` when set (CI's
+toolkit checkout), else the directory `next-dl` on PATH resolves to.
 """
 
-import importlib.util
 import os
 import shutil
 import stat
@@ -19,11 +24,25 @@ import unittest
 from pathlib import Path
 
 TOOL = Path(__file__).with_name("decision-log.py")
+GRAMMAR = "_decision-log.py"
 
-_SPEC = importlib.util.spec_from_file_location("decision_log", TOOL)
-dl = importlib.util.module_from_spec(_SPEC)
-assert _SPEC.loader is not None
-_SPEC.loader.exec_module(dl)
+
+def toolkit_grammar() -> Path:
+    """The real toolkit grammar these cases run against. Absent is an ERROR, not a skip."""
+    root = os.environ.get("AGENT_BOARD_TOOLKIT_DIR")
+    if root:
+        path = Path(root) / "bin" / GRAMMAR
+    else:
+        allocator = shutil.which("next-dl")
+        if allocator is None:
+            raise RuntimeError(
+                "no agent-board toolkit to test against: set AGENT_BOARD_TOOLKIT_DIR to a toolkit "
+                "checkout (v0.51.0 or later), or put the toolkit's next-dl on PATH"
+            )
+        path = Path(allocator).resolve().parent / GRAMMAR
+    if not path.is_file():
+        raise RuntimeError(f"{path} is missing — the toolkit is older than v0.51.0")
+    return path
 
 
 def log(*entries: str) -> str:
@@ -34,301 +53,19 @@ def log(*entries: str) -> str:
     return body
 
 
-class Grammar(unittest.TestCase):
-    def test_only_h2_dl_headers_count(self):
-        text = (
-            "# Decision log\n"
-            "## DL-100 — real\n"
-            "### DL-101 — an H3 is not an entry\n"
-            "Prose citing DL-102 and `DL-103`.\n"
-            "## DL-104 — real\n"
-        )
-        self.assertEqual([(100, 2), (104, 5)], dl.header_numbers(text))
-
-    def test_leading_zeros_are_the_same_number(self):
-        self.assertEqual([(31, 1)], dl.header_numbers("## DL-031 — padded\n"))
-
-    def test_a_header_inside_a_fence_is_an_example_not_an_entry(self):
-        text = "## DL-200 — real\n\n```markdown\n## DL-200 — what a header looks like\n```\n"
-        self.assertEqual([(200, 1)], dl.header_numbers(text))
-
-    def test_a_tilde_fence_closes_only_on_tildes(self):
-        text = "~~~\n## DL-300 — inside\n```\n## DL-301 — still inside\n~~~\n## DL-302 — out\n"
-        self.assertEqual([(302, 6)], dl.header_numbers(text))
-
-    def test_the_scan_reports_how_many_headers_the_fences_hid_from_it(self):
-        entries, skipped, unnumbered = dl.header_scan("## DL-100 — real\n\n```\n## DL-101 — quoted\n```\n")
-
-        self.assertEqual([(100, 1)], entries)
-        self.assertEqual(1, skipped)
-        self.assertEqual([], unnumbered)
-
-    def test_a_numberless_header_is_neither_an_entry_nor_invisible(self):
-        # The card#9936 shape: `_HEADER` requires digits, so before this leg a
-        # `## DL-TBD` was counted by nothing and skipped by nothing — the two
-        # figures agreed while the population they described was one short.
-        entries, skipped, unnumbered = dl.header_scan("## DL-100 — real\n## DL-TBD — a draft\n")
-
-        self.assertEqual([(100, 1)], entries)
-        self.assertEqual(0, skipped)
-        self.assertEqual([("## DL-TBD — a draft", 2)], unnumbered)
-
-    def test_a_numberless_header_inside_a_fence_is_an_example_not_a_placeholder(self):
-        entries, skipped, unnumbered = dl.header_scan("```\n## DL-TBD — what a draft looks like\n```\n")
-
-        self.assertEqual([], entries)
-        self.assertEqual(1, skipped)
-        self.assertEqual([], unnumbered)
-
-
-class CheckHarness(unittest.TestCase):
-    def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="dl-check-"))
-        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
-
-    def write(self, name: str, text: str) -> str:
-        path = self.dir / name
-        path.write_text(text, encoding="utf-8")
-        return str(path)
-
-    def check(self, *args: str):
-        proc = subprocess.run(
-            [sys.executable, str(TOOL), "check", *args],
-            capture_output=True,
-            text=True,
-        )
-        return proc
-
-
-class CheckRefusals(CheckHarness):
-    def test_planted_positive_number_already_on_the_target_branch_is_refused(self):
-        # The measured shape: this change branched at DL-293, minted DL-294, and
-        # the target branch gained its OWN DL-294 in the meantime. The file at
-        # head does not contain the target's entry, so nothing local looks wrong.
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293", "294"))
-        target = self.write("target.md", log("293", "294"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(6, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("DL-294", proc.stderr)
-        self.assertIn("ALREADY IN USE", proc.stderr)
-
-    def test_planted_positive_number_repeated_at_head_is_refused(self):
-        # A number the change's OWN base already carries: because the log is
-        # append-only the collision is visible in one file.
-        head = self.write("head.md", log("293", "294", "294"))
-
-        proc = self.check("--head", head)
-
-        self.assertEqual(5, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("DL-294 is used TWICE", proc.stderr)
-
-    def test_the_refusal_names_every_colliding_number_not_just_the_first(self):
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293", "294", "295"))
-        target = self.write("target.md", log("293", "294", "295"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(6, proc.returncode)
-        self.assertIn("DL-294", proc.stderr)
-        self.assertIn("DL-295", proc.stderr)
-
-
-class CheckUnnumbered(CheckHarness):
-    """A header with no number at all — the input this guard used to pass GREEN.
-
-    `## DL-TBD` matches neither assertion's grammar, so two changes could each
-    write one and both pass; the log then carries two entries claiming one
-    non-identifier, which is the very outcome card#7157 built this gate for.
-    """
-
-    def test_a_planted_placeholder_this_change_adds_is_refused(self):
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293") + "## DL-TBD — a draft entry\n")
-        target = self.write("target.md", log("293"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(7, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("## DL-TBD — a draft entry", proc.stderr)
-        self.assertIn("NO NUMBER", proc.stderr)
-
-    def test_a_placeholder_is_refused_on_the_head_only_run_too(self):
-        head = self.write("head.md", log("293") + "## DL-TBD — a draft entry\n")
-
-        proc = self.check("--head", head)
-
-        self.assertEqual(7, proc.returncode, proc.stdout + proc.stderr)
-
-    def test_a_second_copy_of_an_inherited_placeholder_is_still_an_addition(self):
-        # The hole a SET would leave: base already carries the text, so
-        # membership reads both copies at head as inherited and refuses
-        # neither — two entries claiming one non-identifier, which is the
-        # outcome this assertion exists to refuse. Counted, not set-tested.
-        placeholder = "## DL-TBD — landed earlier\n\n"
-        base = self.write("base.md", log("293") + placeholder)
-        head = self.write("head.md", log("293") + placeholder + placeholder)
-        target = self.write("target.md", log("293") + placeholder)
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(7, proc.returncode, proc.stdout + proc.stderr)
-
-    def test_the_control_the_same_entry_with_a_number_passes(self):
-        # Without this the refusal above could be firing on the entry rather than
-        # on the missing number, and would refuse every PR that adds one.
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293") + "## DL-414 — a draft entry\n")
-        target = self.write("target.md", log("293"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-
-    def test_a_placeholder_already_on_the_base_snapshot_does_not_red_an_innocent_change(self):
-        # It is reported by the population line, not refused: the change that
-        # wrote it is the one to fix, and refusing here reds every PR cut after.
-        placeholder = "## DL-TBD — landed earlier\n\n"
-        base = self.write("base.md", log("293") + placeholder)
-        head = self.write("head.md", log("293", "295") + placeholder)
-        target = self.write("target.md", log("293") + placeholder)
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("1 carrying no number", proc.stdout)
-
-
-class CheckPinnedNegatives(CheckHarness):
-    def test_a_genuinely_new_number_passes(self):
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293", "295"))
-        target = self.write("target.md", log("293", "294"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("DL-295", proc.stdout)
-
-    def test_a_change_that_mints_nothing_passes(self):
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293"))
-        target = self.write("target.md", log("293", "294"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("adds 0 DL entries", proc.stdout)
-
-    def test_an_entry_carried_over_from_base_is_not_a_collision_with_the_target(self):
-        # DL-293 is on base, head and target. It is the SAME entry in all three,
-        # not a mint — refusing it would red every PR opened after it landed.
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293", "296"))
-        target = self.write("target.md", log("293"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-
-    def test_a_number_below_the_target_max_is_not_refused_for_being_low(self):
-        # The operator hand-assigns blocks (294/295/296 during the card#7157
-        # dispatch), so the change carrying 295 can land AFTER the one carrying
-        # 296. The predicate is "already in use", never "must exceed the max".
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293", "295"))
-        target = self.write("target.md", log("293", "296"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-
-
-class CheckPopulation(CheckHarness):
-    """The denominator every verdict is over — stated, because the skip is unbounded.
-
-    ONE unclosed fence hides every later header from the grammar, and the verdict
-    over the remainder is still `OK`. That is a clean result over a population
-    nobody named, so the run prints the fence-aware / fence-blind delta.
-    """
-
-    def test_a_planted_unbalanced_fence_is_stated_rather_than_silently_truncating(self):
-        head = self.write(
-            "head.md",
-            "# Decision log\n\n## DL-100 — a\n\n```\nnever closed\n\n## DL-101 — b\n\n## DL-102 — c\n",
-        )
-
-        proc = self.check("--head", head)
-
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("1 of 3 `## DL-` header lines counted, 2 skipped", proc.stdout)
-        self.assertIn("inside a code fence and were NOT counted", proc.stderr)
-
-    def test_the_control_a_log_with_no_fenced_header_reports_nothing_skipped(self):
-        # Without this the warning above could be decoration that fires on every
-        # log, which states nothing at all.
-        head = self.write("head.md", log("293", "294"))
-
-        proc = self.check("--head", head)
-
-        self.assertIn("2 of 2 `## DL-` header lines counted, 0 skipped", proc.stdout)
-        self.assertNotIn("NOT counted", proc.stderr)
-
-    def test_the_population_is_stated_on_the_full_three_file_verdict_too(self):
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293", "295"))
-        target = self.write("target.md", log("293", "294"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("2 of 2 `## DL-` header lines counted", proc.stdout)
-
-    def test_a_fence_hiding_the_BASE_logs_headers_is_stated(self):
-        # The base and target are read by the same grammar, and a truncated base
-        # INVENTS mints (every hidden number reads as added). Reported for all
-        # three files, not just head.
-        base = self.write("base.md", "## DL-293 — a\n\n```\n## DL-294 — hidden\n")
-        head = self.write("head.md", log("293", "294"))
-        target = self.write("target.md", log("293"))
-
-        proc = self.check("--head", head, "--base", base, "--target", target)
-
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("base log", proc.stderr)
-        self.assertIn("inside a code fence and were NOT counted", proc.stderr)
-
-
-class CheckUsage(CheckHarness):
-    def test_base_without_target_is_a_usage_error_not_a_half_check(self):
-        base = self.write("base.md", log("293"))
-        head = self.write("head.md", log("293", "294"))
-
-        proc = self.check("--head", head, "--base", base)
-
-        self.assertEqual(2, proc.returncode)
-        self.assertIn("given together or not at all", proc.stderr)
-
-    def test_an_unreadable_log_is_not_reported_as_an_empty_one(self):
-        head = self.write("head.md", log("293"))
-
-        proc = self.check("--head", head, "--base", str(self.dir / "absent.md"), "--target", head)
-
-        self.assertEqual(2, proc.returncode)
-        self.assertIn("cannot read", proc.stderr)
-
-
 class NextHarness(unittest.TestCase):
-    """`next` is exercised against a FAKE allocator on PATH.
+    """`next` is exercised against a FAKE allocator, reached through a PATH SYMLINK.
 
     The real one talks to the board's counter over the network; a test that
     called it would assert the board's current state, which changes under it.
     What is under test here is what this tool does with the number it is handed —
     the veto, the warning, and the refusal to invent a number when the allocator
-    is missing.
+    or its grammar is missing.
+
+    The layout is a host PATH install: the fake `next-dl` and a copy of the real
+    toolkit grammar sit in `toolkit/bin/`, and the directory on PATH holds only a
+    symlink to `next-dl`. The grammar is found only if it is looked for where the
+    link RESOLVES.
     """
 
     def setUp(self):
@@ -336,11 +73,14 @@ class NextHarness(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.bindir = self.dir / "fakebin"
         self.bindir.mkdir()
+        self.toolkit_bin = self.dir / "toolkit" / "bin"
+        self.toolkit_bin.mkdir(parents=True)
+        shutil.copy(toolkit_grammar(), self.toolkit_bin / GRAMMAR)
         self.checkout = self.dir / "checkout"
         self.checkout.mkdir()
 
     def plant_allocator(self, stdout: str, rc: int = 0) -> None:
-        script = self.bindir / "next-dl"
+        script = self.toolkit_bin / "next-dl"
         script.write_text(
             textwrap.dedent(
                 f"""\
@@ -353,9 +93,15 @@ class NextHarness(unittest.TestCase):
             encoding="utf-8",
         )
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        link = self.bindir / "next-dl"
+        if not link.is_symlink():
+            link.symlink_to(script)
 
     def plant_local_log(self, *entries: str) -> None:
-        (self.checkout / "CLAUDE_DECISIONS.md").write_text(log(*entries), encoding="utf-8")
+        self.plant_local_text(log(*entries))
+
+    def plant_local_text(self, text: str) -> None:
+        (self.checkout / "CLAUDE_DECISIONS.md").write_text(text, encoding="utf-8")
 
     def run_next(self, *args: str, with_allocator: bool = True):
         env = dict(os.environ)
@@ -384,14 +130,14 @@ class NextAllocation(NextHarness):
 
         self.run_next()
 
-        self.assertEqual("bridge", (self.dir / "allocator-argv").read_text().strip())
+        self.assertEqual("bridge --require-counter", (self.dir / "allocator-argv").read_text().strip())
 
-    def test_peek_is_passed_through(self):
+    def test_peek_is_passed_through_and_still_requires_the_counter(self):
         self.plant_allocator("DL-0294\n")
 
         self.run_next("--peek")
 
-        self.assertEqual("bridge --peek", (self.dir / "allocator-argv").read_text().strip())
+        self.assertEqual("bridge --require-counter --peek", (self.dir / "allocator-argv").read_text().strip())
 
     def test_planted_positive_an_unpushed_local_mint_vetoes_the_allocation(self):
         # THE CARD'S INCIDENT. The counter cannot see a header on a branch that
@@ -460,6 +206,29 @@ class NextRefusals(NextHarness):
         self.assertEqual(2, proc.returncode)
         self.assertEqual("", proc.stdout)
 
+    def test_an_unreachable_counter_is_a_named_refusal_not_a_scanned_number(self):
+        # `next-dl --require-counter` exits 4 where it would otherwise mint from its
+        # non-atomic offline scan. That rc must not read as this tool's own exit 4
+        # (a local collision), and the author must be told to retry, not to look
+        # for a duplicate entry.
+        self.plant_allocator("", rc=4)
+
+        proc = self.run_next()
+
+        self.assertEqual(5, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("REFUSING to mint", proc.stderr)
+        self.assertIn("DL counter could not be reached", proc.stderr)
+        self.assertIn("retry", proc.stderr)
+        self.assertEqual("", proc.stdout)
+
+    def test_the_control_another_allocator_failure_is_not_named_as_an_unreachable_counter(self):
+        self.plant_allocator("", rc=1)
+
+        proc = self.run_next()
+
+        self.assertEqual(2, proc.returncode)
+        self.assertNotIn("DL counter could not be reached", proc.stderr)
+
     def test_an_allocator_printing_no_number_is_not_read_as_zero(self):
         self.plant_allocator("nothing useful\n")
 
@@ -469,22 +238,68 @@ class NextRefusals(NextHarness):
         self.assertIn("printed no DL number", proc.stderr)
 
 
-class ShippedDecisionLog(unittest.TestCase):
-    def test_this_repo_s_own_decision_log_uses_no_number_twice(self):
-        repo_log = TOOL.resolve().parent.parent / "CLAUDE_DECISIONS.md"
-        numbers = [n for n, _ in dl.header_numbers(repo_log.read_text(encoding="utf-8"))]
+class NextGrammar(NextHarness):
+    """The veto reads headers through the TOOLKIT grammar, and says where it could not."""
 
-        duplicates = {n for n in numbers if numbers.count(n) > 1}
+    def test_the_grammar_is_found_where_the_path_link_resolves_not_beside_the_link(self):
+        self.plant_allocator("DL-0294\n")
+        self.plant_local_log("293", "294")
 
-        self.assertEqual(set(), duplicates)
-        # A control on the assertion above: an empty or near-empty parse would
-        # satisfy "no duplicates" while reading nothing. The sequence is sparse
-        # (numbers minted in kanban-board and only mirrored here leave gaps), so
-        # the floor is a count plus two entries that are certainly present —
-        # never `max == len`.
-        self.assertGreater(len(numbers), 150, "the grammar matched almost nothing — it is not reading the log")
-        self.assertIn(1, numbers)
-        self.assertIn(293, numbers)
+        proc = self.run_next()
+
+        self.assertFalse((self.bindir / GRAMMAR).exists(), "the fixture must not put the grammar on PATH")
+        self.assertEqual(4, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("REFUSING DL-294", proc.stderr)
+
+    def test_an_indented_heading_vetoes_because_the_toolkit_grammar_reads_it(self):
+        # `   ## DL-294` renders as an H2, and the toolkit grammar counts it. The
+        # bridge's own grammar, retired by card#12338, matched `^##` only and
+        # handed DL-294 back here at rc 0: this case is the evidence that the
+        # veto reads the toolkit's grammar and not a copy of its own.
+        self.plant_allocator("DL-0294\n")
+        self.plant_local_text(log("293") + "   ## DL-294 — indented\n")
+
+        proc = self.run_next()
+
+        self.assertEqual(4, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("REFUSING DL-294", proc.stderr)
+
+    def test_a_log_ending_inside_an_unclosed_fence_is_named_in_a_warning(self):
+        self.plant_allocator("DL-0294\n")
+        self.plant_local_text(log("293") + "```\nnever closed\n\n## DL-294 — hidden\n")
+
+        proc = self.run_next()
+
+        # The heading after the fence is hidden from the grammar, so the number is
+        # handed back — and the warning is what says the veto could not see it.
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertEqual("DL-294", proc.stdout.strip())
+        self.assertIn("opens a code fence at line", proc.stderr)
+        self.assertIn("INVISIBLE to this veto", proc.stderr)
+
+    def test_the_control_a_closed_fence_draws_no_fence_warning(self):
+        self.plant_allocator("DL-0294\n")
+        self.plant_local_text(log("293") + "```\n## DL-294 — quoted\n```\n")
+
+        proc = self.run_next()
+
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertNotIn("opens a code fence", proc.stderr)
+
+    def test_an_allocator_with_no_grammar_beside_it_refuses_before_allocating(self):
+        # A toolkit older than v0.51.0 ships next-dl without _decision-log.py. A
+        # claim RESERVES a number, so the refusal must come before the allocator
+        # runs — asserted by the argv file the fake allocator would have written.
+        self.plant_allocator("DL-0294\n")
+        (self.toolkit_bin / GRAMMAR).unlink()
+
+        proc = self.run_next()
+
+        self.assertEqual(3, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("REFUSING to mint", proc.stderr)
+        self.assertIn(GRAMMAR, proc.stderr)
+        self.assertEqual("", proc.stdout)
+        self.assertFalse((self.dir / "allocator-argv").exists(), "the allocator ran — a number may have been claimed")
 
 
 if __name__ == "__main__":

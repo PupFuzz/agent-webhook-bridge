@@ -834,7 +834,9 @@ const TOOL_DEFINITIONS = [
     name: 'ci_await_cancel',
     description:
       'Stop waiting for CI on one commit: removes YOUR OWN ci_await on that head, so no ci_settled, ' +
-      'ci_await_unreadable, ci_await_expired or ci_await_overdue is sent for it. Answers cancelled: false when you had ' +
+      'ci_await_unreadable, ci_await_expired or ci_await_overdue is sent for it. cancelled: true also stops the ' +
+      'per-commit summary ci_settled for that commit: you get no further ci_settled for it from either sender, ' +
+      're-runs included, until you call ci_await on it again. Answers cancelled: false when you had ' +
       'no wait there (never registered, already ended, or only another seat waits on it) — safe to ' +
       'call unconditionally. No argument names a seat.',
     inputSchema: {

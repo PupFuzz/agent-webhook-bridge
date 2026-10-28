@@ -136,7 +136,7 @@ The rule below is therefore no longer the *only* thing standing between a stub a
 
 **Register the whole stub set once.** A second `Http::fake()` does not replace the first — it appends to it, the *first* matching stub wins, and it resets the recorded log that `Http::assertSent()` reads. So calling a setup helper and then "overriding" one URL with a later `Http::fake()` silently leaves the helper's answer in place, and the test stays green. Read [`CLAUDE_GOTCHAS.md`](CLAUDE_GOTCHAS.md) G-020 **before** layering fakes.
 
-**Temporary config dirs.** Tests that exercise config loading or filesystem writes create a `sys_get_temp_dir().'/prefix-'.uniqid()` directory in `setUp()` and delete it in `tearDown()`. They point the bridge at it via `config(['bridge.config_dir' => $this->dir, 'bridge.secret_dir' => $this->dir])`. This keeps tests hermetic and avoids leaking into the real install's config paths.
+**Temporary config dirs.** Tests that exercise config loading or filesystem writes create a `Tests\Support\TempPath::unique('prefix')` directory in `setUp()` and delete it in `tearDown()`. Use it rather than `uniqid()` or `bin2hex()` for a new dir: their hex random part can contain a number a test asserts is ABSENT from output that prints the path — that class's docblock owns why, and what it does not cover. They point the bridge at it via `config(['bridge.config_dir' => $this->dir, 'bridge.secret_dir' => $this->dir])`. This keeps tests hermetic and avoids leaking into the real install's config paths.
 
 ⛔ **Forgetting that override used to hand the test the OPERATOR'S install.** `config/bridge.php` resolves both keys from `BRIDGE_DIR`, and `phpunit.xml` cannot override it — `<env>` does not reach the `getenv()` layer `env()` reads — so on a deployed checkout the default was the live install's config + secret dir, while on CI (where `BRIDGE_DIR` names a path that does not exist) the same test read nothing. One test was in that state and issued four token-bearing requests to a live board on every suite run (card#7300, DL-303). `Tests\TestCase::setUp()` now defaults both keys to a path that does not exist, so **the default is the CI shape on every host** and a class that forgets the override reads an empty install rather than a real one. Set your own dir AFTER `parent::setUp()`, exactly as before — the default is a floor, not a substitute.
 
@@ -253,116 +253,53 @@ re-implementation of the predicate in PHP would drift from what CI actually runs
   `git show 4abe8e3:` returns 128 in a shallow clone — a control read that way passes locally
   and reds in CI.
 
-## The DL collision gate's fixture — a real origin, not one repo (DL-295)
+## The DL collision gate — wiring here, behaviour in the toolkit (DL-295, card#12338)
 
-`tests/Feature/Workflows/DlCollisionGateTest.php` extracts the real `run:` block out of
-`.github/workflows/dl-collision-gate.yml` and drives it under `bash`, the same shape as
-`PrTitleLintTest`. What is different is the fixture: the step's second assertion reads
-`CLAUDE_DECISIONS.md` at the **live tip of the target branch**, which it fetches, so the fixture is
-an upstream repository the work tree is *cloned* from and the "the target branch moved under this
-PR" cases advance that upstream for real. A single repo with no `origin` would not exercise the
-fetch at all, and a pre-computed file would assert the fixture.
+`.github/workflows/dl-collision-gate.yml` runs agent-board-toolkit's `dl-collision-gate` composite
+action at a pinned SHA. The grammar, the predicate, the base snapshot and the exit mapping
+are the toolkit's, and their planted-defect cases are that repository's
+`tests/decision-log-selftest.sh`, `tests/pr-base-snapshot-selftest.sh` and
+`tests/dl-collision-gate-selftest.sh` at the pinned SHA. This repository's harness does not execute
+the gate.
 
-- **Every case plants a defect or pins a negative.** The gate is vacuous on this repo's actual
-  tree — no duplicate DL exists — so a case that merely ran it would witness nothing.
-- **Two cases pin the gate's stated BOUND, not its catch:** two concurrently-open PRs minting one
-  number both pass, and the second reds only after the first has merged *and* it re-runs. They
-  exist so the claim cannot quietly widen into "no duplicate DL can be minted".
-- **EVERY case's work tree is a real merge commit, because that is what the step reads its base
-  OUT OF (card#8527).** The base is no longer an input the test hands in: CI checks out
-  `github.sha` — the PR head merged into the base branch — and the step derives its snapshot from
-  that merge's **first parent** via `bin/pr-base-snapshot.sh`. "Present at head, absent at base"
-  means "this PR minted it" only because those two are one snapshot, and they now are one *by
-  construction*: the base end is the commit the head end records as its parent. `makeRepos()`
-  builds the merge and asserts its two parents; the only sha the step is handed is the PR head sha
-  the pairing is CHECKED against.
-- **One case pins what that fix retired, with the measured red as its control.** The step used to
-  take `github.event.pull_request.base.sha`, which GitHub does not refresh on every `synchronize`:
-  on PR #640 (run 33598959720, 2026-09-02) it carried `549c894` while the merge commit the same
-  event checked out had first parent `7a11085`. The case builds exactly that divergence — the base
-  branch mints its own DL after the fork, the merge is rebuilt onto the newer tip — and runs three
-  legs: the step passes; the derived base is asserted to BE the moved tip and NOT the stale sha;
-  and the predicate run against the stale sha returns **6**, naming the base branch's own entry as
-  this PR's mint. That last leg is PR #640's refusal in miniature.
-- **Two cases pin that the pairing is CHECKED, not assumed.** Standing on a non-merge HEAD, or on a
-  merge whose second parent is not this PR's head, the step propagates
-  `bin/pr-base-snapshot.sh`'s refusal (exit 4 and 5) instead of substituting a payload field or a
-  `merge-base` fork point. The workflow comment owns why `merge-base` would be the wrong
-  correction, and § *The PR base snapshot* below owns the measured figure for how much of the
-  harness would notice it — deliberately not restated here, because that figure moves with every
-  merge into this branch and the first copy of it drifted inside one merge round.
-- The step calls the real `bin/decision-log.py` and the real `bin/pr-base-snapshot.sh`, copied into
-  the work tree at the repo-relative paths the step names, so a change to either reds here as well
-  as in `bin/test_decision_log.py` / `PrBaseSnapshotTest`.
+- **`tests/Feature/Workflows/DlCollisionGateTest.php` checks the WIRING**: the action is pinned by
+  full SHA with its `# vX.Y.Z` comment, it is handed the PR head sha and the base ref name, the
+  checkout is full-depth on the default ref and runs first, the trigger is `opened, reopened,
+  synchronize` with no `paths:` filter, and `.github/actions/agent-board-toolkit/action.yml`'s `ref:`
+  is the gate's SHA. That last case is why a dependabot bump of the gate's pin reds until the
+  checkout action's `ref:` follows it: dependabot bumps a `uses:`, never a `ref:`.
+- **`bin/test_decision_log.py` tests `next`** against a fake allocator reached through a PATH
+  symlink, with a copy of the toolkit's REAL `_decision-log.py` beside its target. The copy comes
+  from `$AGENT_BOARD_TOOLKIT_DIR/bin/` (the `bin/ python unit tests` job runs the toolkit checkout
+  action for it), else from where `next-dl` on PATH resolves; with neither, the module errors rather
+  than skips.
 
-## The PR base snapshot, derived once for four gates (card#8527)
+## The PR base snapshot — a wrapper over the toolkit's tool (card#8527, card#12338)
 
-`bin/pr-base-snapshot.sh` prints the first parent of the merge commit `actions/checkout` leaves in
-the work tree, and refuses — loudly, printing no sha — when that work tree is not a two-parent
-merge whose second parent is the PR head sha the event carried. Four gates call it:
-`dl-collision-gate.yml`, `channel-server-supply-chain.yml`'s version-bump guard, and
-`release-artifacts-gate.yml` and `changelog-gate.yml` (each feeds the derived sha to a pinned
-composite action's `base-sha` input through a step output).
+`bin/pr-base-snapshot.sh` execs agent-board-toolkit's `bin/pr-base-snapshot --head <sha>` from the
+checkout `AGENT_BOARD_TOOLKIT_DIR` names, and refuses at exit 2 when that variable is unset or holds
+no such tool. `.github/actions/agent-board-toolkit` makes that checkout, at the one SHA written
+there, and exports the variable. The workflow files that call the wrapper:
+`grep -l 'bin/pr-base-snapshot.sh' .github/workflows/*.yml` lists them. The derivation (the merge
+commit's first parent, refused when HEAD is not a two-parent merge whose second parent is the PR
+head) and its exit codes are owned by the toolkit tool's header.
 
-`tests/Feature/Workflows/PrBaseSnapshotTest.php` exercises the script itself, because each caller's
-harness only takes the arm its own fixtures reach. **Its refusal arms are the point, not edge
-cases:** the script's value is that it says "I cannot tell you what the base is" rather than
-substituting the payload field or a fork point, both of which return a plausible sha and a wrong
-verdict. Every arm asserts its exit code (2 no argument, 3 unreadable HEAD, 4 not a two-parent
-merge, 5 a merge of some other head) — callers propagate it under `set -e` — and asserts that
-**stdout is empty** on every refusal, since a caller capturing `$( )` would otherwise treat a
-diagnostic line as a revision. The octopus-merge case is there because `HEAD^1` is readable and
-wrong on a three-parent commit, so "exactly two" is asserted rather than "is a merge".
+`tests/Feature/Workflows/PrBaseSnapshotTest.php` runs the wrapper against a stub tool that records
+its argv. It asserts the `--head` call shape, that stdout, stderr and the exit status pass through
+unchanged (the callers capture stdout with `$( )` and run under `set -e`), the missing-toolkit refusals, and
+that every workflow step calling the wrapper has the toolkit checkout step before it under the same
+`if:`.
 
-⚠ **One case in that class pins the DERIVATION and the other six pin the refusals, and the split
-matters**: every refusal fixture is linear — the base an ancestor of the head — where `HEAD^1` and
-`git merge-base HEAD^1 HEAD^2` are the same commit, so the class was inert to the one substitution
-the script exists not to be until
-`test_it_reads_the_recorded_parent_rather_than_re_deriving_a_fork_point` was added. It builds PR
-#640's shape (the base branch moves after the fork) and asserts the fork point differs from the
-recorded parent *before* asserting what the script prints, so it cannot pass on a fixture where the
-two coincide.
+The mutation figures this section used to carry (the fork-point rewrite of the derivation, and which
+cases redden under it) left with the derivation: that mutation is now a toolkit selftest's question,
+and this repository's harness cannot see it. `CLAUDE_DECISIONS.md` DL-295's card#8527 amendment
+points here for them; read those figures as history.
 
-### The mutation controls, and how to RE-DERIVE them rather than cite them
-
-**This section is the one owner of these figures.** `CLAUDE_DECISIONS.md` (DL-295's card#8527
-amendment), `docs/CHANGELOG.md` and the workflow comments point here instead of restating a count:
-the denominator is the size of the test classes below and moves with every merge, and the first copy of
-it was falsified by the very merge round that carried it. **Re-run the recipe before quoting any
-figure; the figures below are what it printed at `abef6f0`, not a property of the design.**
-
-| mutation | apply it to | measured at `abef6f0` |
-| --- | --- | --- |
-| **the fork-point rewrite** — replace `bin/pr-base-snapshot.sh`'s last line with `git merge-base "$base_parent" "$head_parent"` | the derivation all four gates share | **8 red of 75**: `DlCollisionGateTest` 1/12, `ChangelogGateTest` 6/56, `PrBaseSnapshotTest` 1/7 |
-
-`ChangelogGateTest`'s share of that row is history: card#11684 replaced the bash changelog gate,
-and that class with it, by the toolkit's `changelog-gate` action, which this repo's harness does
-not execute. Two more mutations this table carried — at that gate's two `CHANGED=` predicates —
-left with it.
-
-Denominator: run `vendor/bin/phpunit` once per file over
-`tests/Feature/Workflows/DlCollisionGateTest.php` and
-`tests/Feature/Workflows/PrBaseSnapshotTest.php`, and take each class's count from its own run —
-those are the classes that execute a base-snapshot derivation, and the population is
-re-counted, never carried. Restore the mutated file by `cp` from a
-copy taken first and `cmp` it back, not by hand.
-
-Two readings the numerator does **not** support, stated because a bare count invites both. Six of
-the eight reds under the fork-point rewrite are not a measure of that rewrite's blast radius on
-CI: three are card#8339's pre-fold cases, which red because a fork-point base changes what the
-diagnosis reads, and three are the card#8441/8527 cells that assert the derived base directly. And
-the rewrite stays **inert on every other case in all three classes**, which is exactly what made it
-look like a harmless simplification — the reason the distinction is written out at the call sites
-rather than left to the diff.
-
-⚑ **Every workflow fixture merges with `--no-ff`, and that is not cosmetic.** Requiring two parents
-raises one obvious worry — a PR whose branch has already merged the base — and it was measured
-rather than argued: GitHub **never fast-forwards** `refs/pull/<n>/merge`. Checked 2026-09-02 against
-the two open PRs on this repo in exactly that state (#635, merge `570d1dc`; #630, merge `6286dc9`),
-both are two-parent merges while `git merge-base --is-ancestor <base> <head>` is true for each. A
-plain `git merge` in a fixture *does* fast-forward there, and the resulting one-parent work tree is
-a tree GitHub would never hand a gate — so a fixture without `--no-ff` tests a shape that does not
-exist, and the script refuses it, correctly.
+⚑ **A workflow fixture that builds a PR merge must pass `--no-ff`.** GitHub **never fast-forwards**
+`refs/pull/<n>/merge` — measured 2026-09-02 against two PRs on this repo whose branches had already
+merged the base (#635, merge `570d1dc`; #630, merge `6286dc9`), both two-parent merges. A plain
+`git merge` in a fixture *does* fast-forward there, and the resulting one-parent work tree is a tree
+GitHub would never hand a gate.
 
 ## The seat updater's suite (card#10568, DL-434)
 
@@ -735,8 +672,8 @@ and let the card own what the population is and when it is empty.
 
 - **Tests that mock `DispatchService` from `WebhookDispatchTest`.** The dispatch loop's interaction with the DB and handlers IS what's being tested. Use `RefreshDatabase` + real tmp config dirs.
 - **Tests that don't fail before a fix.** A regression test that passes at commit time doesn't catch the regression at merge time. Verify the fix-then-revert cycle locally.
-- **Tests that depend on test ordering.** Each test gets a fresh in-memory SQLite and a fresh `uniqid()` tmp dir. Don't write to `~/.config/...` from tests (would leak across runs and into real installs).
-- **Handing `sys_get_temp_dir()` itself to code that enumerates a directory.** The temp root is shared and world-writable, so `bridge.config_dir`, a `SubscriptionRegistry`, or any `glob('*.yml')` sink pointed at it parses whatever a co-tenant OS user left in `/tmp` — the suite then reds (or, worse, goes green for the wrong reason) as a function of the box rather than the branch. Always give such code a dir the test owns: `sys_get_temp_dir().'/<prefix>-'.uniqid()`, created in `setUp()` and `File::deleteDirectory`d in `tearDown()`. The same applies to a test asserting a file is ABSENT: assert it over a dir you created, so absence is by construction rather than by luck.
+- **Tests that depend on test ordering.** Each test gets a fresh in-memory SQLite and a fresh tmp dir of its own. Don't write to `~/.config/...` from tests (would leak across runs and into real installs).
+- **Handing `sys_get_temp_dir()` itself to code that enumerates a directory.** The temp root is shared and world-writable, so `bridge.config_dir`, a `SubscriptionRegistry`, or any `glob('*.yml')` sink pointed at it parses whatever a co-tenant OS user left in `/tmp` — the suite then reds (or, worse, goes green for the wrong reason) as a function of the box rather than the branch. Always give such code a dir the test owns: `TempPath::unique('<prefix>')`, created in `setUp()` and `File::deleteDirectory`d in `tearDown()`. The same applies to a test asserting a file is ABSENT: assert it over a dir you created, so absence is by construction rather than by luck.
 - **Stating a COUNT / ABSENCE / ORDERING / EXCLUSIVITY claim in a test's name and asserting it with `expectsOutputToContain()`.** That matcher answers exactly one question — *does this substring appear at least once?* — so it is satisfied by a doubled line, by a caption printed beside a wrong number, and by a row the command emits unconditionally. A test whose NAME says *collapses* / *deduped* / *once* / *only* / *scoped to* / *counts* while asserting only with it is a **false-clean instrument**: it passes when the behaviour it names is mutated away, and the suite reports the behaviour covered (card#7332 found the first, card#7471 audited the class). Assert the property instead — `substr_count()` for an occurrence count, `doesntExpectOutputToContain()` for an absence, `Tests\Support\ConsoleTable::assertRow()` for a metric/count table CELL (never an unanchored substring, which reads a caption). ⚑ **A different defect of the same matcher, and they are easy to conflate:** chaining several matchers against ONE rendered line is unreliable in both directions. `CLAUDE_DECISIONS.md` DL-263 owns the mechanism and the remedy (capture the output instead); this entry is about what a single matcher can express, not about how several interact.
 - **An absence assertion with no presence witness beside it, or one whose predicate cannot fire.** Both make the check a decoration. A lone `Http::assertNotSent(…)` / `doesntExpectOutputToContain(…)` certifies whatever replaces the code, including code that stopped doing anything at all — pair it with the positive leg that proves the run reached the behaviour. And a predicate that can never be true is worse than no assertion: the board scope travels as the query TERM `q=board_id=<b>`, which the client percent-encodes, so `str_contains($r->url(), 'board_id=9')` is false even for a request that DID read board 9 — **`urldecode($r->url())` first** (card#7471).
 - **Tests for "trivial" code.** A 3-line getter with type hints doesn't need a test. Test substantive behavior; trust the type system for boilerplate.

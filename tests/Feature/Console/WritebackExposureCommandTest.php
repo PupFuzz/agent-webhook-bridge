@@ -6,6 +6,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\TempPath;
 use Tests\TestCase;
 
 /**
@@ -50,7 +51,7 @@ class WritebackExposureCommandTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->dir = sys_get_temp_dir().'/wbexp-'.uniqid();
+        $this->dir = TempPath::unique('wbexp');
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::ensureDirectoryExists($this->dir.'/github');
         config([

@@ -14,6 +14,10 @@ use Illuminate\Support\Facades\Log;
  * ci_await_cancel (card#11200 / DL-452) — remove the calling seat's OWN await on one head, so no
  * `ci_settled`, `ci_await_unreadable`, `ci_await_expired` or `ci_await_overdue` is sent for it.
  *
+ * ⛔ `cancelled: true` ALSO STOPS THE PER-HEAD AGGREGATE (card#12430 / DL-497): the seat gets no
+ * further `ci_settled` for that repo and head from either sender — not for a re-run or a late run
+ * either — until it registers a new `ci_await` on the head ({@see CiAwaitService::cancel()}).
+ *
  * ⛔ SELF-SCOPED, like {@see CiAwaitTool}: only an await the calling seat registered is ever
  * removed, and no argument can name another seat. Cancelling a head this seat does not await
  * answers `cancelled: false` — whether nothing was registered, it already settled, ended as unreadable or expired, or
