@@ -15,7 +15,9 @@ name: Promote released cards on merge to main
 # gate step below waits for the tag and refuses to promote if it never appears.
 #
 # workflow_dispatch lets an operator exercise the path on demand — dry-run by
-# default, so it moves nothing.
+# default, so it moves nothing. Dispatch it from `main`: the promote job runs in the
+# `kanban-writeback` environment, whose deployment branches are `main` only, so a run
+# from any other ref is refused by that rule and never receives the token.
 
 on:
   push:
@@ -42,6 +44,11 @@ concurrency:
 jobs:
   promote:
     runs-on: ubuntu-latest
+    # The environment's deployment branches are `main` only, so this job starts only on `main`,
+    # and its KANBAN_WRITEBACK_TOKEN shadows a repository secret of that name. That keeps the
+    # token from pull-request workflows only once no repository secret of that name remains:
+    # a repository secret is readable by every workflow run in the repo.
+    environment: kanban-writeback
     steps:
       - name: Checkout (with tags)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
