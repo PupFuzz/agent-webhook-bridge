@@ -9,12 +9,13 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
+use App\Bridge\Dispatch\OnceKey;
+use App\Bridge\Dispatch\OnceLedger;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\CiHeadAggregateHandler;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
-use App\Bridge\Support\ReleaseLandingLedger;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TitleChangeEvidence;
 use App\Bridge\Writeback\CoordLaneStages;
@@ -267,7 +268,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     /** The dropped reason for a push {@see pushRoutesToChannel()} withheld. */
     public const IMPL_PUSH_NOT_A_WAKE_BRANCH = 'impl push: branch is not in impl_push_wake_branches (route_intents channel)';
 
-    /** The dropped reason for a release landing the other delivery of the same merge already carried ({@see ReleaseLandingLedger}). */
+    /** The dropped reason for a release landing the other delivery of the same merge already carried ({@see OnceLedger}). */
     public const IMPL_RELEASE_LANDED_ALREADY_CARRIED = 'impl release_landed: this landing was already carried to this agent by the other delivery of the same merge (push / pull_request.closed)';
 
     public function classify(ClassifyContext $ctx): ClassifyResult
@@ -291,6 +292,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $targets = [...$base->targets, ...$this->cardCommentWake($base, $ctx)];
         $reattributed = $base->reattributedActor;
         $dropReason = $base->dropReason;
+        $once = $base->once;
         foreach ($families as $family) {
             $result = match ($family) {
                 'coord-message' => $this->coordMessageFamily($ctx, $cfg),
@@ -308,9 +310,10 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             $targets = [...$targets, ...$result->targets];
             $reattributed ??= $result->reattributedActor;
             $dropReason ??= $result->dropReason;
+            $once ??= $result->once;
         }
 
-        return new ClassifyResult(intents: $intents, targets: $targets, reattributedActor: $reattributed, dropReason: $dropReason);
+        return new ClassifyResult(intents: $intents, targets: $targets, reattributedActor: $reattributed, dropReason: $dropReason, once: $once);
     }
 
     /**
@@ -827,13 +830,6 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             }
         }
 
-        // One merge, two deliveries (card#12576): the one not carrying this landing is dropped
-        // whole — under inbox_stage a release push must not fall through to the broad-inbox
-        // `impl_push` below, which a route_intents channel would deliver as a second wake.
-        if ($signal !== null && $signal['kind'] === 'release_landed' && ! $this->carriesReleaseLanding($signal, $eventType, $ctx)) {
-            return new ClassifyResult(dropReason: self::IMPL_RELEASE_LANDED_ALREADY_CARRIED);
-        }
-
         // card#11667: the per-head aggregate rides every completed run this agent is staged CI
         // for — which is what `inbox_stage` decides — whatever the run's conclusion or actor.
         $inboxStage = $cfg->string('impl_non_wake_disposition', 'drop') === 'inbox_stage';
@@ -846,7 +842,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             // channel by wakePush(), DL-191). The Intent is staged either way.
             $intent = $this->makeImplIntent($signal, $ctx, $cfg);
 
-            return new ClassifyResult(intents: [$intent], targets: [...$this->wakePush($intent, $ctx), ...$aggregate]);
+            return new ClassifyResult(intents: [$intent], targets: [...$this->wakePush($intent, $ctx), ...$aggregate], once: $this->releaseLandingOnce($signal, $eventType, $ctx));
         }
 
         // Non-wake terminal impl event. DEFAULT `drop` = gate-drop (lean inbox — no
@@ -1041,20 +1037,29 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /**
-     * Whether THIS delivery carries the release landing to the serving agent — false when the
-     * other delivery of the same merge already did ({@see ReleaseLandingLedger}). A landing with
-     * no full commit SHA cannot be matched to its twin, so it wakes.
+     * The once key of a release landing (card#12576): one merge reaches the bridge as a `push` AND
+     * a merged `pull_request.closed`, in either order, naming the same landed commit. The
+     * dispatcher delivers it from whichever is first past its gates for the agent and drops the
+     * other's landing with {@see IMPL_RELEASE_LANDED_ALREADY_CARRIED} ({@see OnceLedger}) — a
+     * release push that loses never falls through to the broad-inbox `impl_push`, because it
+     * returns here as a wake signal. A landing with no full commit SHA cannot be matched to its
+     * twin and carries no key.
      *
      * @param  array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}  $signal
      */
-    private function carriesReleaseLanding(array $signal, string $eventType, ClassifyContext $ctx): bool
+    private function releaseLandingOnce(array $signal, string $eventType, ClassifyContext $ctx): ?OnceKey
     {
-        $headSha = $signal['extra']['head_sha'] ?? '';
-        if (! is_string($headSha) || preg_match('/\A[0-9a-f]{40}\z/', $headSha) !== 1) {
-            return true;
+        $headSha = $signal['extra']['head_sha'] ?? null;
+        if ($signal['kind'] !== 'release_landed' || ! is_string($headSha) || preg_match('/\A[0-9a-f]{40}\z/', $headSha) !== 1) {
+            return null;
         }
 
-        return ReleaseLandingLedger::carries($ctx->agent->agentName, $ctx->scopeId, $headSha, explode('.', $eventType, 2)[0]);
+        return new OnceKey(
+            key: 'impl_release_landed:'.strtolower($ctx->scopeId).'@'.$headSha,
+            holder: explode('.', $eventType, 2)[0],
+            subjectId: $signal['ref'],
+            lostReason: self::IMPL_RELEASE_LANDED_ALREADY_CARRIED,
+        );
     }
 
     /**

@@ -228,139 +228,187 @@ final class DispatchService
                 $result = new ClassifyResult(targets: $machineTargets);
             }
 
-            // (B) inbox staging — durability; an IO failure propagates → 5xx.
-            // intents is a list, so $index is the intent's array index (the
-            // stable per-event identity IntentLog needs).
-            foreach ($result->intents as $index => $intent) {
-                $this->intentLog->stage($agent, $event, $intent, $index);
-            }
+            // Once keys (card#12576): claimed HERE, past every gate above that can still
+            // suppress this delivery and before anything is staged, so a claim means this
+            // delivery is delivering. A gate-stripped result carries no key. Losing removes
+            // only the subject the key governs; the rest of the result is delivered.
+            $once = $result->once;
+            if ($once !== null && ! OnceLedger::claim($agent->agentName, $once, (int) $event->id)) {
+                $lostReason = $once->lostReason;
+                $result = $this->withoutSubject($result, $once->subjectId);
+                $once = null;
+                if ($result->intents === [] && $result->targets === []) {
+                    $this->markDropped($dispatch, $lostReason);
 
-            // AFTER staging, deliberately: the warn claims the inbox backstop will
-            // not carry this subject, which is a classifier-authoring claim only
-            // once staging itself succeeded — a staging throw (B) propagates first
-            // and an event that never staged is owed no such claim.
-            $this->warnUnpairedPushes($event, $result, $agent, $classifier, $warned);
-
-            // (C) handlers — durable-first, then best-effort (DL-009).
-            // Same-event coalescing: collapse targets sharing a (handler,
-            // debounceKey) (last-wins) so a classifier emitting duplicate buckets
-            // fires each handler once. The handler is part of the key so two
-            // DISTINCT handlers sharing a debounceKey (default debounceKey is the
-            // targetId) don't clobber each other — e.g. a channel_push and a
-            // log_intent for the same subject both run. No cross-delivery debounce
-            // in the synchronous model (debounceSeconds is advisory metadata).
-            $targets = [];
-            foreach ($result->targets as $t) {
-                $targets[$t->handler.'|'.$t->debounceKey] = $t;
-            }
-
-            // Per-agent channel routing (DL-006): channel.route_intents pushes
-            // every staged intent to the agent's configured channel without the
-            // classifier hand-emitting channel_push — the config-driven form of
-            // EventDrivenClassifier, for fan-out where an agent is remote/idle.
-            // The debounceKey is namespaced ('channel_push:<subject>') so a routed
-            // push never clobbers an unrelated classifier target on the same
-            // subject; it coalesces per subject like EventDrivenClassifier. The
-            // shipped hand-emitting classifiers (EventDriven, Coordination) route
-            // their channel_push through the guarded InboxOnlyClassifier::wakePush(),
-            // which suppresses the hand-emit under route_intents (DL-191, DL-208) —
-            // so pairing them with route_intents is safe (one wake). Only a RAW
-            // custom classifier that emits channel_push WITHOUT wakePush() would
-            // double-push here (distinct debounceKeys ⇒ both survive coalescing).
-            if ($agent->channel->routeIntents) {
-                foreach ($result->intents as $intent) {
-                    $routed = ReactionTarget::make(
-                        handler: HandlerRegistry::CHANNEL_PUSH,
-                        targetId: $intent->subjectId,
-                        debounceKey: HandlerRegistry::CHANNEL_PUSH.':'.$intent->subjectId,
-                        payload: $intent->toArray(),
-                    );
-                    $targets[$routed->handler.'|'.$routed->debounceKey] = $routed;
-                }
-            }
-            // Partition by durability (DL-009). A DurableReaction handler performs
-            // a non-loss-tolerant side effect (e.g. a card-move writeback); its
-            // failure must not be swallowed as a best-effort note. Durable handlers
-            // run FIRST so a durable throw short-circuits BEFORE any best-effort
-            // handler fires — a redelivery, where the upstream redelivers, then re-runs
-            // the whole dispatch (durable handlers MUST be idempotent) without
-            // re-amplifying best-effort pushes.
-            $durable = [];
-            $bestEffort = [];
-            foreach ($targets as $target) {
-                $handler = $this->handlers->resolve($target->handler);
-                if ($handler instanceof DurableReaction) {
-                    $durable[] = $target;
-                } else {
-                    $bestEffort[] = [$target, $handler];
+                    continue;
                 }
             }
 
-            // Durable: treatment (D). A rate limit leaves the write OWED and is not a
-            // delivery failure; anything else propagates → 5xx, the dispatch stays
-            // unprocessed (processed_at null), and the write stays owed either way —
-            // retried by the subject's next event or the retry sweep, and by a
-            // redelivery only where the upstream redelivers (GitHub never does, DL-183).
-            $owedNotes = [];
-            foreach ($durable as $durableTarget) {
-                $owedNote = $this->runDurable($durableTarget, $agent, $event, $provider, $scopeId);
-                if ($owedNote !== null) {
-                    $owedNotes[] = $owedNote;
+            try {
+                $this->deliver($result, $agent, $event, $dispatch, $classifier, $gateReason, $provider, $scopeId, $warned);
+            } catch (Throwable $e) {
+                // A 5xx GitHub never retries: give the key back so a later twin delivers.
+                if ($once !== null) {
+                    OnceLedger::release($agent->agentName, $once, (int) $event->id);
                 }
+                throw $e;
             }
+        }
+    }
 
-            // Best-effort: a throw is a recorded note, not a delivery failure.
-            $note = null;
-            $unconfirmedPush = false;
-            foreach ($bestEffort as [$target, $handler]) {
-                // ⛔ SET ON THE ATTEMPT, NOT ON A RETURN (card#9172, operator-ruled). A
-                // raise out of `handle()` is NOT evidence the push went nowhere:
-                // `ChannelPushTransport::send()` ends in `->throw()`, which fires on ANY
-                // non-2xx — the endpoint reached and answering — and a read timeout can
-                // land after the write already did. Keying on "returned" therefore gave a
-                // FAILED push the strongest word and a possibly-successful 202 the hedged
-                // one, and it did so on the common case, because an idle seat's
-                // connection-refused is this handler's documented normal outcome. Either
-                // way the agent-facing leg is unconfirmed. WHICH failure it was is the
-                // `handler_note`'s to say, and that is unchanged.
-                //
-                // ⭐ THIS FLAG IS WIDER THAN "REACHED A TRANSPORT", AND THE LINE IT DRIVES
-                // IS WORDED FOR THE WIDER SET. `ChannelPushHandler::handle()` also raises
-                // ABOVE both `ChannelPushTransport::send()` calls — no endpoint configured,
-                // a method outside the allow-list, an unreadable `channel.token_path`, a
-                // classifier socket outside the DL-014 prefix — and on those arms nothing
-                // was written to any transport AND no `bridge channel_push:` line exists,
-                // because that line is logged only after a send returns. So the aggregate
-                // message below claims only what holds on EVERY arm of this flag, and the
-                // stronger `accepted by transport (unconfirmed)` is left to the per-push
-                // line, which is emitted exactly when it is true.
-                $unconfirmedPush = $unconfirmedPush || $target->handler === HandlerRegistry::CHANNEL_PUSH;
-                try {
-                    if ($handler === null) {
-                        throw new \RuntimeException("unknown handler '{$target->handler}'");
-                    }
-                    $handler->handle($target, $agent);
-                } catch (Throwable $e) {
-                    $note = RedactedErrorText::note($e);
-                    Log::warning('bridge dispatch: handler failed', [
-                        'agent' => $agent->agentName, 'handler' => $target->handler,
-                    ] + RedactedErrorText::logContext($e));
-                }
+    /**
+     * The result without `$subjectId`'s intents and `channel_push` targets — what losing a once
+     * claim removes ({@see OnceKey}).
+     */
+    private function withoutSubject(ClassifyResult $result, string $subjectId): ClassifyResult
+    {
+        return new ClassifyResult(
+            targets: array_values(array_filter($result->targets, static fn (ReactionTarget $t): bool => ! ($t->handler === HandlerRegistry::CHANNEL_PUSH && $t->targetId === $subjectId))),
+            intents: array_values(array_filter($result->intents, static fn (Intent $i): bool => $i->subjectId !== $subjectId)),
+            reattributedActor: $result->reattributedActor,
+            dropReason: $result->dropReason,
+        );
+    }
+
+    /**
+     * Steps (B)–(C) and the ledger verdict for one agent's surviving result.
+     *
+     * @param  array<string, true>  $warned
+     */
+    private function deliver(ClassifyResult $result, AgentConfig $agent, WebhookEvent $event, AgentDispatch $dispatch, Classifier $classifier, ?string $gateReason, string $provider, string $scopeId, array &$warned): void
+    {
+        // (B) inbox staging — durability; an IO failure propagates → 5xx.
+        // intents is a list, so $index is the intent's array index (the
+        // stable per-event identity IntentLog needs).
+        foreach ($result->intents as $index => $intent) {
+            $this->intentLog->stage($agent, $event, $intent, $index);
+        }
+
+        // AFTER staging, deliberately: the warn claims the inbox backstop will
+        // not carry this subject, which is a classifier-authoring claim only
+        // once staging itself succeeded — a staging throw (B) propagates first
+        // and an event that never staged is owed no such claim.
+        $this->warnUnpairedPushes($event, $result, $agent, $classifier, $warned);
+
+        // (C) handlers — durable-first, then best-effort (DL-009).
+        // Same-event coalescing: collapse targets sharing a (handler,
+        // debounceKey) (last-wins) so a classifier emitting duplicate buckets
+        // fires each handler once. The handler is part of the key so two
+        // DISTINCT handlers sharing a debounceKey (default debounceKey is the
+        // targetId) don't clobber each other — e.g. a channel_push and a
+        // log_intent for the same subject both run. No cross-delivery debounce
+        // in the synchronous model (debounceSeconds is advisory metadata).
+        $targets = [];
+        foreach ($result->targets as $t) {
+            $targets[$t->handler.'|'.$t->debounceKey] = $t;
+        }
+
+        // Per-agent channel routing (DL-006): channel.route_intents pushes
+        // every staged intent to the agent's configured channel without the
+        // classifier hand-emitting channel_push — the config-driven form of
+        // EventDrivenClassifier, for fan-out where an agent is remote/idle.
+        // The debounceKey is namespaced ('channel_push:<subject>') so a routed
+        // push never clobbers an unrelated classifier target on the same
+        // subject; it coalesces per subject like EventDrivenClassifier. The
+        // shipped hand-emitting classifiers (EventDriven, Coordination) route
+        // their channel_push through the guarded InboxOnlyClassifier::wakePush(),
+        // which suppresses the hand-emit under route_intents (DL-191, DL-208) —
+        // so pairing them with route_intents is safe (one wake). Only a RAW
+        // custom classifier that emits channel_push WITHOUT wakePush() would
+        // double-push here (distinct debounceKeys ⇒ both survive coalescing).
+        if ($agent->channel->routeIntents) {
+            foreach ($result->intents as $intent) {
+                $routed = ReactionTarget::make(
+                    handler: HandlerRegistry::CHANNEL_PUSH,
+                    targetId: $intent->subjectId,
+                    debounceKey: HandlerRegistry::CHANNEL_PUSH.':'.$intent->subjectId,
+                    payload: $intent->toArray(),
+                );
+                $targets[$routed->handler.'|'.$routed->debounceKey] = $routed;
             }
-
-            if ($bestEffort !== [] && IdleNudgeConfig::enabled()) {
-                $this->stampPushAttempt($dispatch);
-            }
-
-            // A classifier that emitted no intents AND no targets (e.g. a recipient
-            // filter dropped this agent) did no work — record a gate-drop, not a
-            // delivery, so the ledger / inspect / replay can tell them apart (DL-036).
-            // A classifier that knows WHY it emitted nothing says so (DL-467).
-            if ($result->intents === [] && $targets === []) {
-                $this->markDropped($dispatch, $result->dropReason ?? 'classifier emitted no reactions');
+        }
+        // Partition by durability (DL-009). A DurableReaction handler performs
+        // a non-loss-tolerant side effect (e.g. a card-move writeback); its
+        // failure must not be swallowed as a best-effort note. Durable handlers
+        // run FIRST so a durable throw short-circuits BEFORE any best-effort
+        // handler fires — a redelivery, where the upstream redelivers, then re-runs
+        // the whole dispatch (durable handlers MUST be idempotent) without
+        // re-amplifying best-effort pushes.
+        $durable = [];
+        $bestEffort = [];
+        foreach ($targets as $target) {
+            $handler = $this->handlers->resolve($target->handler);
+            if ($handler instanceof DurableReaction) {
+                $durable[] = $target;
             } else {
-                $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null, $unconfirmedPush, $owedNotes === [] ? null : implode('; ', $owedNotes));
+                $bestEffort[] = [$target, $handler];
             }
+        }
+
+        // Durable: treatment (D). A rate limit leaves the write OWED and is not a
+        // delivery failure; anything else propagates → 5xx, the dispatch stays
+        // unprocessed (processed_at null), and the write stays owed either way —
+        // retried by the subject's next event or the retry sweep, and by a
+        // redelivery only where the upstream redelivers (GitHub never does, DL-183).
+        $owedNotes = [];
+        foreach ($durable as $durableTarget) {
+            $owedNote = $this->runDurable($durableTarget, $agent, $event, $provider, $scopeId);
+            if ($owedNote !== null) {
+                $owedNotes[] = $owedNote;
+            }
+        }
+
+        // Best-effort: a throw is a recorded note, not a delivery failure.
+        $note = null;
+        $unconfirmedPush = false;
+        foreach ($bestEffort as [$target, $handler]) {
+            // ⛔ SET ON THE ATTEMPT, NOT ON A RETURN (card#9172, operator-ruled). A
+            // raise out of `handle()` is NOT evidence the push went nowhere:
+            // `ChannelPushTransport::send()` ends in `->throw()`, which fires on ANY
+            // non-2xx — the endpoint reached and answering — and a read timeout can
+            // land after the write already did. Keying on "returned" therefore gave a
+            // FAILED push the strongest word and a possibly-successful 202 the hedged
+            // one, and it did so on the common case, because an idle seat's
+            // connection-refused is this handler's documented normal outcome. Either
+            // way the agent-facing leg is unconfirmed. WHICH failure it was is the
+            // `handler_note`'s to say, and that is unchanged.
+            //
+            // ⭐ THIS FLAG IS WIDER THAN "REACHED A TRANSPORT", AND THE LINE IT DRIVES
+            // IS WORDED FOR THE WIDER SET. `ChannelPushHandler::handle()` also raises
+            // ABOVE both `ChannelPushTransport::send()` calls — no endpoint configured,
+            // a method outside the allow-list, an unreadable `channel.token_path`, a
+            // classifier socket outside the DL-014 prefix — and on those arms nothing
+            // was written to any transport AND no `bridge channel_push:` line exists,
+            // because that line is logged only after a send returns. So the aggregate
+            // message below claims only what holds on EVERY arm of this flag, and the
+            // stronger `accepted by transport (unconfirmed)` is left to the per-push
+            // line, which is emitted exactly when it is true.
+            $unconfirmedPush = $unconfirmedPush || $target->handler === HandlerRegistry::CHANNEL_PUSH;
+            try {
+                if ($handler === null) {
+                    throw new \RuntimeException("unknown handler '{$target->handler}'");
+                }
+                $handler->handle($target, $agent);
+            } catch (Throwable $e) {
+                $note = RedactedErrorText::note($e);
+                Log::warning('bridge dispatch: handler failed', [
+                    'agent' => $agent->agentName, 'handler' => $target->handler,
+                ] + RedactedErrorText::logContext($e));
+            }
+        }
+
+        if ($bestEffort !== [] && IdleNudgeConfig::enabled()) {
+            $this->stampPushAttempt($dispatch);
+        }
+
+        // A classifier that emitted no intents AND no targets (e.g. a recipient
+        // filter dropped this agent) did no work — record a gate-drop, not a
+        // delivery, so the ledger / inspect / replay can tell them apart (DL-036).
+        // A classifier that knows WHY it emitted nothing says so (DL-467).
+        if ($result->intents === [] && $targets === []) {
+            $this->markDropped($dispatch, $result->dropReason ?? 'classifier emitted no reactions');
+        } else {
+            $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null, $unconfirmedPush, $owedNotes === [] ? null : implode('; ', $owedNotes));
         }
     }
 
