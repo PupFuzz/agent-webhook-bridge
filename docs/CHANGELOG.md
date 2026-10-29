@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.108.0] - 2026-10-29
+
 ### Fixed
 
 - **card#12576 / DL-499** — **A release merge now wakes its waiting seats even when the release is large, and every delivery the receiver's body cap refuses is logged.** The `impl-ci-wake` family's `impl_release_landed` was read only from the `push` to `release_branch`. A push carries every pushed commit's full message plus `head_commit`, so its size grows with the release: kanban-board v0.55.0's push to `main` was 300,739 B, the receiver answered `413 body_too_large` against the 256 KiB default, GitHub does not retry a 413, and nothing on the bridge recorded it — the seat was never woken.
