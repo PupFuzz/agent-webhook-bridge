@@ -38,6 +38,10 @@ namespace App\Bridge\Dispatch;
  * `dropped` reason in place of the generic `classifier emitted no reactions`, so an
  * operator reading `bridge:inspect` sees the cause rather than a family guess. A
  * result that carries anything is delivered and this is ignored.
+ *
+ * once marks a result another delivery can also carry (card#12576): the dispatcher delivers it
+ * only if it can claim the key for the serving agent, AFTER its gates — {@see OnceLedger}. A
+ * result a gate strips to its machine targets loses it, so a suppressed delivery holds nothing.
  */
 final class ClassifyResult
 {
@@ -50,5 +54,6 @@ final class ClassifyResult
         public readonly array $intents = [],
         public readonly ?Actor $reattributedActor = null,
         public readonly ?string $dropReason = null,
+        public readonly ?OnceKey $once = null,
     ) {}
 }
