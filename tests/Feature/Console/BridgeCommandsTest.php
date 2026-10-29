@@ -6,6 +6,7 @@ use App\Bridge\Classifiers\CoordinationClassifier;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotProbe;
+use App\Bridge\Support\ReceiverPhpLimits;
 use App\Bridge\Tools\AuthorizedKeysRead;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\SshProbeEnvironment;
@@ -68,6 +69,10 @@ class BridgeCommandsTest extends TestCase
         foreach (['prod-agent' => 137, 'me' => 1, 'pm' => 100, 'impl' => crc32('impl')] as $seat => $id) {
             $this->seat($seat, $id);
         }
+
+        // A receiver that has served a delivery under a large enough post_max_size (card#12576), so
+        // the unvalidated tallies these tests pin are the legs they set up, not that one.
+        ReceiverPhpLimits::observe('fpm-fcgi', '8.5', null, ['post_max_size' => '8M']);
     }
 
     protected function tearDown(): void
@@ -2523,7 +2528,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertNotNull(WebhookEvent::find($recent->id));           // recent kept
     }
 
-    public function test_prune_deletes_tracked_ci_runs_settled_head_cancelled_wait_and_release_landing_records_older_than(): void
+    public function test_prune_deletes_tracked_ci_runs_settled_head_cancelled_wait_and_once_delivery_records_older_than(): void
     {
         $run = ['repo' => 'octo/w', 'repo_name' => 'octo/w', 'head_sha' => str_repeat('a', 40), 'workflow' => 'CI', 'event' => 'push', 'status' => 'completed', 'html_url' => ''];
         DB::table('ci_head_runs')->insert([$run + ['run_id' => 1, 'created_at' => now()->subDays(40), 'updated_at' => now()->subDays(40)], $run + ['run_id' => 2, 'created_at' => now()->subDays(40), 'updated_at' => now()]]);
@@ -2533,17 +2538,17 @@ class BridgeCommandsTest extends TestCase
         $cancelled = ['agent' => 'a', 'repo' => 'octo/w'];
         DB::table('ci_await_cancellations')->insert([$cancelled + ['head_sha' => str_repeat('a', 40), 'created_at' => now()->subDays(40)], $cancelled + ['head_sha' => str_repeat('b', 40), 'created_at' => now()]]);
 
-        $landing = ['agent' => 'a', 'repo' => 'octo/w', 'source' => 'push'];
-        DB::table('release_landings')->insert([$landing + ['head_sha' => str_repeat('a', 40), 'created_at' => now()->subDays(40)], $landing + ['head_sha' => str_repeat('b', 40), 'created_at' => now()]]);
+        $claim = ['agent' => 'a', 'holder' => 'push', 'webhook_event_id' => 1];
+        DB::table('dispatch_once_claims')->insert([$claim + ['once_key' => 'k-old', 'created_at' => now()->subDays(40)], $claim + ['once_key' => 'k-new', 'created_at' => now()]]);
 
         $this->artisan('bridge:prune', ['--older-than' => '30d'])
-            ->expectsOutputToContain('tracked CI runs, settled-head, cancelled-wait and release-landing records older than 30d: 4 deleted')
+            ->expectsOutputToContain('tracked CI runs, settled-head, cancelled-wait and once-delivery records older than 30d: 4 deleted')
             ->assertExitCode(0);
 
         $this->assertSame([2], DB::table('ci_head_runs')->pluck('run_id')->map(fn ($v): int => (int) $v)->all(), 'a run touched inside the window is kept');
         $this->assertSame([str_repeat('2', 40)], DB::table('ci_head_settlements')->pluck('fingerprint')->all());
         $this->assertSame([str_repeat('b', 40)], DB::table('ci_await_cancellations')->pluck('head_sha')->all(), 'a cancel inside the window is kept');
-        $this->assertSame([str_repeat('b', 40)], DB::table('release_landings')->pluck('head_sha')->all(), 'a landing claimed inside the window is kept');
+        $this->assertSame(['k-new'], DB::table('dispatch_once_claims')->pluck('once_key')->all(), 'a claim inside the window is kept');
     }
 
     public function test_prune_nulls_payloads_older_than_keeping_the_row(): void

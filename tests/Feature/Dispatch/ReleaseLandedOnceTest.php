@@ -5,17 +5,21 @@ namespace Tests\Feature\Dispatch;
 use App\Bridge\Adapters\EventDto;
 use App\Bridge\Classifiers\CoordinationClassifier;
 use App\Bridge\Dispatch\DispatchService;
+use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\IntentLog;
+use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Models\AgentDispatch;
+use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use RuntimeException;
 use Tests\TestCase;
 
 /**
@@ -63,16 +67,16 @@ class ReleaseLandedOnceTest extends TestCase
         }
     }
 
-    private function dispatch(string $deliveryId, string $eventType, array $payload): void
+    private function dispatch(string $deliveryId, string $eventType, array $payload, ?IntentLog $intentLog = null, string $actorId = '999'): void
     {
         $subs = new SubscriptionRegistry($this->dir);
         $dispatcher = new DispatchService(
             $subs,
             AgentRegistry::fromAgentConfigs($subs->agentConfigs(), AgentRegistry::loadSharedIdentities($this->dir)),
             new HandlerRegistry,
-            new IntentLog,
+            $intentLog ?? new IntentLog,
         );
-        $dispatcher->dispatch('github', 'org/impl', new EventDto(deliveryId: $deliveryId, scopeId: 'org/impl', eventType: $eventType, actorId: '999'), $payload);
+        $dispatcher->dispatch('github', 'org/impl', new EventDto(deliveryId: $deliveryId, scopeId: 'org/impl', eventType: $eventType, actorId: $actorId), $payload);
     }
 
     private function push(string $sha = self::SHA, string $deliveryId = 'd-push'): void
@@ -186,12 +190,109 @@ class ReleaseLandedOnceTest extends TestCase
     public function test_a_landing_the_ledger_cannot_claim_still_wakes(): void
     {
         $this->writeSeats(['seat-a' => 8791]);
-        Schema::drop('release_landings');
+        Schema::drop('dispatch_once_claims');
         Log::spy();
 
         $this->push();
 
         $this->assertSame(1, $this->releaseLandedPushesTo('http://127.0.0.1:8791/'));
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_starts_with($message, 'bridge release_landed: the landing could not be claimed'))->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_starts_with($message, 'bridge dispatch: a once key could not be claimed'))->once();
+    }
+
+    /**
+     * The dispatcher can still suppress a delivery AFTER classify — here the shared-identity echo
+     * check on the actor coord-message recovers for an addressed `pull_request.closed` (DL-005).
+     * That delivery woke nobody, so it must not hold the landing: the push for the same merge
+     * wakes. A claim taken inside classify left this merge with ZERO wakes (review of #1005).
+     */
+    public function test_a_pr_delivery_the_echo_gate_drops_does_not_hold_the_landing(): void
+    {
+        File::put($this->dir.'/me.yml',
+            "subscriptions:\n  - provider: github\n    scopes: ['org/impl']\n"
+            ."classifier:\n  class: '".CoordinationClassifier::class."'\n"
+            ."  config:\n    families: ['coord-message', 'impl-ci-wake']\n"
+            ."    scope_author_map:\n      org/impl: me\n"
+            ."    coord_extra_actions:\n      pull_request: [closed]\n"
+            ."channel:\n  url: http://127.0.0.1:8791/\n");
+        File::put($this->dir.'/shared-identities.json', (string) json_encode([
+            'shared_identities' => [['github_user_id' => 12000042, 'github_login' => 'shared-bot', 'agents' => ['me']]],
+        ]));
+        $sender = ['login' => 'shared-bot', 'id' => 12000042];
+
+        $this->dispatch('d-pr', 'pull_request.closed', [
+            'action' => 'closed', 'number' => 942,
+            'pull_request' => ['number' => 942, 'title' => 'release: v1', 'body' => '', 'html_url' => 'https://x/942',
+                'merged' => true, 'merge_commit_sha' => self::SHA, 'commits' => 3, 'base' => ['ref' => 'main'],
+                'labels' => [['name' => 'to:all']]],
+            'repository' => ['full_name' => 'org/impl', 'html_url' => 'https://x'], 'sender' => $sender,
+        ], actorId: '12000042');
+        $this->assertSame(1, AgentDispatch::where('outcome', AgentDispatch::OUTCOME_DROPPED)->where('reason', 'like', 'echo:%')->count(), 'the PR delivery is the echo-dropped one');
+
+        $this->dispatch('d-push', 'push', [
+            'ref' => 'refs/heads/main', 'after' => self::SHA,
+            'head_commit' => ['id' => self::SHA, 'message' => 'Merge'], 'commits' => [['id' => self::SHA]],
+            'repository' => ['full_name' => 'org/impl', 'html_url' => 'https://x'], 'sender' => $sender,
+        ], actorId: '12000042');
+
+        $this->assertSame(1, $this->releaseLandedPushesTo('http://127.0.0.1:8791/'));
+    }
+
+    /**
+     * A delivery that claims the landing and then fails before it is staged returns a 5xx GitHub
+     * never retries; it must give the landing back so its twin wakes.
+     */
+    public function test_a_delivery_that_fails_to_stage_gives_the_landing_back(): void
+    {
+        $this->writeSeats(['seat-a' => 8791]);
+        $failing = new class extends IntentLog
+        {
+            public function stage(AgentConfig $agent, WebhookEvent $event, Intent $intent, int $index): void
+            {
+                throw new RuntimeException('inbox unwritable');
+            }
+        };
+
+        try {
+            $this->dispatch('d-pr', 'pull_request.closed', [
+                'action' => 'closed', 'number' => 942,
+                'pull_request' => ['number' => 942, 'title' => 'release: v0.55.0', 'html_url' => 'https://github.com/org/impl/pull/942',
+                    'merged' => true, 'merge_commit_sha' => self::SHA, 'commits' => 26, 'base' => ['ref' => 'main']],
+                'repository' => ['full_name' => 'org/impl', 'html_url' => 'https://github.com/org/impl'],
+            ], $failing);
+            $this->fail('the staging failure must propagate (a 5xx)');
+        } catch (RuntimeException $e) {
+            $this->assertSame('inbox unwritable', $e->getMessage());
+        }
+
+        $this->push();
+
+        $this->assertSame(1, $this->releaseLandedPushesTo('http://127.0.0.1:8791/'));
+    }
+
+    /**
+     * A lost claim removes the landing it governs and nothing else: the same `pull_request.closed`
+     * can also be a coordination message the seat is addressed by, and that still arrives.
+     */
+    public function test_a_lost_landing_leaves_the_rest_of_the_delivery_intact(): void
+    {
+        File::put($this->dir.'/me.yml',
+            "subscriptions:\n  - provider: github\n    scopes: ['org/impl']\n"
+            ."classifier:\n  class: '".CoordinationClassifier::class."'\n"
+            ."  config:\n    families: ['coord-message', 'impl-ci-wake']\n"
+            ."    coord_extra_actions:\n      pull_request: [closed]\n"
+            ."channel:\n  url: http://127.0.0.1:8791/\n");
+
+        $this->push();
+        $this->dispatch('d-pr', 'pull_request.closed', [
+            'action' => 'closed', 'number' => 942,
+            'pull_request' => ['number' => 942, 'title' => 'release: v1', 'body' => 'FROM: other', 'html_url' => 'https://x/942',
+                'merged' => true, 'merge_commit_sha' => self::SHA, 'commits' => 3, 'base' => ['ref' => 'main'],
+                'labels' => [['name' => 'to:all'], ['name' => 'from:other']]],
+            'repository' => ['full_name' => 'org/impl', 'html_url' => 'https://x'],
+        ]);
+
+        $this->assertSame(1, $this->releaseLandedPushesTo('http://127.0.0.1:8791/'));
+        Http::assertSentCount(2);
+        Http::assertSent(fn ($r) => ($r->data()['intent']['kind'] ?? null) === 'coord_pr');
     }
 }

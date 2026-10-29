@@ -3,8 +3,10 @@
 namespace Tests\Feature\Webhook;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
+use App\Http\Middleware\RecordReceiverPhpLimits;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
@@ -295,6 +297,18 @@ class WebhookReceiveTest extends TestCase
                 && $context['max_bytes'] === 16
                 && ! str_contains((string) json_encode($context), 'commit-message-text');
         })->once();
+    }
+
+    /**
+     * The web SAPI records its own post_max_size from the webhook route (card#12576) — the only
+     * route every delivery takes. The record itself cannot be witnessed here: phpunit is the CLI
+     * SAPI, which never records (ReceiverPostMaxSizeCheckTest pins that).
+     */
+    public function test_the_webhook_route_records_the_receivers_php_limits(): void
+    {
+        $route = app('router')->getRoutes()->match(Request::create('/webhooks/github', 'POST'));
+
+        $this->assertContains(RecordReceiverPhpLimits::class, $route->gatherMiddleware());
     }
 
     public function test_oversize_by_declared_content_length_is_logged_with_that_length(): void

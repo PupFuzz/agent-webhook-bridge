@@ -47,11 +47,12 @@ abstract class TestCase extends BaseTestCase
      * Unlike the three above it is NOT swallowed on SQLite `:memory:`: an un-isolated class gets
      * no table, and the insert's failure 5xxs the delivery, which is the contract.
      *
-     * ⚑ THE FIFTH (card#12576) IS WRITTEN BY CLASSIFY: `impl-ci-wake` claims every release
-     * landing that carries a full commit SHA. Like the first three it is swallowed (and logged)
-     * when the table is absent, so only the MariaDB legs see an un-isolated writer.
+     * ⚑ THE FIFTH (card#12576) IS WRITTEN BY EVERY DISPATCH OF A RESULT CARRYING A ONCE KEY —
+     * `impl-ci-wake`'s release landings with a full commit SHA. Like the first three it is
+     * swallowed (and logged) when the table is absent, so only the MariaDB legs see an
+     * un-isolated writer.
      */
-    private const COMMITTABLE_TABLES = ['writeback_board_divergences', 'board_tools_client_calls', 'board_tools_config_seen', 'writeback_owed_writes', 'release_landings'];
+    private const COMMITTABLE_TABLES = ['writeback_board_divergences', 'board_tools_client_calls', 'board_tools_config_seen', 'writeback_owed_writes', 'dispatch_once_claims'];
 
     /**
      * A path that must not exist, so an install-reading check finds nothing rather than
