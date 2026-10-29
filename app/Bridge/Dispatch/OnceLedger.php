@@ -10,7 +10,7 @@ use Throwable;
 /**
  * Which delivery carries each {@see OnceKey} to each agent (`dispatch_once_claims`, card#12576).
  *
- * ⭐ THE INVARIANT IS "NEVER ZERO; AT WORST TWO". A claim means THIS delivery is delivering, so
+ * ⭐ AT WORST TWO; ZERO ONLY ON THE RESIDUALS BELOW. A claim means THIS delivery is delivering, so
  * {@see DispatchService} takes it only after the echo / signal / strip gates — a delivery a gate
  * suppressed never holds a key it did not deliver (the zero-wake defect a claim taken inside
  * classify had: the gate dropped the claimant, then its twin was dropped as already carried).
@@ -26,7 +26,10 @@ use Throwable;
  *
  * ⚠ RESIDUAL, named: a process that dies between the claim and the end of its durable phase (a
  * PHP fatal, an FPM kill) cannot give the claim back, and a twin classified after it is dropped.
- * So is a twin that LOST to a concurrent delivery which then failed and gave the claim back.
+ * So is a twin that LOST to a concurrent delivery which then failed and gave the claim back. And
+ * a winner whose channel push fails keeps the claim — a best-effort handler's failure is a note,
+ * not a throw — so its twin is dropped and the seat gets no live wake; the intent is still staged
+ * in the inbox, which is where the seat reads it.
  */
 final class OnceLedger
 {
