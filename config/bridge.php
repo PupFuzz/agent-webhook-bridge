@@ -592,12 +592,18 @@ return [
     |--------------------------------------------------------------------------
     |
     | HMAC is verified over the raw body, so an oversize invalid-signature
-    | body would burn CPU before the 401. 256 KB covers every real provider
-    | payload (kanban ~10 KB; GitHub push with large diffs ~50-100 KB).
+    | body would burn CPU before the 401 — this cap bounds that work per request.
+    | 1 MiB (card#12576): a GitHub `push` carries every pushed commit's full
+    | message, so its size grows with the release — kanban-board v0.55.0's push
+    | to `main` was 300,739 B and was refused at the former 256 KiB default.
+    | HMAC-SHA256 over 1 MiB costs single-digit milliseconds, and GitHub itself
+    | caps a webhook payload at 25 MB (docs.github.com/en/webhooks/
+    | webhook-events-and-payloads), so the cap stays well inside the sender's.
+    | A refusal is logged (EnvelopeSizeLimit) and never retried by the sender.
     |
     */
 
-    'max_body_bytes' => (int) env('BRIDGE_MAX_BODY_BYTES', 256 * 1024),
+    'max_body_bytes' => (int) env('BRIDGE_MAX_BODY_BYTES', 1024 * 1024),
 
     /*
     |--------------------------------------------------------------------------

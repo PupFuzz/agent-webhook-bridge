@@ -7,6 +7,7 @@ use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 /**
@@ -266,6 +267,48 @@ class WebhookReceiveTest extends TestCase
         ]);
 
         $response->assertStatus(413)->assertSee('body_too_large');
+    }
+
+    /**
+     * card#12576: GitHub does not retry a 413, so the refusal is the only trace the delivery
+     * existed — it must say which delivery it was, and never what it carried.
+     */
+    public function test_oversize_github_delivery_is_logged_without_its_body(): void
+    {
+        config(['bridge.max_body_bytes' => 16]);
+        $body = (string) json_encode(['ref' => 'refs/heads/main', 'secret-looking' => 'commit-message-text']);
+        Log::spy();
+
+        $this->postWebhook('/webhooks/github?b=acme-corp/widget', $body, [
+            'X-Hub-Signature-256' => $this->sign($body, 'gh-secret'),
+            'X-GitHub-Delivery' => 'gh-d-413',
+            'X-GitHub-Event' => 'push',
+        ])->assertStatus(413);
+
+        Log::shouldHaveReceived('warning')->withArgs(function (string $message, array $context) use ($body): bool {
+            return str_starts_with($message, 'bridge receiver: 413 body_too_large')
+                && $context['provider'] === 'github'
+                && $context['scope'] === 'acme-corp/widget'
+                && $context['event'] === 'push'
+                && $context['delivery'] === 'gh-d-413'
+                && $context['bytes'] === strlen($body)
+                && $context['max_bytes'] === 16
+                && ! str_contains((string) json_encode($context), 'commit-message-text');
+        })->once();
+    }
+
+    public function test_oversize_by_declared_content_length_is_logged_with_that_length(): void
+    {
+        config(['bridge.max_body_bytes' => 16]);
+        Log::spy();
+
+        $this->call('POST', '/webhooks/kanban?b=5', [], [], [], ['CONTENT_TYPE' => 'application/json', 'CONTENT_LENGTH' => '999999'], '{}')
+            ->assertStatus(413);
+
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context): bool => str_starts_with($message, 'bridge receiver: 413 body_too_large')
+            && $context['provider'] === 'kanban' && $context['scope'] === '5'
+            && $context['event'] === null && $context['delivery'] === null
+            && $context['bytes'] === 999999)->once();
     }
 
     public function test_scope_mismatch_is_401(): void

@@ -2523,7 +2523,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertNotNull(WebhookEvent::find($recent->id));           // recent kept
     }
 
-    public function test_prune_deletes_tracked_ci_runs_settled_head_and_cancelled_wait_records_older_than(): void
+    public function test_prune_deletes_tracked_ci_runs_settled_head_cancelled_wait_and_release_landing_records_older_than(): void
     {
         $run = ['repo' => 'octo/w', 'repo_name' => 'octo/w', 'head_sha' => str_repeat('a', 40), 'workflow' => 'CI', 'event' => 'push', 'status' => 'completed', 'html_url' => ''];
         DB::table('ci_head_runs')->insert([$run + ['run_id' => 1, 'created_at' => now()->subDays(40), 'updated_at' => now()->subDays(40)], $run + ['run_id' => 2, 'created_at' => now()->subDays(40), 'updated_at' => now()]]);
@@ -2533,13 +2533,17 @@ class BridgeCommandsTest extends TestCase
         $cancelled = ['agent' => 'a', 'repo' => 'octo/w'];
         DB::table('ci_await_cancellations')->insert([$cancelled + ['head_sha' => str_repeat('a', 40), 'created_at' => now()->subDays(40)], $cancelled + ['head_sha' => str_repeat('b', 40), 'created_at' => now()]]);
 
+        $landing = ['agent' => 'a', 'repo' => 'octo/w', 'source' => 'push'];
+        DB::table('release_landings')->insert([$landing + ['head_sha' => str_repeat('a', 40), 'created_at' => now()->subDays(40)], $landing + ['head_sha' => str_repeat('b', 40), 'created_at' => now()]]);
+
         $this->artisan('bridge:prune', ['--older-than' => '30d'])
-            ->expectsOutputToContain('tracked CI runs, settled-head and cancelled-wait records older than 30d: 3 deleted')
+            ->expectsOutputToContain('tracked CI runs, settled-head, cancelled-wait and release-landing records older than 30d: 4 deleted')
             ->assertExitCode(0);
 
         $this->assertSame([2], DB::table('ci_head_runs')->pluck('run_id')->map(fn ($v): int => (int) $v)->all(), 'a run touched inside the window is kept');
         $this->assertSame([str_repeat('2', 40)], DB::table('ci_head_settlements')->pluck('fingerprint')->all());
         $this->assertSame([str_repeat('b', 40)], DB::table('ci_await_cancellations')->pluck('head_sha')->all(), 'a cancel inside the window is kept');
+        $this->assertSame([str_repeat('b', 40)], DB::table('release_landings')->pluck('head_sha')->all(), 'a landing claimed inside the window is kept');
     }
 
     public function test_prune_nulls_payloads_older_than_keeping_the_row(): void

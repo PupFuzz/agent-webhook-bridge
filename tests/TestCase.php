@@ -46,8 +46,12 @@ abstract class TestCase extends BaseTestCase
      * a rate-limited or failing write leaves its row behind — from ANY test that dispatches one.
      * Unlike the three above it is NOT swallowed on SQLite `:memory:`: an un-isolated class gets
      * no table, and the insert's failure 5xxs the delivery, which is the contract.
+     *
+     * ⚑ THE FIFTH (card#12576) IS WRITTEN BY CLASSIFY: `impl-ci-wake` claims every release
+     * landing that carries a full commit SHA. Like the first three it is swallowed (and logged)
+     * when the table is absent, so only the MariaDB legs see an un-isolated writer.
      */
-    private const COMMITTABLE_TABLES = ['writeback_board_divergences', 'board_tools_client_calls', 'board_tools_config_seen', 'writeback_owed_writes'];
+    private const COMMITTABLE_TABLES = ['writeback_board_divergences', 'board_tools_client_calls', 'board_tools_config_seen', 'writeback_owed_writes', 'release_landings'];
 
     /**
      * A path that must not exist, so an install-reading check finds nothing rather than

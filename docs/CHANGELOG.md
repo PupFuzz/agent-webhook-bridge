@@ -8,6 +8,16 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#12576** — **A release merge now wakes its waiting seats even when the release is large, and the receiver logs every delivery it refuses for size.** The `impl-ci-wake` family's `impl_release_landed` was read only from the `push` to `release_branch`. A push carries every pushed commit's full message plus `head_commit`, so its size grows with the release: kanban-board v0.55.0's push to `main` was 300,739 B, the receiver answered `413 body_too_large` against the 256 KiB default, GitHub does not retry a 413, and nothing on the bridge recorded it — the seat was never woken.
+  - **`impl_release_landed` is also read from the merged `pull_request.closed` into `release_branch`**, whose size is one PR's body rather than the release's commit list. `subject_id` and `head_sha` are the PR's `merge_commit_sha` — the same landed commit the push names — `commit_count` is the PR's `commits`, and the payload gains `pr`; `event` reads `pull_request.closed` when this delivery carried it. An unmerged close, or a merge into another branch, is not a wake.
+  - **One merge wakes each seat once.** Both deliveries still arrive on a hook that sends *Pull requests* and *Pushes*; whichever is classified first for an agent claims the landing in a new `release_landings` table and the other is dropped, with the reason `impl release_landed: this landing was already carried…` on its dispatch row. A hook that sends no *Pull requests* keeps waking from the push alone, and a direct push to the release branch that no PR reports still wakes.
+  - **`BRIDGE_MAX_BODY_BYTES` now defaults to 1,048,576 B (1 MiB)**, up from 262,144 B. The cap exists so an unsigned body is not HMAC-hashed at any size: HMAC-SHA256 over 1 MiB costs single-digit milliseconds, and GitHub caps webhook payloads at 25 MB. An install that set the variable keeps its own value.
+  - **Every `413` is logged** as a `bridge receiver: 413 body_too_large` warning naming the provider, scope, `X-GitHub-Event`, `X-GitHub-Delivery`, the size and the cap. The body is never logged. Before this, a 413 left no record on the bridge.
+  - `bridge:prune`'s line now reads "tracked CI runs, settled-head, cancelled-wait and release-landing records"; the release-landing claims are pruned on the same retention window.
+  - **Upgrade: no installer action.** No `.env` edit and no repo-webhook change is needed. The new table is created by the `php artisan migrate --force` step of the standard update (`CLAUDE_DEPLOYMENT.md` § Update an existing install). Until that step runs, a landing that cannot be claimed still wakes, logs `bridge release_landed: the landing could not be claimed`, and can wake twice for one merge. Installs whose hook does not send *Pull requests* get the larger cap but still read the landing from the push, so a release push over 1 MiB is still refused there; adding *Pull requests* to the hook removes that exposure.
+
 ## [0.107.3] - 2026-10-28
 
 ### Changed

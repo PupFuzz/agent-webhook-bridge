@@ -14,6 +14,7 @@ use App\Bridge\Handlers\CiHeadAggregateHandler;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
+use App\Bridge\Support\ReleaseLandingLedger;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TitleChangeEvidence;
 use App\Bridge\Writeback\CoordLaneStages;
@@ -51,7 +52,9 @@ use App\Bridge\Writeback\WritebackMapping;
  *     default), a created comment it cannot attribute also emits ONE
  *     `github_protocol_invalid_label` target, whether or not the serving agent is
  *     addressed — {@see protocolInvalidLabelTargets()}.
- *   - `impl-ci-wake`  — github push→release-branch (release-landed) + workflow_run
+ *   - `impl-ci-wake`  — a landing on the release branch (release-landed: the merged
+ *     `pull_request.closed` into it, or the `push` to it — whichever is classified first
+ *     for the agent; the other is dropped, card#12576) + workflow_run
  *     wake-worthy CI (failure-class conclusions, provenance-success). DEFAULT
  *     surgical: hand-emits a channel_push ONLY for wake-worthy events, else
  *     gate-dropped. Config: `impl_repos` gates to a repo subset (empty ⇒ all
@@ -177,15 +180,24 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     ];
 
     /**
-     * The top-level GitHub event types the `impl-ci-wake` family consumes (§3):
-     * a `push` (release-landed) and a `workflow_run.<action>` (CI). This is the
-     * SINGLE source of truth {@see consumedEventTypes} unions for that family — it
-     * mirrors the two dispatch guards in {@see implCiWakeFamily} (`$eventType ===
-     * 'push'` / `str_starts_with($eventType, 'workflow_run.')`); keep them in sync.
+     * The GitHub event types the `impl-ci-wake` family consumes (§3): a `push` and a
+     * merged `pull_request.closed` (release-landed) and a `workflow_run.<action>` (CI).
+     * This is the SINGLE source of truth {@see consumedEventTypes} unions for that
+     * family — it mirrors the three dispatch guards in {@see implCiWakeFamily}
+     * (`$eventType === 'push'` / `=== self::RELEASE_PR_EVENT` /
+     * `str_starts_with($eventType, 'workflow_run.')`); keep them in sync. `push` and
+     * `workflow_run` stay bare, `pull_request` is qualified to the one action read.
      * (coord-message derives its types from {@see HANDLED} instead, so it can't
      * drift at all.)
      */
-    private const IMPL_CI_WAKE_EVENT_TYPES = ['push', 'workflow_run'];
+    private const IMPL_CI_WAKE_EVENT_TYPES = ['push', self::RELEASE_PR_EVENT, 'workflow_run'];
+
+    /**
+     * The pull_request delivery that reports a merge (card#12576). Its size is bounded by one
+     * PR's body, where a push to the release branch carries every pushed commit's full message
+     * (up to 2048 of them) and can exceed the receiver's body cap — a 413 GitHub never retries.
+     */
+    private const RELEASE_PR_EVENT = 'pull_request.closed';
 
     /**
      * The issue actions each coord-card family acts on — single source for BOTH
@@ -254,6 +266,9 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
     /** The dropped reason for a push {@see pushRoutesToChannel()} withheld. */
     public const IMPL_PUSH_NOT_A_WAKE_BRANCH = 'impl push: branch is not in impl_push_wake_branches (route_intents channel)';
+
+    /** The dropped reason for a release landing the other delivery of the same merge already carried ({@see ReleaseLandingLedger}). */
+    public const IMPL_RELEASE_LANDED_ALREADY_CARRIED = 'impl release_landed: this landing was already carried to this agent by the other delivery of the same merge (push / pull_request.closed)';
 
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
@@ -805,9 +820,18 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         if (! $denied) {
             if ($eventType === 'push') {
                 $signal = $this->pushSignal($payload, $cfg);
+            } elseif ($eventType === self::RELEASE_PR_EVENT) {
+                $signal = $this->mergedPrSignal($payload, $cfg);
             } elseif (str_starts_with($eventType, 'workflow_run.')) {
                 $signal = $this->workflowRunSignal($payload, $cfg);
             }
+        }
+
+        // One merge, two deliveries (card#12576): the one not carrying this landing is dropped
+        // whole — under inbox_stage a release push must not fall through to the broad-inbox
+        // `impl_push` below, which a route_intents channel would deliver as a second wake.
+        if ($signal !== null && $signal['kind'] === 'release_landed' && ! $this->carriesReleaseLanding($signal, $eventType, $ctx)) {
+            return new ClassifyResult(dropReason: self::IMPL_RELEASE_LANDED_ALREADY_CARRIED);
         }
 
         // card#11667: the per-head aggregate rides every completed run this agent is staged CI
@@ -936,7 +960,9 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /**
-     * A push to the release branch = release-landed (aimla's push-landing wake).
+     * A push to the release branch = release-landed (aimla's push-landing wake) — kept beside
+     * {@see mergedPrSignal} for a landing no PR reports (a direct push) and for a repo webhook
+     * that does not send *Pull requests*; for a PR merge the two are de-duplicated.
      * Non-release-branch pushes and branch-delete pushes are not wake-worthy. The
      * subjectId is the landed commit SHA (aimla's plane-5 SHA-chain keys on the
      * commit, not the branch name); `head_sha` + `commit_count` ride the payload.
@@ -973,6 +999,62 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'commit_count' => count($commits),
             ],
         ];
+    }
+
+    /**
+     * A PR merged into the release branch = release-landed (card#12576): the same signal as
+     * {@see pushSignal}, read from the delivery whose size does not grow with the release.
+     * `subjectId`/`head_sha` is `merge_commit_sha` — the commit the merge put on the branch
+     * (the merge commit, the squashed commit, or the last rebased one), which is the push's
+     * `after` for the same merge. `commit_count` is the PR's own `commits`, not the push's
+     * commit list; `pr` is added. An unmerged close, or a merge into another branch, is no
+     * landing.
+     *
+     * @param  array<mixed>  $payload
+     * @return array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}|null
+     */
+    private function mergedPrSignal(array $payload, ClassifierConfig $cfg): ?array
+    {
+        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+        $base = is_array($pr['base'] ?? null) ? $pr['base'] : [];
+        $releaseBranch = $cfg->string('release_branch', 'main');
+        if (($pr['merged'] ?? false) !== true || ($base['ref'] ?? null) !== $releaseBranch) {
+            return null;
+        }
+        $repo = is_array($payload['repository'] ?? null) ? $payload['repository'] : [];
+        $headSha = is_string($pr['merge_commit_sha'] ?? null) ? $pr['merge_commit_sha'] : '';
+        $number = is_int($pr['number'] ?? null) ? $pr['number'] : null;
+
+        return [
+            'kind' => 'release_landed',
+            'ref' => $headSha !== '' ? $headSha : $releaseBranch,
+            'tail' => $this->oneLine(is_scalar($pr['title'] ?? null) ? (string) $pr['title'] : $releaseBranch),
+            'url' => is_string($pr['html_url'] ?? null) ? $pr['html_url']
+                : (is_scalar($repo['html_url'] ?? null) ? (string) $repo['html_url'] : ''),
+            'extra' => [
+                'branch' => $releaseBranch,
+                'head_sha' => $headSha,
+                'commit_count' => is_int($pr['commits'] ?? null) ? $pr['commits'] : 0,
+                'pr' => $number,
+            ],
+        ];
+    }
+
+    /**
+     * Whether THIS delivery carries the release landing to the serving agent — false when the
+     * other delivery of the same merge already did ({@see ReleaseLandingLedger}). A landing with
+     * no full commit SHA cannot be matched to its twin, so it wakes.
+     *
+     * @param  array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}  $signal
+     */
+    private function carriesReleaseLanding(array $signal, string $eventType, ClassifyContext $ctx): bool
+    {
+        $headSha = $signal['extra']['head_sha'] ?? '';
+        if (! is_string($headSha) || preg_match('/\A[0-9a-f]{40}\z/', $headSha) !== 1) {
+            return true;
+        }
+
+        return ReleaseLandingLedger::carries($ctx->agent->agentName, $ctx->scopeId, $headSha, explode('.', $eventType, 2)[0]);
     }
 
     /**
