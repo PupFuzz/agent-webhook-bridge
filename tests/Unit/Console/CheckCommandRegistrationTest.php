@@ -49,6 +49,7 @@ class CheckCommandRegistrationTest extends TestCase
         'install.config_dir',
         'install.secret_dir',
         'install.flag_values',
+        'install.receiver_post_max_size',
         'database.connectivity',
         'database.install_suffix',
         'writeback.owed_writes_table',

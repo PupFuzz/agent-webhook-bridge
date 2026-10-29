@@ -30,11 +30,12 @@ use Symfony\Component\HttpFoundation\Response;
  *   config_secret_dir_* / secret_perms_insecure         → 500
  *   empty_secret_file                                   → 500
  *
- * 413 is a deterministic 4xx (a body over `bridge.max_body_bytes`, 256 KB default
- * — which "covers every real provider" per config/bridge.php). kanban-board does
- * NOT retry it, so an over-limit delivery is dropped — correct, since a retry of
- * the same too-big body can't succeed. Realistic payloads (a 50–100 KB GitHub
- * push diff) sit well under the ceiling.
+ * 413 is a deterministic 4xx (a body over `bridge.max_body_bytes`). Neither
+ * kanban-board nor GitHub retries it, so an over-limit delivery is dropped — a
+ * retry of the same too-big body can't succeed — and EnvelopeSizeLimit logs each
+ * one. A GitHub push has no fixed size bound (config/bridge.php says why the
+ * default is what it is), which is why the release-landed wake also reads the
+ * bounded `pull_request.closed` (card#12576).
  *
  * On success it stashes the resolved adapter + raw body + scope + provider on
  * the request so the controller doesn't re-resolve or re-read them.

@@ -423,6 +423,7 @@ class UnvalidatedCallSiteTest extends TestCase
         // so the drops were not counted (limb a). The absent-but-unseeable arms go through
         // `PathVisibility` and are counted there.
         'app/Bridge/Check/Checks/GitHubTokenFileCheck.php' => 9,
+        'app/Bridge/Check/Checks/ReceiverPostMaxSizeCheck.php' => 3,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

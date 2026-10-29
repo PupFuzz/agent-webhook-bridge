@@ -81,7 +81,7 @@ class CoordinationClassifierTest extends TestCase
         $events = $this->classifier->consumedEventTypes($this->config(['families' => ['impl-ci-wake']]));
 
         sort($events);
-        $this->assertSame(['push', 'workflow_run'], $events);
+        $this->assertSame(['pull_request.closed', 'push', 'workflow_run'], $events);
     }
 
     public function test_consumed_event_types_union_over_enabled_families(): void
@@ -95,7 +95,7 @@ class CoordinationClassifierTest extends TestCase
         $this->assertSame([
             'issue_comment.created',
             'issues.opened', 'issues.reopened',
-            'pull_request.opened', 'pull_request.ready_for_review', 'pull_request.reopened',
+            'pull_request.closed', 'pull_request.opened', 'pull_request.ready_for_review', 'pull_request.reopened',
             'push', 'workflow_run',
         ], $events);
     }
@@ -352,6 +352,93 @@ class CoordinationClassifierTest extends TestCase
         $this->assertSame(2, $r->intents[0]->payload['commit_count']);
         $this->assertSame('device', $r->intents[0]->payload['from']);     // §1 scope-map on a label-less event
         $this->assertCount(1, $r->targets);
+    }
+
+    /**
+     * A `pull_request.closed` payload, merged or not, into `$base`.
+     *
+     * @return array<mixed>
+     */
+    private function closedPr(bool $merged, string $base = 'main', array $extra = []): array
+    {
+        return array_merge([
+            'action' => 'closed',
+            'number' => 942,
+            'pull_request' => [
+                'number' => 942,
+                'title' => 'release: v0.55.0',
+                'html_url' => 'https://github.com/org/impl/pull/942',
+                'merged' => $merged,
+                'merge_commit_sha' => $merged ? 'abc1234' : 'f00ba12',
+                'commits' => 26,
+                'base' => ['ref' => $base],
+            ],
+            'repository' => ['html_url' => 'https://github.com/org/impl'],
+        ], $extra);
+    }
+
+    public function test_pr_merged_into_release_branch_wakes_release_landed(): void
+    {
+        $r = $this->classify('pull_request.closed', $this->closedPr(true), 'org/impl', classifierConfig: $this->implConfig());
+
+        $this->assertCount(1, $r->intents);
+        $intent = $r->intents[0];
+        $this->assertSame('impl_release_landed', $intent->kind);
+        // The same subject the push carries for the same merge: the landed commit.
+        $this->assertSame('abc1234', $intent->subjectId);
+        $this->assertSame('abc1234', $intent->payload['head_sha']);
+        $this->assertSame('main', $intent->payload['branch']);
+        $this->assertSame(26, $intent->payload['commit_count']);
+        $this->assertSame(942, $intent->payload['pr']);
+        $this->assertSame('pull_request.closed', $intent->payload['event']);
+        $this->assertSame('https://github.com/org/impl/pull/942', $intent->payload['url']);
+        $this->assertSame('device', $intent->payload['from']);
+        $this->assertStringContainsString('release: v0.55.0', $intent->summary);
+        $this->assertCount(1, $r->targets);
+    }
+
+    public function test_pr_closed_without_merge_does_not_wake(): void
+    {
+        $r = $this->classify('pull_request.closed', $this->closedPr(false), 'org/impl', classifierConfig: $this->implConfig());
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_pr_merged_into_another_branch_does_not_wake(): void
+    {
+        $r = $this->classify('pull_request.closed', $this->closedPr(true, 'dev'), 'org/impl', classifierConfig: $this->implConfig());
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_pr_merged_into_a_configured_release_branch_wakes(): void
+    {
+        $r = $this->classify('pull_request.closed', $this->closedPr(true, 'trunk'), 'org/impl',
+            classifierConfig: $this->implConfig(['release_branch' => 'trunk']));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_release_landed', $r->intents[0]->kind);
+    }
+
+    public function test_pr_merge_by_a_denied_actor_does_not_wake(): void
+    {
+        // The push path keys the deny-list on `sender`; a merge's `sender` is who merged.
+        $r = $this->classify('pull_request.closed',
+            $this->closedPr(true, extra: ['sender' => ['login' => 'release-bot', 'id' => 7]]), 'org/impl',
+            classifierConfig: $this->implConfig(['impl_wake_deny_actors' => ['release-bot']]));
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_pr_actions_other_than_closed_are_not_release_landings(): void
+    {
+        $r = $this->classify('pull_request.opened', $this->closedPr(true, extra: ['action' => 'opened']), 'org/impl',
+            classifierConfig: $this->implConfig());
+
+        $this->assertSame([], $r->intents);
     }
 
     public function test_push_to_non_release_branch_does_not_wake(): void
