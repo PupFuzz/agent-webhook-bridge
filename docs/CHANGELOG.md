@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **npm/express-rate-limit 8.5.2 → 8.7.2 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisory GHSA-j3cq-92fq-qg5f (low, range `<= 8.7.1`, patched in 8.7.2) on express-rate-limit/express-rate-limit). Opened by the daily dependency advisory ref matrix: 8.7.2 is in range for @modelcontextprotocol/sdk@1.32.1's `^8.2.1`, so `npm update express-rate-limit` sufficed and no override was added. Channel-server snapshot 0.9.75 → 0.9.76.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.76. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.5.2, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+
 ## [0.108.0] - 2026-10-29
 
 ### Fixed
