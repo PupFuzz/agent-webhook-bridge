@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#12740** — **npm/hono 4.13.11 → 4.13.16 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisories GHSA-46wx-v44x-9hh2 (medium, range `< 4.13.16`, patched in 4.13.16); GHSA-4h7h-rv7c-7m2v (medium, range `>= 4.5.1, <= 4.13.15`, patched in 4.13.16); GHSA-4m76-xfj5-7975 (medium, range `< 4.13.16`, patched in 4.13.16); GHSA-h7mg-cq63-vhpq (medium, range `>= 4.1.4, <= 4.13.15`, patched in 4.13.16); GHSA-3gg2-335m-rxc6 (low, range `>= 3.12.0, <= 4.13.15`, patched in 4.13.16) on honojs/hono). Opened by the daily dependency advisory ref matrix: 4.13.16 is in range for @hono/node-server@2.1.3's `^4`; @modelcontextprotocol/sdk@1.32.1's `^4.11.4`, so `npm update hono` sufficed and no override was added. Channel-server snapshot 0.9.76 → 0.9.77.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.77. Until you do, seats stay on the client they have, whose lockfile pins hono 4.13.11, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+
 ## [0.108.1] - 2026-10-31
 
 ### Fixed
