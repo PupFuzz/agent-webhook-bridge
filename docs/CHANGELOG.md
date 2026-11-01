@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.108.1] - 2026-10-31
+
 ### Fixed
 
 - **card#12659** — **npm/express-rate-limit 8.5.2 → 8.7.2 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisory GHSA-j3cq-92fq-qg5f (low, range `<= 8.7.1`, patched in 8.7.2) on express-rate-limit/express-rate-limit). Opened by the daily dependency advisory ref matrix: 8.7.2 is in range for @modelcontextprotocol/sdk@1.32.1's `^8.2.1`, so `npm update express-rate-limit` sufficed and no override was added. Channel-server snapshot 0.9.75 → 0.9.76.
