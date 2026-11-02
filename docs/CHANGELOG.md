@@ -8,14 +8,21 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.108.3] - 2026-11-02
+
 ### Fixed
 
 - **npm/@hono/node-server 2.1.3 → 2.1.6 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisories GHSA-jpvv-r467-5p4w (medium, range `>= 2.0.0, < 2.1.6`, patched in 2.1.6); GHSA-7v5p-43qr-wch5 (medium, range `>= 2.0.0, < 2.1.6`, patched in 2.1.6); GHSA-qv5m-9pm6-hqp3 (medium, range `>= 2.0.0, < 2.1.6`, patched in 2.1.6) on honojs/node-server). Opened by the daily dependency advisory ref matrix: 2.1.6 is in range for @modelcontextprotocol/sdk@1.32.2's `^1.19.9 || ^2.0.5`, so `npm update @hono/node-server` sufficed and no override was added. Channel-server snapshot 0.9.78 → 0.9.79.
 - **Dependabot PR #1023** — **npm/@modelcontextprotocol/sdk 1.32.1 → 1.32.2 in examples/channel-servers**, an upstream bugfix patch with no advisory. Its two fixes do not reach the channel server: registering a handler after `connect()` when the capability was declared (the channel server registers its handlers before it connects), and an explicit `| undefined` on the `Transport` interface's optional properties (a TypeScript type change; the channel server is plain `.mjs`). Bumped because it is in-range and freely available. Reference channel-server snapshot 0.9.77 → 0.9.78.
 
+### Changed
+
+- **Dependabot PRs #1015 · #1016 · #1017** — `laravel/framework` 13.38.0 → 13.39.0 and `symfony/yaml` 8.1.9 → 8.1.10 (runtime, `composer.lock`), `larastan/larastan` 3.13.1 → 3.13.2 (dev). The framework move, with the Symfony 8.1.10 components and the other transitive entries it pulls, landed in `composer.lock` through #1016; #1017 merged with no lockfile change left to make. Run `composer install` on deploy as usual. No migration, no config key.
+- **Dependabot PRs #1018 – #1022** — the SHA pins of agent-board-toolkit's `changelog-gate`, `release-tag-check`, `release-artifacts`, `promote` and `dl-collision-gate` actions (and the toolkit checkout in `.github/actions/agent-board-toolkit`) move to v0.52.1. Repository CI only.
+
 ### Upgrade warnings
 
-- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.79. Until you do, seats stay on the client they have, whose lockfile pins @modelcontextprotocol/sdk 1.32.1, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.79. Until you do, seats stay on the client they have, whose lockfile pins @hono/node-server 2.1.3 and @modelcontextprotocol/sdk 1.32.1, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.108.2] - 2026-11-01
 
