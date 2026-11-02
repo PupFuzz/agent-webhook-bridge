@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dependabot PR #1023** — **npm/@modelcontextprotocol/sdk 1.32.1 → 1.32.2 in examples/channel-servers**, an upstream bugfix patch with no advisory. Its two fixes do not reach the channel server: registering a handler after `connect()` when the capability was declared (the channel server registers its handlers before it connects), and an explicit `| undefined` on the `Transport` interface's optional properties (a TypeScript type change; the channel server is plain `.mjs`). Bumped because it is in-range and freely available. Reference channel-server snapshot 0.9.77 → 0.9.78.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.78. Until you do, seats stay on the client they have, whose lockfile pins @modelcontextprotocol/sdk 1.32.1, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+
 ## [0.108.2] - 2026-11-01
 
 ### Fixed
