@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.108.4] - 2026-11-06
+
 ### Fixed
 
 - **card#12863** — **composer/laravel/framework 13.39.0 → 13.40.0** (`composer.lock` only; repository advisory GHSA-63hm-g96r-2m2q (low, range `< 13.40.0`, patched in 13.40.0)). Flagged by the daily dependency advisory ref matrix, whose bump job does not automate composer findings; the `composer.json` constraint already admits 13.40.0. `composer update laravel/framework --with-dependencies` also moved `league/uri` and `league/uri-interfaces` 7.9.1 → 7.10.0, the Symfony 8.1 components (`console`, `finder`, `http-foundation`, `http-kernel`, `routing`, `translation`) 8.1.10 → 8.1.11, and the Symfony contracts (`deprecation-contracts`, `event-dispatcher-contracts`, `service-contracts`, `translation-contracts`) 3.7.x → 3.8.1. Run `composer install` on deploy as usual. No migration, no config key.
