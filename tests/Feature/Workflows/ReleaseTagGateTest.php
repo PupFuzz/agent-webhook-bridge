@@ -184,8 +184,11 @@ class ReleaseTagGateTest extends TestCase
      * The gate DECLARES which tag it waits for; this CHECKS that declaration is
      * true of this repo's own tagger. Without it the declaration is a comment.
      *
-     * Which tag a version maps to is `.release-pr.json`'s `tag_format` (absent =
-     * `v{{version}}`), and that key is what the gate polls for. It does NOT
+     * Which tag a version maps to is `.release-pr.json`'s `tag_format`, and that
+     * key is what the gate polls for. It is REQUIRED here, not defaulted: the
+     * framework release-pr skill treats a missing key as undeclared and stops,
+     * so a test that filled in `v{{version}}` would pass a config the release
+     * cut refuses (card#12945). It does NOT
      * change what `auto-tag-version.yml` CREATES — nothing in the toolkit
      * constrains that workflow — so the two can silently disagree, and the cost
      * of disagreeing is now much higher than it was before the gate existed:
@@ -201,8 +204,12 @@ class ReleaseTagGateTest extends TestCase
         $config = json_decode((string) file_get_contents(base_path('.release-pr.json')), true);
         $this->assertIsArray($config, '.release-pr.json did not parse — the gate reads it for the tag name');
 
-        // The default is the toolkit's, applied when the key is absent.
-        $tagFormat = $config['tag_format'] ?? 'v{{version}}';
+        $tagFormat = $config['tag_format'] ?? null;
+        $this->assertTrue(
+            is_string($tagFormat) && $tagFormat !== '',
+            '.release-pr.json does not declare `tag_format` (missing, empty or not a string). The release-pr skill stops on '
+            .'an undeclared tag_format rather than guessing `v{{version}}`; declare the tag auto-tag-version.yml creates.'
+        );
 
         $tagger = Yaml::parseFile(base_path('.github/workflows/auto-tag-version.yml'));
 
