@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#12945** — `.release-pr.json` now declares `"tag_format": "v{{version}}"`, the `v<version>` tag that `auto-tag-version.yml` already creates. The framework release-pr skill (v0.73.0 and later) stops a release cut when the key is missing, and the toolkit's release tools are moving to refuse on it as well; until now the repo relied on their guessed `v` default. No tag name, workflow behaviour, migration or config key changes. Repository release tooling only.
+
 ## [0.108.4] - 2026-11-06
 
 ### Fixed
