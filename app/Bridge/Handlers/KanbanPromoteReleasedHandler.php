@@ -115,9 +115,9 @@ final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReac
         return $repos;
     }
 
-    public static function fileTokenWrites(): bool
+    public static function fileTokenWrites(): array
     {
-        return false;
+        return [];
     }
 
     /** Each candidate's pull request, then a compare of its merge commit with the release base. */

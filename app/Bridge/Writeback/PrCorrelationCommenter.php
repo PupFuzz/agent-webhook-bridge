@@ -122,9 +122,9 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         return array_map(strval(...), array_keys($writeback === null ? [] : $writeback->mappings));
     }
 
-    public static function fileTokenWrites(): bool
+    public static function fileTokenWrites(): array
     {
-        return true;
+        return [GitHubWriteLeg::Comment];
     }
 
     /** The dedupe read of the thread's comments before each post. */
@@ -291,7 +291,7 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         }
 
         $resolution = $this->tokens->resolveFor($repo);
-        // Which source answered rides on every line below, so a refusal names the token to fix (card#12968).
+        // Which source answered rides on every line below, so a refusal names the token to fix.
         $context['token_source'] = $resolution->sourceLabel();
         if (! $resolution->ok()) {
             Log::warning('pr_correlation_comment: NOT posted — no GitHub token resolves for this repo (its write_token_path, the coord credential store, then the single token file — never GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [

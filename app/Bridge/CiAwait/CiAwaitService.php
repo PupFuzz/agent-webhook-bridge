@@ -1021,17 +1021,7 @@ final class CiAwaitService
     {
         $open = [];
         foreach ($head->decidingRuns() as $run) {
-            $jobs = self::githubRead($repoName, "the jobs read of run {$run['id']}", static function (GitHubReadClient $client) use ($repoName, $run): array {
-                try {
-                    return $client->workflowJobsForRun($repoName, $run['id']);
-                } catch (RequestException $e) {
-                    if ($e->response->status() === 404) {
-                        throw new UnexpectedValueException("GitHub answered HTTP 404 to the jobs read of run {$run['id']}, which the run list read with the same token had just listed — read again, not taken as an unreadable repo");
-                    }
-
-                    throw $e;
-                }
-            });
+            $jobs = self::jobsRead($repoName, $run['id'], static fn (GitHubReadClient $client): array => $client->workflowJobsForRun($repoName, $run['id']));
             foreach ($jobs as $job) {
                 if ($job['status'] !== 'completed') {
                     $open[] = ['workflow' => $run['workflow'], 'run_id' => $run['id'], 'html_url' => $run['html_url'], 'job' => $job['name'], 'status' => $job['status']];
@@ -1053,34 +1043,55 @@ final class CiAwaitService
     }
 
     /**
-     * One workflow-runs read of `$repoName` for any head, made exactly as an await's read is made —
-     * the same token resolution and the same failure classes — so `bridge:check` can say whether
-     * `ci_await` on that repo would be answered (card#11600); then, where the list named a run, one
-     * read of that run's jobs, the other read an await makes (card#12968). The failure of either,
-     * or whether the jobs read was made: false when the list named no run to read the jobs of. A
-     * jobs-read failure is never `repoUnreadable`, so it can never be reported as one.
+     * A read of run `$runId`'s jobs, failing as {@see githubRead()} does except on a `404`: the run
+     * list read with the same token has just named the run, so a 404 is retryable (a run deleted
+     * between the reads, not measured), never an unreadable repo.
+     *
+     * @template T
+     *
+     * @param  callable(GitHubReadClient): T  $read
+     * @return T
+     *
+     * @throws CiRunsReadException
      */
-    public static function probeRunsRead(string $repoName): CiRunsReadException|bool
+    private static function jobsRead(string $repoName, int $runId, callable $read): mixed
+    {
+        return self::githubRead($repoName, "the jobs read of run {$runId}", static function (GitHubReadClient $client) use ($read, $runId): mixed {
+            try {
+                return $read($client);
+            } catch (RequestException $e) {
+                if ($e->response->status() === 404) {
+                    throw new UnexpectedValueException("GitHub answered HTTP 404 to the jobs read of run {$runId}, which the run list read with the same token had just listed — read again, not taken as an unreadable repo");
+                }
+
+                throw $e;
+            }
+        });
+    }
+
+    /**
+     * The two reads an await makes of `$repoName` — its workflow runs for any head, then the jobs of
+     * the run that list names — each made exactly as an await makes it (the same token resolution
+     * and failure classes), so `bridge:check` can say whether `ci_await` on that repo would be
+     * answered (card#11600, card#12968).
+     */
+    public static function probeReads(string $repoName): CiReadsProbe
     {
         try {
             $runId = self::githubRead($repoName, self::RUNS_READ, static fn (GitHubReadClient $client): ?int => $client->probeWorkflowRuns($repoName));
         } catch (CiRunsReadException $e) {
-            return $e;
+            return CiReadsProbe::runsFailed($e);
         }
         if ($runId === null) {
-            return false;
+            return CiReadsProbe::noRun();
         }
         try {
-            self::githubRead($repoName, "the jobs read of run {$runId}", static function (GitHubReadClient $client) use ($repoName, $runId): void {
-                $client->probeWorkflowJobs($repoName, $runId);
-            });
+            self::jobsRead($repoName, $runId, static fn (GitHubReadClient $client) => $client->probeWorkflowJobs($repoName, $runId));
         } catch (CiRunsReadException $e) {
-            // The runs read just answered, so a 404 here is not "this repo is unreadable" — the run
-            // may have been deleted between the two reads. Never a verdict on the repo.
-            return new CiRunsReadException(RedactedErrorText::of($e), $e->retryNotBefore, repoUnreadable: false, status: $e->status, needsConfirmation: $e->needsConfirmation);
+            return CiReadsProbe::jobsFailed($runId, $e);
         }
 
-        return true;
+        return CiReadsProbe::read($runId);
     }
 
     /**

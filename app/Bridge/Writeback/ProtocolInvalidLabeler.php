@@ -132,9 +132,9 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
         return self::configuredRepos();
     }
 
-    public static function fileTokenWrites(): bool
+    public static function fileTokenWrites(): array
     {
-        return true;
+        return [GitHubWriteLeg::Label];
     }
 
     /** The label is one write and reads nothing. */
@@ -245,7 +245,7 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
         }
 
         $resolution = $this->tokens->resolveFor($repo);
-        // Which source answered rides on every line below, so a refusal names the token to fix (card#12968).
+        // Which source answered rides on every line below, so a refusal names the token to fix.
         $context['token_source'] = $resolution->sourceLabel();
         if (! $resolution->ok()) {
             Log::warning('protocol_invalid_label: NOT applied — no GitHub token resolves for this repo (its write_token_path, the coord credential store, then the single token file — never GH_TOKEN); routing is unchanged', ['catalog_id' => 'protocol_invalid_label.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context + [

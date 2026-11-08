@@ -41,10 +41,12 @@ interface GitHubTokenFileConsumer
     public static function fileTokenRepos(?WritebackConfig $writeback): array;
 
     /**
-     * Whether the leg WRITES to GitHub (a comment, a label) rather than only reading it. A token
+     * The GitHub WRITES the leg makes (a comment, a label); empty for a leg that only reads. A token
      * that can read and not write leaves a writing leg as inert as no token at all.
+     *
+     * @return list<GitHubWriteLeg>
      */
-    public static function fileTokenWrites(): bool;
+    public static function fileTokenWrites(): array;
 
     /**
      * The per-repo GitHub READS the leg makes with its repo's token, so `bridge:check` can ask that

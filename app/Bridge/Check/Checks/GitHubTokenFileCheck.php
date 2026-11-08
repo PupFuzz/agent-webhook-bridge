@@ -143,7 +143,7 @@ final class GitHubTokenFileCheck implements Check
         foreach (self::CONSUMERS as $consumer) {
             $repos = $consumer::fileTokenRepos($ctx->writeback);
             if ($repos !== []) {
-                $enabled[$consumer::fileTokenLeg()] = ['repos' => $repos, 'writes' => $consumer::fileTokenWrites()];
+                $enabled[$consumer::fileTokenLeg()] = ['repos' => $repos, 'writes' => $consumer::fileTokenWrites() !== []];
             }
         }
 

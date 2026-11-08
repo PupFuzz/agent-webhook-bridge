@@ -20,29 +20,21 @@ use Illuminate\Http\Client\Response;
  */
 final class GitHubWriteClient
 {
-    /**
-     * The issue number {@see probeCommentWrite()} posts to: the largest a signed 32-bit id holds, a
-     * number no repo reaches, so the probe has no thread to land on.
-     */
-    public const WRITE_PROBE_ISSUE = 2147483647;
-
     public function __construct(private string $token, private int $timeoutSeconds) {}
 
     /**
-     * Can this token create a comment on `$repo`, asked WITHOUT writing anything (card#12968)? A
-     * well-formed comment POST to {@see WRITE_PROBE_ISSUE}, which does not exist. Returns GitHub's
-     * answer, unclassified — the caller judges it: a 403 is refused at the permission check, before
-     * the issue is looked up; a 404 got past it, but a 404 is also what a token that cannot see the
-     * repo at all gets, and what a CLASSIC token missing a scope gets (GitHub Docs, *Troubleshooting
-     * the REST API*), so it means "can write" only where the same token has just read the repo and is
-     * not a classic token short of the scope.
-     * The body is well-formed on purpose: an empty one would add a second unknown (whether GitHub
-     * validates the body before it checks the permission). Throws only when no answer came back.
+     * Can this token create a comment on `$repo`, asked WITHOUT writing anything? A comment POST to
+     * the EXISTING thread `$number` whose body is `{}` — `body` is required, so GitHub can never
+     * accept it. Returns GitHub's answer, unclassified; the caller judges it. Measured on GitHub
+     * (card#12968): a token with Issues write gets `422` ("body" wasn't supplied), a fine-grained
+     * token without it gets `403`, and nothing is created either way. The thread must exist: to an
+     * issue number that does not, both tokens get `404`. Throws only when no answer came back.
      */
-    public function probeCommentWrite(string $repo): Response
+    public function probeCommentWrite(string $repo, int $number): Response
     {
         return GitHubApi::request($this->token, $this->timeoutSeconds)
-            ->post(GitHubApi::BASE."/repos/{$repo}/issues/".self::WRITE_PROBE_ISSUE.'/comments', ['body' => 'agent-webhook-bridge write-access probe (bridge:check); addressed to an issue that does not exist']);
+            ->withBody('{}', 'application/json')
+            ->post(GitHubApi::BASE."/repos/{$repo}/issues/{$number}/comments");
     }
 
     /**

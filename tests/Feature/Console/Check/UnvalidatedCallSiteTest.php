@@ -410,7 +410,10 @@ class UnvalidatedCallSiteTest extends TestCase
         // this leg makes one read.
         // card#11696: one more, limb (a) — for a repo declared in BRIDGE_CI_AWAIT_NO_CI_REPOS, the
         // database did not answer whether a stored workflow_run delivery contradicts the declaration.
-        'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 6,
+        // card#12968: two more, both limb (a) — after the workflow-runs read answered, the jobs read
+        // of the run it listed answered one 401 / 403 (which only a confirming read can settle), or
+        // failed in a way an await retries (a 404, a rate limit, a 5xx, no answer).
+        'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 8,
         // card#11201, one per arm: the token file is there and THIS process could not read it
         // (limb 2 — the receiver runs as its own user); writeback.json did not load, so which
         // legs need the file was not determined (limb a — two sites: with no leg switched on, and

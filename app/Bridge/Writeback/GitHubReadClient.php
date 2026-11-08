@@ -105,8 +105,30 @@ final class GitHubReadClient
         $response = $this->http()->get(self::API_BASE."/repos/{$repo}")->throw();
         $branch = $response->json('default_branch');
         $private = $response->json('private');
+        // True on any role at or above Triage; false only where the answer reports the triage role
+        // itself and none of them, so an answer that omits it is unknown, never "below Triage".
+        $roles = $response->json('permissions');
+        $roles = is_array($roles) ? $roles : [];
+        $atLeastTriage = match (true) {
+            array_filter(['triage', 'push', 'maintain', 'admin'], fn (string $role): bool => ($roles[$role] ?? null) === true) !== [] => true,
+            ($roles['triage'] ?? null) === false => false,
+            default => null,
+        };
 
-        return new GitHubRepoView(is_string($branch) && $branch !== '' ? $branch : null, is_bool($private) ? $private : null, self::scopesOf($response));
+        return new GitHubRepoView(is_string($branch) && $branch !== '' ? $branch : null, is_bool($private) ? $private : null, self::scopesOf($response), $atLeastTriage);
+    }
+
+    /**
+     * The number of the repo's most recent issue or pull request (`GET /repos/{repo}/issues`,
+     * `state=all` — the list carries pull requests too), or null when it lists none or the answer
+     * names no integer `number`: the thread {@see GitHubWriteClient::probeCommentWrite()} posts to.
+     * Throws RequestException on any non-2xx.
+     */
+    public function latestIssueNumber(string $repo): ?int
+    {
+        $number = $this->http()->get(self::API_BASE."/repos/{$repo}/issues", ['state' => 'all', 'per_page' => 1])->throw()->json('0.number');
+
+        return is_int($number) ? $number : null;
     }
 
     /**

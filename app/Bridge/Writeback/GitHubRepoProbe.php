@@ -27,8 +27,8 @@ use Throwable;
  * either), and is silent only on Ok.
  *
  * {@see access()} is the receiver's half (card#12968): the token `resolveFor()` gives the repo —
- * what the runtime legs use, never `GH_TOKEN` — asked for the repo, each read its legs declare and,
- * where a leg writes, a comment write that creates nothing. One verdict per leg.
+ * what the runtime legs use, never `GH_TOKEN` — asked for the repo, each read its legs declare and
+ * each write they declare, judged without writing. One verdict per leg.
  */
 final class GitHubRepoProbe
 {
@@ -83,16 +83,19 @@ final class GitHubRepoProbe
     }
 
     /**
-     * The repo, `$reads` and (where `$writes`) a comment write, each asked of the token the RECEIVER
-     * resolves for `$repo`; null when none resolves (`github.token_file` reports that). Never throws.
+     * The repo, `$reads` and `$writes`, each asked of the token the RECEIVER resolves for `$repo`;
+     * null when none resolves (`github.token_file` reports that). Never throws. Each leg carries the
+     * `subject` it answers for (`'repo'`, a {@see GitHubReadLeg} or a {@see GitHubWriteLeg}), so a
+     * caller can name the runtime legs that depend on it.
      *
-     * The write is asked LAST and judged against the repo read: a 404 to the write probe is "can
-     * write" only after the same token read the repo, and for a classic token only where its scopes
-     * cover the repo — GitHub answers 404, not 403, to a classic token missing a scope.
+     * WRITES ARE JUDGED, NEVER MADE. {@see commentWrite()} posts a body GitHub cannot accept to an
+     * existing thread; a label is judged from that answer plus the account's role, because adding
+     * one needs both Issues write and at least Triage, and probing it directly would apply a label.
      *
      * @param  list<GitHubReadLeg>  $reads
+     * @param  list<GitHubWriteLeg>  $writes
      */
-    public function access(string $repo, array $reads, bool $writes): ?GitHubRepoAccess
+    public function access(string $repo, array $reads, array $writes): ?GitHubRepoAccess
     {
         $resolution = $this->resolver->resolveFor($repo);
         if (! $resolution->ok()) {
@@ -104,26 +107,33 @@ final class GitHubRepoProbe
         $view = null;
         try {
             $view = $client->probeRepo($repo);
-            $legs = [self::leg('read the repo', 'access to the repo', GitHubAccess::Granted, 'HTTP 200')];
+            $repoLeg = self::leg('repo', 'read the repo', 'access to the repo', GitHubAccess::Granted, 'HTTP 200');
         } catch (Throwable $e) {
-            $legs = [self::judged('read the repo', 'access to the repo', $e)];
+            $repoLeg = self::judged('repo', 'read the repo', 'access to the repo', $e);
         }
+        $legs = [$repoLeg];
         foreach ($reads as $read) {
             $legs[] = self::read($client, $repo, $read, $view);
         }
-        if ($writes) {
-            $legs[] = self::write(new GitHubWriteClient($token, self::ACCESS_TIMEOUT_SECONDS), $repo, $view, $legs[0]['access']);
+        if ($writes !== []) {
+            $comment = self::commentWrite($client, new GitHubWriteClient($token, self::ACCESS_TIMEOUT_SECONDS), $repo, $view, $repoLeg['access']);
+            if (in_array(GitHubWriteLeg::Comment, $writes, true)) {
+                $legs[] = $comment;
+            }
+            if (in_array(GitHubWriteLeg::Label, $writes, true)) {
+                $legs[] = self::labelWrite($comment, $view);
+            }
         }
 
         return new GitHubRepoAccess($resolution->sourceLabel(), $legs);
     }
 
-    /** @return array{what: string, needs: string, access: GitHubAccess, answer: string} */
+    /** @return array{subject: string|GitHubReadLeg|GitHubWriteLeg, what: string, needs: string, access: GitHubAccess, answer: string} */
     private static function read(GitHubReadClient $client, string $repo, GitHubReadLeg $read, ?GitHubRepoView $view): array
     {
         $branch = $view?->defaultBranch;
         if ($read === GitHubReadLeg::Compare && $branch === null) {
-            return self::leg($read->describe(), $read->permission(), GitHubAccess::Unmeasured, 'not asked: the repo read named no default branch to compare');
+            return self::leg($read, $read->describe(), $read->permission(), GitHubAccess::Unmeasured, 'not asked: the repo read named no default branch to compare');
         }
         try {
             match ($read) {
@@ -132,58 +142,100 @@ final class GitHubRepoProbe
                 GitHubReadLeg::Compare => $client->probeCompare($repo, (string) $branch),
             };
         } catch (Throwable $e) {
-            return self::judged($read->describe(), $read->permission(), $e);
+            return self::judged($read, $read->describe(), $read->permission(), $e);
         }
 
-        return self::leg($read->describe(), $read->permission(), GitHubAccess::Granted, 'HTTP 200');
+        return self::leg($read, $read->describe(), $read->permission(), GitHubAccess::Granted, 'HTTP 200');
     }
 
-    /** @return array{what: string, needs: string, access: GitHubAccess, answer: string} */
-    private static function write(GitHubWriteClient $client, string $repo, ?GitHubRepoView $view, GitHubAccess $repoRead): array
+    /**
+     * A comment POST with body `{}` to the repo's latest issue or pull request. Measured on GitHub
+     * (card#12968, `DL-500`): `422` from a token with Issues write, `403` from a fine-grained token
+     * without it, nothing created either way. `404` is a refusal only for a classic token whose
+     * scopes do not cover the repo (GitHub Docs, *Troubleshooting the REST API* — documented, not
+     * measured); from any other token it measured nothing.
+     *
+     * @return array{subject: string|GitHubReadLeg|GitHubWriteLeg, what: string, needs: string, access: GitHubAccess, answer: string}
+     */
+    private static function commentWrite(GitHubReadClient $reader, GitHubWriteClient $writer, string $repo, ?GitHubRepoView $view, GitHubAccess $repoRead): array
     {
-        $what = 'create comments and labels';
-        $needs = 'Issues and Pull requests WRITE';
+        $leg = GitHubWriteLeg::Comment;
+        $judge = fn (GitHubAccess $access, string $answer): array => self::leg($leg, $leg->describe(), $leg->permission(), $access, $answer);
         if ($view === null) {
             return $repoRead === GitHubAccess::Refused
-                ? self::leg($what, $needs, GitHubAccess::Refused, 'not asked: the token cannot see the repo')
-                : self::leg($what, $needs, GitHubAccess::Unmeasured, 'not asked: the repo read did not answer, and without it a 404 here cannot be told from a token that cannot see the repo');
+                ? $judge(GitHubAccess::Refused, 'not asked: the token cannot see the repo')
+                : $judge(GitHubAccess::Unmeasured, 'not asked: the repo read did not answer');
         }
         try {
-            $response = $client->probeCommentWrite($repo);
+            $number = $reader->latestIssueNumber($repo);
         } catch (Throwable $e) {
-            return self::judged($what, $needs, $e);
+            return $judge(GitHubAccess::Unmeasured, 'not asked: the read of an issue to post against did not answer ('.self::described($e).')');
+        }
+        if ($number === null) {
+            return $judge(GitHubAccess::Unmeasured, 'not asked: the repo has no issue or pull request to post against');
+        }
+        try {
+            $response = $writer->probeCommentWrite($repo, $number);
+        } catch (Throwable $e) {
+            return $judge(GitHubAccess::Unmeasured, self::described($e));
         }
         $status = $response->status();
-        if ($status === 403 && ! GitHubApi::saysRateLimit($response)) {
-            return self::leg($what, $needs, GitHubAccess::Refused, 'HTTP 403');
-        }
-        if ($status !== 404) {
-            return self::leg($what, $needs, GitHubAccess::Unmeasured, self::status($response));
-        }
-        if ($view->scopes === null) {
-            return self::leg($what, $needs, GitHubAccess::Granted, 'HTTP 404 to an issue that does not exist — past the permission check, nothing written');
-        }
-        $covered = in_array('repo', $view->scopes, true) || ($view->private === false && in_array('public_repo', $view->scopes, true));
 
-        return $covered
-            ? self::leg($what, $needs, GitHubAccess::Granted, 'HTTP 404 to an issue that does not exist, with a classic scope that covers the repo — nothing written')
-            : self::leg($what, $needs, GitHubAccess::Refused, 'HTTP 404, and the classic token carries neither `repo` nor, on a public repo, `public_repo` — GitHub answers a classic token missing a scope with 404');
+        return match (true) {
+            $status === 422 => $judge(GitHubAccess::Granted, "HTTP 422 to a comment with no body on #{$number} — past the permission check, nothing created"),
+            $status === 403 && ! GitHubApi::saysRateLimit($response) => $judge(GitHubAccess::Refused, "HTTP 403 to a comment on #{$number}"),
+            $status === 404 && $view->scopes !== null && ! self::scopeCovers($view) => $judge(GitHubAccess::Refused, 'HTTP 404, and the classic token carries neither `repo` nor, on a public repo, `public_repo` — GitHub answers a classic token missing a scope with 404'),
+            $status >= 200 && $status < 300 => $judge(GitHubAccess::Wrote, "HTTP {$status}: GitHub reports it accepted a comment with no body on {$repo}#{$number}, which it documents as impossible — look at that thread, delete anything the probe left, and report this as a bridge defect"),
+            default => $judge(GitHubAccess::Unmeasured, self::status($response)),
+        };
+    }
+
+    /**
+     * Adding a label needs the token's Issues or Pull requests write AND an account role of at least
+     * Triage. The role comes from the repo read; the token's write from the comment probe. The role
+     * is the ACCOUNT's, not the token's, so it can refuse a label but never grant one alone.
+     *
+     * @param  array{subject: string|GitHubReadLeg|GitHubWriteLeg, what: string, needs: string, access: GitHubAccess, answer: string}  $comment
+     * @return array{subject: string|GitHubReadLeg|GitHubWriteLeg, what: string, needs: string, access: GitHubAccess, answer: string}
+     */
+    private static function labelWrite(array $comment, ?GitHubRepoView $view): array
+    {
+        $leg = GitHubWriteLeg::Label;
+        [$access, $answer] = match (true) {
+            $comment['access'] === GitHubAccess::Refused => [GitHubAccess::Refused, "the token cannot write issues ({$comment['answer']})"],
+            $view?->atLeastTriage === false => [GitHubAccess::Refused, "the account's role on the repo is below Triage (`permissions` in the repo read)"],
+            $comment['access'] === GitHubAccess::Granted && $view?->atLeastTriage === true => [GitHubAccess::Granted, "the token can write issues ({$comment['answer']}) and the account's role is at least Triage"],
+            $comment['access'] === GitHubAccess::Wrote => [GitHubAccess::Wrote, $comment['answer']],
+            $comment['access'] === GitHubAccess::Granted => [GitHubAccess::Unmeasured, "the token can write issues ({$comment['answer']}), and the repo read reported no role"],
+            default => [GitHubAccess::Unmeasured, "whether the token can write issues was not measured ({$comment['answer']})"],
+        };
+
+        return self::leg($leg, $leg->describe(), $leg->permission(), $access, $answer);
+    }
+
+    private static function scopeCovers(GitHubRepoView $view): bool
+    {
+        $scopes = $view->scopes ?? [];
+
+        return in_array('repo', $scopes, true) || ($view->private === false && in_array('public_repo', $scopes, true));
     }
 
     /**
      * A probe's exception as a verdict: a 403 that is not a rate limit, or a 404, is a refusal;
      * every other status, and no answer, measured nothing.
      *
-     * @return array{what: string, needs: string, access: GitHubAccess, answer: string}
+     * @return array{subject: string|GitHubReadLeg|GitHubWriteLeg, what: string, needs: string, access: GitHubAccess, answer: string}
      */
-    private static function judged(string $what, string $needs, Throwable $e): array
+    private static function judged(string|GitHubReadLeg $subject, string $what, string $needs, Throwable $e): array
     {
-        if (! $e instanceof RequestException) {
-            return self::leg($what, $needs, GitHubAccess::Unmeasured, 'no answer ('.UntrustedText::forOperator(RedactedErrorText::of($e)).')');
-        }
-        $refused = ! GitHubApi::saysRateLimit($e->response) && in_array($e->response->status(), [403, 404], true);
+        $refused = $e instanceof RequestException && ! GitHubApi::saysRateLimit($e->response) && in_array($e->response->status(), [403, 404], true);
 
-        return self::leg($what, $needs, $refused ? GitHubAccess::Refused : GitHubAccess::Unmeasured, self::status($e->response));
+        return self::leg($subject, $what, $needs, $refused ? GitHubAccess::Refused : GitHubAccess::Unmeasured, self::described($e));
+    }
+
+    private static function described(Throwable $e): string
+    {
+        return $e instanceof RequestException ? self::status($e->response) : 'no answer ('.UntrustedText::forOperator(RedactedErrorText::of($e)).')';
     }
 
     private static function status(Response $response): string
@@ -191,10 +243,10 @@ final class GitHubRepoProbe
         return 'HTTP '.$response->status().(GitHubApi::saysRateLimit($response) ? ', rate limited' : '');
     }
 
-    /** @return array{what: string, needs: string, access: GitHubAccess, answer: string} */
-    private static function leg(string $what, string $needs, GitHubAccess $access, string $answer): array
+    /** @return array{subject: string|GitHubReadLeg|GitHubWriteLeg, what: string, needs: string, access: GitHubAccess, answer: string} */
+    private static function leg(string|GitHubReadLeg|GitHubWriteLeg $subject, string $what, string $needs, GitHubAccess $access, string $answer): array
     {
-        return ['what' => $what, 'needs' => $needs, 'access' => $access, 'answer' => $answer];
+        return ['subject' => $subject, 'what' => $what, 'needs' => $needs, 'access' => $access, 'answer' => $answer];
     }
 
     /**

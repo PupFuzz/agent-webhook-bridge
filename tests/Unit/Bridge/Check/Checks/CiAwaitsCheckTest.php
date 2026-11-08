@@ -5,6 +5,7 @@ namespace Tests\Unit\Bridge\Check\Checks;
 use App\Bridge\Check\Checks\CiAwaitsCheck;
 use App\Bridge\Scheduling\Handlers\CiAwaitSweepJob;
 use App\Bridge\Scheduling\JobRegistry;
+use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Models\CiAwait;
 use App\Models\WebhookEvent;
@@ -196,31 +197,50 @@ class CiAwaitsCheckTest extends TestCase
     }
 
     /**
-     * card#12968: a token that reads runs and not jobs leaves every await unanswerable. The runs
-     * read answered, so a jobs refusal is never "the repo is unreadable" — it is UNVALIDATED, and
-     * names the jobs read rather than the run list.
-     *
-     * @return array<string, array{0: int}>
+     * card#12968: a token that reads runs and not jobs leaves every await unanswerable. The finding
+     * names the JOBS read — never "the workflow runs" — and what an await does with the same answer:
+     * a 403 ends it once a confirming read repeats it; a 404 (the runs read just named the run) is
+     * retried. Neither is a FAIL.
      */
-    public static function jobsRefusals(): array
+    public function test_a_jobs_read_403_is_unvalidated_naming_the_jobs_read_and_the_await_consequence(): void
     {
-        return ['403' => [403], '404' => [404]];
+        $this->fakeRunsThenJobs(403);
+
+        $finding = $this->onlyFinding();
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringStartsWith('ci_await: GitHub answered HTTP 403 to the jobs read of run 77 on '.self::REPO.', after the workflow-runs read answered', $finding->message);
+        $this->assertStringContainsString('the await ends with ci_await_unreadable', $finding->message);
+        $this->assertStringNotContainsString('read '.self::REPO."'s workflow runs", $finding->message);
     }
 
-    #[DataProvider('jobsRefusals')]
-    public function test_a_jobs_read_refusal_is_unvalidated_naming_the_jobs_read_never_a_fail(int $status): void
+    public function test_a_jobs_read_404_is_unvalidated_and_says_the_await_reads_it_again(): void
+    {
+        $this->fakeRunsThenJobs(404);
+
+        $finding = $this->onlyFinding();
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringStartsWith('ci_await: whether this install can read the jobs of '.self::REPO."'s workflow runs was NOT measured — GitHub answered HTTP 404 to the jobs read of run 77", $finding->message);
+        $this->assertStringContainsString('ci_await keeps an await whose jobs read fails this way and reads it again', $finding->message);
+        $this->assertStringNotContainsString('read '.self::REPO."'s workflow runs", $finding->message);
+    }
+
+    private function fakeRunsThenJobs(int $jobsStatus): void
     {
         $this->installServingCiTools();
         Http::fake([
-            'api.github.com/repos/octo/widgets/actions/runs/77/jobs*' => Http::response(['message' => 'Resource not accessible by personal access token'], $status),
+            'api.github.com/repos/octo/widgets/actions/runs/77/jobs*' => Http::response(['message' => 'Resource not accessible by personal access token'], $jobsStatus),
             'api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['total_count' => 1, 'workflow_runs' => [['id' => 77]]]),
         ]);
+    }
 
+    private function onlyFinding(): Finding
+    {
         $findings = $this->findingsOf(new CiAwaitsCheck);
-
         $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
-        $this->assertStringContainsString("HTTP {$status} to the jobs read of run 77", $findings[0]->message);
+
+        return $findings[0];
     }
 
     public function test_a_received_repo_the_token_cannot_see_fails_naming_the_source_file_and_remedy(): void
