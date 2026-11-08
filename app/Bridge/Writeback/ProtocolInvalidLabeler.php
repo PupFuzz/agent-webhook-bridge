@@ -203,6 +203,8 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
                 'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => 'label',
                 'repo' => $payload['repo'] ?? null, 'number' => $payload['number'] ?? null,
+                // The resolver is memoized and never throws: this is the source label() resolved, if it got that far.
+                'token_source' => is_string($payload['repo'] ?? null) ? $this->tokens->resolveFor($payload['repo'])->sourceLabel() : null,
                 'reason' => self::REASON_UNEXPECTED, 'error' => RedactedErrorText::of($e),
             ]);
 

@@ -103,8 +103,11 @@ final class GitHubRepoAccessCheck implements Check
         $wrote = $access->with(GitHubAccess::Wrote);
         $refused = $access->with(GitHubAccess::Refused);
         $belowRole = $access->with(GitHubAccess::BelowRole);
+        $refusedOther = $access->with(GitHubAccess::RefusedNotPermission);
         $unmeasured = $access->with(GitHubAccess::Unmeasured);
-        $notMeasured = $unmeasured === [] ? '' : ' NOT measured: '.self::list($unmeasured).' — not evidence the token is good or bad; re-run bridge:check.';
+        $unprobeable = $access->with(GitHubAccess::Unprobeable);
+        $notMeasured = ($unmeasured === [] ? '' : ' NOT measured: '.self::list($unmeasured).' — not evidence the token is good or bad; re-run bridge:check.')
+            .($unprobeable === [] ? '' : ' NOT measurable on this repo: '.self::list($unprobeable).' — a re-run will not change that while the repo stays so; not evidence the token is good or bad.');
         $dependents = fn (array $probed): string => implode(', ', array_values(array_unique(array_merge(...array_map(fn (GitHubProbedLeg $leg): array => self::dependents($leg->subject, $declared), $probed)))));
         $repoint = '(its write_token_path in writeback.json, or its [git-credential-map] key in the coord credential store)';
 
@@ -117,6 +120,10 @@ final class GitHubRepoAccessCheck implements Check
             $parts[] = "{$repo} resolves its GitHub token from {$access->source}, and GitHub REFUSES that token to ".self::list($refused).". The legs on {$repo} that need it — {$dependents($refused)} — are refused on every attempt and drop what they decided (the bridge logs each with token_source). "
                 ."Give the token at {$access->source} {$needs} on {$repo}, or point {$repo} at a token that has it {$repoint}.";
         }
+        if ($refusedOther !== []) {
+            $parts[] = "GitHub REFUSES the token {$repo} resolves from {$access->source} to ".self::list($refusedOther)." — not for a missing permission, so granting one will not fix it. The legs on {$repo} that need it — {$dependents($refusedOther)} — are refused on every attempt. "
+                ."Clear the cause for that token (authorize it for the organization's SAML SSO, or let this host through the organization's IP allow list), or point {$repo} at a token that is not blocked {$repoint}.";
+        }
         if ($belowRole !== []) {
             $parts[] = "the token {$repo} resolves from {$access->source} belongs to an account whose role on {$repo} cannot ".self::list($belowRole)." — inferred from the repo read, not a request GitHub refused. The legs on {$repo} that need it — {$dependents($belowRole)} — will be refused. "
                 ."Give the token's ACCOUNT at least the Triage role on {$repo}, or point {$repo} at a token whose account has it {$repoint}.";
@@ -124,7 +131,7 @@ final class GitHubRepoAccessCheck implements Check
         if ($parts !== []) {
             return Finding::warn('github repo access: '.implode(' And ', $parts).' Then re-run bridge:check.'.$notMeasured);
         }
-        if ($unmeasured !== []) {
+        if ($unmeasured !== [] || $unprobeable !== []) {
             $granted = $access->with(GitHubAccess::Granted);
 
             return Finding::unvalidated("github repo access: whether the token {$repo} resolves from {$access->source} can serve {$legs} was NOT established.{$notMeasured}".($granted === [] ? '' : ' Measured: it can '.self::list($granted).'.'));

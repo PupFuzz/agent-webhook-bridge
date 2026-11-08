@@ -146,6 +146,57 @@ class GitHubRepoAccessCheckTest extends TestCase
         $this->assertStringContainsString('Measured: it can read the repo (HTTP 200)', $finding->message);
     }
 
+    /**
+     * The probe POST never follows a redirect — Guzzle would replay it as a GET, whose 2xx would read
+     * as GitHub accepting the comment — so a 3xx is returned as itself and measures nothing.
+     */
+    public function test_the_write_probe_does_not_follow_redirects_and_a_3xx_is_unvalidated(): void
+    {
+        $redirects = null;
+        $this->fakeGitHub(write: function (Request $request, array $options) use (&$redirects) {
+            $redirects = $options['allow_redirects'] ?? 'unset';
+
+            return Http::response('', 301, ['Location' => 'https://api.github.com/repositories/1/issues/1031/comments']);
+        });
+
+        $finding = $this->onlyFinding();
+
+        $this->assertFalse($redirects, 'the probe POST must be sent with allow_redirects=false');
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringContainsString('create pull-request comments (HTTP 301 from #1031, a pull request)', $finding->message);
+        $this->assertStringNotContainsString('ACCEPTED', $finding->message);
+    }
+
+    /** A read 403 that is not GitHub's permission refusal is a refusal no permission fixes — no permission remedy. */
+    public function test_a_read_403_that_is_not_the_permission_refusal_is_refused_without_a_permission_remedy(): void
+    {
+        $this->fakeGitHub(write: Http::response([], 422), extra: [
+            self::BASE.'/issues/comments*' => Http::response(['message' => 'Resource protected by organization SAML enforcement.'], 403),
+        ]);
+
+        $finding = $this->onlyFinding();
+
+        $this->assertSame(Severity::Warn, $finding->severity);
+        $this->assertStringContainsString('read issue and pull-request comments (HTTP 403, refused for a cause that is not a missing permission', $finding->message);
+        $this->assertStringContainsString('granting one will not fix it', $finding->message);
+        $this->assertStringNotContainsString('Issues or Pull requests READ', $finding->message);
+    }
+
+    /** Issues disabled (410 to the issue list) is structural: named, and no re-run advice for it. */
+    public function test_disabled_issues_are_named_as_structural_without_re_run_advice(): void
+    {
+        config(['bridge.protocol_invalid_label.repos' => [self::REPO]]);
+        $this->fakeGitHub(repo: $this->repoWithRoles(['triage' => true]), write: Http::response([], 422), extra: [
+            self::BASE.'/issues?*' => Http::response(['message' => 'Issues are disabled for this repo'], 410),
+        ]);
+
+        $finding = $this->onlyFinding();
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringContainsString("NOT measurable on this repo: add labels to issues and pull requests (not asked: GitHub answered HTTP 410 to the repo's issues list — issues are disabled on this repo)", $finding->message);
+        $this->assertStringNotContainsString('re-run bridge:check', $finding->message);
+    }
+
     /** A 2xx means GitHub accepted what it documents it never accepts: a defect to report, not a re-run. */
     public function test_a_2xx_to_the_write_probe_warns_that_it_was_accepted(): void
     {
@@ -167,7 +218,8 @@ class GitHubRepoAccessCheckTest extends TestCase
         $finding = $this->onlyFinding();
 
         $this->assertSame(Severity::Unvalidated, $finding->severity);
-        $this->assertStringContainsString("not asked: no unlocked pull request among the repo's newest 30 pull requests to post against", $finding->message);
+        $this->assertStringContainsString("NOT measurable on this repo: create pull-request comments (not asked: no unlocked pull request among the repo's newest 30 pull requests to post against)", $finding->message);
+        $this->assertStringNotContainsString('re-run bridge:check', $finding->message);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'POST');
     }
 
@@ -248,7 +300,7 @@ class GitHubRepoAccessCheckTest extends TestCase
         $finding = $this->onlyFinding(promote: true);
 
         $this->assertSame(Severity::Warn, $finding->severity);
-        $this->assertStringContainsString('read pull requests (HTTP 403)', $finding->message);
+        $this->assertStringContainsString("read pull requests (HTTP 403, GitHub's permission refusal)", $finding->message);
         $this->assertStringContainsString('Pull requests READ', $finding->message);
         $this->assertStringContainsString('that need it — promote-on-release (DL-207) — are refused', $finding->message);
         Http::assertSent(fn (Request $r) => str_starts_with($r->url(), self::BASE.'/compare/main...main'));

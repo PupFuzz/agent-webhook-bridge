@@ -165,18 +165,24 @@ final class GitHubRepoProbe
     private static function commentOn(GitHubReadClient $reader, GitHubWriteClient $writer, string $repo, GitHubThreadKind $kind, ?GitHubRepoView $view, GitHubAccess $repoRead): array
     {
         if ($view === null) {
-            return $repoRead === GitHubAccess::Refused
-                ? [GitHubAccess::Refused, 'not asked: the token cannot see the repo']
-                : [GitHubAccess::Unmeasured, 'not asked: the repo read did not answer'];
+            return match ($repoRead) {
+                GitHubAccess::Refused => [GitHubAccess::Refused, 'not asked: the token cannot see the repo'],
+                GitHubAccess::RefusedNotPermission => [GitHubAccess::RefusedNotPermission, 'not asked: the repo read was refused for a cause that is not a missing permission'],
+                default => [GitHubAccess::Unmeasured, 'not asked: the repo read did not answer'],
+            };
         }
         $plural = $kind->noun().'s';
         try {
             $number = $reader->unlockedThread($repo, $kind);
         } catch (Throwable $e) {
+            if ($e instanceof RequestException && $e->response->status() === 410) {
+                return [GitHubAccess::Unprobeable, "not asked: GitHub answered HTTP 410 to the repo's {$plural} list — {$plural} are disabled on this repo"];
+            }
+
             return [GitHubAccess::Unmeasured, "not asked: the read of the repo's {$plural}, to find one to post against, ".($e instanceof RequestException ? 'answered '.self::status($e->response) : 'got no answer ('.self::noAnswer($e).')')];
         }
         if ($number === null) {
-            return [GitHubAccess::Unmeasured, "not asked: no unlocked {$kind->noun()} among the repo's newest ".GitHubReadClient::THREAD_PAGE_SIZE." {$plural} to post against"];
+            return [GitHubAccess::Unprobeable, "not asked: no unlocked {$kind->noun()} among the repo's newest ".GitHubReadClient::THREAD_PAGE_SIZE." {$plural} to post against"];
         }
         $thread = "#{$number}, {$kind->describe()}";
         try {
@@ -185,8 +191,7 @@ final class GitHubRepoProbe
             return [GitHubAccess::Unmeasured, 'no answer ('.self::noAnswer($e).") from {$thread}"];
         }
         $status = $response->status();
-        $message = $response->json('message');
-        $permissionRefusal = is_string($message) && str_starts_with($message, 'Resource not accessible by');
+        $permissionRefusal = self::isPermissionRefusal($response);
 
         return match (true) {
             $status === 422 => [GitHubAccess::Granted, "HTTP 422 to a comment with no body on {$thread} — past the permission check, nothing created"],
@@ -216,8 +221,10 @@ final class GitHubRepoProbe
         [$access, $answer] = match (true) {
             $with(GitHubAccess::Wrote) !== [] => [GitHubAccess::Wrote, $answers($with(GitHubAccess::Wrote))],
             $with(GitHubAccess::Refused) !== [] => [GitHubAccess::Refused, $answers($with(GitHubAccess::Refused))],
+            $with(GitHubAccess::RefusedNotPermission) !== [] => [GitHubAccess::RefusedNotPermission, $answers($with(GitHubAccess::RefusedNotPermission))],
             $label && $view?->atLeastTriage === false => [GitHubAccess::BelowRole, "the repo read reports the token's account holds a role below Triage on the repo (`permissions`)"],
             $with(GitHubAccess::Unmeasured) !== [] => [GitHubAccess::Unmeasured, $answers($with(GitHubAccess::Unmeasured))],
+            $with(GitHubAccess::Unprobeable) !== [] => [GitHubAccess::Unprobeable, $answers($with(GitHubAccess::Unprobeable))],
             $label && $view?->atLeastTriage !== true => [GitHubAccess::Unmeasured, $answers($kinds).', and the repo read reported no role, which a label also needs (Triage)'],
             default => [GitHubAccess::Granted, $answers($kinds).($label ? ", and the account's role is at least Triage" : '')],
         };
@@ -233,17 +240,34 @@ final class GitHubRepoProbe
     }
 
     /**
-     * A read's exception as a verdict: a 403 that is not a rate limit, or a 404, is a refusal;
-     * every other status, and no answer, measured nothing.
+     * A read's exception as a verdict: a 404, or a 403 carrying GitHub's permission refusal, is a
+     * refusal; any other 403 that is not a rate limit (SSO authorization, an IP allow list) is
+     * {@see GitHubAccess::RefusedNotPermission} — refused, but not for a permission the remedy could
+     * name; every other status, and no answer, measured nothing.
      */
     private static function judged(string|GitHubReadLeg $subject, string $what, string $needs, Throwable $e): GitHubProbedLeg
     {
         if (! $e instanceof RequestException) {
             return new GitHubProbedLeg($subject, $what, $needs, GitHubAccess::Unmeasured, 'no answer ('.self::noAnswer($e).')');
         }
-        $refused = ! GitHubApi::saysRateLimit($e->response) && in_array($e->response->status(), [403, 404], true);
+        $status = $e->response->status();
+        [$access, $answer] = match (true) {
+            GitHubApi::saysRateLimit($e->response) => [GitHubAccess::Unmeasured, self::status($e->response)],
+            $status === 404 => [GitHubAccess::Refused, 'HTTP 404'],
+            $status === 403 && self::isPermissionRefusal($e->response) => [GitHubAccess::Refused, "HTTP 403, GitHub's permission refusal"],
+            $status === 403 => [GitHubAccess::RefusedNotPermission, 'HTTP 403, refused for a cause that is not a missing permission (an SSO authorization or an IP allow list, say)'],
+            default => [GitHubAccess::Unmeasured, self::status($e->response)],
+        };
 
-        return new GitHubProbedLeg($subject, $what, $needs, $refused ? GitHubAccess::Refused : GitHubAccess::Unmeasured, self::status($e->response));
+        return new GitHubProbedLeg($subject, $what, $needs, $access, $answer);
+    }
+
+    /** GitHub's permission refusal for a fine-grained or app token (*Troubleshooting the REST API*). */
+    private static function isPermissionRefusal(Response $response): bool
+    {
+        $message = $response->json('message');
+
+        return is_string($message) && str_starts_with($message, 'Resource not accessible by');
     }
 
     private static function noAnswer(Throwable $e): string

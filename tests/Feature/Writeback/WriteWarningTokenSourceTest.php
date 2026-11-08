@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Tests\Support\CoordCredentialStoreFixture;
 use Tests\TestCase;
 
@@ -112,6 +113,33 @@ class WriteWarningTokenSourceTest extends TestCase
         (new ProtocolInvalidLabeler(GitHubTokenResolver::forWriteback(null)))->apply(['repo' => self::REPO, 'number' => 7, 'comment_id' => 1]);
 
         $this->assertWarnedWithSource($catalogId);
+    }
+
+    /**
+     * An `unexpected` failure can be thrown AFTER the token is resolved — here the success log line
+     * itself throws once the write has landed — and its row still names the source.
+     */
+    public function test_an_unexpected_failure_after_resolution_names_the_store_key(): void
+    {
+        $marker = PrCorrelationComment::markerFor('merged');
+        $this->fakeGitHub([Http::response([]), Http::response(['body' => $marker."\nbody"], 201)]);
+        Log::spy();
+        Log::shouldReceive('info')->andThrow(new RuntimeException('log sink failed'));
+
+        (new PrCorrelationCommenter(GitHubTokenResolver::forWriteback(null)))->repost(self::REPO, 7, 'merged', $marker."\nbody");
+
+        $this->assertWarnedWithSource('pr_correlation_comment.unexpected_failure');
+    }
+
+    public function test_an_unexpected_label_failure_after_resolution_names_the_store_key(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response([['name' => 'protocol:invalid']])]);
+        Log::spy();
+        Log::shouldReceive('info')->andThrow(new RuntimeException('log sink failed'));
+
+        (new ProtocolInvalidLabeler(GitHubTokenResolver::forWriteback(null)))->apply(['repo' => self::REPO, 'number' => 7, 'comment_id' => 1]);
+
+        $this->assertWarnedWithSource('protocol_invalid_label.unexpected_failure');
     }
 
     public function test_a_store_key_with_no_usable_file_names_the_key_on_both_no_token_warnings(): void

@@ -34,7 +34,10 @@ final class GitHubWriteClient
      */
     public function probeCommentWrite(string $repo, int $number): Response
     {
+        // Never follow a redirect: Guzzle replays a 301/302 POST as a GET, whose 2xx would read as
+        // GitHub accepting the impossible comment. A 3xx is returned as itself and measures nothing.
         return GitHubApi::request($this->token, $this->timeoutSeconds)
+            ->withoutRedirecting()
             ->withBody('{}', 'application/json')
             ->post(GitHubApi::BASE."/repos/{$repo}/issues/{$number}/comments");
     }

@@ -249,7 +249,8 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         try {
             return $this->post($repo, $number, $outcome, $body, $context);
         } catch (Throwable $e) {
-            $this->unexpected($context, $e);
+            // The resolver is memoized and never throws: this is the source post() resolved, if it got that far.
+            $this->unexpected($context + ['token_source' => $this->tokens->resolveFor($repo)->sourceLabel()], $e);
 
             // ⛔ OWED EVEN THOUGH THE POST MAY HAVE LANDED — this arm can fire after a successful
             // write. The repair reads the pull request before it posts, so a debt recorded here for
