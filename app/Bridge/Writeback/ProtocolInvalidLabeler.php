@@ -132,6 +132,7 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
         return self::configuredRepos();
     }
 
+    /** The thread an unattributable comment was made on: `issue_comment` fires for issues and pull requests alike. */
     public static function fileTokenWrites(): array
     {
         return [GitHubWriteLeg::Label];

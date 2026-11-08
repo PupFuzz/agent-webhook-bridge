@@ -25,10 +25,12 @@ final class GitHubWriteClient
     /**
      * Can this token create a comment on `$repo`, asked WITHOUT writing anything? A comment POST to
      * the EXISTING thread `$number` whose body is `{}` — `body` is required, so GitHub can never
-     * accept it. Returns GitHub's answer, unclassified; the caller judges it. Measured on GitHub
-     * (card#12968): a token with Issues write gets `422` ("body" wasn't supplied), a fine-grained
-     * token without it gets `403`, and nothing is created either way. The thread must exist: to an
-     * issue number that does not, both tokens get `404`. Throws only when no answer came back.
+     * accept it. Returns GitHub's answer, unclassified; the caller judges it. Measured on GitHub on a
+     * pull request (card#12968): a token with write gets `422` ("body" wasn't supplied), a
+     * fine-grained token without it gets `403`, and nothing is created either way. The thread must
+     * exist — to an issue number that does not, both tokens get `404` — and its KIND matters to what
+     * the answer measures: the endpoint is listed under both the Issues and the Pull requests
+     * permission. Throws only when no answer came back.
      */
     public function probeCommentWrite(string $repo, int $number): Response
     {

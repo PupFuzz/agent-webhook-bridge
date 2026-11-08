@@ -122,9 +122,10 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         return array_map(strval(...), array_keys($writeback === null ? [] : $writeback->mappings));
     }
 
+    /** The pull request whose correlation failed. */
     public static function fileTokenWrites(): array
     {
-        return [GitHubWriteLeg::Comment];
+        return [GitHubWriteLeg::PullRequestComment];
     }
 
     /** The dedupe read of the thread's comments before each post. */

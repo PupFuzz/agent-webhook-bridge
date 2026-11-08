@@ -61,6 +61,9 @@ final class GitHubReadClient
     /** GitHub's maximum page size for `GET /repos/{repo}/issues/{n}/comments`. */
     private const COMMENT_PAGE_SIZE = 100;
 
+    /** How many of a repo's newest threads {@see self::unlockedThread()} looks through. */
+    public const THREAD_PAGE_SIZE = 30;
+
     /**
      * How many comment pages {@see self::hasIssueCommentStartingWith} walks before it answers "not
      * established". A bound on a loop, not a belief about pull requests, exactly as HOOK_PAGE_LIMIT.
@@ -119,16 +122,29 @@ final class GitHubReadClient
     }
 
     /**
-     * The number of the repo's most recent issue or pull request (`GET /repos/{repo}/issues`,
-     * `state=all` — the list carries pull requests too), or null when it lists none or the answer
-     * names no integer `number`: the thread {@see GitHubWriteClient::probeCommentWrite()} posts to.
-     * Throws RequestException on any non-2xx.
+     * The number of the newest UNLOCKED thread of `$kind` among the repo's newest
+     * {@see self::THREAD_PAGE_SIZE} (`GET /repos/{repo}/pulls`, or `GET /repos/{repo}/issues` without
+     * the entries that carry `pull_request`; `state=all`), or null when that page holds none: the
+     * thread {@see GitHubWriteClient::probeCommentWrite()} posts to. A locked thread is skipped
+     * because GitHub can refuse a comment there whatever the token holds. Throws RequestException
+     * on any non-2xx.
      */
-    public function latestIssueNumber(string $repo): ?int
+    public function unlockedThread(string $repo, GitHubThreadKind $kind): ?int
     {
-        $number = $this->http()->get(self::API_BASE."/repos/{$repo}/issues", ['state' => 'all', 'per_page' => 1])->throw()->json('0.number');
+        $path = $kind === GitHubThreadKind::PullRequest ? 'pulls' : 'issues';
+        $list = $this->http()->get(self::API_BASE."/repos/{$repo}/{$path}", ['state' => 'all', 'per_page' => self::THREAD_PAGE_SIZE])->throw()->json();
+        foreach (is_array($list) ? $list : [] as $thread) {
+            if (! is_array($thread) || ! is_int($thread['number'] ?? null) || ($thread['locked'] ?? null) !== false) {
+                continue;
+            }
+            if ($kind === GitHubThreadKind::Issue && array_key_exists('pull_request', $thread)) {
+                continue;
+            }
 
-        return is_int($number) ? $number : null;
+            return $thread['number'];
+        }
+
+        return null;
     }
 
     /**

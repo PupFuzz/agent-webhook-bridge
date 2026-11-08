@@ -137,7 +137,7 @@ class BridgeCommandsTest extends TestCase
                 // github.repo_access's write probe: a comment with body {} — a token that can write gets 422.
                 $request->method() === 'POST' => Http::response(['message' => 'Validation Failed'], 422),
                 str_contains($request->url(), '/issues/comments') => Http::response([]),
-                str_contains($request->url(), '/issues?') => Http::response([['number' => 7]]),
+                str_contains($request->url(), '/pulls?') => Http::response([['number' => 7, 'locked' => false]]),
                 default => Http::response(['full_name' => 'owner/repo', 'default_branch' => 'main', 'private' => true]),
             };
         });
@@ -145,12 +145,12 @@ class BridgeCommandsTest extends TestCase
 
     /**
      * The token-file leg's scope read, the reconcile probe of one mapped repo, or one of
-     * github.repo_access's probes of it (the dedupe read, the issue pick and the write probe).
+     * github.repo_access's probes of it (the dedupe read, the pull-request pick and the comment probe).
      */
     private static function isGithubTokenFileRead(string $url): bool
     {
         return $url === 'https://api.github.com/rate_limit'
-            || preg_match('#^https://api\.github\.com/repos/[^/]+/[^/]+(/issues/comments\?per_page=1|/issues\?state=all&per_page=1|/issues/7/comments)?$#', $url) === 1;
+            || preg_match('#^https://api\.github\.com/repos/[^/]+/[^/]+(/issues/comments\?per_page=1|/pulls\?state=all&per_page=30|/issues/7/comments)?$#', $url) === 1;
     }
 
     /**
