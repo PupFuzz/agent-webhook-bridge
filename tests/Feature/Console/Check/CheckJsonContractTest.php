@@ -9,6 +9,7 @@ use App\Bridge\Check\CheckJsonRenderer;
 use App\Bridge\Check\CheckResult;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciliation;
 use App\Bridge\Support\Finding;
+use App\Bridge\Writeback\GitHubWriteClient;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -512,6 +513,10 @@ class CheckJsonContractTest extends TestCase
                     Http::fake([
                         'https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo']),
                         'https://api.github.com/repos/owner/repo' => Http::response(['full_name' => 'owner/repo']),
+                        // github.repo_access (card#12968): a token that reads and writes, so that
+                        // leg passes and stays out of the two this fixture is about.
+                        'https://api.github.com/repos/owner/repo/issues/comments*' => Http::response([]),
+                        'https://api.github.com/repos/owner/repo/issues/'.GitHubWriteClient::WRITE_PROBE_ISSUE.'/comments' => Http::response(['message' => 'Not Found'], 404),
                     ]);
                     break;
 

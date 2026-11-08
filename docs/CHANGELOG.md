@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#12968** — `bridge:check` gains a `github.repo_access` leg: per repo with a GitHub leg switched on, the token the receiver resolves for that repo is asked for the repo, for each read that repo's legs make (the correlation comment's dedupe read, promote-on-release's pull-request read and compare) and, where a leg writes, for a comment write that creates nothing (a `POST` to an issue number no repo reaches: `403` = cannot write, `404` = can). A refusal is a **WARN** naming the source — `store key <key>`, `write_token_path` or `single token file`, never a path or the token; a `401`, rate limit, `5xx` or no answer is UNVALIDATED. `ci_await.awaits` now also reads the jobs of the run it lists. The GitHub write warnings (`pr_correlation_comment: NOT posted …`, `protocol_invalid_label: NOT applied …`) and promote-on-release's `no_github_token` / `getpull_4xx` / `compare_4xx` rows carry `token_source`, and `ci_await`'s read errors name the store key instead of the key's file path (`token source: store key <key>`; the other sources' wording shortens to `single token file` / `write_token_path`). `docs/writeback.md` § *`bridge:check` asks each repo's token for what its legs do*. No migration, no config key; the check makes GitHub requests per mapped repo on each run, and never fails the run.
+
 ### Changed
 
 - **card#12945** — `.release-pr.json` now declares `"tag_format": "v{{version}}"`, the `v<version>` tag that `auto-tag-version.yml` already creates. The framework release-pr skill (v0.73.0 and later) stops a release cut when the key is missing, and the toolkit's release tools are moving to refuse on it as well; until now the repo relied on their guessed `v` default. No tag name, workflow behaviour, migration or config key changes. Repository release tooling only.

@@ -127,6 +127,12 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         return true;
     }
 
+    /** The dedupe read of the thread's comments before each post. */
+    public static function fileTokenReads(): array
+    {
+        return [GitHubReadLeg::IssueComments];
+    }
+
     /**
      * Can the identical comment still land? Re-derived for THIS surface rather than inherited from
      * the label's (card#10365), from GitHub's REST reference for the two requests it makes:
@@ -285,6 +291,8 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         }
 
         $resolution = $this->tokens->resolveFor($repo);
+        // Which source answered rides on every line below, so a refusal names the token to fix (card#12968).
+        $context['token_source'] = $resolution->sourceLabel();
         if (! $resolution->ok()) {
             Log::warning('pr_correlation_comment: NOT posted — no GitHub token resolves for this repo (its write_token_path, the coord credential store, then the single token file — never GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_TOKEN_UNRESOLVED, 'problem' => $resolution->problem,

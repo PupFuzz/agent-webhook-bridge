@@ -17,11 +17,11 @@ use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Writeback\GitHubApi;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\TokenFileFault;
 use App\Bridge\Writeback\TokenResolution;
-use App\Bridge\Writeback\TokenSource;
 use App\Models\CiAwait;
 use App\Models\WebhookEvent;
 use DateTimeInterface;
@@ -1055,19 +1055,32 @@ final class CiAwaitService
     /**
      * One workflow-runs read of `$repoName` for any head, made exactly as an await's read is made —
      * the same token resolution and the same failure classes — so `bridge:check` can say whether
-     * `ci_await` on that repo would be answered (card#11600). Null when GitHub answered 2xx.
+     * `ci_await` on that repo would be answered (card#11600); then, where the list named a run, one
+     * read of that run's jobs, the other read an await makes (card#12968). The failure of either,
+     * or whether the jobs read was made: false when the list named no run to read the jobs of. A
+     * jobs-read failure is never `repoUnreadable`, so it can never be reported as one.
      */
-    public static function probeRunsRead(string $repoName): ?CiRunsReadException
+    public static function probeRunsRead(string $repoName): CiRunsReadException|bool
     {
         try {
-            self::githubRead($repoName, self::RUNS_READ, static function (GitHubReadClient $client) use ($repoName): void {
-                $client->probeWorkflowRuns($repoName);
-            });
+            $runId = self::githubRead($repoName, self::RUNS_READ, static fn (GitHubReadClient $client): ?int => $client->probeWorkflowRuns($repoName));
         } catch (CiRunsReadException $e) {
             return $e;
         }
+        if ($runId === null) {
+            return false;
+        }
+        try {
+            self::githubRead($repoName, "the jobs read of run {$runId}", static function (GitHubReadClient $client) use ($repoName, $runId): void {
+                $client->probeWorkflowJobs($repoName, $runId);
+            });
+        } catch (CiRunsReadException $e) {
+            // The runs read just answered, so a 404 here is not "this repo is unreadable" — the run
+            // may have been deleted between the two reads. Never a verdict on the repo.
+            return new CiRunsReadException(RedactedErrorText::of($e), $e->retryNotBefore, repoUnreadable: false, status: $e->status, needsConfirmation: $e->needsConfirmation);
+        }
 
-        return null;
+        return true;
     }
 
     /**
@@ -1103,12 +1116,8 @@ final class CiAwaitService
             return $read(new GitHubReadClient((string) $token->token, self::TIMEOUT_SECONDS));
         } catch (RequestException $e) {
             $status = $e->response->status();
-            // A primary limit says X-RateLimit-Remaining: 0; a secondary limit is a 403 that may
-            // leave Remaining above zero but carries Retry-After — or carries neither, and says so
-            // only in its body's message (GitHub Docs, *Rate limits for the REST API*). The body is
-            // read for that one test and never printed.
-            $headerLimited = $status === 429 || ($status === 403 && ($e->response->header('X-RateLimit-Remaining') === '0' || $e->response->header('Retry-After') !== ''));
-            $bodyLimited = ! $headerLimited && $status === 403 && self::bodySaysRateLimit($e);
+            $headerLimited = GitHubApi::headerSaysRateLimit($e->response);
+            $bodyLimited = ! $headerLimited && GitHubApi::bodySaysRateLimit($e->response);
             $limited = $headerLimited || $bodyLimited;
             // A limit only the body names carries no reset; GitHub asks for at least a minute.
             $resetAt = $headerLimited ? self::rateLimitReset($e) : ($bodyLimited ? Carbon::now()->addSeconds(self::CONFIRM_AFTER_SECONDS) : null);
@@ -1131,14 +1140,6 @@ final class CiAwaitService
         }
     }
 
-    /** Whether a refused read's body says it is a rate limit. Only this test reads the body; nothing prints it. */
-    private static function bodySaysRateLimit(RequestException $e): bool
-    {
-        $message = $e->response->json('message');
-
-        return is_string($message) && stripos($message, 'rate limit') !== false;
-    }
-
     /**
      * Whether a token that did not resolve is missing for EVERY process, not only this one. The
      * sweep also runs from `bridge:tick`, whose OS user may not be the receiver's: a file THIS
@@ -1157,20 +1158,13 @@ final class CiAwaitService
     }
 
     /**
-     * Where a repo's read token came from — or was looked for — as a message may print it: the
-     * {@see TokenSource} and the file, never the token.
+     * Where a repo's read token came from — or was looked for — as a message may print it:
+     * {@see TokenResolution::sourceLabel()} and the file, never the token. A store key's file is
+     * not printed: the key is what the operator fixes (card#12968).
      */
     private static function tokenOrigin(TokenResolution $token): string
     {
-        $source = match ($token->sourceKind) {
-            TokenSource::WriteTokenPath => "the repo's write_token_path in writeback.json",
-            TokenSource::Store => 'the coord credential store',
-            TokenSource::TokenFile => 'the single GitHub token file',
-            TokenSource::Ambient => 'GH_TOKEN',
-            null => 'no token source',
-        };
-
-        return 'token source: '.$source.($token->path === null ? '' : ', file '.PastedSecretShape::displayPathSetting($token->path));
+        return 'token source: '.$token->sourceLabel().($token->path === null || $token->storeKey !== null ? '' : ', file '.PastedSecretShape::displayPathSetting($token->path));
     }
 
     /**

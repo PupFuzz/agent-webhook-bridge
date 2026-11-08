@@ -2,14 +2,16 @@
 
 namespace App\Bridge\Writeback;
 
+use Illuminate\Http\Client\Response;
+
 /**
  * The bridge's GitHub WRITES (DL-390). Kept apart from {@see GitHubReadClient} because that class's
  * contract is that it writes nothing, and a caller holding one should be able to rely on that. A
  * future GitHub write extends this class rather than minting a sibling.
  *
  * Token-agnostic like its sibling: constructed with an already-resolved token
- * ({@see GitHubTokenResolver}). Throws RequestException on any non-2xx, so the caller owns what a
- * refusal means.
+ * ({@see GitHubTokenResolver}). Each write throws RequestException on any non-2xx, so the caller owns
+ * what a refusal means; {@see probeCommentWrite()}, which writes nothing, returns its answer instead.
  *
  * ⚑ PERMISSIONS (docs.github.com, "Permissions required for fine-grained personal access tokens"):
  * creating an issue or pull-request comment needs Issues OR Pull requests WRITE. Adding labels to an
@@ -18,7 +20,30 @@ namespace App\Bridge\Writeback;
  */
 final class GitHubWriteClient
 {
+    /**
+     * The issue number {@see probeCommentWrite()} posts to: the largest a signed 32-bit id holds, a
+     * number no repo reaches, so the probe has no thread to land on.
+     */
+    public const WRITE_PROBE_ISSUE = 2147483647;
+
     public function __construct(private string $token, private int $timeoutSeconds) {}
+
+    /**
+     * Can this token create a comment on `$repo`, asked WITHOUT writing anything (card#12968)? A
+     * well-formed comment POST to {@see WRITE_PROBE_ISSUE}, which does not exist. Returns GitHub's
+     * answer, unclassified — the caller judges it: a 403 is refused at the permission check, before
+     * the issue is looked up; a 404 got past it, but a 404 is also what a token that cannot see the
+     * repo at all gets, and what a CLASSIC token missing a scope gets (GitHub Docs, *Troubleshooting
+     * the REST API*), so it means "can write" only where the same token has just read the repo and is
+     * not a classic token short of the scope.
+     * The body is well-formed on purpose: an empty one would add a second unknown (whether GitHub
+     * validates the body before it checks the permission). Throws only when no answer came back.
+     */
+    public function probeCommentWrite(string $repo): Response
+    {
+        return GitHubApi::request($this->token, $this->timeoutSeconds)
+            ->post(GitHubApi::BASE."/repos/{$repo}/issues/".self::WRITE_PROBE_ISSUE.'/comments', ['body' => 'agent-webhook-bridge write-access probe (bridge:check); addressed to an issue that does not exist']);
+    }
 
     /**
      * A comment on issue or pull request $number — GitHub numbers the two in one space.

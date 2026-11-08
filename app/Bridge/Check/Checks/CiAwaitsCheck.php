@@ -23,7 +23,7 @@ use Throwable;
  * Can a seat's `ci_await` be settled or expired on this install (card#11200 / DL-452)?
  *
  * While any agent is served the CI tools, reads each repo this install receives GitHub events for
- * once (card#11600, {@see repoReads()}): `ok` when GitHub answers, FAIL on a 404 or no token
+ * once, and the jobs of the run it lists (card#11600, card#12968, {@see repoReads()}): `ok` when GitHub answers, FAIL on a 404 or no token
  * (every `ci_await` there is refused `repo_unreadable`), UNVALIDATED on a single 401 or 403 and
  * when the read did not measure it. A repo declared in `BRIDGE_CI_AWAIT_NO_CI_REPOS` is not read
  * (card#11696, {@see declaredNoCi()}): `ok`, or a WARN when this install holds a `workflow_run`
@@ -126,8 +126,9 @@ final class CiAwaitsCheck implements Check
     }
 
     /**
-     * Can each repo `ci_await` accepts be read for workflow runs (card#11600)? One read per repo
-     * this install receives GitHub events for, made by {@see CiAwaitService::probeRunsRead()} —
+     * Can each repo `ci_await` accepts be read for workflow runs and their jobs (card#11600,
+     * card#12968)? One runs read per repo this install receives GitHub events for — and one jobs read
+     * of the run it lists, where it lists one — made by {@see CiAwaitService::probeRunsRead()} —
      * the token resolution and failure classes an await's own read uses — and only while some agent
      * is served the CI tools: with none, no seat can call `ci_await`, and the leg asks GitHub nothing.
      * A repo declared to have no CI is not read ({@see declaredNoCi()}).
@@ -136,8 +137,9 @@ final class CiAwaitsCheck implements Check
      * naming the repo, the token source and file, and the remedy. A 401 or a non-rate-limited 403 is
      * UNVALIDATED naming its status: one read cannot confirm it, and this leg makes one. One an
      * await would retry — a rate limit, a 5xx, no answer, a token this process could not read — is
-     * UNVALIDATED too, never a pass; a 2xx is `ok`.
-     * Cost: one request per received repo per run (no GitHub read budget governs `bridge:check`).
+     * UNVALIDATED too, never a pass; a 2xx is `ok`. The jobs read fails the same way, named as the
+     * jobs read; a repo that lists no run yet is `ok` saying its jobs read was not made.
+     * Cost: up to two requests per received repo per run (no GitHub read budget governs `bridge:check`).
      *
      * @return iterable<Finding>
      */
@@ -169,8 +171,10 @@ final class CiAwaitsCheck implements Check
                 continue;
             }
             $failure = CiAwaitService::probeRunsRead($repo);
-            if ($failure === null) {
-                yield Finding::ok("ci_await: GitHub lets this install read {$repo}'s workflow runs, so a ci_await there can be answered.");
+            if ($failure === true) {
+                yield Finding::ok("ci_await: GitHub lets this install read {$repo}'s workflow runs and their jobs, so a ci_await there can be answered.");
+            } elseif ($failure === false) {
+                yield Finding::ok("ci_await: GitHub lets this install read {$repo}'s workflow runs, so a ci_await there can be answered — it lists no run yet, so the jobs read was not made.");
             } elseif ($failure->needsConfirmation) {
                 yield Finding::unvalidated("ci_await: GitHub answered HTTP {$failure->status} to one read of {$repo}'s workflow runs — ".RedactedErrorText::of($failure).'. One such answer is not final: a secondary rate limit can answer 403 naming no reset, and a token being rotated can answer 401 briefly, so a confirming read at least '.CiAwaitService::CONFIRM_AFTER_SECONDS.' s later is needed before ci_await treats the repo as unreadable. Re-run bridge:check after that; if it answers the same, '.CiAwaitService::unreadableRemedy($repo).'.');
             } elseif ($failure->repoUnreadable) {

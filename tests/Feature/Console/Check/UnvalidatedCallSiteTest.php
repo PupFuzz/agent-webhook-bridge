@@ -423,6 +423,10 @@ class UnvalidatedCallSiteTest extends TestCase
         // so the drops were not counted (limb a). The absent-but-unseeable arms go through
         // `PathVisibility` and are counted there.
         'app/Bridge/Check/Checks/GitHubTokenFileCheck.php' => 9,
+        // card#12968: one site, limb (a) — a leg of a repo's token probe got an answer that measures
+        // nothing (a 401, a rate limit, a 5xx, any other status, no answer), or was not asked because
+        // the read it depends on did not answer. A 403 or 404 is a refusal — a `warn`, not a site.
+        'app/Bridge/Check/Checks/GitHubRepoAccessCheck.php' => 1,
         'app/Bridge/Check/Checks/ReceiverPostMaxSizeCheck.php' => 3,
     ];
 

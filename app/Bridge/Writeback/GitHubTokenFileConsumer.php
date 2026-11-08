@@ -45,4 +45,12 @@ interface GitHubTokenFileConsumer
      * that can read and not write leaves a writing leg as inert as no token at all.
      */
     public static function fileTokenWrites(): bool;
+
+    /**
+     * The per-repo GitHub READS the leg makes with its repo's token, so `bridge:check` can ask that
+     * token for each (card#12968). A write token placed for a repo answers its reads too.
+     *
+     * @return list<GitHubReadLeg>
+     */
+    public static function fileTokenReads(): array;
 }
