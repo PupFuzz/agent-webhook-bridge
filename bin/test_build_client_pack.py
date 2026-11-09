@@ -601,6 +601,25 @@ class InstalledTreeSpecialFile(unittest.TestCase):
                 server.close()
 
 
+class ExcludedSubtrees(unittest.TestCase):
+    """The subtrees a pack never ships, printed for the CI step that decides which channel-server
+    changes need a version bump."""
+
+    def test_it_prints_each_excluded_subtree_under_the_channel_dir(self):
+        result = _run("--excluded-subtrees")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [bcp.CHANNEL_DIR + subtree for subtree in bcp.EXCLUDED_CHANNEL_SUBTREES],
+        )
+        self.assertTrue(bcp.EXCLUDED_CHANNEL_SUBTREES, "the case must print something to compare")
+
+    def test_it_takes_no_out(self):
+        result = _run("--excluded-subtrees", "--out", "x")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("takes no --out", result.stderr)
+
+
 class VerifyCommit(unittest.TestCase):
     """(v)"""
 
@@ -634,7 +653,7 @@ class VerifyCommit(unittest.TestCase):
     def test_no_source_is_a_usage_error(self):
         result = _run("--repo", self.fx.repo)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("one of the arguments --ref --verify-commit is required", result.stderr)
+        self.assertIn("one of the arguments --ref --verify-commit --excluded-subtrees is required", result.stderr)
 
     def test_both_sources_is_a_usage_error(self):
         result = _run("--ref", "v1.2.3", "--verify-commit", "main", "--repo", self.fx.repo)

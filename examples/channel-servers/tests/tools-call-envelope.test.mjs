@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scratch, connectServer } from './mcp-harness.mjs';
+import { unusedPort } from './ports.mjs';
 
 const TARGET = 'bridge@testhost';
 const serverOpts = { name: 'envelope-test', runtimePrefix: 'envelope-rt-' };
@@ -131,10 +132,7 @@ test('forced-on board tools with an endpoint and no bearer refuse the call, nami
 // card#11151 review r2: the endpoint reaches the agent's transcript and the server log only
 // through channel-lib's `redactUrl` (origin + path) — never its userinfo or query.
 test('a tool result that names the HTTP endpoint carries neither its query nor a credential', async (t) => {
-  const s = (await import('node:http')).createServer();
-  await new Promise((r) => s.listen(0, '127.0.0.1', r));
-  const port = s.address().port;
-  await new Promise((r) => s.close(r));
+  const port = await unusedPort();
   for (const endpoint of [`http://127.0.0.1:${port}/agent-tools/call?token=SECRETQ`, `http://u:hunter2@SECRETTAIL@127.0.0.1:${port}/agent-tools/call`]) {
     const client = await connectServer(t, { BRIDGE_TOOLS_ENDPOINT: endpoint, BRIDGE_TOOLS_TOKEN: 'b' }, serverOpts);
     const res = await client.callTool({ name: 'board_my_cards', arguments: {} });

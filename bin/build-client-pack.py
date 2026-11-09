@@ -3,6 +3,7 @@
 
     python3 bin/build-client-pack.py --ref v<X.Y.Z> --out <dir>     # a publishable pack
     python3 bin/build-client-pack.py --verify-commit <rev>          # does it build? writes nothing
+    python3 bin/build-client-pack.py --excluded-subtrees            # what it never ships, one per line
 
 A pack is what a seat installs as its channel server: the reference client with its
 dependencies already in place, so a seat never fetches from a package registry. This program
@@ -20,7 +21,9 @@ that applies to an untagged commit, against any commit, then discards the result
 exists so a pull request can prove its tree still builds before it merges.
 
 INPUTS, at the one commit: the tracked files under `examples/channel-servers/` except its
-`tests/`, and the seat tools `seat-tools.json` declares. Then `npm ci --ignore-scripts
+`tests/` (EXCLUDED_CHANNEL_SUBTREES; `--excluded-subtrees` prints them, as repo-relative directory
+prefixes, for the CI step that decides which channel-server changes need a version bump), and the
+seat tools `seat-tools.json` declares. Then `npm ci --ignore-scripts
 --omit=dev` runs against the committed lockfile, which reaches the registry (or npm's cache)
 from the machine that BUILDS the pack, never from a seat.
 
@@ -412,6 +415,11 @@ def main(argv=None) -> int:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--ref", help="the release tag to build from, v<X.Y.Z>; requires --out")
     source.add_argument("--verify-commit", metavar="REV", help="build any commit and discard the result")
+    source.add_argument(
+        "--excluded-subtrees",
+        action="store_true",
+        help="print the channel-server subtrees a pack never ships, one repo-relative prefix per line",
+    )
     parser.add_argument("--out", help="directory to write the pack and manifest into (absent or empty)")
     parser.add_argument("--repo", default=REPO, help="the git repository to read (default: this checkout)")
     args = parser.parse_args(argv)
@@ -419,6 +427,12 @@ def main(argv=None) -> int:
         parser.error("--ref requires --out")
     if args.verify_commit is not None and args.out is not None:
         parser.error("--verify-commit writes nothing and takes no --out")
+    if args.excluded_subtrees:
+        if args.out is not None:
+            parser.error("--excluded-subtrees writes nothing and takes no --out")
+        for subtree in EXCLUDED_CHANNEL_SUBTREES:
+            print(CHANNEL_DIR + subtree)
+        return 0
 
     try:
         if args.ref is not None:

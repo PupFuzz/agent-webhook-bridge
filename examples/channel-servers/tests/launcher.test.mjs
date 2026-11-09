@@ -12,9 +12,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './mcp-harness.mjs';
+import { unusedPort } from './ports.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LAUNCHER = path.join(HERE, '..', 'bin', 'start-claude.sh');
@@ -30,7 +30,8 @@ import net from 'node:net';
 const server = process.argv[2] === 'http'
   ? http.createServer((q, r) => { r.writeHead(405); r.end(); })
   : net.createServer((s) => s.destroy());
-server.listen(Number(process.argv[3] || 0), '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'));
+server.on('error', (err) => { process.stderr.write(err.message + '\\n'); process.exit(1); });
+server.listen(Number(process.argv[3]), '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'));
 `;
 
 async function listener(t, file, mode, port = 0) {
@@ -42,7 +43,11 @@ async function listener(t, file, mode, port = 0) {
       child.kill('SIGKILL');
     }
   });
-  const [chunk] = await once(child.stdout, 'data');
+  const died = once(child, 'exit').then(([code]) => {
+    throw new Error(`the listener exited ${code} before listening on ${port}`);
+  });
+  died.catch(() => {});
+  const [chunk] = await Promise.race([once(child.stdout, 'data'), died]);
   return { child, port: Number(String(chunk).trim()) };
 }
 
@@ -80,16 +85,6 @@ function runLauncher(t, port, { ss, args = [], env = {}, pathBase = process.env.
   return { ...out, launched: read(record)?.split('\n') ?? null, path: read(`${record}.path`), which: read(`${record}.which`) || null };
 }
 
-async function freePort() {
-  const server = net.createServer();
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const { port } = server.address();
-  server.close();
-  await once(server, 'close');
-  return port;
-}
-
 function alive(child) {
   return child.exitCode === null && child.signalCode === null;
 }
@@ -102,7 +97,8 @@ async function exited(child, ms = 5000) {
 
 test('an unresponsive copied channel server holding the port is reclaimed and the launch goes on', { skip }, async (t) => {
   const dir = scratch(t, 'orphan-');
-  const orphan = await listener(t, path.join(dir, 'agent-webhook-bridge-channel.mjs'), 'mute');
+  // Killed, then expected free: an ephemeral port could be re-handed to a concurrent listen(0).
+  const orphan = await listener(t, path.join(dir, 'agent-webhook-bridge-channel.mjs'), 'mute', await unusedPort());
   const r = runLauncher(t, orphan.port);
 
   assert.equal(r.status, 0, r.stderr);
@@ -113,7 +109,7 @@ test('an unresponsive copied channel server holding the port is reclaimed and th
 
 test('an unresponsive client-root channel server (…/agent-webhook-bridge/client/<channel>/entry.mjs) is reclaimed too', { skip }, async (t) => {
   const dir = scratch(t, 'orphan-root-');
-  const port = await freePort();
+  const port = await unusedPort();
   const orphan = await listener(t, path.join(dir, 'agent-webhook-bridge', 'client', channelFor(port), 'entry.mjs'), 'mute', port);
   const r = runLauncher(t, orphan.port);
 
@@ -165,7 +161,7 @@ test('a holder whose PID ss cannot show (another user\'s socket) and that answer
 });
 
 test('a LISTEN socket ss shows with no PID, answering nothing, is refused — never read as a free port (card#11328 review M2)', { skip: process.platform === 'win32' && 'the bash launcher' }, async (t) => {
-  const r = runLauncher(t, await freePort(), { ss: SS_WITHOUT_PID });
+  const r = runLauncher(t, await unusedPort(), { ss: SS_WITHOUT_PID });
 
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /held by a process whose PID this user cannot see/);
@@ -173,7 +169,7 @@ test('a LISTEN socket ss shows with no PID, answering nothing, is refused — ne
 });
 
 test('with no listener at all the launcher runs claude, passing BRIDGE_CLAUDE_EXTRA_ARGS before its own arguments', { skip }, async (t) => {
-  const r = runLauncher(t, await freePort(), { args: ['--x'], env: { BRIDGE_CLAUDE_EXTRA_ARGS: ' --dangerously-skip-permissions  --model opus ' } });
+  const r = runLauncher(t, await unusedPort(), { args: ['--x'], env: { BRIDGE_CLAUDE_EXTRA_ARGS: ' --dangerously-skip-permissions  --model opus ' } });
 
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(r.launched.slice(1), [r.launched[1], '--dangerously-skip-permissions', '--model', 'opus', '--x']);
@@ -193,7 +189,7 @@ function clientRoot(t) {
 
 test('a launch through a client root appends <root>/bin to the session PATH, so bridge-board-call resolves by name', { skip }, async (t) => {
   const root = clientRoot(t);
-  const r = runLauncher(t, await freePort(), { env: { AWB_LAUNCHER_CLIENT_ROOT: root } });
+  const r = runLauncher(t, await unusedPort(), { env: { AWB_LAUNCHER_CLIENT_ROOT: root } });
 
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.which, path.join(root, 'bin', 'bridge-board-call'));
@@ -204,7 +200,7 @@ test('an earlier bridge-board-call on PATH keeps winning, and a nested launch do
   const root = clientRoot(t);
   const mine = scratch(t, 'mine-');
   fs.writeFileSync(path.join(mine, 'bridge-board-call'), '#!/bin/sh\n', { mode: 0o755 });
-  const r = runLauncher(t, await freePort(), { env: { AWB_LAUNCHER_CLIENT_ROOT: root }, pathBase: `${mine}:${process.env.PATH}:${root}/bin` });
+  const r = runLauncher(t, await unusedPort(), { env: { AWB_LAUNCHER_CLIENT_ROOT: root }, pathBase: `${mine}:${process.env.PATH}:${root}/bin` });
 
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.which, path.join(mine, 'bridge-board-call'));
@@ -212,7 +208,7 @@ test('an earlier bridge-board-call on PATH keeps winning, and a nested launch do
 });
 
 test('a launch from a copied launcher (no client root) leaves PATH as it was', { skip }, async (t) => {
-  const r = runLauncher(t, await freePort());
+  const r = runLauncher(t, await unusedPort());
 
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.path, /agent-webhook-bridge\/client/);

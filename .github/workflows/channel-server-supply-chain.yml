@@ -25,7 +25,9 @@ name: Channel-server supply chain
 #      (per the README), so a downstream snapshot drifts silently when these
 #      files change. Two assertions: FAILS a PR that touches a shipped
 #      channel-server file without bumping package.json `version` — the one field
-#      a snapshot can compare to detect drift (DL-038) — and FAILS whenever
+#      a snapshot can compare to detect drift (DL-038); a file is shipped unless it
+#      sits in a subtree bin/build-client-pack.py leaves out of the client pack
+#      (DL-501) — and FAILS whenever
 #      package-lock.json's version disagrees with it, since the field is a signal
 #      only while every file that states it agrees (DL-268).
 #   5. client-update-windows — the seat updater's suite (tests/client-update.test.mjs)
@@ -148,7 +150,8 @@ jobs:
     # Consumers copy examples/channel-servers/ into a per-deployment (often
     # per-agent) snapshot, and the client pack ships it to bootstrapped seats,
     # so a change to a shipped file drifts every copy with no detectable signal. Require a package.json `version` bump on any shipped
-    # change, so a snapshot can detect staleness by comparing one field (DL-038),
+    # change, so a snapshot can detect staleness by comparing one field (DL-038) — shipped meaning
+    # outside the subtrees the client pack excludes, which the bump step reads from the pack builder (DL-501) —
     # AND require package-lock.json to carry that same version — the field is only
     # a signal while every file that states it agrees (DL-268).
     # PR-only: the cron / workflow_dispatch runs have no base ref to diff against.
@@ -204,14 +207,26 @@ jobs:
           # with a lagging base, the diff below picks up files the BASE BRANCH
           # changed after the fork and demands a version bump for them.
           BASE_SHA=$(bin/pr-base-snapshot.sh "$HEAD_SHA")
-          # Shipped files only: exclude the gitignored node_modules (never copied).
+          # Shipped files only: exclude the gitignored node_modules (never copied)
+          # and every subtree the client pack leaves out, read from the pack
+          # builder so the two cannot disagree about what ships.
           # The three dots are now redundant — `$BASE_SHA` IS HEAD's first parent,
           # so the merge base of the two is `$BASE_SHA` — and are left in place
           # because they still say what the diff means to a reader.
-          changed=$(git diff --name-only "$BASE_SHA"...HEAD -- examples/channel-servers/ \
+          excluded=$(python3 bin/build-client-pack.py --excluded-subtrees)
+          pathspecs=(examples/channel-servers/)
+          while IFS= read -r subtree; do
+            if [ -n "$subtree" ]; then
+              pathspecs+=(":(exclude,literal)$subtree")
+            fi
+          done <<< "$excluded"
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD -- "${pathspecs[@]}" \
             | grep -v '/node_modules/' || true)
           if [ -z "$changed" ]; then
             echo "No shipped channel-server files changed — version bump not required."
+            if [ -n "$excluded" ]; then
+              echo "Not shipped by the client pack, so not counted:"; printf '  %s\n' $excluded
+            fi
             exit 0
           fi
           echo "Changed channel-server files:"; printf '  %s\n' $changed
