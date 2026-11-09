@@ -10,7 +10,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
-- **card#13056** — Fixes an intermittent red in the channel-server unit suite (`node --test tests/`): a launcher test could refuse to start because another test file had been handed the same port. The tests that give a child process a port (the launcher tests, and the `bridge-board-call` and tools-call cases that need a port nothing listens on) now take it from `tests/ports.mjs`'s `unusedPort()`. It picks a port below the kernel's ephemeral range, so no concurrent `listen(0)` can be given it. Test-only. Nothing a seat or an install runs changes.
+- **card#13056** — Fixes an intermittent red in the channel-server unit suite (`node --test tests/`): a launcher test could refuse to start because another test file had been handed the same port. The tests that give a child process a port (the launcher tests, and the `bridge-board-call` and tools-call cases that need a port nothing listens on) now take it from `tests/ports.mjs`'s `unusedPort()`. It picks a port below the kernel's ephemeral range, so no concurrent `listen(0)` can be given it. No channel-server code changes, but a change under `examples/channel-servers/` bumps the client version (DL-038), so the client is now 0.9.80.
+  - Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.80. Until you do, `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command. Seats that update get identical channel-server code.
 
 ## [0.109.0] - 2026-11-09
 
