@@ -92,6 +92,9 @@ class CheckCommandRegistrationTest extends TestCase
         // right after the writeback envelope and OUTSIDE it: the protocol:invalid label needs no
         // writeback.json, and every slot inside the envelope is skipped without one.
         'github.token_file',
+        // card#12968 — per repo, what that repo's legs ask of the token it resolves. After
+        // github.token_file in the same slot: a source that leg reports unresolved is skipped here.
+        'github.repo_access',
         // event-follows-consumer (stage 7a)
         'event.follows_consumer',
         // card#9150 — the only leg that asks GITHUB about a github subscription. Registered

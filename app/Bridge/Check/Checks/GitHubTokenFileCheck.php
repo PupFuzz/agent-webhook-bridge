@@ -70,7 +70,8 @@ use Throwable;
  * not asked, and the `ok` line says so; a fine-grained or installation token reports no
  * permissions on any read this bridge makes, so its write access is said to be UNMEASURED, by
  * name, and never passed. An EMPTY scopes header is "no scope" only on a token with a classic
- * prefix; on any other it is unmeasured too.
+ * prefix; on any other it is unmeasured too. {@see GitHubRepoAccessCheck} asks each repo's token
+ * for the write itself, per repo (card#12968).
  *
  * ⚑ READ BY THIS RUN IS NOT READ BY THE RECEIVER. The file is owner-only, so this run read it as
  * its owner or as root. An answer GitHub would pass becomes `ok` only where nothing says the
@@ -142,7 +143,7 @@ final class GitHubTokenFileCheck implements Check
         foreach (self::CONSUMERS as $consumer) {
             $repos = $consumer::fileTokenRepos($ctx->writeback);
             if ($repos !== []) {
-                $enabled[$consumer::fileTokenLeg()] = ['repos' => $repos, 'writes' => $consumer::fileTokenWrites()];
+                $enabled[$consumer::fileTokenLeg()] = ['repos' => $repos, 'writes' => $consumer::fileTokenWrites() !== []];
             }
         }
 

@@ -229,6 +229,57 @@ class GitHubTokenResolverTest extends TestCase
         $this->assertSame("store key framework ([git-credential-map] github.com/owner) ({$path})", $r->source);
     }
 
+    /**
+     * card#12968: the label a write warning and `github.repo_access` print names the store KEY by
+     * display name, and never the file it points at or the token.
+     */
+    public function test_the_source_label_names_the_store_key_and_never_its_file_or_the_token(): void
+    {
+        $path = $this->storeMapping('github.com/owner', 'readonly_key', 'ghp_store');
+
+        $label = $this->resolver()->resolveFor('owner/repo')->sourceLabel();
+
+        $this->assertSame('store key readonly_key', $label);
+        $this->assertStringNotContainsString($path, $label);
+        $this->assertStringNotContainsString('ghp_store', $label);
+    }
+
+    public function test_the_source_label_names_the_key_on_a_store_problem_too(): void
+    {
+        $this->store->write(['github.com/owner' => 'readonly_key'], []);
+
+        $r = $this->resolver()->resolveFor('owner/repo');
+
+        $this->assertFalse($r->ok());
+        $this->assertSame('store key readonly_key', $r->sourceLabel());
+    }
+
+    public function test_a_credential_shaped_store_key_is_elided_in_the_source_label(): void
+    {
+        $key = 'ghp_'.str_repeat('a', 36);
+        $this->storeMapping('github.com/owner', $key, 'ghp_store');
+
+        $label = $this->resolver()->resolveFor('owner/repo')->sourceLabel();
+
+        $this->assertStringNotContainsString($key, $label);
+        $this->assertStringStartsWith('store key <a credential-shaped name, sha256:', $label);
+    }
+
+    public function test_the_source_label_of_each_other_source_carries_no_path(): void
+    {
+        $this->writeFileToken('ghp_single');
+        $override = $this->dir.'/override-token';
+        File::put($override, 'ghp_override');
+        chmod($override, 0o600);
+        $mappings = ['owner/written' => new WritebackMapping(1, [], writeTokenPath: $override)];
+
+        $this->assertSame('single token file', $this->resolver($mappings)->resolveFor('owner/plain')->sourceLabel());
+        $this->assertSame('write_token_path', $this->resolver($mappings)->resolveFor('owner/written')->sourceLabel());
+        putenv('GH_TOKEN=ghp_env');
+        File::delete($this->dir.'/github/token');
+        $this->assertSame('GH_TOKEN', $this->resolver()->resolveForCli('owner/plain')->sourceLabel());
+    }
+
     public function test_a_one_owner_single_file_never_shadows_another_owners_mapped_repo(): void
     {
         // The rt#593 install: one owner's repos ride the single file, the other owner's are mapped.

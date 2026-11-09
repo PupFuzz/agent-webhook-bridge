@@ -4,6 +4,7 @@ namespace App\Bridge\Writeback;
 
 use App\Bridge\Support\GitHubRequestLog;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -27,5 +28,34 @@ final class GitHubApi
             ])
             ->timeout($timeoutSeconds)
             ->withMiddleware(GitHubRequestLog::middleware());
+    }
+
+    /** Whether GitHub's refusal says it is a rate limit, by its headers or its body. */
+    public static function saysRateLimit(Response $response): bool
+    {
+        return self::headerSaysRateLimit($response) || self::bodySaysRateLimit($response);
+    }
+
+    /**
+     * Whether GitHub's refusal is a rate limit by its status or headers: a 429, or a 403 carrying
+     * `X-RateLimit-Remaining: 0` (a primary limit) or `Retry-After` (a secondary limit that may
+     * leave Remaining above zero) — GitHub Docs, *Rate limits for the REST API*.
+     */
+    public static function headerSaysRateLimit(Response $response): bool
+    {
+        $status = $response->status();
+
+        return $status === 429 || ($status === 403 && ($response->header('X-RateLimit-Remaining') === '0' || $response->header('Retry-After') !== ''));
+    }
+
+    /**
+     * Whether a 403 says it is a rate limit only in its body's message — a secondary limit can carry
+     * neither header. The body is read for this one test and never printed.
+     */
+    public static function bodySaysRateLimit(Response $response): bool
+    {
+        $message = $response->status() === 403 ? $response->json('message') : null;
+
+        return is_string($message) && stripos($message, 'rate limit') !== false;
     }
 }

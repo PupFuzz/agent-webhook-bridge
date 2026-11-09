@@ -35,6 +35,7 @@ use App\Bridge\Check\Checks\ClientPackSourceCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
 use App\Bridge\Check\Checks\GitHubDeliveryHistoryCheck;
+use App\Bridge\Check\Checks\GitHubRepoAccessCheck;
 use App\Bridge\Check\Checks\GitHubTokenFileCheck;
 use App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck;
 use App\Bridge\Check\Checks\IdleNudgePostureCheck;
@@ -977,7 +978,7 @@ class CheckCommand extends BridgeCommand
                 new WritebackBoardStateCheck,
                 new WritebackSourceCoverageCheck,
             )
-            ->register(CheckSlot::GithubTokenFile, new GitHubTokenFileCheck)
+            ->register(CheckSlot::GithubTokenFile, new GitHubTokenFileCheck, new GitHubRepoAccessCheck)
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
             ->register(CheckSlot::GithubWebhook, new GitHubWebhookSubscriptionCheck, new GitHubDeliveryHistoryCheck)
             ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)

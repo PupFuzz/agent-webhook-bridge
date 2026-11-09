@@ -175,6 +175,11 @@ final class GitHubTokenResolver
      */
     private function resolveStoreKey(CoordCredentialStore $store, string $repo, string $key, string $matched): TokenResolution
     {
+        return $this->readStoreKey($store, $repo, $key, $matched)->withStoreKey($key);
+    }
+
+    private function readStoreKey(CoordCredentialStore $store, string $repo, string $key, string $matched): TokenResolution
+    {
         $label = 'store key '.PastedSecretShape::displayName($key)." ([git-credential-map] {$matched})";
         [$path, $undetermined, $why] = $store->tokenFileFor($key);
         if ($path === null) {

@@ -132,22 +132,30 @@ class BridgeCommandsTest extends TestCase
                 return null;
             }
 
-            return str_ends_with($request->url(), '/rate_limit')
-                ? Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])
-                : Http::response(['full_name' => 'owner/repo']);
+            return match (true) {
+                str_ends_with($request->url(), '/rate_limit') => Http::response([], 200, ['X-OAuth-Scopes' => 'repo']),
+                // github.repo_access's write probe: a comment with body {} — a token that can write gets 422.
+                $request->method() === 'POST' => Http::response(['message' => 'Validation Failed'], 422),
+                str_contains($request->url(), '/issues/comments') => Http::response([]),
+                str_contains($request->url(), '/pulls?') => Http::response([['number' => 7, 'locked' => false]]),
+                default => Http::response(['full_name' => 'owner/repo', 'default_branch' => 'main', 'private' => true]),
+            };
         });
     }
 
-    /** The token-file leg's scope read, or the reconcile probe of one mapped repo. */
+    /**
+     * The token-file leg's scope read, the reconcile probe of one mapped repo, or one of
+     * github.repo_access's probes of it (the dedupe read, the pull-request pick and the comment probe).
+     */
     private static function isGithubTokenFileRead(string $url): bool
     {
         return $url === 'https://api.github.com/rate_limit'
-            || preg_match('#^https://api\.github\.com/repos/[^/]+/[^/]+$#', $url) === 1;
+            || preg_match('#^https://api\.github\.com/repos/[^/]+/[^/]+(/issues/comments\?per_page=1|/pulls\?state=all&per_page=30|/issues/7/comments)?$#', $url) === 1;
     }
 
     /**
      * For a test whose subject is that the BOARD is never asked: with a usable token file placed,
-     * the only requests are the two GitHub reads it adds, and anything else is the defect.
+     * the only requests are the GitHub reads it adds, and anything else is the defect.
      */
     private function assertOnlyTheGithubTokenFileReadsWereSent(): void
     {
