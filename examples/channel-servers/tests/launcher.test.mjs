@@ -30,19 +30,24 @@ import net from 'node:net';
 const server = process.argv[2] === 'http'
   ? http.createServer((q, r) => { r.writeHead(405); r.end(); })
   : net.createServer((s) => s.destroy());
+server.on('error', (err) => { process.stderr.write(err.message + '\\n'); process.exit(1); });
 server.listen(Number(process.argv[3]), '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'));
 `;
 
-async function listener(t, file, mode, port) {
+async function listener(t, file, mode, port = 0) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, LISTENER);
-  const child = spawn(process.execPath, [file, mode, String(port ?? await unusedPort())], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, [file, mode, String(port)], { stdio: ['ignore', 'pipe', 'inherit'] });
   t.after(() => {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL');
     }
   });
-  const [chunk] = await once(child.stdout, 'data');
+  const died = once(child, 'exit').then(([code]) => {
+    throw new Error(`the listener exited ${code} before listening on ${port}`);
+  });
+  died.catch(() => {});
+  const [chunk] = await Promise.race([once(child.stdout, 'data'), died]);
   return { child, port: Number(String(chunk).trim()) };
 }
 
@@ -92,7 +97,8 @@ async function exited(child, ms = 5000) {
 
 test('an unresponsive copied channel server holding the port is reclaimed and the launch goes on', { skip }, async (t) => {
   const dir = scratch(t, 'orphan-');
-  const orphan = await listener(t, path.join(dir, 'agent-webhook-bridge-channel.mjs'), 'mute');
+  // Killed, then expected free: an ephemeral port could be re-handed to a concurrent listen(0).
+  const orphan = await listener(t, path.join(dir, 'agent-webhook-bridge-channel.mjs'), 'mute', await unusedPort());
   const r = runLauncher(t, orphan.port);
 
   assert.equal(r.status, 0, r.stderr);

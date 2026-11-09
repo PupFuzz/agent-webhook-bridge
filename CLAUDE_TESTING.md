@@ -345,12 +345,15 @@ trustworthy. That is measured history, not a hypothetical (DL-237(e)).
 ## Ports handed to a child process (channel-server tests)
 
 A port a test passes to a child, for the child to bind or as one nothing listens on, comes from
-`unusedPort()` in `examples/channel-servers/tests/ports.mjs`, never from a closed `listen(0)`.
-`node --test` runs the files concurrently, and any file's `listen(0)` can be handed a port another
-file just closed. The child then finds it held (`port … held by PID …` from the launcher), or a
-request meant to be refused reaches a stranger. `unusedPort()` draws from below the kernel's
-ephemeral range, which `listen(0)` never hands out. A test that binds `listen(0)` and keeps the
-listener open, passing its port to the child while it holds it, has no race and needs no change.
+`unusedPort()` in `examples/channel-servers/tests/ports.mjs`, never from a `listen(0)` that was then
+closed. `node --test` runs the files concurrently, and any file's `listen(0)` can be handed a port
+another file has just closed. The child then finds it held (`port … held by PID …` from the
+launcher), or a request meant to be refused reaches a stranger. `unusedPort()` draws from below the
+kernel's ephemeral range, which `listen(0)` never hands out. The range is read from the kernel on
+Linux and macOS and otherwise assumed to start at 49152. A test that binds `listen(0)` and keeps the
+listener open for as long as the child uses the port has no race and needs no change. A holder the
+test expects to be killed, with its port then free for the child, does not: it takes an
+`unusedPort()`, as the launcher's reclaim cases do.
 
 ## Database configuration
 
