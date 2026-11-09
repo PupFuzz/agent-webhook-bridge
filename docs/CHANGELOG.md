@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- ⚠ **card#13064 (DL-501) — CHANGES WHAT CI ACCEPTS: a pull request that changes only `examples/channel-servers/tests/` no longer needs a channel-server `package.json` version bump.** `version-bump-guard` now skips the subtrees the client pack leaves out, and reads them from `bin/build-client-pack.py --excluded-subtrees` (that script's `EXCLUDED_CHANNEL_SUBTREES`). A change to any file the pack ships still needs a bump, including in a pull request that also changes tests. The lockfile rule (DL-268) is unchanged.
+
 ### Fixed
 
 - **card#13056** — Fixes an intermittent red in the channel-server unit suite (`node --test tests/`): a launcher test could refuse to start because another test file had been handed the same port. The tests that give a child process a port before it starts (the launcher tests, and the `bridge-board-call` and tools-call cases that need a port nothing listens on) now take it from `tests/ports.mjs`'s `unusedPort()`. It picks a port below the kernel's ephemeral range, so no concurrent `listen(0)` can be given it. Test-only. The reference channel-server client version moves to 0.9.80 (DL-038), with no code change.

@@ -253,6 +253,20 @@ re-implementation of the predicate in PHP would drift from what CI actually runs
   `git show 4abe8e3:` returns 128 in a shallow clone — a control read that way passes locally
   and reds in CI.
 
+## The channel-server version-bump step (DL-038, DL-501)
+
+`tests/Feature/Workflows/ChannelServerVersionBumpTest.php` runs the bump step's real `run:` block
+the same way, in a throwaway repository whose HEAD is a `--no-ff` PR merge. That repository holds
+copies of the real `bin/build-client-pack.py` and `bin/pr-base-snapshot.sh`; the toolkit tool the
+wrapper runs is a stub that prints `HEAD^1`.
+
+- **What ships is the pack builder's answer, not the test's.** The step reads the excluded
+  subtrees from `bin/build-client-pack.py --excluded-subtrees`, and one case rewrites the copied
+  builder's `EXCLUDED_CHANNEL_SUBTREES` to a different subtree and checks that the verdicts follow.
+  A step that carried its own copy of the list fails that case.
+- **A mixed diff is its own case.** A test change alongside a shipped-file change must still be
+  refused, and the files listed must be the shipped ones only.
+
 ## The DL collision gate — wiring here, behaviour in the toolkit (DL-295, card#12338)
 
 `.github/workflows/dl-collision-gate.yml` runs agent-board-toolkit's `dl-collision-gate` composite
