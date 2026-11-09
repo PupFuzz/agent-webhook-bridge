@@ -8,9 +8,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.109.1] - 2026-11-09
+
 ### Changed
 
 - ⚠ **card#13064 (DL-501) — CHANGES WHAT CI ACCEPTS: a pull request that changes only `examples/channel-servers/tests/` no longer needs a channel-server `package.json` version bump.** `version-bump-guard` now skips the subtrees the client pack leaves out, and reads them from `bin/build-client-pack.py --excluded-subtrees` (that script's `EXCLUDED_CHANNEL_SUBTREES`). A change to any file the pack ships still needs a bump, including in a pull request that also changes tests. The lockfile rule (DL-268) is unchanged.
+- **Dependabot PRs #1036 · #1037** — dev dependencies `phpunit/phpunit` 13.4.5 → 13.4.6 (with `phpunit/php-code-coverage` 14.5.2 and `sebastian/version` 7.1.0; `theseer/tokenizer` removed) and `larastan/larastan` 3.13.2 → 3.14.0 (with `phpstan/phpstan` 2.3.5). The larastan update also moved the runtime package `nunomaduro/termwind` v2.4.0 → v2.4.1. `composer.lock` only. Run `composer install` on deploy as usual. No migration, no config key.
 
 ### Fixed
 
