@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#13056** — Fixes an intermittent red in the channel-server unit suite (`node --test tests/`): a launcher test could refuse to start because another test file had been handed the same port. The tests that give a child process a port (the launcher tests, and the `bridge-board-call` and tools-call cases that need a port nothing listens on) now take it from `tests/ports.mjs`'s `unusedPort()`. It picks a port below the kernel's ephemeral range, so no concurrent `listen(0)` can be given it. Test-only. Nothing a seat or an install runs changes.
+
 ## [0.109.0] - 2026-11-09
 
 ### Added

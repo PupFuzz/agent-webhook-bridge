@@ -17,6 +17,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './mcp-harness.mjs';
+import { unusedPort } from './ports.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, '..', 'bin', 'bridge-board-call.mjs');
@@ -194,10 +195,7 @@ for (const [status, error] of [[401, 'unrecognized bearer token'], [403, 'this e
 }
 
 test('http: an unreachable endpoint exits 2', async (t) => {
-  const closed = http.createServer();
-  await new Promise((r) => closed.listen(0, '127.0.0.1', r));
-  const port = closed.address().port;
-  await new Promise((r) => closed.close(r));
+  const port = await unusedPort();
   const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: `http://127.0.0.1:${port}/agent-tools/call`, BRIDGE_TOOLS_TOKEN: 'tkn' } });
 
   assert.equal(r.code, 2, r.stderr);
@@ -452,10 +450,7 @@ test('a malformed .mcp.json never echoes its content (a token in it must not rea
 });
 
 test('a credential in the endpoint URL is never printed', async (t) => {
-  const closed = http.createServer();
-  await new Promise((r) => closed.listen(0, '127.0.0.1', r));
-  const port = closed.address().port;
-  await new Promise((r) => closed.close(r));
+  const port = await unusedPort();
   const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: `http://user:${CANARY}@127.0.0.1:${port}/agent-tools/call`, BRIDGE_TOOLS_TOKEN: 'tkn' } });
 
   assert.equal(r.code, 2, r.stderr);
@@ -484,14 +479,6 @@ for (const [stderr, code, label] of [
 // sent; a value that does not parse, or carries a credential, is a configuration fault (exit 2)
 // and is never echoed; a printed endpoint is origin + path only.
 
-async function closedPort() {
-  const s = http.createServer();
-  await new Promise((r) => s.listen(0, '127.0.0.1', r));
-  const port = s.address().port;
-  await new Promise((r) => s.close(r));
-  return port;
-}
-
 for (const [label, endpoint, code] of [
   ['an @ inside the password', (p) => `http://u:hunter2@SECRETTAIL@127.0.0.1:${p}/agent-tools/call`, 2],
   ['an unparseable credentialed endpoint', (p) => `http://u:pa/SECRETTAIL@127.0.0.1:${p}/agent-tools/call`, 2],
@@ -499,7 +486,7 @@ for (const [label, endpoint, code] of [
   ['a secret in the query string', (p) => `http://127.0.0.1:${p}/agent-tools/call?token=SECRETQ`, 2],
 ]) {
   test(`endpoint with ${label}: exit ${code}, and no part of the secret on stdout or stderr`, async (t) => {
-    const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: endpoint(await closedPort()), BRIDGE_TOOLS_TOKEN: 'tkn' } });
+    const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: endpoint(await unusedPort()), BRIDGE_TOOLS_TOKEN: 'tkn' } });
 
     assert.equal(r.code, code, r.stderr);
     const out = r.stdout + r.stderr;

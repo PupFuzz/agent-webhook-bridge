@@ -342,6 +342,16 @@ trustworthy. That is measured history, not a hypothetical (DL-237(e)).
   `setUpModule`/`tearDownModule`. The two are separate per-language authorities; they must
   move together when the contract changes.
 
+## Ports handed to a child process (channel-server tests)
+
+A port a test passes to a child, for the child to bind or as one nothing listens on, comes from
+`unusedPort()` in `examples/channel-servers/tests/ports.mjs`, never from a closed `listen(0)`.
+`node --test` runs the files concurrently, and any file's `listen(0)` can be handed a port another
+file just closed. The child then finds it held (`port … held by PID …` from the launcher), or a
+request meant to be refused reaches a stranger. `unusedPort()` draws from below the kernel's
+ephemeral range, which `listen(0)` never hands out. A test that binds `listen(0)` and keeps the
+listener open, passing its port to the child while it holds it, has no race and needs no change.
+
 ## Database configuration
 
 `phpunit.xml` pins the test environment — but *how strongly* differs per key, and the
