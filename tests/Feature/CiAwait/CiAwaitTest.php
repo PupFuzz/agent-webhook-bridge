@@ -1886,7 +1886,7 @@ class CiAwaitTest extends TestCase
         $this->assertSame('repo_unreadable', $out->body()['reason']);
         $error = (string) $out->body()['error'];
         $this->assertStringContainsString("GitHub answered HTTP {$status} to the workflow-run read", $error);
-        $this->assertStringContainsString('token source: the single GitHub token file, file '.$this->dir.'/github/token', $error);
+        $this->assertStringContainsString('token source: single token file, file '.$this->dir.'/github/token', $error);
         $this->assertStringContainsString('[git-credential-map]', $error);
         $this->assertStringContainsString('write_token_path', $error);
         $this->assertStringContainsString('Nothing was stored', $error);
@@ -2102,7 +2102,7 @@ class CiAwaitTest extends TestCase
         $this->assertFalse($out->ok, json_encode($out->body()) ?: '');
         $this->assertSame('repo_unreadable', $out->body()['reason']);
         $this->assertStringContainsString('no GitHub read token', (string) $out->body()['error']);
-        $this->assertStringContainsString('token source: the single GitHub token file, file '.$this->dir.'/github/token', (string) $out->body()['error']);
+        $this->assertStringContainsString('token source: single token file, file '.$this->dir.'/github/token', (string) $out->body()['error']);
         $this->assertSame(0, CiAwait::query()->count());
         $this->assertSentRunsReads(0);
     }
@@ -2166,7 +2166,7 @@ class CiAwaitTest extends TestCase
             'pr' => 5,
             'registered_at' => '2026-10-03T10:00:00.000Z',
             'status' => 404,
-            'error' => 'GitHub answered HTTP 404 to the workflow-run read (token source: the single GitHub token file, file '.$this->dir.'/github/token)',
+            'error' => 'GitHub answered HTTP 404 to the workflow-run read (token source: single token file, file '.$this->dir.'/github/token)',
             'remedy' => CiAwaitService::unreadableRemedy(self::REPO),
         ], $mine['payload']);
     }

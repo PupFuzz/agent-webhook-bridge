@@ -2,14 +2,16 @@
 
 namespace App\Bridge\Writeback;
 
+use Illuminate\Http\Client\Response;
+
 /**
  * The bridge's GitHub WRITES (DL-390). Kept apart from {@see GitHubReadClient} because that class's
  * contract is that it writes nothing, and a caller holding one should be able to rely on that. A
  * future GitHub write extends this class rather than minting a sibling.
  *
  * Token-agnostic like its sibling: constructed with an already-resolved token
- * ({@see GitHubTokenResolver}). Throws RequestException on any non-2xx, so the caller owns what a
- * refusal means.
+ * ({@see GitHubTokenResolver}). Each write throws RequestException on any non-2xx, so the caller owns
+ * what a refusal means; {@see probeCommentWrite()}, which writes nothing, returns its answer instead.
  *
  * ⚑ PERMISSIONS (docs.github.com, "Permissions required for fine-grained personal access tokens"):
  * creating an issue or pull-request comment needs Issues OR Pull requests WRITE. Adding labels to an
@@ -19,6 +21,26 @@ namespace App\Bridge\Writeback;
 final class GitHubWriteClient
 {
     public function __construct(private string $token, private int $timeoutSeconds) {}
+
+    /**
+     * Can this token create a comment on `$repo`, asked WITHOUT writing anything? A comment POST to
+     * the EXISTING thread `$number` whose body is `{}` — `body` is required, so GitHub can never
+     * accept it. Returns GitHub's answer, unclassified; the caller judges it. Measured on GitHub on a
+     * pull request (card#12968): a token with write gets `422` ("body" wasn't supplied), a
+     * fine-grained token without it gets `403`, and nothing is created either way. The thread must
+     * exist — to an issue number that does not, both tokens get `404` — and its KIND matters to what
+     * the answer measures: the endpoint is listed under both the Issues and the Pull requests
+     * permission. Throws only when no answer came back.
+     */
+    public function probeCommentWrite(string $repo, int $number): Response
+    {
+        // Never follow a redirect: Guzzle replays a 301/302 POST as a GET, whose 2xx would read as
+        // GitHub accepting the impossible comment. A 3xx is returned as itself and measures nothing.
+        return GitHubApi::request($this->token, $this->timeoutSeconds)
+            ->withoutRedirecting()
+            ->withBody('{}', 'application/json')
+            ->post(GitHubApi::BASE."/repos/{$repo}/issues/{$number}/comments");
+    }
 
     /**
      * A comment on issue or pull request $number — GitHub numbers the two in one space.

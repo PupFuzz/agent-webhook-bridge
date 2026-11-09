@@ -410,7 +410,10 @@ class UnvalidatedCallSiteTest extends TestCase
         // this leg makes one read.
         // card#11696: one more, limb (a) — for a repo declared in BRIDGE_CI_AWAIT_NO_CI_REPOS, the
         // database did not answer whether a stored workflow_run delivery contradicts the declaration.
-        'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 6,
+        // card#12968: two more, both limb (a) — after the workflow-runs read answered, the jobs read
+        // of the run it listed answered one 401 / 403 (which only a confirming read can settle), or
+        // failed in a way an await retries (a 404, a rate limit, a 5xx, no answer).
+        'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 8,
         // card#11201, one per arm: the token file is there and THIS process could not read it
         // (limb 2 — the receiver runs as its own user); writeback.json did not load, so which
         // legs need the file was not determined (limb a — two sites: with no leg switched on, and
@@ -423,6 +426,10 @@ class UnvalidatedCallSiteTest extends TestCase
         // so the drops were not counted (limb a). The absent-but-unseeable arms go through
         // `PathVisibility` and are counted there.
         'app/Bridge/Check/Checks/GitHubTokenFileCheck.php' => 9,
+        // card#12968: one site, limb (a) — a leg of a repo's token probe got an answer that measures
+        // nothing (a 401, a rate limit, a 5xx, any other status, no answer), or was not asked because
+        // the read it depends on did not answer. A 403 or 404 is a refusal — a `warn`, not a site.
+        'app/Bridge/Check/Checks/GitHubRepoAccessCheck.php' => 1,
         'app/Bridge/Check/Checks/ReceiverPostMaxSizeCheck.php' => 3,
     ];
 

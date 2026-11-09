@@ -122,9 +122,16 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         return array_map(strval(...), array_keys($writeback === null ? [] : $writeback->mappings));
     }
 
-    public static function fileTokenWrites(): bool
+    /** The pull request whose correlation failed. */
+    public static function fileTokenWrites(): array
     {
-        return true;
+        return [GitHubWriteLeg::PullRequestComment];
+    }
+
+    /** The dedupe read of the thread's comments before each post. */
+    public static function fileTokenReads(): array
+    {
+        return [GitHubReadLeg::IssueComments];
     }
 
     /**
@@ -242,7 +249,8 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         try {
             return $this->post($repo, $number, $outcome, $body, $context);
         } catch (Throwable $e) {
-            $this->unexpected($context, $e);
+            // The resolver is memoized and never throws: this is the source post() resolved, if it got that far.
+            $this->unexpected($context + ['token_source' => $this->tokens->resolveFor($repo)->sourceLabel()], $e);
 
             // ⛔ OWED EVEN THOUGH THE POST MAY HAVE LANDED — this arm can fire after a successful
             // write. The repair reads the pull request before it posts, so a debt recorded here for
@@ -285,6 +293,8 @@ final class PrCorrelationCommenter implements GitHubTokenFileConsumer
         }
 
         $resolution = $this->tokens->resolveFor($repo);
+        // Which source answered rides on every line below, so a refusal names the token to fix.
+        $context['token_source'] = $resolution->sourceLabel();
         if (! $resolution->ok()) {
             Log::warning('pr_correlation_comment: NOT posted — no GitHub token resolves for this repo (its write_token_path, the coord credential store, then the single token file — never GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'comment'] + $context + [
                 'reason' => self::REASON_TOKEN_UNRESOLVED, 'problem' => $resolution->problem,

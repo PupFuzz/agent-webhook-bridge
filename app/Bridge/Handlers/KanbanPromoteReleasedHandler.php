@@ -11,6 +11,7 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\BoardMoverScope;
 use App\Bridge\Writeback\GitHubReadClient;
+use App\Bridge\Writeback\GitHubReadLeg;
 use App\Bridge\Writeback\GitHubTokenFileConsumer;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
@@ -114,9 +115,15 @@ final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReac
         return $repos;
     }
 
-    public static function fileTokenWrites(): bool
+    public static function fileTokenWrites(): array
     {
-        return false;
+        return [];
+    }
+
+    /** Each candidate's pull request, then a compare of its merge commit with the release base. */
+    public static function fileTokenReads(): array
+    {
+        return [GitHubReadLeg::Pulls, GitHubReadLeg::Compare];
     }
 
     public function writeOp(ReactionTarget $target): WriteOp
@@ -191,7 +198,7 @@ final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReac
             $this->alerts->warnAndNotify(
                 'promote_released.no_github_token',
                 'kanban_promote_released: no GitHub read token for repo — cannot verify commit reachability; skipping (map the repo in the coord credential store, set its write_token_path, or place <secret_dir>/github/token — `bridge:check` names which source failed)',
-                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'reason' => $resolution->problem],
+                ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'repo' => $repo, 'reason' => $resolution->problem, 'token_source' => $resolution->sourceLabel()],
                 $repo, 'promote_on_release', null, 'promote_no_github_token',
             );
 
@@ -305,7 +312,7 @@ final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReac
         // for candidates GitHub already cleared before it refused.
         $rateLimited = [];
         foreach ($candidates as $cardId => $candidate) {
-            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'], $mapping, $rateLimited)) {
+            if ($this->promoteIfReleased($github, $resolution->sourceLabel(), $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'], $mapping, $rateLimited)) {
                 $promoted++;
             }
         }
@@ -359,7 +366,7 @@ final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReac
      * @param  array{card_board: mixed, mapped_board: int}  $boardContext
      * @param  array<string, RequestException>  $rateLimited  source => its first rate-limit refusal this run
      */
-    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext, WritebackMapping $mapping, array &$rateLimited): bool
+    private function promoteIfReleased(GitHubReadClient $github, string $tokenSource, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext, WritebackMapping $mapping, array &$rateLimited): bool
     {
         if (isset($rateLimited[self::SOURCE_GITHUB])) {
             return false;   // GitHub already refused this run — no further call to it
@@ -380,7 +387,7 @@ final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReac
                 $this->alerts->warnAndNotify(
                     'promote_released.getpull_4xx',
                     'kanban_promote_released: getPull refused (4xx) — skipping card (see `body`)',
-                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'token_source' => $tokenSource] + RefusalContext::from($e),
                     $repo, 'promote_on_release', $cardId, 'promote_getpull_4xx',
                 );
 
@@ -420,7 +427,7 @@ final class KanbanPromoteReleasedHandler implements DeclaresWriteOp, DurableReac
                 $this->alerts->warnAndNotify(
                     'promote_released.compare_4xx',
                     'kanban_promote_released: compareStatus refused (4xx) — skipping card (see `body`)',
-                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
+                    ['handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'move', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'token_source' => $tokenSource] + RefusalContext::from($e),
                     $repo, 'promote_on_release', $cardId, 'promote_compare_4xx',
                 );
 

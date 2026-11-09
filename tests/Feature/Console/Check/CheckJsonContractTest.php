@@ -512,6 +512,11 @@ class CheckJsonContractTest extends TestCase
                     Http::fake([
                         'https://api.github.com/rate_limit' => Http::response([], 200, ['X-OAuth-Scopes' => 'repo']),
                         'https://api.github.com/repos/owner/repo' => Http::response(['full_name' => 'owner/repo']),
+                        // github.repo_access (card#12968): a token that reads and writes, so that
+                        // leg passes and stays out of the two this fixture is about.
+                        'https://api.github.com/repos/owner/repo/issues/comments*' => Http::response([]),
+                        'https://api.github.com/repos/owner/repo/pulls?*' => Http::response([['number' => 7, 'locked' => false]]),
+                        'https://api.github.com/repos/owner/repo/issues/7/comments' => Http::response(['message' => 'Validation Failed'], 422),
                     ]);
                     break;
 

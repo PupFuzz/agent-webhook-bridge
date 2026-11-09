@@ -5,6 +5,7 @@ namespace App\Bridge\Writeback;
 use App\Bridge\Support\ForeignText;
 use App\Bridge\Support\ReceiverUrl;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 use UnexpectedValueException;
@@ -60,6 +61,9 @@ final class GitHubReadClient
     /** GitHub's maximum page size for `GET /repos/{repo}/issues/{n}/comments`. */
     private const COMMENT_PAGE_SIZE = 100;
 
+    /** How many of a repo's newest threads {@see self::unlockedThread()} looks through. */
+    public const THREAD_PAGE_SIZE = 30;
+
     /**
      * How many comment pages {@see self::hasIssueCommentStartingWith} walks before it answers "not
      * established". A bound on a loop, not a belief about pull requests, exactly as HOOK_PAGE_LIMIT.
@@ -96,10 +100,82 @@ final class GitHubReadClient
      * token can't see a private repo (404), is expired/revoked (401), or lacks
      * scope (403), instead of every per-card getPull silently 404-ing and the run
      * exiting 0 (the degraded-read-must-be-loud posture, DL-026 lineage).
+     *
+     * Returns what the answer told this token about the repo (card#12968).
      */
-    public function probeRepo(string $repo): void
+    public function probeRepo(string $repo): GitHubRepoView
     {
-        $this->http()->get(self::API_BASE."/repos/{$repo}")->throw();
+        $response = $this->http()->get(self::API_BASE."/repos/{$repo}")->throw();
+        $branch = $response->json('default_branch');
+        $private = $response->json('private');
+        // True on any role at or above Triage; false only where the answer reports the triage role
+        // itself and none of them, so an answer that omits it is unknown, never "below Triage".
+        $roles = $response->json('permissions');
+        $roles = is_array($roles) ? $roles : [];
+        $atLeastTriage = match (true) {
+            array_filter(['triage', 'push', 'maintain', 'admin'], fn (string $role): bool => ($roles[$role] ?? null) === true) !== [] => true,
+            ($roles['triage'] ?? null) === false => false,
+            default => null,
+        };
+
+        return new GitHubRepoView(is_string($branch) && $branch !== '' ? $branch : null, is_bool($private) ? $private : null, self::scopesOf($response), $atLeastTriage);
+    }
+
+    /**
+     * The number of the newest UNLOCKED thread of `$kind` among the repo's newest
+     * {@see self::THREAD_PAGE_SIZE} (`GET /repos/{repo}/pulls`, or `GET /repos/{repo}/issues` without
+     * the entries that carry `pull_request`; `state=all`), or null when that page holds none: the
+     * thread {@see GitHubWriteClient::probeCommentWrite()} posts to. A locked thread is skipped
+     * because GitHub can refuse a comment there whatever the token holds. Throws RequestException
+     * on any non-2xx.
+     */
+    public function unlockedThread(string $repo, GitHubThreadKind $kind): ?int
+    {
+        $path = $kind === GitHubThreadKind::PullRequest ? 'pulls' : 'issues';
+        $list = $this->http()->get(self::API_BASE."/repos/{$repo}/{$path}", ['state' => 'all', 'per_page' => self::THREAD_PAGE_SIZE])->throw()->json();
+        foreach (is_array($list) ? $list : [] as $thread) {
+            if (! is_array($thread) || ! is_int($thread['number'] ?? null) || ($thread['locked'] ?? null) !== false) {
+                continue;
+            }
+            if ($kind === GitHubThreadKind::Issue && array_key_exists('pull_request', $thread)) {
+                continue;
+            }
+
+            return $thread['number'];
+        }
+
+        return null;
+    }
+
+    /**
+     * One page of one item of the repo's issue and pull-request comments (`GET
+     * /repos/{repo}/issues/comments`) — the permission the correlation comment's dedupe read of one
+     * thread's comments needs (Issues or Pull requests READ). Throws RequestException on any
+     * non-2xx; a 2xx answers yes and its body is not read (card#12968).
+     */
+    public function probeIssueComments(string $repo): void
+    {
+        $this->http()->get(self::API_BASE."/repos/{$repo}/issues/comments", ['per_page' => 1])->throw();
+    }
+
+    /**
+     * One page of one pull request (`GET /repos/{repo}/pulls`) — the permission {@see getPull()}
+     * needs (Pull requests READ). Throws RequestException on any non-2xx (card#12968).
+     */
+    public function probePulls(string $repo): void
+    {
+        $this->http()->get(self::API_BASE."/repos/{$repo}/pulls", ['per_page' => 1, 'state' => 'all'])->throw();
+    }
+
+    /**
+     * A compare of `$branch` with itself (`GET /repos/{repo}/compare/{b}...{b}`) — the permission
+     * {@see compareStatus()} needs (Contents READ), asked of a ref that exists. Throws
+     * RequestException on any non-2xx (card#12968).
+     */
+    public function probeCompare(string $repo, string $branch): void
+    {
+        $ref = rawurlencode($branch);
+        $this->http()->get(self::API_BASE."/repos/{$repo}/compare/{$ref}...{$ref}", ['per_page' => 1])->throw();
     }
 
     /**
@@ -116,7 +192,17 @@ final class GitHubReadClient
      */
     public function oauthScopes(): ?array
     {
-        $response = $this->http()->get(self::API_BASE.'/rate_limit')->throw();
+        return self::scopesOf($this->http()->get(self::API_BASE.'/rate_limit')->throw());
+    }
+
+    /**
+     * The `X-OAuth-Scopes` an authenticated answer carries: null without the header (not a classic
+     * token), an empty list for a classic token with no scope.
+     *
+     * @return ?list<string>
+     */
+    private static function scopesOf(Response $response): ?array
+    {
         if (! $response->toPsrResponse()->hasHeader('X-OAuth-Scopes')) {
             return null;
         }
@@ -694,11 +780,24 @@ final class GitHubReadClient
     /**
      * One request for one workflow run of any head (`GET /repos/{repo}/actions/runs?per_page=1`):
      * can this token read the repo's workflow runs at all? Throws RequestException on any non-2xx,
-     * like every read here; a 2xx answers yes and its body is not read (card#11600).
+     * like every read here; a 2xx answers yes (card#11600). Returns the listed run's id, so its jobs
+     * can be asked too, or null when the answer lists no run with a readable id (card#12968).
      */
-    public function probeWorkflowRuns(string $repo): void
+    public function probeWorkflowRuns(string $repo): ?int
     {
-        $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs", ['per_page' => 1, 'exclude_pull_requests' => 'true'])->throw();
+        $id = $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs", ['per_page' => 1, 'exclude_pull_requests' => 'true'])->throw()->json('workflow_runs.0.id');
+
+        return is_int($id) ? $id : null;
+    }
+
+    /**
+     * One page of one job of workflow run `$runId` (`GET /repos/{repo}/actions/runs/{id}/jobs`) —
+     * the read {@see workflowJobsForRun()} walks. Throws RequestException on any non-2xx; a 2xx
+     * answers yes and its body is not read (card#12968).
+     */
+    public function probeWorkflowJobs(string $repo, int $runId): void
+    {
+        $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs/{$runId}/jobs", ['per_page' => 1])->throw();
     }
 
     /**

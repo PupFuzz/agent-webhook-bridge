@@ -132,9 +132,16 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
         return self::configuredRepos();
     }
 
-    public static function fileTokenWrites(): bool
+    /** The thread an unattributable comment was made on: `issue_comment` fires for issues and pull requests alike. */
+    public static function fileTokenWrites(): array
     {
-        return true;
+        return [GitHubWriteLeg::Label];
+    }
+
+    /** The label is one write and reads nothing. */
+    public static function fileTokenReads(): array
+    {
+        return [];
     }
 
     /**
@@ -196,6 +203,8 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
                 'webhook_event_id' => BoardMoverScope::webhookEventId(),
                 'op' => 'label',
                 'repo' => $payload['repo'] ?? null, 'number' => $payload['number'] ?? null,
+                // The resolver is memoized and never throws: this is the source label() resolved, if it got that far.
+                'token_source' => is_string($payload['repo'] ?? null) ? $this->tokens->resolveFor($payload['repo'])->sourceLabel() : null,
                 'reason' => self::REASON_UNEXPECTED, 'error' => RedactedErrorText::of($e),
             ]);
 
@@ -239,6 +248,8 @@ final class ProtocolInvalidLabeler implements GitHubTokenFileConsumer
         }
 
         $resolution = $this->tokens->resolveFor($repo);
+        // Which source answered rides on every line below, so a refusal names the token to fix.
+        $context['token_source'] = $resolution->sourceLabel();
         if (! $resolution->ok()) {
             Log::warning('protocol_invalid_label: NOT applied — no GitHub token resolves for this repo (its write_token_path, the coord credential store, then the single token file — never GH_TOKEN); routing is unchanged', ['catalog_id' => 'protocol_invalid_label.no_token', 'handler' => BoardMoverScope::handler(), 'webhook_event_id' => BoardMoverScope::webhookEventId(), 'op' => 'label'] + $context + [
                 'reason' => self::REASON_TOKEN_UNRESOLVED, 'problem' => $resolution->problem,

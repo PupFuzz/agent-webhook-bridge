@@ -437,9 +437,13 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             ], 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['message' => 'Not Found'], 404),
         ]);
+        Log::spy();
 
         $this->handle();
 
+        // card#12968: the refusal names the token source that was refused.
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c = []) => ($c['catalog_id'] ?? null) === 'promote_released.getpull_4xx'
+            && ($c['token_source'] ?? null) === 'single token file')->once();
         // FLAT reason: GitHub answers 404 for a private repo this token cannot see, so a
         // named 403/404 split here would be wrong-but-specific.
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
@@ -461,10 +465,13 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['message' => 'No common ancestor'], 404),
         ]);
+        Log::spy();
 
         $this->handle();
 
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'promote_compare_4xx');
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c = []) => ($c['catalog_id'] ?? null) === 'promote_released.compare_4xx'
+            && ($c['token_source'] ?? null) === 'single token file')->once();
         $this->assertNotMoved(5);
     }
 
@@ -522,9 +529,12 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         File::delete($this->dir.'/github/token');
         config(['bridge.providers.github.token_path' => $this->dir.'/github/absent-token']);
         Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+        Log::spy();
 
         $this->handle();
 
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c = []) => ($c['catalog_id'] ?? null) === 'promote_released.no_github_token'
+            && ($c['token_source'] ?? null) === 'single token file')->once();
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
             && $r['reason'] === 'promote_no_github_token'
             && $r['card_id'] === null);

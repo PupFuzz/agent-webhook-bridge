@@ -80,9 +80,10 @@ jobs:
       # PRECONDITIONS, all already met above: the checkout's `fetch-depth: 0` (the classification
       # reads both ends of the range and refuses a shallow clone rather than reading it as "not a
       # release"), and the job's `permissions: contents: read`, which is UNCHANGED and sufficient
-      # — the gate polls refs with `git ls-remote` and writes nothing. This repo leaves
-      # .release-pr.json's `tag_format` unset, so the gate waits for `v<version>`, which is
-      # exactly what auto-tag-version.yml creates; the two must move together if either changes.
+      # — the gate polls refs with `git ls-remote` and writes nothing. This repo declares
+      # .release-pr.json's `tag_format` as `v{{version}}`, so the gate waits for `v<version>`,
+      # which is exactly what auto-tag-version.yml creates; the two must move together if either
+      # changes (ReleaseTagGateTest holds them together).
       - name: Refuse to promote an untagged release
         # A workflow_dispatch run carries no before-ref, so it has no range to classify. That
         # path is operator-driven and dry-run by default, so it is skipped rather than gated.

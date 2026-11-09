@@ -5,6 +5,7 @@ namespace Tests\Unit\Bridge\Check\Checks;
 use App\Bridge\Check\Checks\CiAwaitsCheck;
 use App\Bridge\Scheduling\Handlers\CiAwaitSweepJob;
 use App\Bridge\Scheduling\JobRegistry;
+use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Models\CiAwait;
 use App\Models\WebhookEvent;
@@ -168,6 +169,80 @@ class CiAwaitsCheckTest extends TestCase
         Http::assertSent(fn (Request $r): bool => str_contains($r->url(), 'per_page=1'));
     }
 
+    public function test_a_received_repo_whose_runs_and_jobs_answer_is_ok_naming_both(): void
+    {
+        $this->installServingCiTools();
+        Http::fake([
+            'api.github.com/repos/octo/widgets/actions/runs/77/jobs*' => Http::response(['total_count' => 0, 'jobs' => []]),
+            'api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['total_count' => 1, 'workflow_runs' => [['id' => 77]]]),
+        ]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('workflow runs and their jobs', $findings[0]->message);
+        Http::assertSent(fn (Request $r): bool => str_contains($r->url(), '/actions/runs/77/jobs'));
+    }
+
+    public function test_a_repo_that_lists_no_run_says_its_jobs_read_was_not_made(): void
+    {
+        $this->installServingCiTools();
+        Http::fake(['api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['total_count' => 0, 'workflow_runs' => []])]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('so the jobs read was not made', $findings[0]->message);
+    }
+
+    /**
+     * card#12968: a token that reads runs and not jobs leaves every await unanswerable. The finding
+     * names the JOBS read — never "the workflow runs" — and what an await does with the same answer:
+     * a 403 ends it once a confirming read repeats it; a 404 (the runs read just named the run) is
+     * retried. Neither is a FAIL.
+     */
+    public function test_a_jobs_read_403_is_unvalidated_naming_the_jobs_read_and_the_await_consequence(): void
+    {
+        $this->fakeRunsThenJobs(403);
+
+        $finding = $this->onlyFinding();
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringStartsWith('ci_await: GitHub answered HTTP 403 to the jobs read of run 77 on '.self::REPO.', after the workflow-runs read answered', $finding->message);
+        $this->assertStringContainsString('the await ends with ci_await_unreadable', $finding->message);
+        $this->assertStringNotContainsString('read '.self::REPO."'s workflow runs", $finding->message);
+    }
+
+    public function test_a_jobs_read_404_is_unvalidated_and_says_the_await_reads_it_again(): void
+    {
+        $this->fakeRunsThenJobs(404);
+
+        $finding = $this->onlyFinding();
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringStartsWith('ci_await: whether this install can read the jobs of '.self::REPO."'s workflow runs was NOT measured — GitHub answered HTTP 404 to the jobs read of run 77", $finding->message);
+        $this->assertStringContainsString('ci_await keeps an await whose jobs read fails this way and reads it again', $finding->message);
+        $this->assertStringNotContainsString('read '.self::REPO."'s workflow runs", $finding->message);
+    }
+
+    private function fakeRunsThenJobs(int $jobsStatus): void
+    {
+        $this->installServingCiTools();
+        Http::fake([
+            'api.github.com/repos/octo/widgets/actions/runs/77/jobs*' => Http::response(['message' => 'Resource not accessible by personal access token'], $jobsStatus),
+            'api.github.com/repos/octo/widgets/actions/runs*' => Http::response(['total_count' => 1, 'workflow_runs' => [['id' => 77]]]),
+        ]);
+    }
+
+    private function onlyFinding(): Finding
+    {
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+        $this->assertCount(1, $findings);
+
+        return $findings[0];
+    }
+
     public function test_a_received_repo_the_token_cannot_see_fails_naming_the_source_file_and_remedy(): void
     {
         $dir = $this->installServingCiTools();
@@ -179,7 +254,7 @@ class CiAwaitsCheckTest extends TestCase
         $this->assertSame(Severity::Fail, $findings[0]->severity);
         $this->assertStringContainsString('HTTP 404', $findings[0]->message);
         $this->assertStringContainsString(self::REPO, $findings[0]->message);
-        $this->assertStringContainsString('token source: the single GitHub token file, file '.$dir.'/github/token', $findings[0]->message);
+        $this->assertStringContainsString('token source: single token file, file '.$dir.'/github/token', $findings[0]->message);
         $this->assertStringContainsString('[git-credential-map]', $findings[0]->message);
         $this->assertStringContainsString('BRIDGE_CI_AWAIT_NO_CI_REPOS', $findings[0]->message);
         $this->assertStringNotContainsString('gh-check-token', $findings[0]->message);
