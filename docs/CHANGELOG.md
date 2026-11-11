@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#13173** — **composer/laravel/framework 13.40.0 → 13.42.0** (`composer.lock` only; repository advisories GHSA-v5ch-g375-82r6 and GHSA-6rv8-qj5v-p8ch (both medium, temporary signed URL expiration bypass, range `>= 13.0.0, < 13.41.0`, patched in 13.41.0)). Flagged by the daily dependency advisory ref matrix, whose bump job does not automate composer findings; the `composer.json` constraint already admits 13.42.0. The bridge issues and checks no signed URLs, so this is preventive. `composer update laravel/framework --with-dependencies` also moved `laravel/prompts` 0.3.26 → 0.3.27 and `laravel/serializable-closure` 2.1.0 → 2.2.0. Run `composer install` on deploy as usual. No migration, no config key.
+
 ## [0.109.1] - 2026-11-09
 
 ### Changed
