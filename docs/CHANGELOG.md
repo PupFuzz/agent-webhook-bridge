@@ -8,6 +8,18 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.109.2] - 2026-11-11
+
+### Fixed
+
+- **npm/hono 4.13.16 → 4.13.18 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisories GHSA-74fm-fwc7-3fwp (medium, range `>= 4.13.11, <= 4.13.17`, patched in 4.13.18); GHSA-39q9-qp46-w8xg (medium, range `>= 4.12.16, <= 4.13.17`, patched in 4.13.18); GHSA-92p4-j3wq-jmqx (medium, range `>= 4.5.1, <= 4.13.17`, patched in 4.13.18); GHSA-h25j-2p75-qj33 (medium, range `>= 4.13.16, <= 4.13.17`, patched in 4.13.18) on honojs/hono). Opened by the daily dependency advisory ref matrix: 4.13.18 is in range for @hono/node-server@2.1.7's `^4 || ^5.0.0-0`; @modelcontextprotocol/sdk@1.32.2's `^4.11.4`, so `npm update hono` sufficed and no override was added. Channel-server snapshot 0.9.81 → 0.9.82.
+- **npm/@hono/node-server 2.1.6 → 2.1.7 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisory GHSA-fj57-4f93-cfw6 (medium, range `>= 2.1.3, < 2.1.7`, patched in 2.1.7) on honojs/node-server). Opened by the daily dependency advisory ref matrix: 2.1.7 is in range for @modelcontextprotocol/sdk@1.32.2's `^1.19.9 || ^2.0.5`, so `npm update @hono/node-server` sufficed and no override was added. Channel-server snapshot 0.9.80 → 0.9.81.
+- **card#13173** — **composer/laravel/framework 13.40.0 → 13.42.0** (`composer.lock` only; repository advisories GHSA-v5ch-g375-82r6 and GHSA-6rv8-qj5v-p8ch (both medium, temporary signed URL expiration bypass, range `>= 13.0.0, < 13.41.0`, patched in 13.41.0)). Flagged by the daily dependency advisory ref matrix, whose bump job does not automate composer findings; the `composer.json` constraint already admits 13.42.0. The bridge issues and checks no signed URLs, so this is preventive. `composer update laravel/framework --with-dependencies` also moved `laravel/prompts` 0.3.26 → 0.3.27 and `laravel/serializable-closure` 2.1.0 → 2.2.0. Run `composer install` on deploy as usual. No migration, no config key.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.82. Until you do, seats stay on the client they have, whose lockfile pins @hono/node-server 2.1.6, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+
 ## [0.109.1] - 2026-11-09
 
 ### Changed
