@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **npm/@hono/node-server 2.1.6 → 2.1.7 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisory GHSA-fj57-4f93-cfw6 (medium, range `>= 2.1.3, < 2.1.7`, patched in 2.1.7) on honojs/node-server). Opened by the daily dependency advisory ref matrix: 2.1.7 is in range for @modelcontextprotocol/sdk@1.32.2's `^1.19.9 || ^2.0.5`, so `npm update @hono/node-server` sufficed and no override was added. Channel-server snapshot 0.9.80 → 0.9.81.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.81. Until you do, seats stay on the client they have, whose lockfile pins @hono/node-server 2.1.6, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+
 ## [0.109.1] - 2026-11-09
 
 ### Changed
