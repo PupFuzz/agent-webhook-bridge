@@ -69,7 +69,7 @@ CHANGELOG = """# Changelog
 
 ### Upgrade warnings
 
-- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.72. Until you do, seats stay on the client they have.
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.72. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.5.2, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.1.0] - 2026-01-01
 
@@ -256,6 +256,55 @@ class Changelog(unittest.TestCase):
     def test_no_unreleased_heading_is_refused(self):
         with self.assertRaises(ab.BumpError):
             ab.edit_changelog("# Changelog\n", "- b", "1.0.0", "x", "1")
+
+    def upgrade_line(self, text):
+        unreleased = text.split("## [0.1.0]")[0]
+        return [l for l in unreleased.split("\n") if "publish client snapshot" in l]
+
+    def test_a_second_bump_names_its_package_in_the_existing_upgrade_line(self):
+        # v0.109.2: the @hono/node-server bump wrote the line, the hono bump only moved its snapshot.
+        out = ab.edit_changelog(CHANGELOG, "- **npm/hono 4.13.16 → 4.13.18** — b.", "0.9.73", "hono", "4.13.16")
+        self.assertEqual(self.upgrade_line(out), [
+            "- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot "
+            "0.9.73. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit "
+            "8.5.2 and hono 4.13.16, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming "
+            "that command."])
+
+    def test_a_third_bump_extends_the_list_and_keeps_every_earlier_pin(self):
+        once = ab.edit_changelog(CHANGELOG, "- b1", "0.9.73", "hono", "4.13.16")
+        twice = ab.edit_changelog(once, "- b2", "0.9.74", "@hono/node-server", "2.1.6, 2.1.7")
+        line = self.upgrade_line(twice)[0]
+        self.assertIn("snapshot 0.9.74.", line)
+        self.assertIn("whose lockfile pins express-rate-limit 8.5.2, hono 4.13.16 and @hono/node-server "
+                      "2.1.6, 2.1.7, and `bridge:check`", line)
+
+    def test_a_package_bumped_again_before_a_release_keeps_the_version_seats_pin(self):
+        # Seats on the released client still carry the first old version, not the intermediate one.
+        once = ab.edit_changelog(CHANGELOG, "- b1", "0.9.73", "hono", "4.13.11")
+        twice = ab.edit_changelog(once, "- b2", "0.9.74", "hono", "4.13.16")
+        line = self.upgrade_line(twice)[0]
+        self.assertIn("pins express-rate-limit 8.5.2 and hono 4.13.11, and", line)
+        self.assertNotIn("4.13.16", line)
+
+    def test_a_hand_written_line_keeps_its_other_claims_when_the_pin_is_added(self):
+        text = CHANGELOG.replace(
+            "whose lockfile pins express-rate-limit 8.5.2, and",
+            "whose `ci_await` description is old (card#1) and whose lockfile pins qs 6.16.1 (card#2), and")
+        line = self.upgrade_line(ab.edit_changelog(text, "- b", "0.9.73", "hono", "4.13.16"))[0]
+        self.assertIn("whose `ci_await` description is old (card#1) and whose lockfile pins qs 6.16.1 and "
+                      "hono 4.13.16 (card#2), and `bridge:check`", line)
+
+    def test_a_hand_written_serial_comma_list_is_read_whole(self):
+        text = CHANGELOG.replace("pins express-rate-limit 8.5.2, and", "pins a 1.0.0, b 2.0.0, and c 3.0.0, and")
+        line = self.upgrade_line(ab.edit_changelog(text, "- b", "0.9.73", "hono", "4.13.16"))[0]
+        self.assertIn("pins a 1.0.0, b 2.0.0, c 3.0.0 and hono 4.13.16, and `bridge:check`", line)
+
+    def test_an_upgrade_line_with_no_lockfile_pins_clause_is_refused_not_left_stale(self):
+        text = CHANGELOG.replace(
+            "Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.5.2, and",
+            "Until you do, seats stay on the client they have; 0.9.72 ships the same code as 0.9.71. Also, and")
+        with self.assertRaisesRegex(ab.BumpError, "names no `whose lockfile pins` list"):
+            ab.edit_changelog(text, "- b", "0.9.73", "hono", "4.13.16")
 
 
 class FakeTools(ab.Shell):

@@ -26,7 +26,9 @@ bumps did (PRs #834, #966, #968):
   * `npm version patch` there (the DL-038 snapshot bump the version-bump guard requires; it moves
     package.json and both lockfile version sites together, DL-268), then
     `node bin/gen-client-capabilities.mjs`, then a `[Unreleased]` `### Fixed` bullet in
-    docs/CHANGELOG.md and the client-pack upgrade line's snapshot version.
+    docs/CHANGELOG.md, and the client-pack upgrade line: its snapshot version, and the package and
+    old version added to the list of what the seats' lockfile pins until they upgrade (a package
+    already listed keeps the version it names — that is the one the released client pins).
 
 Two subcommands, so the token lives in exactly one workflow step:
 
@@ -73,6 +75,12 @@ PATCHED_RE = re.compile(r'^patched in "(?P<text>.*)"$')
 VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
 PATCHED_PIECE_RE = re.compile(r"^(?:>=|=>)?\s*(?P<v>\d+(?:\.\d+)*)$")
 SNAPSHOT_LINE_RE = re.compile(r"(publish client snapshot )(\d+\.\d+\.\d+)")
+# The upgrade line's list of what the not-yet-upgraded client pins: `<pkg> <ver>[, <ver>]` items
+# joined by ", " / " and " as `edit_changelog` writes them (or ", and " by hand). A package name
+# starts with a letter or `@`, so a version after ", " is never read as the next item.
+_PIN = r"[@A-Za-z][\w.@/-]* \d+(?:\.\d+)*(?:, \d+(?:\.\d+)*)*"
+PINS_RE = re.compile(rf"(whose lockfile pins )({_PIN}(?:(?:, and |, | and ){_PIN})*)")
+PIN_RE = re.compile(r"(?P<name>[@A-Za-z][\w.@/-]*) \d+(?:\.\d+)*(?:, \d+(?:\.\d+)*)*")
 # The shape the audit itself checks before building an API path from an ID (reviewed_records).
 GHSA_RE = re.compile(r"^GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$")
 # The audit's two sources, as each `affected` row names its own.
@@ -337,9 +345,30 @@ def group_candidates(rows, lock):
 # ── CHANGELOG ───────────────────────────────────────────────────────────────────────────────
 
 
+def join_pins(pins):
+    return pins[0] if len(pins) == 1 else ", ".join(pins[:-1]) + " and " + pins[-1]
+
+
+def add_pin(line, pkg, old):
+    """`line` with `pkg old` added to its `whose lockfile pins` list, unless `pkg` is already listed.
+
+    A line with no such list was written by hand and says something about the client this tool
+    cannot check, so it is refused rather than left naming none of the packages the seats pin.
+    """
+    m = PINS_RE.search(line)
+    if m is None:
+        raise BumpError(f"the {CHANGELOG} `### Upgrade warnings` client-pack line names no `whose lockfile pins` "
+                        f"list to add {pkg} {old} to; add the clause by hand and re-run: {line[:300]}")
+    pins = list(PIN_RE.finditer(m.group(2)))
+    if any(p.group("name").lower() == pkg.lower() for p in pins):
+        return line
+    return line[:m.start(2)] + join_pins([p.group(0) for p in pins] + [f"{pkg} {old}"]) + line[m.end(2):]
+
+
 def edit_changelog(text, bullet, snapshot_to, pkg, old):
-    """Insert `bullet` first under `[Unreleased]` `### Fixed`, and name `snapshot_to` in the
-    `### Upgrade warnings` client-pack line (adding that line when the section has none)."""
+    """Insert `bullet` first under `[Unreleased]` `### Fixed`, and make the `### Upgrade warnings`
+    client-pack line name `snapshot_to` and `pkg old` among what the old client pins (adding that
+    line when the section has none)."""
     lines = text.split("\n")
     try:
         start = lines.index("## [Unreleased]")
@@ -386,7 +415,8 @@ def edit_changelog(text, bullet, snapshot_to, pkg, old):
                 last -= 1
             section.insert(last, upgrade)
         else:
-            section[hit] = SNAPSHOT_LINE_RE.sub(lambda mm: mm.group(1) + snapshot_to, section[hit], count=1)
+            section[hit] = add_pin(SNAPSHOT_LINE_RE.sub(lambda mm: mm.group(1) + snapshot_to, section[hit], count=1),
+                                   pkg, old)
     if section and section[-1] != "" and end < len(lines):
         section.append("")
     return "\n".join(lines[:start + 1] + section + lines[end:])
@@ -439,7 +469,7 @@ Bumps {pkg} {old} -> {new} in the channel-servers lockfile. Opened automatically
 - `{LOCKFILE}`: {pkg} **{old} -> {new}**, done with `npm update {pkg} --package-lock-only --ignore-scripts`. The declaring range admits it, so no override was needed: {"; ".join(parents) or "(no declaring entry found)"}. Dependency path: {via}.
 {moved_line}
 - Reference channel-server snapshot **{snap_from} -> {snap_to}** (`package.json` + both lockfile version sites, `npm version patch`), for the version-bump guard (DL-038). `{CAPABILITIES}` regenerated with `node bin/gen-client-capabilities.mjs`.
-- `{CHANGELOG}` `[Unreleased]`: a `### Fixed` entry, and the `### Upgrade warnings` client-pack line names snapshot {snap_to}.
+- `{CHANGELOG}` `[Unreleased]`: a `### Fixed` entry, and the `### Upgrade warnings` client-pack line names snapshot {snap_to} and lists {pkg} among what the old client pins.
 
 Reachability of the advisory in this tree was not analysed by the automation. The bump is in range, so it is made either way.
 

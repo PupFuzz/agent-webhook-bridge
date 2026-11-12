@@ -19,7 +19,13 @@ import { unusedPort } from './ports.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LAUNCHER = path.join(HERE, '..', 'bin', 'start-claude.sh');
 
-const portTool = ['ss', 'lsof'].some((tool) => spawnSync('sh', ['-c', `command -v ${tool}`]).status === 0);
+// The launch's PATH is the test's, never the host's: a session started through a client root (or a
+// seat with `bridge-board-call` linked into ~/.local/bin) carries a real `bridge-board-call` and
+// `<root>/bin` on its PATH, which is exactly what the client-root cases assert about. These are the
+// OS's own tool directories, where an OS package puts the launcher's ss/lsof, curl and ps.
+const SYSTEM_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+
+const portTool = ['ss', 'lsof'].some((tool) => spawnSync('sh', ['-c', `command -v ${tool}`], { env: { PATH: SYSTEM_PATH } }).status === 0);
 const skip = process.platform === 'win32' ? 'the bash launcher; start-claude.ps1 is validated on Windows by its device agent' : !portTool && 'neither ss nor lsof on this host';
 
 // A listener: `http` answers every request 405 (a live channel server), `mute` accepts and drops
@@ -57,7 +63,7 @@ const channelFor = (port) => `launcher-test-${process.pid}-${port}`;
 // socket another user holds (card#11328 review M2).
 const SS_WITHOUT_PID = `#!/bin/sh\necho 'LISTEN 0 511 127.0.0.1:1 0.0.0.0:*'\n`;
 
-function runLauncher(t, port, { ss, args = [], env = {}, pathBase = process.env.PATH } = {}) {
+function runLauncher(t, port, { ss, args = [], env = {}, pathBase = SYSTEM_PATH } = {}) {
   const dir = scratch(t, 'launcher-');
   const bin = path.join(dir, 'bin');
   fs.mkdirSync(bin);
@@ -200,7 +206,7 @@ test('an earlier bridge-board-call on PATH keeps winning, and a nested launch do
   const root = clientRoot(t);
   const mine = scratch(t, 'mine-');
   fs.writeFileSync(path.join(mine, 'bridge-board-call'), '#!/bin/sh\n', { mode: 0o755 });
-  const r = runLauncher(t, await unusedPort(), { env: { AWB_LAUNCHER_CLIENT_ROOT: root }, pathBase: `${mine}:${process.env.PATH}:${root}/bin` });
+  const r = runLauncher(t, await unusedPort(), { env: { AWB_LAUNCHER_CLIENT_ROOT: root }, pathBase: `${mine}:${SYSTEM_PATH}:${root}/bin` });
 
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.which, path.join(mine, 'bridge-board-call'));

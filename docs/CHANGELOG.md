@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#13185** — The dependency audit's bump job (`bin/advisory-bump.py`) now names every package it bumps in the `[Unreleased]` client-pack upgrade line. When that line already existed it only moved the snapshot version, so the line kept naming the first bump's package alone: v0.109.2's named @hono/node-server 2.1.6 and not hono 4.13.16. A package bumped again before a release keeps the version the line already names, the one the released client pins. A hand-written upgrade line with no `whose lockfile pins` list now fails the bump job, naming the line, instead of being left naming none of what the seats pin; add the clause and the next run opens the bump. Also: the channel-server launcher's client-root tests no longer read the host's PATH, which failed them on a seat whose own session was started through a client root (repository tests only). No migration, no config key, no client change.
+
 ## [0.109.2] - 2026-11-11
 
 ### Fixed
