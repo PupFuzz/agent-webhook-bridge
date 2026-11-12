@@ -10,7 +10,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
-- **card#13185** — The dependency audit's bump job (`bin/advisory-bump.py`) now names every package it bumps in the `[Unreleased]` client-pack upgrade line. When that line already existed it only moved the snapshot version, so the line kept naming the first bump's package alone: v0.109.2's named @hono/node-server 2.1.6 and not hono 4.13.16. A package bumped again before a release keeps the version the line already names, the one the released client pins. A hand-written upgrade line with no `whose lockfile pins` list now fails the bump job, naming the line, instead of being left naming none of what the seats pin; add the clause and the next run opens the bump. Also: the channel-server launcher's client-root tests no longer read the host's PATH, which failed them on a seat whose own session was started through a client root (repository tests only). No migration, no config key, no client change.
+- **card#13185** — The dependency audit's bump job (`bin/advisory-bump.py`) now names every package it bumps in the `[Unreleased]` client-pack upgrade line. When that line already existed it only moved the snapshot version, so the line kept naming the first bump's package alone: v0.109.2's named @hono/node-server 2.1.6 and not hono 4.13.16 (that released line now carries an annotation naming hono). A package bumped again before a release keeps the version the line already names, the one the released client pins. A hand-written upgrade line with no `whose lockfile pins` list the job can read is left as written apart from its snapshot, and the bump PR still opens, with a warning in its body that names the line and the `<package> <version>` to add by hand. Also: the channel-server launcher's client-root tests no longer launch with the host's PATH, which failed them on a seat whose own session was started through a client root (repository tests only). No migration, no config key, no client change.
 
 ## [0.109.2] - 2026-11-11
 
@@ -22,7 +22,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
-- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.82. Until you do, seats stay on the client they have, whose lockfile pins @hono/node-server 2.1.6, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.82. Until you do, seats stay on the client they have, whose lockfile pins @hono/node-server 2.1.6, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command. *(Additive annotation, card#13185, written after 0.109.2 shipped — the released sentence above is not edited: the client those seats have also pins **hono 4.13.16**, which 0.9.82 moves to 4.13.18. The bump job moved this line's snapshot and did not add hono to it.)*
 
 ## [0.109.1] - 2026-11-09
 

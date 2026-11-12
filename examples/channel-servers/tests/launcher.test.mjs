@@ -25,7 +25,7 @@ const LAUNCHER = path.join(HERE, '..', 'bin', 'start-claude.sh');
 // OS's own tool directories, where an OS package puts the launcher's ss/lsof, curl and ps.
 const SYSTEM_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 
-const portTool = ['ss', 'lsof'].some((tool) => spawnSync('sh', ['-c', `command -v ${tool}`], { env: { PATH: SYSTEM_PATH } }).status === 0);
+const portTool = ['ss', 'lsof'].some((tool) => spawnSync('sh', ['-c', `command -v ${tool}`]).status === 0);
 const skip = process.platform === 'win32' ? 'the bash launcher; start-claude.ps1 is validated on Windows by its device agent' : !portTool && 'neither ss nor lsof on this host';
 
 // A listener: `http` answers every request 405 (a live channel server), `mute` accepts and drops

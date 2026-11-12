@@ -28,7 +28,9 @@ bumps did (PRs #834, #966, #968):
     `node bin/gen-client-capabilities.mjs`, then a `[Unreleased]` `### Fixed` bullet in
     docs/CHANGELOG.md, and the client-pack upgrade line: its snapshot version, and the package and
     old version added to the list of what the seats' lockfile pins until they upgrade (a package
-    already listed keeps the version it names — that is the one the released client pins).
+    already listed keeps the version it names — that is the one the released client pins). An
+    existing line with no such list this tool can read is left as written apart from its snapshot,
+    and the PR body says so, naming the line and the `<pkg> <old>` to add by hand.
 
 Two subcommands, so the token lives in exactly one workflow step:
 
@@ -75,12 +77,17 @@ PATCHED_RE = re.compile(r'^patched in "(?P<text>.*)"$')
 VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
 PATCHED_PIECE_RE = re.compile(r"^(?:>=|=>)?\s*(?P<v>\d+(?:\.\d+)*)$")
 SNAPSHOT_LINE_RE = re.compile(r"(publish client snapshot )(\d+\.\d+\.\d+)")
-# The upgrade line's list of what the not-yet-upgraded client pins: `<pkg> <ver>[, <ver>]` items
-# joined by ", " / " and " as `edit_changelog` writes them (or ", and " by hand). A package name
-# starts with a letter or `@`, so a version after ", " is never read as the next item.
-_PIN = r"[@A-Za-z][\w.@/-]* \d+(?:\.\d+)*(?:, \d+(?:\.\d+)*)*"
-PINS_RE = re.compile(rf"(whose lockfile pins )({_PIN}(?:(?:, and |, | and ){_PIN})*)")
-PIN_RE = re.compile(r"(?P<name>[@A-Za-z][\w.@/-]*) \d+(?:\.\d+)*(?:, \d+(?:\.\d+)*)*")
+# The upgrade line's list of what the not-yet-upgraded client pins: `<pkg> <ver>[, <ver>]` items,
+# each optionally followed by one ` (<note>)` such as ` (card#N)`, joined by ", " / " and " as
+# `edit_changelog` writes them (or ", and " by hand). A package name starts with a letter or `@`, so
+# a version after ", " is never read as the next item. The list must end at `, and \``, at a `.`
+# or `;` that ends a word, or at the end of the line; anything else after it means the line is not
+# this shape, and it is not read.
+_VER = r"\d+(?:\.\d+)*(?:-\w+(?:\.\w+)*)?"
+_NAME = r"[@A-Za-z][\w.@/-]*"
+_TAIL = rf" {_VER}(?:, {_VER})*(?: \([^()]*\))?"
+PIN_RE = re.compile(rf"(?P<name>{_NAME}){_TAIL}")
+PINS_RE = re.compile(rf"(whose lockfile pins )({_NAME}{_TAIL}(?:(?:, and |, | and ){_NAME}{_TAIL})*)(?=, and `|[.;](?!\w)|$)")
 # The shape the audit itself checks before building an API path from an ID (reviewed_records).
 GHSA_RE = re.compile(r"^GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$")
 # The audit's two sources, as each `affected` row names its own.
@@ -350,15 +357,11 @@ def join_pins(pins):
 
 
 def add_pin(line, pkg, old):
-    """`line` with `pkg old` added to its `whose lockfile pins` list, unless `pkg` is already listed.
-
-    A line with no such list was written by hand and says something about the client this tool
-    cannot check, so it is refused rather than left naming none of the packages the seats pin.
-    """
+    """`line` with `pkg old` added to its `whose lockfile pins` list, unless `pkg` is already listed;
+    None when the line has no such list this tool can read (a hand-written line, left for a human)."""
     m = PINS_RE.search(line)
     if m is None:
-        raise BumpError(f"the {CHANGELOG} `### Upgrade warnings` client-pack line names no `whose lockfile pins` "
-                        f"list to add {pkg} {old} to; add the clause by hand and re-run: {line[:300]}")
+        return None
     pins = list(PIN_RE.finditer(m.group(2)))
     if any(p.group("name").lower() == pkg.lower() for p in pins):
         return line
@@ -368,7 +371,11 @@ def add_pin(line, pkg, old):
 def edit_changelog(text, bullet, snapshot_to, pkg, old):
     """Insert `bullet` first under `[Unreleased]` `### Fixed`, and make the `### Upgrade warnings`
     client-pack line name `snapshot_to` and `pkg old` among what the old client pins (adding that
-    line when the section has none)."""
+    line when the section has none).
+
+    Returns (text, unlisted): `unlisted` is the upgrade line as written when it has no pins list
+    `add_pin` can read — its snapshot is moved and nothing else — else None.
+    """
     lines = text.split("\n")
     try:
         start = lines.index("## [Unreleased]")
@@ -398,6 +405,7 @@ def edit_changelog(text, bullet, snapshot_to, pkg, old):
         section.insert(first, bullet)
 
     warn = find("### Upgrade warnings")
+    unlisted = None
     upgrade = (f"- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client "
                f"snapshot {snapshot_to}. Until you do, seats stay on the client they have, whose lockfile "
                f"pins {pkg} {old}, and `bridge:check` fails its `board_tools.client_pack_source` leg, "
@@ -415,11 +423,13 @@ def edit_changelog(text, bullet, snapshot_to, pkg, old):
                 last -= 1
             section.insert(last, upgrade)
         else:
-            section[hit] = add_pin(SNAPSHOT_LINE_RE.sub(lambda mm: mm.group(1) + snapshot_to, section[hit], count=1),
-                                   pkg, old)
+            moved = SNAPSHOT_LINE_RE.sub(lambda mm: mm.group(1) + snapshot_to, section[hit], count=1)
+            pinned = add_pin(moved, pkg, old)
+            section[hit] = moved if pinned is None else pinned
+            unlisted = moved if pinned is None else None
     if section and section[-1] != "" and end < len(lines):
         section.append("")
-    return "\n".join(lines[:start + 1] + section + lines[end:])
+    return "\n".join(lines[:start + 1] + section + lines[end:]), unlisted
 
 
 # ── texts ───────────────────────────────────────────────────────────────────────────────────
@@ -446,14 +456,37 @@ def advisories_phrase(rows):
     return "; ".join(parts)
 
 
-def bump_texts(pkg, rows, old, new, parents, chain, moved, snap_from, snap_to, base, run_url):
-    via = "direct dependency" if chain is None or len(chain) <= 1 else "transitive via " + " → ".join(chain[:-1])
-    others = [m for m in moved if not m.lower().startswith(pkg.lower() + " ")]
+def via_phrase(chain):
+    return "direct dependency" if chain is None or len(chain) <= 1 else "transitive via " + " → ".join(chain[:-1])
+
+
+def other_moves(pkg, moved):
+    return [m for m in moved if not m.lower().startswith(pkg.lower() + " ")]
+
+
+def bump_bullet(pkg, rows, old, new, parents, chain, moved, snap_from, snap_to):
+    others = other_moves(pkg, moved)
     also = f'; it also moved {", ".join(others)}, which the new version\'s ranges require' if others else ""
-    bullet = (f"- **npm/{pkg} {old} → {new} in examples/channel-servers** ({via}; {advisories_phrase(rows)}). "
-              f"Opened by the daily dependency advisory ref matrix: {new} is in range for "
-              f'{"; ".join(parents) or "every declaring range"}, so `npm update {pkg}` sufficed and no override '
-              f"was added{also}. Channel-server snapshot {snap_from} → {snap_to}.")
+    return (f"- **npm/{pkg} {old} → {new} in examples/channel-servers** ({via_phrase(chain)}; {advisories_phrase(rows)}). "
+            f"Opened by the daily dependency advisory ref matrix: {new} is in range for "
+            f'{"; ".join(parents) or "every declaring range"}, so `npm update {pkg}` sufficed and no override '
+            f"was added{also}. Channel-server snapshot {snap_from} → {snap_to}.")
+
+
+def bump_texts(pkg, rows, old, new, parents, chain, moved, snap_from, snap_to, base, run_url, unlisted):
+    """-> (title, body). `unlisted` is edit_changelog's: an upgrade line the job could not add `pkg old` to."""
+    via = via_phrase(chain)
+    others = other_moves(pkg, moved)
+    if unlisted is None:
+        changelog_line = (f"- `{CHANGELOG}` `[Unreleased]`: a `### Fixed` entry, and the `### Upgrade warnings` "
+                          f"client-pack line names snapshot {snap_to} and lists {pkg} among what the old client pins.")
+    else:
+        changelog_line = (f"- `{CHANGELOG}` `[Unreleased]`: a `### Fixed` entry, and the `### Upgrade warnings` "
+                          f"client-pack line names snapshot {snap_to}.\n"
+                          f"- ⚠ **Edit by hand before merging: that upgrade line does not name `{pkg} {old}`.** It has "
+                          f"no `whose lockfile pins` list this job can read, so apart from its snapshot it was left as "
+                          f"written. Add `{pkg} {old}` to what it says the seats' client pins. The line:\n\n"
+                          f"  > {unlisted}")
     ghsas = sorted({r["ghsa"] for r in rows})
     title = f"deps(channel-servers): bump {pkg} to {new} ({ghsas[0]}{'' if len(ghsas) == 1 else f' +{len(ghsas) - 1}'})"
     findings = "\n".join(f"  - `{finding_line(r)}`" for r in rows)
@@ -469,7 +502,7 @@ Bumps {pkg} {old} -> {new} in the channel-servers lockfile. Opened automatically
 - `{LOCKFILE}`: {pkg} **{old} -> {new}**, done with `npm update {pkg} --package-lock-only --ignore-scripts`. The declaring range admits it, so no override was needed: {"; ".join(parents) or "(no declaring entry found)"}. Dependency path: {via}.
 {moved_line}
 - Reference channel-server snapshot **{snap_from} -> {snap_to}** (`package.json` + both lockfile version sites, `npm version patch`), for the version-bump guard (DL-038). `{CAPABILITIES}` regenerated with `node bin/gen-client-capabilities.mjs`.
-- `{CHANGELOG}` `[Unreleased]`: a `### Fixed` entry, and the `### Upgrade warnings` client-pack line names snapshot {snap_to} and lists {pkg} among what the old client pins.
+{changelog_line}
 
 Reachability of the advisory in this tree was not analysed by the automation. The bump is in range, so it is made either way.
 
@@ -488,7 +521,7 @@ Reachability of the advisory in this tree was not analysed by the automation. Th
 - Checked by the job before opening this PR: after the update no lockfile entry of {pkg} is at or above a flagged version and below that finding's fix; only `package-lock.json` changed under `npm update`; the snapshot bump moved `package.json`, the lockfile's `.version` and `.packages[""].version` together.
 - Not run by the job: `npm ci`, `node --test tests/`, `npm audit`, PHPUnit, or a re-run of the Audit step. This PR's own CI runs them (it was opened with `{TOKEN_ENV}`, not `GITHUB_TOKEN`, so its workflows fire).
 """
-    return title, body, bullet
+    return title, body
 
 
 # ── git / npm / gh seams ────────────────────────────────────────────────────────────────────
@@ -541,10 +574,13 @@ def build_bump(sh, repo, workroot, base_sha, base, pkg, rows, run_url):
         if lock.get("version") != snap_to or lock.get("packages", {}).get("", {}).get("version") != snap_to:
             raise BumpError(f"`npm version patch` left the lockfile's version sites off package.json's {snap_to}")
         sh.run(["node", "bin/gen-client-capabilities.mjs"], cwd=str(wt))
-        title, body, bullet = bump_texts(pkg, rows, old, new, parents, dependency_path(after, pkg), moved,
-                                         snap_from, snap_to, base, run_url)
+        chain = dependency_path(after, pkg)
+        bullet = bump_bullet(pkg, rows, old, new, parents, chain, moved, snap_from, snap_to)
         cl = wt / CHANGELOG
-        cl.write_text(edit_changelog(cl.read_text(encoding="utf-8"), bullet, snap_to, pkg, old), encoding="utf-8")
+        text, unlisted = edit_changelog(cl.read_text(encoding="utf-8"), bullet, snap_to, pkg, old)
+        cl.write_text(text, encoding="utf-8")
+        title, body = bump_texts(pkg, rows, old, new, parents, chain, moved, snap_from, snap_to, base, run_url,
+                                 unlisted)
         branch = f"{BRANCH_PREFIX}{slug(pkg)}-{new.split(', ')[-1]}"
         sh.run(["git", "-C", str(wt), "switch", "-c", branch])
         sh.run(["git", "-C", str(wt), "add", "--", LOCKFILE, MANIFEST, CAPABILITIES, CHANGELOG])
