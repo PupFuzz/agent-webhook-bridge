@@ -69,7 +69,7 @@ CHANGELOG = """# Changelog
 
 ### Upgrade warnings
 
-- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.72. Until you do, seats stay on the client they have.
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.72. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.5.2, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.1.0] - 2026-01-01
 
@@ -234,9 +234,16 @@ class Slug(unittest.TestCase):
             self.assertEqual(rc, 0, f"{name} -> {branch} is not a valid branch name")
 
 
+def edit(text, bullet, snapshot_to, pkg, old):
+    """edit_changelog's text, for a case whose upgrade line the tool can read (so `unlisted` is None)."""
+    out, unlisted = ab.edit_changelog(text, bullet, snapshot_to, pkg, old)
+    assert unlisted is None, unlisted
+    return out
+
+
 class Changelog(unittest.TestCase):
     def test_the_bullet_goes_first_under_fixed_and_the_snapshot_line_moves(self):
-        out = ab.edit_changelog(CHANGELOG, "- **npm/x 1 → 2** — b.", "0.9.73", "x", "1")
+        out = edit(CHANGELOG, "- **npm/x 1 → 2** — b.", "0.9.73", "x", "1")
         unreleased = out.split("## [0.1.0]")[0]
         self.assertIn("### Fixed\n\n- **npm/x 1 → 2** — b.\n- **card#1**", unreleased)
         self.assertIn("publish client snapshot 0.9.73.", unreleased)
@@ -245,7 +252,7 @@ class Changelog(unittest.TestCase):
 
     def test_missing_sections_are_created_inside_unreleased(self):
         text = "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n- old.\n"
-        out = ab.edit_changelog(text, "- **npm/x 1 → 2** — b.", "0.9.73", "x", "1")
+        out = edit(text, "- **npm/x 1 → 2** — b.", "0.9.73", "x", "1")
         unreleased, released = out.split("## [0.1.0]")
         self.assertIn("### Fixed\n\n- **npm/x 1 → 2** — b.", unreleased)
         self.assertIn("### Upgrade warnings\n\n- Run `php artisan bridge:client-pack:install`", unreleased)
@@ -257,6 +264,81 @@ class Changelog(unittest.TestCase):
         with self.assertRaises(ab.BumpError):
             ab.edit_changelog("# Changelog\n", "- b", "1.0.0", "x", "1")
 
+    def upgrade_line(self, text):
+        unreleased = text.split("## [0.1.0]")[0]
+        return [l for l in unreleased.split("\n") if "publish client snapshot" in l]
+
+    def test_a_second_bump_names_its_package_in_the_existing_upgrade_line(self):
+        # v0.109.2: the @hono/node-server bump wrote the line, the hono bump only moved its snapshot.
+        out = edit(CHANGELOG, "- **npm/hono 4.13.16 → 4.13.18** — b.", "0.9.73", "hono", "4.13.16")
+        self.assertEqual(self.upgrade_line(out), [
+            "- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot "
+            "0.9.73. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit "
+            "8.5.2 and hono 4.13.16, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming "
+            "that command."])
+
+    def test_a_third_bump_extends_the_list_and_keeps_every_earlier_pin(self):
+        once = edit(CHANGELOG, "- b1", "0.9.73", "hono", "4.13.16")
+        twice = edit(once, "- b2", "0.9.74", "@hono/node-server", "2.1.6, 2.1.7")
+        line = self.upgrade_line(twice)[0]
+        self.assertIn("snapshot 0.9.74.", line)
+        self.assertIn("whose lockfile pins express-rate-limit 8.5.2, hono 4.13.16 and @hono/node-server "
+                      "2.1.6, 2.1.7, and `bridge:check`", line)
+
+    def test_a_package_bumped_again_before_a_release_keeps_the_version_seats_pin(self):
+        # Seats on the released client still carry the first old version, not the intermediate one.
+        once = edit(CHANGELOG, "- b1", "0.9.73", "hono", "4.13.11")
+        twice = edit(once, "- b2", "0.9.74", "hono", "4.13.16")
+        line = self.upgrade_line(twice)[0]
+        self.assertIn("pins express-rate-limit 8.5.2 and hono 4.13.11, and", line)
+        self.assertNotIn("4.13.16", line)
+
+    def test_a_new_pin_goes_after_a_card_note_not_inside_it(self):
+        # docs/CHANGELOG.md's 0.9.75 line: `pins qs 6.16.1 (card#12519), and ...` — the note is qs's.
+        text = CHANGELOG.replace(
+            "whose lockfile pins express-rate-limit 8.5.2, and",
+            "whose `ci_await` description is old (card#1) and whose lockfile pins qs 6.16.1 (card#2), and")
+        once = edit(text, "- b", "0.9.73", "hono", "4.13.16")
+        self.assertIn("whose `ci_await` description is old (card#1) and whose lockfile pins qs 6.16.1 (card#2) and "
+                      "hono 4.13.16, and `bridge:check`", self.upgrade_line(once)[0])
+        twice = edit(once, "- b", "0.9.74", "zod", "4.4.3")
+        self.assertIn("pins qs 6.16.1 (card#2), hono 4.13.16 and zod 4.4.3, and `bridge:check`",
+                      self.upgrade_line(twice)[0])
+
+    def test_a_hand_written_serial_comma_list_is_read_whole(self):
+        text = CHANGELOG.replace("pins express-rate-limit 8.5.2, and", "pins a 1.0.0, b 2.0.0, and c 3.0.0, and")
+        line = self.upgrade_line(edit(text, "- b", "0.9.73", "hono", "4.13.16"))[0]
+        self.assertIn("pins a 1.0.0, b 2.0.0, c 3.0.0 and hono 4.13.16, and `bridge:check`", line)
+
+    def test_a_prerelease_version_is_read_whole(self):
+        text = CHANGELOG.replace("pins express-rate-limit 8.5.2, and", "pins x 1.2.3-rc.1, and")
+        line = self.upgrade_line(edit(text, "- b", "0.9.73", "hono", "4.13.16"))[0]
+        self.assertIn("pins x 1.2.3-rc.1 and hono 4.13.16, and `bridge:check`", line)
+
+    def test_a_list_ending_its_sentence_is_read(self):
+        text = CHANGELOG.replace("pins express-rate-limit 8.5.2, and `bridge:check` fails its "
+                                 "`board_tools.client_pack_source` leg, naming that command.",
+                                 "pins express-rate-limit 8.5.2. Also see X.")
+        line = self.upgrade_line(edit(text, "- b", "0.9.73", "hono", "4.13.16"))[0]
+        self.assertIn("pins express-rate-limit 8.5.2 and hono 4.13.16. Also see X.", line)
+
+    def assert_left_for_a_human(self, text):
+        out, unlisted = ab.edit_changelog(text, "- b", "0.9.73", "hono", "4.13.16")
+        written = [l for l in text.split("## [0.1.0]")[0].split("\n") if "publish client snapshot" in l][0]
+        expected = written.replace("snapshot 0.9.72", "snapshot 0.9.73")
+        self.assertEqual(self.upgrade_line(out), [expected], "only the snapshot moves")
+        self.assertEqual(unlisted, expected)
+        self.assertIn("- b", out, "the bump's bullet is still written")
+
+    def test_an_upgrade_line_with_no_pins_list_is_left_as_written_and_returned(self):
+        # docs/CHANGELOG.md's 0.109.1 line has no `whose lockfile pins` list.
+        self.assert_left_for_a_human(CHANGELOG.replace(
+            "Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.5.2, and",
+            "Until you do, seats stay on the client they have; 0.9.72 ships the same code as 0.9.71. Also, and"))
+
+    def test_a_list_running_on_into_the_sentence_is_not_read(self):
+        self.assert_left_for_a_human(CHANGELOG.replace("pins express-rate-limit 8.5.2, and",
+                                                       "pins zod 4.4.3, and 2 other things, and"))
 
 class FakeTools(ab.Shell):
     """Real git; `npm update`, `npm version` and `node bin/gen-client-capabilities.mjs` are faked.
@@ -346,19 +428,48 @@ class Plan(unittest.TestCase):
         self.assertEqual(subprocess.run(["git", "-C", str(self.repo), "worktree", "list"], capture_output=True,
                                         text=True, check=True).stdout.count("\n"), 1, "a worktree was left behind")
 
+    def test_an_unreadable_upgrade_line_still_builds_the_bump_and_the_body_says_what_to_add(self):
+        line = ("- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot "
+                "0.9.72. Until you do, seats stay on the client they have; 0.9.72 ships the same code as 0.9.71.")
+        (self.repo / ab.CHANGELOG).write_text(
+            CHANGELOG.replace(next(l for l in CHANGELOG.split("\n") if "publish client snapshot" in l), line))
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit", "-qam", "hand-written line"], check=True)
+        p = ab.plan(FakeTools("2.4.0"), str(self.repo), [row()], "dev", "", str(self.work))
+        self.assertEqual(p["errors"], [])
+        self.assertEqual(len(p["bumps"]), 1)
+        b = p["bumps"][0]
+        moved = line.replace("snapshot 0.9.72", "snapshot 0.9.73")
+        cl = subprocess.run(["git", "-C", str(self.repo), "show", f"{b['head']}:{ab.CHANGELOG}"],
+                            capture_output=True, text=True, check=True).stdout
+        self.assertIn(moved + "\n", cl)
+        self.assertIn("does not name `body-parser 2.3.0`", b["body"])
+        self.assertIn(f"  > {moved}", b["body"])
+        self.assertNotIn("lists body-parser among", b["body"])
+        self.assert_body_lint_passes(b)
+
+    def test_a_readable_upgrade_line_is_reported_in_the_body_as_listing_the_package(self):
+        p = ab.plan(FakeTools("2.4.0"), str(self.repo), [row()], "dev", "", str(self.work))
+        b = p["bumps"][0]
+        self.assertIn("lists body-parser among what the old client pins", b["body"])
+        self.assertNotIn("Edit by hand", b["body"])
+
     def test_the_bump_body_passes_the_pr_body_lint_as_a_user_authored_pr(self):
         """The job opens with a PAT, so the PR's `user.type` is `User` and the lint asks the body for
         both audit rows. Run the vendored lint the way pr-body-lint.yml does, on the body and title
         the job would open."""
         b = ab.plan(FakeTools("2.4.0"), str(self.repo), [row()], "dev", "", str(self.work))["bumps"][0]
+        self.assert_body_lint_passes(b)
+        self.assertIn("\n**Built:** unattestable — ", b["body"])
+        self.assertIn("\n**Coordinated in:** none — ", b["body"])
+
+    def assert_body_lint_passes(self, b):
         lint = Path(__file__).resolve().parent.parent / ".github" / "pr-body-lint" / "pr-body-lint.py"
         res = subprocess.run(["python3", str(lint), "--body-file", "-", "--title", b["title"],
                               "--author-type-env", "COORD_PR_AUTHOR_TYPE"],
                              input=b["body"], capture_output=True, text=True,
                              env={**os.environ, "COORD_PR_AUTHOR_TYPE": "User"})
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
-        self.assertIn("\n**Built:** unattestable — ", b["body"])
-        self.assertIn("\n**Coordinated in:** none — ", b["body"])
 
     def changelog_at(self, head):
         return subprocess.run(["git", "-C", str(self.repo), "show", f"{head}:{ab.CHANGELOG}"],
