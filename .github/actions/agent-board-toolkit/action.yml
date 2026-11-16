@@ -17,7 +17,7 @@ runs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         repository: PupFuzz/agent-board-toolkit
-        ref: 25371ef425b0cee0bef2799f4c0fb51211132651  # v0.52.1
+        ref: 27e4d7bd8a3f0288b36beabc15adbe3511c69e6f  # v0.53.1
         path: .agent-board-toolkit
         persist-credentials: false
 

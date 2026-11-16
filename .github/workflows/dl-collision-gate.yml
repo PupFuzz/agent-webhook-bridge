@@ -65,7 +65,7 @@ jobs:
       # Pin maintained by dependabot's github-actions ecosystem (see .github/dependabot.yml).
       # ⚠ The same SHA is the `ref:` in .github/actions/agent-board-toolkit/action.yml,
       # which dependabot does not bump; DlCollisionGateTest reds until the two agree.
-      - uses: PupFuzz/agent-board-toolkit/dl-collision-gate@25371ef425b0cee0bef2799f4c0fb51211132651  # v0.52.1
+      - uses: PupFuzz/agent-board-toolkit/dl-collision-gate@27e4d7bd8a3f0288b36beabc15adbe3511c69e6f  # v0.53.1
         with:
           head-sha: ${{ github.event.pull_request.head.sha }}
           base-ref: ${{ github.event.pull_request.base.ref }}
