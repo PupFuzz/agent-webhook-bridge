@@ -12,6 +12,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#13185** — The dependency audit's bump job (`bin/advisory-bump.py`) now names every package it bumps in the `[Unreleased]` client-pack upgrade line. When that line already existed it only moved the snapshot version, so the line kept naming the first bump's package alone: v0.109.2's named @hono/node-server 2.1.6 and not hono 4.13.16 (that released line now carries an annotation naming hono). A package bumped again before a release keeps the version the line already names, the one the released client pins. A hand-written upgrade line with no `whose lockfile pins` list the job can read is left as written apart from its snapshot, and the bump PR still opens, with a warning in its body that names the line and the `<package> <version>` to add by hand. Also: the channel-server launcher's client-root tests no longer launch with the host's PATH, which failed them on a seat whose own session was started through a client root (repository tests only). No migration, no config key, no client change.
 
+### Security
+
+- **card#13419** — 🔒 **An AWS access key id pasted where a credential-store name or a path setting belongs is no longer printed whole.** It was 20 characters, under the 24-character rule, and matched no token prefix, so `laravel.log` lines, the promote alert and `bridge:check` printed it as written. The pasted-token rule (`PastedSecretShape`) now mirrors the coordination framework's credential vocabulary (`VENDOR_TOKENS` / `AWS_KEY_ID`, agent-board-framework `a38d5eb9`), which replaced the `TOKEN_PREFIXES` list the bridge copied. It also recognises an `sk-` API key with 16 or more body characters. A GitHub, GitLab or Slack token is now recognised anywhere in the value rather than only at its start, and a bare prefix with no characters after it (`ghp_`) is no longer treated as a token.
+
 ## [0.109.2] - 2026-11-11
 
 ### Fixed

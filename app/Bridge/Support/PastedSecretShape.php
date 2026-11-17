@@ -6,7 +6,7 @@ namespace App\Bridge\Support;
  * The ONE display rule for text an operator configured that may be a pasted credential: a value
  * with a credential's shape is printed as a non-reversible `sha256:` fingerprint, anything else as
  * written. Mirrors the coordination framework's `looks_like_pasted_secret` / `_safe_coordinate`
- * (`coord_credentials.py`), which the bridge cannot import.
+ * (`coord_credentials.py`) and its credential vocabulary, which the bridge cannot import.
  *
  * Two uses, one shape test:
  *  - {@see displayName()} — a coord credential-store NAME (a `[git-credential-map]` value, a
@@ -32,10 +32,39 @@ namespace App\Bridge\Support;
 final class PastedSecretShape
 {
     /**
-     * The framework's `TOKEN_PREFIXES` (`coord_credentials.py`): the credential formats its store
-     * holds. Mirrored, not imported.
+     * The framework's credential vocabulary, row for row: `VENDOR_TOKENS` and `AWS_KEY_ID` in
+     * `plugins/coord/_vendor/credential-prefix.py.txt` at agent-board-framework `a38d5eb9`. Each row
+     * is a (prefix, body alphabet) pair of Python `re` source, used here verbatim as PCRE. A hand
+     * copy until card#13420 replaces it with a check against the framework's pinned published copy.
      */
-    private const TOKEN_PREFIXES = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'glpat-', 'xoxb-', 'xoxp-'];
+    public const VENDOR_TOKENS = [
+        'gh-token-family' => ['gh[pousr]_', '[A-Za-z0-9]'],
+        'gh-fine-grained-pat' => ['github_pat_', '[A-Za-z0-9_]'],
+        'gitlab-pat' => ['glpat-', '[A-Za-z0-9_\-]'],
+        'slack-token' => ['xox[bp]-', '[A-Za-z0-9_\-]'],
+        'sk-api-key' => ['(?:(?<![A-Za-z])|(?<=%[0-9A-Fa-f]{2}))sk-(?=[A-Za-z0-9_\-]{16})', '[A-Za-z0-9_\-]'],
+    ];
+
+    public const AWS_KEY_ID = '(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AROA|ANPA|ANVA)[0-9A-Z]{16,}(?![0-9A-Z])';
+
+    /**
+     * The minimum body length after a vendor prefix; the framework leaves it to the caller. One, not
+     * the framework sanitizer's 16: a sanitizer scanning prose needs a long body to avoid false
+     * matches, but this value is one configured name or setting, where a prefixed value is elided
+     * whatever its length. The `sk-` row carries its own 16-character lookahead regardless.
+     */
+    private const VENDOR_TOKEN_FLOOR = 1;
+
+    /**
+     * One row as a PCRE pattern — the framework's `token_pattern`. Case-insensitive, as the
+     * bridge's prefix match always was, so an upper-cased `GHP_` is still elided.
+     */
+    public static function vendorTokenPattern(string $row): string
+    {
+        [$prefix, $body] = self::VENDOR_TOKENS[$row];
+
+        return sprintf('~%s%s{%d,}~i', $prefix, $body, self::VENDOR_TOKEN_FLOOR);
+    }
 
     /** A credential-store name as a message may print it — the framework's `_safe_coordinate`. */
     public static function displayName(string $name): string
@@ -53,8 +82,8 @@ final class PastedSecretShape
     }
 
     /**
-     * The framework's `looks_like_pasted_secret`, line for line: no separator, no leading `~`, and
-     * either a known token prefix or 24+ characters with no dot.
+     * The framework's `looks_like_pasted_secret`: no separator, no leading `~`, and either a token
+     * from the vocabulary above or 24+ characters with no dot.
      */
     public static function looksLikePastedSecret(string $value): bool
     {
@@ -62,10 +91,13 @@ final class PastedSecretShape
         if ($v === '' || str_starts_with($v, '~') || str_contains($v, '/') || str_contains($v, '\\')) {
             return false;
         }
-        foreach (self::TOKEN_PREFIXES as $prefix) {
-            if (str_starts_with(strtolower($v), $prefix)) {
+        foreach (array_keys(self::VENDOR_TOKENS) as $row) {
+            if (preg_match(self::vendorTokenPattern($row), $v) === 1) {
                 return true;
             }
+        }
+        if (preg_match('~'.self::AWS_KEY_ID.'~', $v) === 1) {
+            return true;
         }
 
         return strlen($v) >= 24 && ! str_contains($v, '.');
