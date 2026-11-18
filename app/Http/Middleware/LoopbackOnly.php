@@ -20,12 +20,12 @@ use Symfony\Component\HttpFoundation\Response;
  * different value (round-2 category-error fix). It also does NOT accept the
  * hostname "localhost" — a peer IP is always numeric.
  *
- * ⚠ SOUND ONLY UNDER THE NO-TrustProxies POSTURE. The app runs Apache +
- * mod_proxy_fcgi passing the real REMOTE_ADDR, with X-Forwarded-For UNTRUSTED
- * (no TrustProxies middleware). $request->ip() therefore returns the true peer.
- * If a future change adds trustProxies('*'), a spoofed XFF would make
- * $request->ip() attacker-controlled and this gate bypassable — do NOT trust
- * proxy headers without re-deriving this gate against the real peer.
+ * ⚠ SOUND ONLY WHILE NO PROXY IS TRUSTED. Apache + mod_proxy_fcgi passes the real
+ * REMOTE_ADDR, and bootstrap/app.php removes the framework's global TrustProxies, so
+ * $request->ip() is that peer and X-Forwarded-For is never read. Removing it is what
+ * makes this hold: left in place with no proxies configured, TrustProxies trusts every
+ * proxy on requests it takes for Laravel Forge, Vapor or Cloud (DL-502). Trusting any
+ * proxy makes $request->ip() header-controlled and this gate bypassable.
  */
 final class LoopbackOnly
 {
