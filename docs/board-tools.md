@@ -3223,11 +3223,20 @@ This is the shape the channel-server README's example env already uses.
 
 mod_proxy_fcgi forwards Apache's **own TCP connection peer** as `REMOTE_ADDR`
 (this is not the separate-reverse-proxy-hop pattern where the app sees the proxy
-as the peer). The app registers **no TrustProxies middleware**, so
-`$request->ip()` returns that raw peer — a forged `X-Forwarded-For` is never
-consulted, in either direction. This posture is **test-pinned**: the XFF-spoof
-tests in `AgentToolsCallTest` go red the moment a `trustProxies` registration
-lands.
+as the peer). The app **removes** Laravel's default global `TrustProxies`
+middleware (DL-502), so `$request->ip()` returns that raw peer — a forged
+`X-Forwarded-For` is never consulted, in either direction. Removing it, rather than
+just configuring no proxies, is what makes this hold: with none configured,
+`TrustProxies` trusts every proxy on a request it takes for a hosted platform: any
+host under `LARAVEL_CLOUD=1`; up to Laravel 13.42.0 any `Host` ending
+`.on-forge.com` / `.on-vapor.com`; from 13.43.0 those hosts only beside the Forge /
+Vapor environment marker. The XFF tests in `AgentToolsCallTest` send each of those hosts
+and markers, and go red if a forged `X-Forwarded-For` changes the peer the gate sees
+on any of them.
+
+This holds only while Apache itself is the peer. A reverse proxy or tunnel on the
+same box (nginx, `cloudflared`) makes every caller's peer loopback, so the gate
+admits them all and the per-agent bearer is the only control left.
 
 ### 3. Mint the bearer (only for a DEDICATED tools bearer)
 

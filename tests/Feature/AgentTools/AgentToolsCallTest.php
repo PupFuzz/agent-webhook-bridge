@@ -103,7 +103,7 @@ class AgentToolsCallTest extends TestCase
      * @param  array<string, mixed>  $body
      * @param  array<string, string>  $server
      */
-    private function callTool(array $body, ?string $bearer = null, array $server = [])
+    private function callTool(array $body, ?string $bearer = null, array $server = [], string $uri = '/agent-tools/call')
     {
         // Each call models its own FPM request, i.e. its own process, which is what the
         // write-once seat seal is scoped to (card#9170). Seven tests in this class drive the
@@ -116,7 +116,7 @@ class AgentToolsCallTest extends TestCase
             $server['HTTP_AUTHORIZATION'] = 'Bearer '.$bearer;
         }
 
-        return $this->call('POST', '/agent-tools/call', [], [], [], array_merge([
+        return $this->call('POST', $uri, [], [], [], array_merge([
             'CONTENT_TYPE' => 'application/json',
             'HTTP_ACCEPT' => 'application/json',
         ], $server), (string) json_encode($body));
@@ -302,11 +302,11 @@ class AgentToolsCallTest extends TestCase
 
     public function test_external_peer_with_spoofed_loopback_xff_is_refused(): void
     {
-        // Posture pin (DL-220): the gate reads the TCP peer ($request->ip()), and
-        // X-Forwarded-For is UNTRUSTED (no TrustProxies), so a spoofed XFF claiming
-        // 127.0.0.1 cannot make an external peer look local. This test goes RED the
-        // moment a TrustProxies registration lands (the gate would then honor the
-        // forged header and admit the external peer) — that is the point of pinning it.
+        // Posture pin (DL-502): the gate reads $request->ip(), and no
+        // proxy is trusted, so a spoofed XFF claiming 127.0.0.1 cannot make an external peer
+        // look local. The host here is the test default, which none of the framework's
+        // hosted-platform auto-trust branches match — those are
+        // test_spoofed_loopback_xff_is_refused_on_a_hosted_platform_host()'s job.
         Http::fake();
 
         $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]], server: [
@@ -331,6 +331,93 @@ class AgentToolsCallTest extends TestCase
             'HTTP_X_FORWARDED_FOR' => '203.0.113.9',
         ])->assertStatus(200)
             ->assertJsonPath('result.placement_observed', true);   // stubbed read-back, not the fail-soft path
+    }
+
+    /**
+     * The hosts and environment markers on which the framework's TrustProxies trusts every
+     * proxy when the app configures none: `.on-forge.com` / `.on-vapor.com` alone up to
+     * 13.42.0 (GHSA-559m-v249-7qw2), those hosts plus `FORGE_SERVER_ID` / `VAPOR_SSM_PATH`
+     * from 13.43.0, and `LARAVEL_CLOUD=1` on any host. The host has to travel in an ABSOLUTE
+     * URI: Request::create() overwrites an HTTP_HOST passed in the server array, which would
+     * leave every row on the default host and unable to fail. Each row is: host, request
+     * server variables, $_ENV entries, $_SERVER entries.
+     *
+     * @return array<string, array{0: string, 1: array<string, string>, 2: array<string, string>, 3: array<string, string>}>
+     */
+    public static function hostedPlatformRequests(): array
+    {
+        return [
+            'forge host' => ['bridge.on-forge.com', [], [], []],
+            'vapor host' => ['bridge.on-vapor.com', [], [], []],
+            'forge host with the forge server marker' => ['bridge.on-forge.com', ['FORGE_SERVER_ID' => '1'], [], []],
+            'vapor host with the vapor environment marker' => ['bridge.on-vapor.com', [], ['VAPOR_SSM_PATH' => '/bridge'], []],
+            'laravel cloud marker' => ['bridge.example.com', [], [], ['LARAVEL_CLOUD' => '1']],
+        ];
+    }
+
+    /**
+     * @param  array<string, string>  $requestServer
+     * @param  array<string, string>  $env
+     * @param  array<string, string>  $globalServer
+     */
+    #[DataProvider('hostedPlatformRequests')]
+    public function test_spoofed_loopback_xff_is_refused_on_a_hosted_platform_host(string $host, array $requestServer, array $env, array $globalServer): void
+    {
+        Http::fake();
+
+        $this->withProcessGlobals($env, $globalServer, fn () => $this->callTool(
+            ['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]],
+            server: ['REMOTE_ADDR' => '203.0.113.9', 'HTTP_X_FORWARDED_FOR' => '127.0.0.1'] + $requestServer,
+            uri: "http://{$host}/agent-tools/call",
+        )->assertStatus(403));
+        Http::assertNothingSent();
+    }
+
+    /**
+     * The control for the refusal above: a gate that refused every request on these hosts
+     * would pass it too. A trusted proxy turns this loopback peer into the forwarded
+     * external address, so this reds wherever the auto-trust applies.
+     *
+     * @param  array<string, string>  $requestServer
+     * @param  array<string, string>  $env
+     * @param  array<string, string>  $globalServer
+     */
+    #[DataProvider('hostedPlatformRequests')]
+    public function test_loopback_peer_with_external_xff_is_admitted_on_a_hosted_platform_host(string $host, array $requestServer, array $env, array $globalServer): void
+    {
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
+
+        $this->withProcessGlobals($env, $globalServer, fn () => $this->callTool(
+            ['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]],
+            server: ['REMOTE_ADDR' => '127.0.0.1', 'HTTP_X_FORWARDED_FOR' => '203.0.113.9'] + $requestServer,
+            uri: "http://{$host}/agent-tools/call",
+        )->assertStatus(200)->assertJsonPath('result.placement_observed', true));
+    }
+
+    /**
+     * The Vapor and Cloud markers are read from the PROCESS globals, not the request, so
+     * they are set around the call and removed after it whatever it does.
+     *
+     * @param  array<string, string>  $env
+     * @param  array<string, string>  $globalServer
+     */
+    private function withProcessGlobals(array $env, array $globalServer, callable $call): void
+    {
+        $_ENV = $env + $_ENV;
+        $_SERVER = $globalServer + $_SERVER;
+        try {
+            $call();
+        } finally {
+            foreach (array_keys($env) as $key) {
+                unset($_ENV[$key]);
+            }
+            foreach (array_keys($globalServer) as $key) {
+                unset($_SERVER[$key]);
+            }
+        }
     }
 
     // ─── bearer resolution ───────────────────────────────────────────────────
