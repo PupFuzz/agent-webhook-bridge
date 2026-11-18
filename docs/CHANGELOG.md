@@ -14,7 +14,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Security
 
-- **card#13419** — 🔒 **An AWS access key id pasted where a credential-store name or a path setting belongs is no longer printed whole.** It was 20 characters, under the 24-character rule, and matched no token prefix, so `laravel.log` lines, the promote alert and `bridge:check` printed it as written. The pasted-token rule (`PastedSecretShape`) now mirrors the coordination framework's credential vocabulary (`VENDOR_TOKENS` / `AWS_KEY_ID`, agent-board-framework `a38d5eb9`), which replaced the `TOKEN_PREFIXES` list the bridge copied. It also recognises an `sk-` API key with 16 or more body characters. A GitHub, GitLab or Slack token is now recognised anywhere in the value rather than only at its start, and a bare prefix with no characters after it (`ghp_`) is no longer treated as a token.
+- **card#13419** — 🔒 **An AWS access key id pasted where a credential-store name or a path setting belongs is no longer printed whole.** It was 20 characters, under the 24-character rule, and matched no token prefix, so `laravel.log` lines, the promote alert and `bridge:check` printed it as written. The pasted-token rule (`PastedSecretShape`) now mirrors the coordination framework's credential vocabulary (`VENDOR_TOKENS` / `AWS_KEY_ID`, agent-board-framework `a38d5eb9`), which replaced the `TOKEN_PREFIXES` list the bridge copied. It also recognises an `sk-` API key with 16 or more body characters. As in the framework, a token is recognised only at the start of the value, so a key name such as `deploy_ghp_reader` is still printed as written. A bare prefix with no characters after it (`ghp_`) is no longer treated as a token.
 
 ## [0.109.2] - 2026-11-11
 

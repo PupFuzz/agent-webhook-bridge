@@ -6,7 +6,11 @@ namespace App\Bridge\Support;
  * The ONE display rule for text an operator configured that may be a pasted credential: a value
  * with a credential's shape is printed as a non-reversible `sha256:` fingerprint, anything else as
  * written. Mirrors the coordination framework's `looks_like_pasted_secret` / `_safe_coordinate`
- * (`coord_credentials.py`) and its credential vocabulary, which the bridge cannot import.
+ * (`coord_credentials.py`) and its credential vocabulary, which the bridge cannot import. A token is
+ * matched at the START of the value, as the framework's is. One difference, ruled aligned by the
+ * framework's owner: a vendor prefix counts here only with at least one body character after it
+ * (`VENDOR_TOKEN_FLOOR`), where the framework matches the prefix alone, so a bare `ghp_` is a token
+ * there and not here. Case is not a difference: both match a vendor prefix case-insensitively.
  *
  * Two uses, one shape test:
  *  - {@see displayName()} — a coord credential-store NAME (a `[git-credential-map]` value, a
@@ -34,8 +38,10 @@ final class PastedSecretShape
     /**
      * The framework's credential vocabulary, row for row: `VENDOR_TOKENS` and `AWS_KEY_ID` in
      * `plugins/coord/_vendor/credential-prefix.py.txt` at agent-board-framework `a38d5eb9`. Each row
-     * is a (prefix, body alphabet) pair of Python `re` source, used here verbatim as PCRE. A hand
-     * copy until card#13420 replaces it with a check against the framework's pinned published copy.
+     * is a (prefix, body alphabet) pair of Python `re` source, used here verbatim as PCRE, even where
+     * the start anchor makes part of a row moot (the `sk-` row's lookbehinds always hold at offset 0).
+     * A hand copy until card#13420 replaces it with a check against the framework's pinned published
+     * copy.
      */
     public const VENDOR_TOKENS = [
         'gh-token-family' => ['gh[pousr]_', '[A-Za-z0-9]'],
@@ -56,14 +62,14 @@ final class PastedSecretShape
     private const VENDOR_TOKEN_FLOOR = 1;
 
     /**
-     * One row as a PCRE pattern — the framework's `token_pattern`. Case-insensitive, as the
-     * bridge's prefix match always was, so an upper-cased `GHP_` is still elided.
+     * One row as a PCRE pattern — the framework's `token_pattern`, anchored at the start of the
+     * subject (`A`) and case-insensitive (`i`), as the framework's `_VENDOR_PREFIX.match` is.
      */
     public static function vendorTokenPattern(string $row): string
     {
         [$prefix, $body] = self::VENDOR_TOKENS[$row];
 
-        return sprintf('~%s%s{%d,}~i', $prefix, $body, self::VENDOR_TOKEN_FLOOR);
+        return sprintf('~%s%s{%d,}~iA', $prefix, $body, self::VENDOR_TOKEN_FLOOR);
     }
 
     /** A credential-store name as a message may print it — the framework's `_safe_coordinate`. */
@@ -82,8 +88,8 @@ final class PastedSecretShape
     }
 
     /**
-     * The framework's `looks_like_pasted_secret`: no separator, no leading `~`, and either a token
-     * from the vocabulary above or 24+ characters with no dot.
+     * The framework's `looks_like_pasted_secret`: no separator, no leading `~`, and either a value
+     * that starts with a token from the vocabulary above or 24+ characters with no dot.
      */
     public static function looksLikePastedSecret(string $value): bool
     {
@@ -96,7 +102,7 @@ final class PastedSecretShape
                 return true;
             }
         }
-        if (preg_match('~'.self::AWS_KEY_ID.'~', $v) === 1) {
+        if (preg_match('~'.self::AWS_KEY_ID.'~A', $v) === 1) {
             return true;
         }
 
