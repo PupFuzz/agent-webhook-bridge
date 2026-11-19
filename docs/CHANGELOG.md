@@ -8,6 +8,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.109.3] - 2026-11-19
+
+### Changed
+
+- **Dependabot PRs #1049 – #1053** — `laravel/tinker` v3.0.2 → v3.1.0 (runtime, with `psy/psysh` v0.12.24); dev dependencies `nunomaduro/collision` v8.9.5 → v8.9.6 (with `filp/whoops` 2.19.3), `laravel/pint` v1.32.1 → v1.32.3, `larastan/larastan` v3.14.0 → v3.15.0 (with `phpstan/phpstan` 2.3.6) and `laravel/pail` v1.2.7 → v1.3.0. The pail update also moved the runtime packages `guzzlehttp/guzzle` 8.3.1 → 8.5.0 (taken to 8.5.2 by card#13434 below), `guzzlehttp/psr7` 3.2.0 → 3.4.0, `monolog/monolog` 3.12.1 → 3.13.0, `ramsey/uuid` 4.9.4 → 4.10.0 and `symfony/polyfill-php85` v1.43.0 → v1.44.0. `composer.lock` only. Run `composer install` on deploy as usual. No migration, no config key.
+- **Dependabot PRs #1054 – #1058** — the SHA pins of agent-board-toolkit's `dl-collision-gate`, `release-tag-check`, `changelog-gate`, `promote` and `release-artifacts` actions (and the toolkit checkout in `.github/actions/agent-board-toolkit`) move to v0.53.1. Repository CI only.
+
 ### Fixed
 
 - **npm/express-rate-limit 8.7.2 → 8.7.5 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisory GHSA-cppf-2hm6-mrvm (medium, range `<= 8.7.4`, patched in 8.7.5) on express-rate-limit/express-rate-limit). Opened by the daily dependency advisory ref matrix: 8.7.5 is in range for @modelcontextprotocol/sdk@1.32.2's `^8.2.1`, so `npm update express-rate-limit` sufficed and no override was added. Channel-server snapshot 0.9.82 → 0.9.83.
@@ -23,6 +30,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
+- If a channel server's `BRIDGE_TOOLS_ENDPOINT` reaches the bridge's `/agent-tools/*` endpoints through a reverse proxy or tunnel (nginx, `cloudflared`) that adds an `X-Forwarded-*` or `Forwarded` header, point it at the bridge's Apache vhost on loopback directly (`docs/board-tools.md` § Same-box enablement). Until you do, every board-tool call from that seat is refused 403, and `bridge:check --probe-tools` names the forwarding header as a cause. A seat using the SSH transport, or calling Apache directly, is not affected.
 - Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.83. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.7.2, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.109.2] - 2026-11-11
