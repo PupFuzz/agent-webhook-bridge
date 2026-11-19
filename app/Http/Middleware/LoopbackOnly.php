@@ -20,22 +20,42 @@ use Symfony\Component\HttpFoundation\Response;
  * different value (round-2 category-error fix). It also does NOT accept the
  * hostname "localhost" — a peer IP is always numeric.
  *
- * ⚠ SOUND ONLY WHILE NO PROXY IS TRUSTED. Apache + mod_proxy_fcgi passes the real
+ * A REQUEST CARRYING A FORWARDING HEADER IS REFUSED, whatever its peer (DL-503). A reverse
+ * proxy or tunnel on the same box (nginx, cloudflared) reaches Apache over loopback, so the
+ * peer test alone would admit every caller it forwards. Any `X-Forwarded-*` header or RFC 7239
+ * `Forwarded` marks the call as proxied, and a proxied call is not a same-box call. The bound:
+ * a proxy configured to add none of these headers is indistinguishable from a local client.
+ *
+ * The peer test relies on no proxy being trusted: Apache + mod_proxy_fcgi passes the real
  * REMOTE_ADDR, and bootstrap/app.php removes the framework's global TrustProxies, so
- * $request->ip() is that peer and X-Forwarded-For is never read. Removing it is what
- * makes this hold: left in place with no proxies configured, TrustProxies trusts every
- * proxy on requests it takes for Laravel Forge, Vapor or Cloud (DL-502). Trusting any
- * proxy makes $request->ip() header-controlled and this gate bypassable.
+ * $request->ip() is that peer (DL-502). The header refusal does not depend on that: a request
+ * whose peer a trusted proxy could rewrite carries one of these headers, and is refused
+ * on that before its peer is read.
  */
 final class LoopbackOnly
 {
     public function handle(Request $request, Closure $next): Response
     {
+        $forwarding = self::forwardingHeader($request);
+        if ($forwarding !== null) {
+            abort(403, "this endpoint is reachable from loopback only: the request carries the forwarding header {$forwarding}, so it came through a proxy");
+        }
         if (! self::isLoopback($request->ip())) {
             abort(403, 'this endpoint is reachable from loopback only');
         }
 
         return $next($request);
+    }
+
+    private static function forwardingHeader(Request $request): ?string
+    {
+        foreach ($request->headers->keys() as $name) {
+            if ($name === 'forwarded' || str_starts_with($name, 'x-forwarded-')) {
+                return $name;
+            }
+        }
+
+        return null;
     }
 
     public static function isLoopback(?string $ip): bool
