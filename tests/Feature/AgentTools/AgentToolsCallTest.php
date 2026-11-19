@@ -15,9 +15,11 @@ use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Http\Controllers\AgentTools\AgentToolsController;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Route;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\CoordRosterFixture;
@@ -103,7 +105,7 @@ class AgentToolsCallTest extends TestCase
      * @param  array<string, mixed>  $body
      * @param  array<string, string>  $server
      */
-    private function callTool(array $body, ?string $bearer = null, array $server = [])
+    private function callTool(array $body, ?string $bearer = null, array $server = [], string $uri = '/agent-tools/call')
     {
         // Each call models its own FPM request, i.e. its own process, which is what the
         // write-once seat seal is scoped to (card#9170). Seven tests in this class drive the
@@ -116,7 +118,7 @@ class AgentToolsCallTest extends TestCase
             $server['HTTP_AUTHORIZATION'] = 'Bearer '.$bearer;
         }
 
-        return $this->call('POST', '/agent-tools/call', [], [], [], array_merge([
+        return $this->call('POST', $uri, [], [], [], array_merge([
             'CONTENT_TYPE' => 'application/json',
             'HTTP_ACCEPT' => 'application/json',
         ], $server), (string) json_encode($body));
@@ -277,7 +279,7 @@ class AgentToolsCallTest extends TestCase
 
         $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]], server: ['REMOTE_ADDR' => '203.0.113.9']);
 
-        $res->assertStatus(403);
+        $res->assertStatus(403)->assertSee('this endpoint is reachable from loopback only')->assertDontSee('forwarding header');
         Http::assertNothingSent();
     }
 
@@ -302,11 +304,6 @@ class AgentToolsCallTest extends TestCase
 
     public function test_external_peer_with_spoofed_loopback_xff_is_refused(): void
     {
-        // Posture pin (DL-220): the gate reads the TCP peer ($request->ip()), and
-        // X-Forwarded-For is UNTRUSTED (no TrustProxies), so a spoofed XFF claiming
-        // 127.0.0.1 cannot make an external peer look local. This test goes RED the
-        // moment a TrustProxies registration lands (the gate would then honor the
-        // forged header and admit the external peer) — that is the point of pinning it.
         Http::fake();
 
         $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]], server: [
@@ -316,21 +313,124 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_loopback_peer_with_external_xff_is_admitted(): void
+    /**
+     * One row per header family a proxy announces itself with: the five `X-Forwarded-*`
+     * headers the framework knows, one it does not (the refusal is the prefix, not a list),
+     * and RFC 7239 `Forwarded`. Each is the server variable FastCGI hands PHP, and the
+     * header name the refusal reports.
+     *
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public static function forwardingHeaders(): array
     {
-        // The mirror of the spoof case: a loopback peer carrying an EXTERNAL XFF is
-        // still admitted — the header is inert in BOTH directions (it neither grants
-        // nor revokes access), proving the gate keys solely on the real TCP peer.
-        Http::fake([
-            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
-        ]);
+        return [
+            'X-Forwarded-For' => ['HTTP_X_FORWARDED_FOR', 'x-forwarded-for'],
+            'X-Forwarded-Host' => ['HTTP_X_FORWARDED_HOST', 'x-forwarded-host'],
+            'X-Forwarded-Proto' => ['HTTP_X_FORWARDED_PROTO', 'x-forwarded-proto'],
+            'X-Forwarded-Port' => ['HTTP_X_FORWARDED_PORT', 'x-forwarded-port'],
+            'X-Forwarded-Prefix' => ['HTTP_X_FORWARDED_PREFIX', 'x-forwarded-prefix'],
+            'an X-Forwarded- header no framework reads' => ['HTTP_X_FORWARDED_SSL', 'x-forwarded-ssl'],
+            'RFC 7239 Forwarded' => ['HTTP_FORWARDED', 'forwarded'],
+        ];
+    }
+
+    /**
+     * A reverse proxy or tunnel on the same box reaches Apache over loopback, so its peer
+     * passes the peer test; the forwarding header it adds is what refuses it (DL-503). The
+     * value is the bridge's own loopback address on purpose: no value makes the header
+     * acceptable. test_loopback_peer_is_admitted() is the control — the same call without
+     * the header is admitted.
+     */
+    #[DataProvider('forwardingHeaders')]
+    public function test_a_forwarding_header_from_a_loopback_peer_is_refused(string $serverKey, string $headerName): void
+    {
+        Http::fake();
 
         $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'description' => PlainCardText::DESCRIPTION]], server: [
             'REMOTE_ADDR' => '127.0.0.1',
-            'HTTP_X_FORWARDED_FOR' => '203.0.113.9',
-        ])->assertStatus(200)
-            ->assertJsonPath('result.placement_observed', true);   // stubbed read-back, not the fail-soft path
+            $serverKey => '127.0.0.1',
+        ])->assertStatus(403)
+            ->assertSee("this endpoint is reachable from loopback only: the request carries the forwarding header {$headerName}, so it came through a proxy");
+        Http::assertNothingSent();
+    }
+
+    public function test_a_forwarding_header_is_refused_on_the_client_update_door_too(): void
+    {
+        Http::fake();
+
+        $this->callTool(['op' => 'client_manifest'], server: ['HTTP_X_FORWARDED_FOR' => '203.0.113.9'], uri: '/agent-tools/client')
+            ->assertStatus(403)
+            ->assertSee('this endpoint is reachable from loopback only: the request carries the forwarding header x-forwarded-for, so it came through a proxy');
+        Http::assertNothingSent();
+    }
+
+    /**
+     * The hosts and environment markers on which the framework's TrustProxies trusts every
+     * proxy when the app configures none: `.on-forge.com` / `.on-vapor.com` alone up to
+     * 13.42.0 (GHSA-559m-v249-7qw2), those hosts plus `FORGE_SERVER_ID` / `VAPOR_SSM_PATH`
+     * from 13.43.0, and `LARAVEL_CLOUD=1` on any host. The host has to travel in an ABSOLUTE
+     * URI: Request::create() overwrites an HTTP_HOST passed in the server array, which would
+     * leave every row on the default host and unable to fail. Each row is: host, request
+     * server variables, $_ENV entries, $_SERVER entries.
+     *
+     * @return array<string, array{0: string, 1: array<string, string>, 2: array<string, string>, 3: array<string, string>}>
+     */
+    public static function hostedPlatformRequests(): array
+    {
+        return [
+            'forge host' => ['bridge.on-forge.com', [], [], []],
+            'vapor host' => ['bridge.on-vapor.com', [], [], []],
+            'forge host with the forge server marker' => ['bridge.on-forge.com', ['FORGE_SERVER_ID' => '1'], [], []],
+            'vapor host with the vapor environment marker' => ['bridge.on-vapor.com', [], ['VAPOR_SSM_PATH' => '/bridge'], []],
+            'laravel cloud marker' => ['bridge.example.com', [], [], ['LARAVEL_CLOUD' => '1']],
+        ];
+    }
+
+    /**
+     * Pins bootstrap/app.php's removal of TrustProxies (DL-502) on the value it protects,
+     * $request->ip(), read through a route of its own. It can no longer be pinned through the
+     * loopback gate: since DL-503 every request a trusted proxy could rewrite carries a
+     * forwarding header and is refused for that alone. Wherever the framework's auto-trust
+     * applies, the peer becomes the forwarded address, in either direction, and the row reds.
+     *
+     * @param  array<string, string>  $requestServer
+     * @param  array<string, string>  $env
+     * @param  array<string, string>  $globalServer
+     */
+    #[DataProvider('hostedPlatformRequests')]
+    public function test_the_peer_is_remote_addr_on_a_hosted_platform_host(string $host, array $requestServer, array $env, array $globalServer): void
+    {
+        Route::post('/_peer', fn (Request $request) => response((string) $request->ip()));
+
+        foreach (['127.0.0.1' => '203.0.113.9', '203.0.113.9' => '127.0.0.1'] as $peer => $forwarded) {
+            $this->withProcessGlobals($env, $globalServer, fn () => $this->call('POST', "http://{$host}/_peer", [], [], [], [
+                'REMOTE_ADDR' => $peer,
+                'HTTP_X_FORWARDED_FOR' => $forwarded,
+            ] + $requestServer)->assertOk()->assertContent($peer));
+        }
+    }
+
+    /**
+     * The Vapor and Cloud markers are read from the PROCESS globals, not the request, so
+     * they are set around the call and removed after it whatever it does.
+     *
+     * @param  array<string, string>  $env
+     * @param  array<string, string>  $globalServer
+     */
+    private function withProcessGlobals(array $env, array $globalServer, callable $call): void
+    {
+        $_ENV = $env + $_ENV;
+        $_SERVER = $globalServer + $_SERVER;
+        try {
+            $call();
+        } finally {
+            foreach (array_keys($env) as $key) {
+                unset($_ENV[$key]);
+            }
+            foreach (array_keys($globalServer) as $key) {
+                unset($_SERVER[$key]);
+            }
+        }
     }
 
     // ─── bearer resolution ───────────────────────────────────────────────────

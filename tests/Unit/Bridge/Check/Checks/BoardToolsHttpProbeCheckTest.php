@@ -230,7 +230,7 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertStringContainsString('200 but the response carries no `result` object — cannot confirm board_my_cards ran (error: no such tool).', $findings[0]->message);
     }
 
-    public function test_a_403_names_the_loopback_trap(): void
+    public function test_a_403_names_both_of_the_gates_causes(): void
     {
         Http::fake(fn () => Http::response(['error' => 'nope'], 403));
 
@@ -239,6 +239,9 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertSame(Severity::Fail, $findings[0]->severity);
         $this->assertStringContainsString('403 (loopback gate refused)', $findings[0]->message);
         $this->assertStringContainsString('/etc/hosts recipe', $findings[0]->message);
+        // The gate also refuses a loopback peer that came through a proxy (DL-503), so a 403
+        // cannot be reported as the public-IP trap alone.
+        $this->assertStringContainsString('reverse proxy or tunnel that added a forwarding header', $findings[0]->message);
     }
 
     public function test_a_401_names_the_bearer(): void

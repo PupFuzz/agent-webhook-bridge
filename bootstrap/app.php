@@ -7,6 +7,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
@@ -25,7 +26,13 @@ $app = Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        // No proxy is trusted, so $request->ip() is REMOTE_ADDR, the peer App\Http\Middleware\LoopbackOnly
+        // tests. Configuring no proxies is not enough: with none configured, the framework's
+        // TrustProxies trusts every proxy on hosts it takes for Laravel Forge, Vapor or Cloud, and
+        // a forged X-Forwarded-For then rewrites the peer (DL-502; the gate also refuses any
+        // forwarded request outright since DL-503). Pinned by AgentToolsCallTest's hosted-platform
+        // test.
+        $middleware->remove(TrustProxies::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

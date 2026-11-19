@@ -25,7 +25,8 @@ use Throwable;
  * For each agent with an enabled `board_tools` block and a readable bearer, POST a
  * `board_my_cards` over the REAL network path (TLS verify on) to the endpoint the channel
  * server will use, and certify the round trip:
- *  - the loopback gate admits the call (a 403 names the on-box public-IP peer trap);
+ *  - the loopback gate admits the call (a 403 names its two causes: the on-box public-IP
+ *    peer trap, and a proxy in front of the endpoint adding a forwarding header, DL-503);
  *  - the bearer authenticates (a 401 names the token path / collision);
  *  - the answering agent is the one this bearer was minted for: the result HEADER
  *    (`result.configured_board_id` / `result.swimlane_id`, read through
@@ -161,7 +162,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
             $status = $resp->status();
             if ($status === 403) {
-                yield Finding::fail("board_tools probe: agent {$name}: {$endpoint} → 403 (loopback gate refused). The request's TCP peer is not loopback — an https://<public-host>/… endpoint makes the kernel pick the box's PUBLIC IP as the source. Use the /etc/hosts recipe (127.0.0.1 <bridge-hostname> + BRIDGE_TOOLS_ENDPOINT=https://<bridge-hostname>/agent-tools/call) — see docs/board-tools.md § Same-box enablement.");
+                yield Finding::fail("board_tools probe: agent {$name}: {$endpoint} → 403 (loopback gate refused). Either the request's TCP peer is not loopback — an https://<public-host>/… endpoint makes the kernel pick the box's PUBLIC IP as the source — or the endpoint is a reverse proxy or tunnel that added a forwarding header (X-Forwarded-* or Forwarded), which the gate refuses from any peer; the response body says which. Point the endpoint at Apache directly: use the /etc/hosts recipe (127.0.0.1 <bridge-hostname> + BRIDGE_TOOLS_ENDPOINT=https://<bridge-hostname>/agent-tools/call) — see docs/board-tools.md § Same-box enablement.");
 
                 continue;
             }
