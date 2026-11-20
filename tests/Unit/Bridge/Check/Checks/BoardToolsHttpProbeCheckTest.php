@@ -260,6 +260,23 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertStringNotContainsString('forwarding header', $findings[0]->message);
     }
 
+    /**
+     * A 403 the gate did not write (an Apache `Require` denial, a tunnel's or WAF's own page)
+     * is not reported as either of the gate's causes.
+     */
+    public function test_a_403_the_gate_did_not_write_is_not_blamed_on_the_gate(): void
+    {
+        Http::fake(fn () => Http::response(['error' => 'nope'], 403));
+
+        $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
+
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString("403 from something other than the bridge's loopback gate", $findings[0]->message);
+        $this->assertStringContainsString('/etc/hosts recipe', $findings[0]->message);
+        $this->assertStringNotContainsString('loopback gate refused', $findings[0]->message);
+        $this->assertStringNotContainsString('TCP peer is not loopback', $findings[0]->message);
+    }
+
     /** @param  array<string, string>  $server */
     private function gateRefusalPage(array $server): string
     {

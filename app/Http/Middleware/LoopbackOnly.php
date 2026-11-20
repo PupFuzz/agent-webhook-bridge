@@ -40,19 +40,22 @@ final class LoopbackOnly
     private const FORWARDING_HEADERS = ['forwarded', 'via', 'x-real-ip', 'cf-connecting-ip'];
 
     /**
-     * The refusal's phrase before the header name. `bridge:check --probe-tools` reads the name
-     * back out of the 403 page after it, so the phrase is shared rather than copied.
+     * The gate's two refusal phrases, shared with `bridge:check --probe-tools`, which reads them
+     * back out of the 403 page to tell the gate's refusals from a 403 something else wrote, and
+     * the header name after FORWARDING_REFUSAL. Every refusal starts with PEER_REFUSAL.
      */
+    public const PEER_REFUSAL = 'this endpoint is reachable from loopback only';
+
     public const FORWARDING_REFUSAL = 'the request carries the forwarding header';
 
     public function handle(Request $request, Closure $next): Response
     {
         $forwarding = self::forwardingHeader($request);
         if ($forwarding !== null) {
-            abort(403, 'this endpoint is reachable from loopback only: '.self::FORWARDING_REFUSAL." {$forwarding}, so it came through a proxy");
+            abort(403, self::PEER_REFUSAL.': '.self::FORWARDING_REFUSAL." {$forwarding}, so it came through a proxy");
         }
         if (! self::isLoopback($request->ip())) {
-            abort(403, 'this endpoint is reachable from loopback only');
+            abort(403, self::PEER_REFUSAL);
         }
 
         return $next($request);

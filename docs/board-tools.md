@@ -3292,9 +3292,10 @@ call proving the endpoint is reachable, the loopback gate admits it, the bearer
 resolves to the right agent, and the scope header the bridge answers with
 (`configured_board_id`/`swimlane_id`) is that agent's. ⚠ That last leg certifies
 **which agent the bearer resolved to** — it is config echoed back, so it cannot show
-that the bridge-side lane filter ran. Each failure mode names its likely cause (403 → a proxy
-in front of the endpoint, named with the forwarding header it added, read off the gate's
-refusal page; with no header named there, the step-1 trap; 401 → bearer mismatch/collision;
+that the bridge-side lane filter ran. Each failure mode names its likely cause (403 → read off
+the gate's refusal page: a proxy in front of the endpoint, named with the forwarding header it
+added; or the step-1 trap; or, where the page carries neither of the gate's refusals, a 403
+from something else in front of the bridge, such as an access rule or a tunnel's firewall; 401 → bearer mismatch/collision;
 connection refused → wrong vhost/endpoint). Non-2xx or a scope mismatch exits non-zero. Every finding also names WHICH
 spelling the responder answered the header under, which is how a version skew stops reading as
 an identity fault — see **Which spelling the probe read** above.
