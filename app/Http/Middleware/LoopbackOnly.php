@@ -20,11 +20,13 @@ use Symfony\Component\HttpFoundation\Response;
  * different value (round-2 category-error fix). It also does NOT accept the
  * hostname "localhost" — a peer IP is always numeric.
  *
- * A REQUEST CARRYING A FORWARDING HEADER IS REFUSED, whatever its peer (DL-503). A reverse
- * proxy or tunnel on the same box (nginx, cloudflared) reaches Apache over loopback, so the
- * peer test alone would admit every caller it forwards. Any `X-Forwarded-*` header or RFC 7239
- * `Forwarded` marks the call as proxied, and a proxied call is not a same-box call. The bound:
- * a proxy configured to add none of these headers is indistinguishable from a local client.
+ * A REQUEST CARRYING A FORWARDING HEADER IS REFUSED, whatever its peer (DL-503, DL-504). A
+ * reverse proxy or tunnel on the same box (nginx, cloudflared) reaches Apache over loopback, so
+ * the peer test alone would admit every caller it forwards. Any `X-Forwarded-*` header, RFC 7239
+ * `Forwarded`, `Via`, `X-Real-IP` or `CF-Connecting-IP` marks the call as proxied, and a proxied
+ * call is not a same-box call. The bound: a proxy that adds none of these headers (a stock nginx
+ * `proxy_pass`, or one using a vendor header not listed here) is indistinguishable from a local
+ * client.
  *
  * The peer test relies on no proxy being trusted: Apache + mod_proxy_fcgi passes the real
  * REMOTE_ADDR, and bootstrap/app.php removes the framework's global TrustProxies, so
@@ -34,14 +36,26 @@ use Symfony\Component\HttpFoundation\Response;
  */
 final class LoopbackOnly
 {
+    /** Names as Symfony's HeaderBag stores them: lowercased, `-` not `_`. */
+    private const FORWARDING_HEADERS = ['forwarded', 'via', 'x-real-ip', 'cf-connecting-ip'];
+
+    /**
+     * The gate's two refusal phrases, shared with `bridge:check --probe-tools`, which reads them
+     * back out of the 403 page to tell the gate's refusals from a 403 something else wrote, and
+     * the header name after FORWARDING_REFUSAL. Every refusal starts with PEER_REFUSAL.
+     */
+    public const PEER_REFUSAL = 'this endpoint is reachable from loopback only';
+
+    public const FORWARDING_REFUSAL = 'the request carries the forwarding header';
+
     public function handle(Request $request, Closure $next): Response
     {
         $forwarding = self::forwardingHeader($request);
         if ($forwarding !== null) {
-            abort(403, "this endpoint is reachable from loopback only: the request carries the forwarding header {$forwarding}, so it came through a proxy");
+            abort(403, self::PEER_REFUSAL.': '.self::FORWARDING_REFUSAL." {$forwarding}, so it came through a proxy");
         }
         if (! self::isLoopback($request->ip())) {
-            abort(403, 'this endpoint is reachable from loopback only');
+            abort(403, self::PEER_REFUSAL);
         }
 
         return $next($request);
@@ -50,7 +64,7 @@ final class LoopbackOnly
     private static function forwardingHeader(Request $request): ?string
     {
         foreach ($request->headers->keys() as $name) {
-            if ($name === 'forwarded' || str_starts_with($name, 'x-forwarded-')) {
+            if (in_array($name, self::FORWARDING_HEADERS, true) || str_starts_with($name, 'x-forwarded-')) {
                 return $name;
             }
         }
