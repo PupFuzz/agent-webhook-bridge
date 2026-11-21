@@ -314,10 +314,10 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
-     * One row per header family a proxy announces itself with: the five `X-Forwarded-*`
-     * headers the framework knows, one it does not (the refusal is the prefix, not a list),
-     * and RFC 7239 `Forwarded`. Each is the server variable FastCGI hands PHP, and the
-     * header name the refusal reports.
+     * One row per header a proxy announces itself with: the five `X-Forwarded-*` headers the
+     * framework knows, one it does not (that family is refused by prefix, not a list), RFC 7239
+     * `Forwarded`, `Via`, `X-Real-IP` and `CF-Connecting-IP`. Each is the server variable
+     * FastCGI hands PHP, and the header name the refusal reports.
      *
      * @return array<string, array{0: string, 1: string}>
      */
@@ -331,6 +331,9 @@ class AgentToolsCallTest extends TestCase
             'X-Forwarded-Prefix' => ['HTTP_X_FORWARDED_PREFIX', 'x-forwarded-prefix'],
             'an X-Forwarded- header no framework reads' => ['HTTP_X_FORWARDED_SSL', 'x-forwarded-ssl'],
             'RFC 7239 Forwarded' => ['HTTP_FORWARDED', 'forwarded'],
+            'Via' => ['HTTP_VIA', 'via'],
+            'X-Real-IP' => ['HTTP_X_REAL_IP', 'x-real-ip'],
+            'CF-Connecting-IP' => ['HTTP_CF_CONNECTING_IP', 'cf-connecting-ip'],
         ];
     }
 

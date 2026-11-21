@@ -43,7 +43,7 @@ Use the bridge when:
 
 - The upstream system emits webhooks for the events you care about
 - Those events affect state your agent reads (otherwise periodic re-poll at session start suffices)
-- Your machine can expose an HTTPS endpoint (direct internet, cloudflared/ngrok, or reverse proxy) for the webhook receiver. The board-tools endpoint (`/agent-tools/*`) is different: it answers same-box callers only, and **refuses any call that came through a proxy or tunnel, even one on the same box** — any request carrying an `X-Forwarded-*` or `Forwarded` header (DL-503). Do not route `/agent-tools/*` through one; see [`docs/board-tools.md`](docs/board-tools.md) § Same-box enablement.
+- Your machine can expose an HTTPS endpoint (direct internet, cloudflared/ngrok, or reverse proxy) for the webhook receiver. The board-tools endpoint (`/agent-tools/*`) is different: it answers same-box callers only, and **refuses any call that came through a proxy or tunnel, even one on the same box** — any request carrying a proxy forwarding header (DL-503, DL-504). Do not route `/agent-tools/*` through one; [`docs/board-tools.md`](docs/board-tools.md) § Same-box enablement, step 2, lists the refused headers.
 - The reactions you'd dispatch are idempotent or have safe debounce semantics
 
 Don't use the bridge when:
