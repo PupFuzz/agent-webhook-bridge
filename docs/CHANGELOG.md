@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.109.4] - 2026-11-21
+
 ### Fixed
 
 - **npm/@hono/node-server 2.1.7 → 2.1.11 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisories GHSA-8wcc-wqxr-28qp (medium, range `>= 2.0.0, < 2.1.10`, patched in 2.1.10); GHSA-qhm2-7mpr-ghjp (medium, range `>= 2.0.0, < 2.1.11`, patched in 2.1.11) on honojs/node-server). Opened by the daily dependency advisory ref matrix: 2.1.11 is in range for @modelcontextprotocol/sdk@1.32.2's `^1.19.9 || ^2.0.5`, so `npm update @hono/node-server` sufficed and no override was added. Channel-server snapshot 0.9.83 → 0.9.84.
@@ -18,7 +20,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
-- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.84. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.7.2 and @hono/node-server 2.1.7, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+- Before updating the bridge, check each seat's channel-server `BRIDGE_TOOLS_ENDPOINT`. If it reaches `/agent-tools/*` through a reverse proxy or tunnel on the bridge's box that adds a `Via`, `X-Real-IP` or `CF-Connecting-IP` header (nginx, Cloudflare), point it at the bridge's own web server on loopback (`docs/board-tools.md` § Same-box enablement, step 1) and restart that seat's session. Do this first: once the bridge is updated, such a seat has every board-tool call refused 403.
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.84. Until you do, seats stay on the client they have (snapshot 0.9.83 from v0.109.3), whose lockfile pins @hono/node-server 2.1.7 and express-rate-limit 8.7.5, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.109.3] - 2026-11-19
 
