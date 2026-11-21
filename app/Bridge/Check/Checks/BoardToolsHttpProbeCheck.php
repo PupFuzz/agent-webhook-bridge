@@ -13,6 +13,7 @@ use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolsScopeHeader;
+use App\Http\Middleware\LoopbackOnly;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -25,8 +26,10 @@ use Throwable;
  * For each agent with an enabled `board_tools` block and a readable bearer, POST a
  * `board_my_cards` over the REAL network path (TLS verify on) to the endpoint the channel
  * server will use, and certify the round trip:
- *  - the loopback gate admits the call (a 403 names its two causes: the on-box public-IP
- *    peer trap, and a proxy in front of the endpoint adding a forwarding header, DL-503);
+ *  - the loopback gate admits the call. A 403 is told apart by the gate's own text in the
+ *    page: a proxy in front of the endpoint added a forwarding header (named, DL-503, DL-504);
+ *    the on-box public-IP peer trap; or, with neither text present, a 403 something other
+ *    than the gate wrote;
  *  - the bearer authenticates (a 401 names the token path / collision);
  *  - the answering agent is the one this bearer was minted for: the result HEADER
  *    (`result.configured_board_id` / `result.swimlane_id`, read through
@@ -162,7 +165,13 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
             $status = $resp->status();
             if ($status === 403) {
-                yield Finding::fail("board_tools probe: agent {$name}: {$endpoint} → 403 (loopback gate refused). Either the request's TCP peer is not loopback — an https://<public-host>/… endpoint makes the kernel pick the box's PUBLIC IP as the source — or the endpoint is a reverse proxy or tunnel that added a forwarding header (X-Forwarded-* or Forwarded), which the gate refuses from any peer; the response body says which. Point the endpoint at Apache directly: use the /etc/hosts recipe (127.0.0.1 <bridge-hostname> + BRIDGE_TOOLS_ENDPOINT=https://<bridge-hostname>/agent-tools/call) — see docs/board-tools.md § Same-box enablement.");
+                $remedy = 'Point the endpoint at Apache directly: use the /etc/hosts recipe (127.0.0.1 <bridge-hostname> + BRIDGE_TOOLS_ENDPOINT=https://<bridge-hostname>/agent-tools/call) — see docs/board-tools.md § Same-box enablement.';
+                $header = $this->refusedForwardingHeader($resp);
+                yield Finding::fail(match (true) {
+                    $header !== null => "board_tools probe: agent {$name}: {$endpoint} → 403 (loopback gate refused): the request arrived carrying the forwarding header {$header}, which this probe does not send, so a reverse proxy or tunnel in front of the endpoint added it. {$remedy}",
+                    str_contains($resp->body(), LoopbackOnly::PEER_REFUSAL) => "board_tools probe: agent {$name}: {$endpoint} → 403 (loopback gate refused): the request's TCP peer is not loopback — an https://<public-host>/… endpoint makes the kernel pick the box's PUBLIC IP as the source. {$remedy}",
+                    default => "board_tools probe: agent {$name}: {$endpoint} → 403 from something other than the bridge's loopback gate (its refusal text is not in the response): a web-server access rule, or a proxy, tunnel or firewall in front of the endpoint refused the call ({$this->probeErrorDetail($resp)}). {$remedy}",
+                });
 
                 continue;
             }
@@ -207,6 +216,18 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
             yield Finding::ok("board_tools probe: agent {$name}: {$endpoint} → 200; window scoped to board {$bt->boardId} / swimlane {$bt->swimlaneId} ({$stageGroups} stage group(s)). The scope header is an identity echo — matching it certifies that this bearer resolved to THIS agent, not that the bridge-side lane filter ran (config matching config is true whatever the rows held); the measured half is the response's own board_id/board_observed. ".$header->boardSpelling->note());
         }
+    }
+
+    /**
+     * The header the gate names in its 403 page, or null when the page names none. The name is
+     * matched as `[a-z0-9-]` only, so nothing the responder wrote beyond a header-name charset
+     * reaches the finding.
+     */
+    private function refusedForwardingHeader(Response $resp): ?string
+    {
+        return preg_match('/'.preg_quote(LoopbackOnly::FORWARDING_REFUSAL, '/').' ([a-z0-9-]+)/', $resp->body(), $m) === 1
+            ? $m[1]
+            : null;
     }
 
     /**

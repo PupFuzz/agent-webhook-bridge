@@ -8,6 +8,18 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **npm/@hono/node-server 2.1.7 → 2.1.11 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisories GHSA-8wcc-wqxr-28qp (medium, range `>= 2.0.0, < 2.1.10`, patched in 2.1.10); GHSA-qhm2-7mpr-ghjp (medium, range `>= 2.0.0, < 2.1.11`, patched in 2.1.11) on honojs/node-server). Opened by the daily dependency advisory ref matrix: 2.1.11 is in range for @modelcontextprotocol/sdk@1.32.2's `^1.19.9 || ^2.0.5`, so `npm update @hono/node-server` sufficed and no override was added. Channel-server snapshot 0.9.83 → 0.9.84.
+
+### Security
+
+- ⚠ **card#13520 (DL-504) — CHANGES WHAT THE APP ACCEPTS: the board-tools endpoint also refuses calls carrying `Via`, `X-Real-IP` or `CF-Connecting-IP`.** These join the `X-Forwarded-*` and `Forwarded` headers refused since card#13506: a request to `/agent-tools/call` or `/agent-tools/client` carrying any of them is now refused 403, even from a loopback address, and the refusal names the header. A proxy that announced itself only with one of these (an nginx setup adding `X-Real-IP`, Cloudflare's `CF-Connecting-IP`, a proxy adding `Via`) still made every caller look local. **Before updating, if a seat reaches `/agent-tools/*` through a proxy or tunnel on the same box that adds any of these headers, re-point it first:** set the channel server's `BRIDGE_TOOLS_ENDPOINT` to the bridge's own web server on loopback (`docs/board-tools.md` § Same-box enablement, step 1), or its board-tools calls get 403 after the update. `bridge:check --probe-tools` now reports which cause a 403 had: a proxy, naming the header it added; a peer that is not loopback; or a 403 that something other than the bridge's gate returned. A proxy that adds none of the refused headers is still not detected. No migration, no config key.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.84. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.7.2 and @hono/node-server 2.1.7, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+
 ## [0.109.3] - 2026-11-19
 
 ### Changed

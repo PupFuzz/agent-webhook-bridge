@@ -230,18 +230,60 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertStringContainsString('200 but the response carries no `result` object — cannot confirm board_my_cards ran (error: no such tool).', $findings[0]->message);
     }
 
-    public function test_a_403_names_both_of_the_gates_causes(): void
+    /**
+     * Each 403 below is the page the bridge's own gate renders, so the probe is held to what
+     * an operator's endpoint actually returns rather than to a hand-written body.
+     */
+    public function test_a_403_from_a_proxy_names_the_header_the_gate_refused(): void
+    {
+        $page = $this->gateRefusalPage(['REMOTE_ADDR' => '127.0.0.1', 'HTTP_X_REAL_IP' => '203.0.113.9']);
+        Http::fake(fn () => Http::response($page, 403));
+
+        $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
+
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('403 (loopback gate refused): the request arrived carrying the forwarding header x-real-ip, which this probe does not send, so a reverse proxy or tunnel in front of the endpoint added it.', $findings[0]->message);
+        $this->assertStringContainsString('/etc/hosts recipe', $findings[0]->message);
+        $this->assertStringNotContainsString('TCP peer is not loopback', $findings[0]->message);
+    }
+
+    public function test_a_403_naming_no_forwarding_header_is_the_public_peer_trap(): void
+    {
+        $page = $this->gateRefusalPage(['REMOTE_ADDR' => '203.0.113.9']);
+        Http::fake(fn () => Http::response($page, 403));
+
+        $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
+
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString("403 (loopback gate refused): the request's TCP peer is not loopback", $findings[0]->message);
+        $this->assertStringContainsString('/etc/hosts recipe', $findings[0]->message);
+        $this->assertStringNotContainsString('forwarding header', $findings[0]->message);
+    }
+
+    /**
+     * A 403 the gate did not write (an Apache `Require` denial, a tunnel's or WAF's own page)
+     * is not reported as either of the gate's causes.
+     */
+    public function test_a_403_the_gate_did_not_write_is_not_blamed_on_the_gate(): void
     {
         Http::fake(fn () => Http::response(['error' => 'nope'], 403));
 
         $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertStringContainsString('403 (loopback gate refused)', $findings[0]->message);
+        $this->assertStringContainsString("403 from something other than the bridge's loopback gate", $findings[0]->message);
         $this->assertStringContainsString('/etc/hosts recipe', $findings[0]->message);
-        // The gate also refuses a loopback peer that came through a proxy (DL-503), so a 403
-        // cannot be reported as the public-IP trap alone.
-        $this->assertStringContainsString('reverse proxy or tunnel that added a forwarding header', $findings[0]->message);
+        $this->assertStringNotContainsString('loopback gate refused', $findings[0]->message);
+        $this->assertStringNotContainsString('TCP peer is not loopback', $findings[0]->message);
+    }
+
+    /** @param  array<string, string>  $server */
+    private function gateRefusalPage(array $server): string
+    {
+        $response = $this->call('POST', '/agent-tools/call', [], [], [], $server + ['CONTENT_TYPE' => 'application/json', 'HTTP_ACCEPT' => 'application/json'], '{}');
+        $response->assertStatus(403);
+
+        return (string) $response->getContent();
     }
 
     public function test_a_401_names_the_bearer(): void

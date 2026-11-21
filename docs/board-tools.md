@@ -2412,7 +2412,7 @@ the run list settled and a job still open. Nothing for heads nobody awaits.
 
 | Status | Meaning |
 | --- | --- |
-| 403 | The request did not come from loopback, or it carries a forwarding header (`X-Forwarded-*` or `Forwarded`) and so came through a proxy (network gate, DL-503). The message says which. |
+| 403 | The request did not come from loopback, or it carries a forwarding header and so came through a proxy (network gate, DL-503, DL-504; [§ Same-box enablement step 2](#2-why-the-gate-is-proxy-safe-on-this-topology) lists the headers). The message says which, and names the header. |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
 | 422 | A caller-fixable bad request (a request body that is not a JSON object — empty, not valid JSON, or valid JSON of another type — which is refused **for the body, in the same words on both doors**, and never as a missing `tool` (card#10106); over HTTP, a body sent without a JSON `Content-Type`; an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). A refusal that carries a machine-readable code adds `reason` beside `error` (`{ok: false, error, reason}`); the codes are listed in [`board_take_card`'s start form](#the-start-form-start-true-card11150--dl-449). |
 | 502 | Upstream kanban error (may be retryable) — a kanban 5xx or another non-permanent status, **or a call kanban never answered** (a timeout or a failed connection, DL-387), **or a paged board read kanban answered `2xx` that the bridge could not report complete** (card#10653; see the **2xx, read refused** row of the mapping table below). The body is the same for all of them. ⚠ On a WRITE a 502 may follow a write that landed: read the tool's own section before re-sending. |
@@ -2725,7 +2725,8 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   shared/colliding token fails closed for *both* agents.
 - **Network:** the `/agent-tools/call` route is **loopback-gated** — the TCP peer
   must be `127.0.0.0/8` or `::1`, and the request must carry no forwarding header
-  (`X-Forwarded-*` or RFC 7239 `Forwarded`, DL-503): a call through a reverse proxy
+  (DL-503, DL-504; [§ Same-box enablement step 2](#2-why-the-gate-is-proxy-safe-on-this-topology)
+  lists them): a call through a reverse proxy
   or tunnel is refused even when that proxy runs on the same box. For the same-box endpoint value (NOT simply
   "use the public hostname" — see the trap below) follow
   [§ Same-box enablement (Apache/FPM)](#same-box-enablement-apachefpm);
@@ -3239,11 +3240,13 @@ changes `$request->ip()` on any of them.
 The peer test holds only while Apache itself is the peer. A reverse proxy or tunnel on
 the same box (nginx, `cloudflared`) makes every caller's peer loopback, so the gate
 also **refuses any request carrying a forwarding header** — any `X-Forwarded-*`
-header or RFC 7239 `Forwarded` — whatever its peer (DL-503). Do not put a proxy or
-tunnel in front of `/agent-tools/*`: point `BRIDGE_TOOLS_ENDPOINT` at Apache directly,
-as step 1 does. ⚠ The bound: the gate can only refuse a proxy that announces itself.
-A same-box proxy configured to add none of these headers is indistinguishable from a
-local client, and behind it the per-agent bearer is the only control left.
+header, RFC 7239 `Forwarded`, `Via`, `X-Real-IP` or `CF-Connecting-IP` — whatever its
+peer (DL-503, DL-504). Do not put a proxy or tunnel in front of `/agent-tools/*`: point
+`BRIDGE_TOOLS_ENDPOINT` at Apache directly, as step 1 does. ⚠ The bound: the gate can
+only refuse a proxy that announces itself with one of these headers. A same-box proxy
+that adds none of them (a stock nginx `proxy_pass`, or one sending only a vendor header
+not listed here) is indistinguishable from a local client, and behind it the per-agent
+bearer is the only control left.
 
 ### 3. Mint the bearer (only for a DEDICATED tools bearer)
 
@@ -3289,9 +3292,11 @@ call proving the endpoint is reachable, the loopback gate admits it, the bearer
 resolves to the right agent, and the scope header the bridge answers with
 (`configured_board_id`/`swimlane_id`) is that agent's. ⚠ That last leg certifies
 **which agent the bearer resolved to** — it is config echoed back, so it cannot show
-that the bridge-side lane filter ran. Each failure mode names its likely cause (403 → the
-step-1 trap, or a proxy in front of the endpoint; 401 → bearer mismatch/collision; connection refused → wrong
-vhost/endpoint). Non-2xx or a scope mismatch exits non-zero. Every finding also names WHICH
+that the bridge-side lane filter ran. Each failure mode names its likely cause (403 → read off
+the gate's refusal page: a proxy in front of the endpoint, named with the forwarding header it
+added; or the step-1 trap; or, where the page carries neither of the gate's refusals, a 403
+from something else in front of the bridge, such as an access rule or a tunnel's firewall; 401 → bearer mismatch/collision;
+connection refused → wrong vhost/endpoint). Non-2xx or a scope mismatch exits non-zero. Every finding also names WHICH
 spelling the responder answered the header under, which is how a version skew stops reading as
 an identity fault — see **Which spelling the probe read** above.
 
