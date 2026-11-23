@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#12616** — Two pull-request checks from the coord plugin v0.77.0. `storage cost guard` fails a PR whose workflows upload an artifact without a short `retention-days` and a reason, or cache under a key that never changes (no workflow here does either today). `quality ratchet` fails a PR that adds a function over the complexity or length limit, a new over-size or mostly-comment file, or a new copied block; growth of existing code is a warning only. On a PR to `main` its rule findings become warnings; a measurement failure still fails. Each workflow's header owns its rules and how to fix a red. Repository CI only; no migration, no config key.
+
 ### Changed
 
 - **card#12616** — The release card promotion (`release-promote-cards.yml`) now runs the toolkit `promote` action's completeness gate (`require-complete: 'true'`), and its token may read pull requests. On a release merge, a tracking card is no longer moved to Released while a PR the release does not contain still names it on its head branch (open, or merged to `dev` after the release was cut), or when those PRs cannot be read. The refused card is named and the job fails. To clear it, close or release that PR and re-run the job. The toolkit pin is unchanged (v0.53.1). Repository CI only; no migration, no config key.

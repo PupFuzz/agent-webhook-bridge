@@ -1,0 +1,1001 @@
+# quality-ratchet.yml — red when a pull request ADDS code over the quality bar: a function over the
+# complexity or length limit, a new file over the size limit or mostly comments, or a new copy of a
+# block. Growth of EXISTING code is printed for the reviewer as a warning and never fails (card#12586,
+# operator decision opq-1794180083-3be0 option A).
+#
+# WHY IT EXISTS. A file that grows by forty lines in each of thirty PRs is never "too long" in any one
+# of them, so a reviewer reading one diff cannot stop it. This check gives the reviewer the measures
+# (cyclomatic complexity, function length, file length, comment ratio, duplicated blocks) for every
+# unit the PR touches, and stops the next NEW over-limit function, file or copy.
+#
+# WHAT IS RED (exit 1 — in GATE mode, below):
+#   * a function every one of whose lines this PR adds, over RATCHET_MAX_CCN (cyclomatic complexity)
+#     or RATCHET_MAX_FUNCTION_NLOC (non-comment lines). "Every line" is read from git's hunks: a
+#     function moved or copied into another file is added code too, so an over-limit function has
+#     to be split when it is moved. The one exception: a function a second, whitespace-ignoring read
+#     shows NO line of as added was re-indented or reformatted only (a namespace-style change, a
+#     hoisted function, tabs to spaces) and is a warning instead (operator decision Q6 option C).
+#     A sweep that moves a token between lines — a brace onto its own line — is not whitespace-only.
+#   * a NEW file over RATCHET_MAX_NEW_FILE_CODE_LINES code lines, or of at least
+#     RATCHET_COMMENT_RATIO_MIN_CODE_LINES code lines whose comment ratio
+#     comment / (comment + code) is over RATCHET_MAX_NEW_FILE_COMMENT_RATIO;
+#   * a NEW copy — a clone absent from the base tree, of at least RATCHET_COPY_MIN_LINES lines and
+#     RATCHET_COPY_MIN_TOKENS tokens, one of whose two fragments lies wholly inside lines this PR adds.
+# WHAT IS A WARNING (never fails): an over-limit function the PR touched but did not wholly add (the
+# warning prints how many of its lines the PR added); an existing file over a limit that the PR made
+# larger; every other new clone. Nothing else prints: a unit under every limit is never mentioned.
+#
+# WHICH PRs ARE GATED (operator decision Q3 option A). Every PR runs this job, whatever its base. A PR
+# whose base is listed in RATCHET_REPORT_BASES — the release branches your project's branch model
+# declares for this repository — runs in REPORT mode: the same findings print, every red becomes a
+# warning, the summary's first line says REPORT mode, and the job passes. A release PR carries the
+# whole cycle, which nobody can split; each change in it was gated on its own PR. EVERY OTHER BASE
+# GATES, including one nobody listed. The list is RENDERED by `/coord:update` (area 3) from
+# `coordination.config.json` → `branch_model` and re-rendered on every refresh — do not edit it by
+# hand. This file ships it EMPTY, so an unrendered copy gates every base (a release PR then reds on the
+# whole cycle until the refresh renders the line). The one stale state that is quiet: a branch REMOVED
+# from the release set stays report-only until the next refresh; the area-3 read prints
+# `REPORT LIST STALE` for it.
+#
+# THESE MEASUREMENT FAILURES ARE RED IN BOTH MODES, by name: a missing tool; a tool that exits non-zero
+# or writes no report; a checkout that is not the PR's merge commit; a workspace with files git does not
+# track; a touched file git shows as binary (UTF-16 content or a `-diff` attribute — exclude it with a
+# glob, or re-encode it before you adopt); an extensionless file whose `#!` interpreter no tool here
+# reads; a non-empty touched file cloc printed no row for; a listed jscpd format that read no source;
+# a threshold that cannot be read. NOT a failure, by design: a file of a measured
+# language in which lizard finds no function (a C# file of properties, a Python file of constants) —
+# zero functions is an answer. A touched file whose extension no tool here reads (`.go`, `.vue`, …) is
+# not measured, and is listed under `skipped` in the run's `--json` report.
+#
+# HOW TO FIX A RED. Split the new function or file; call the existing code instead of copying it; land
+# a re-indent in its own PR, apart from the edits. There is NO override in this check (operator decision
+# Q4 option A): no marker of its own, no PR-body line, and `--allow-red` on a merge wrapper is for CI that
+# could not RUN — a red here is CI that ran and said no. Where a red truly cannot be cleared in the PR,
+# the repository admin edits the branch protection rule, merges, and restores the rule, by hand. jscpd
+# itself skips code between `jscpd:ignore-start` and `jscpd:ignore-end` comments, which takes it out of
+# the copy rule only; they are for generated copies (the framework's vendoring generator writes them),
+# and nothing here refuses one written by hand — review it as you would a disabled test.
+#
+# ⚠ WHAT IT CANNOT SEE, BY NAME: growth of an existing over-limit function or file (warned, never red);
+# a brand-new function one of whose lines git aligns with a pre-existing line (warned, with its share);
+# a body rewritten under an unchanged signature line (warned); complexity in bash, PowerShell, XAML,
+# Blade or Razor, and in C# property accessors (no reader in lizard — the file rules still apply);
+# copies inside extensionless scripts (jscpd reads by extension); near-miss and semantic clones; class
+# length (the file rule is its proxy, for new files only); dead code.
+#
+# ⛔ CUSTOMIZE — the ONLY lines a repository edits, and a `/coord:update` refresh keeps them: `runs-on:`,
+# the thresholds and globs in the job's `env:` block, and the install steps (if your runner forbids
+# them). RATCHET_REPORT_BASES is rendered, not edited. The predicate below is a GENERATED region — the
+# same code the framework repo runs over itself, from `plugins/coord/_vendor/quality-ratchet.py.txt` —
+# and the install and run blocks between `# ---` markers are held byte-identical to the framework's own
+# copy; do not edit either.
+#
+# ⚠ RUNNER PREREQUISITES. Python 3 with pip, Node (jscpd ships native binaries for linux, windows and
+# darwin), Perl (cloc is a Perl program — on every Ubuntu host), and network access to PyPI and the npm
+# registry for the three pinned tools: lizard 1.25.1, jscpd 5.4.3, cloc 2.10 — every download checked
+# against the hash written below. This workflow requires an Actions runner that supports node24 (its
+# action references are SHA pins at majors that declare `runs.using: node24`).
+# None of the tools runs or compiles your code, so a Linux runner serves every language here (C# and
+# XAML included). Run it on your self-hosted runner where you have one: GitHub-hosted minutes are billed.
+
+# coord-preflight: none quality-ratchet needs lizard, jscpd and cloc, which are runner prerequisites, not seat tools; it runs in CI only
+
+name: quality ratchet
+
+on:
+  pull_request:
+    # No `branches:` filter, and no job `if:`: a skipped job reports success, and a filter would leave
+    # the check MISSING on the bases it excluded. `edited` because the checkout is the PR's MERGE
+    # commit, and a retargeted base arrives as `pull_request.edited`.
+    types: [opened, edited, reopened, synchronize]
+
+# SUPERSEDED PR RUNS ARE CANCELLED; NOTHING ELSE EVER IS (card#11008) — KEEP IT when you copy this
+# file. `plugins/coord/docs/CUSTOMIZING.md § Superseded PR runs are cancelled in the shipped workflows`
+# (in your coord install) OWNS the rule.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # UTF-8 stdio pinned at WORKFLOW scope (card#7869) — KEEP IT when you copy this file.
+  # `plugins/coord/docs/CUSTOMIZING.md § UTF-8 stdio in the shipped workflows` (in your coord
+  # install) OWNS the argument.
+  PYTHONUTF8: "1"
+
+jobs:
+  quality-ratchet:
+    # The check context every merge gate reads. ONE fixed name on every base: do not compute it.
+    name: quality-ratchet
+    # edited-reads: base — the checkout below is the PR's MERGE commit, which a retarget moves
+    # (card#11683: a job that runs on `edited` must read something `edited` changes).
+    runs-on: ubuntu-latest
+    env:
+      # The interpreter the install step and the predicate run under.
+      RATCHET_PYTHON: python3
+      # ⛔ CUSTOMIZE — the limits. The operator set CCN 15, NLOC 80, 800 code lines and a 10-line /
+      # 100-token copy; 0.40 at 20 or more code lines is decision Q1 option A.
+      RATCHET_MAX_CCN: "15"
+      RATCHET_MAX_FUNCTION_NLOC: "80"
+      RATCHET_MAX_NEW_FILE_CODE_LINES: "800"
+      RATCHET_MAX_NEW_FILE_COMMENT_RATIO: "0.40"
+      RATCHET_COMMENT_RATIO_MIN_CODE_LINES: "20"
+      RATCHET_COPY_MIN_LINES: "10"
+      RATCHET_COPY_MIN_TOKENS: "100"
+      # ⛔ CUSTOMIZE — paths no tool measures, space-separated globs over the repository path (`**/`
+      # is any number of directories). Keep the lines for your stack and delete the rest; `**/bin/**`
+      # is the C# build output — delete it where `bin/` holds source. To leave tests out of the
+      # population, add your test globs here (the default measures all code).
+      RATCHET_EXCLUDE: >-
+        **/venv/** **/.venv/** **/__pycache__/**
+        **/vendor/** **/storage/** **/bootstrap/cache/**
+        **/node_modules/** **/public/build/** **/*.min.js
+      # ⛔ CUSTOMIZE — the copy scan's formats (jscpd names). A XAML repository adds `markup`, sets
+      # RATCHET_JSCPD_FORMATS_EXTS to `markup:xaml`, and adds `**/*.html **/*.htm **/*.xml **/*.svg`
+      # to RATCHET_JSCPD_IGNORE (jscpd's markup format reads those too).
+      RATCHET_JSCPD_FORMATS: "python,csharp,php,javascript,typescript,bash,powershell"
+      RATCHET_JSCPD_FORMATS_EXTS: ""
+      # Blade templates are left out of the copy scan by decision (a repeated template block is a
+      # layout decision); delete the glob to gate them.
+      RATCHET_JSCPD_IGNORE: "**/*.blade.php"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The merge commit and its first parent (the base tip): the whole range this check reads.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '20'
+
+      - name: Install the three measuring tools, pinned and hash-checked
+        run: |
+          # --- quality-ratchet-install
+          set -euo pipefail
+          tools="$RUNNER_TEMP/quality-ratchet-tools"
+          mkdir -p "$tools/pylib" "$tools/node"
+          cat > "$tools/requirements.txt" <<'REQUIREMENTS'
+          lizard==1.25.1 --hash=sha256:789e7103875cb15aac273e1701cd72d4b9d5fa521790e258fe071dbf79dbc4ee
+          pathspec==1.1.1 --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
+          pygments==2.21.0 --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+          REQUIREMENTS
+          "$RATCHET_PYTHON" -I -m pip install --disable-pip-version-check --no-deps --require-hashes \
+            --target "$tools/pylib" -r "$tools/requirements.txt"
+          cat > "$tools/node/package.json" <<'PACKAGE'
+          {"private":true,"dependencies":{"cloc":"2.10.0-cloc","jscpd":"5.4.3"}}
+          PACKAGE
+          cat > "$tools/node/package-lock.json" <<'LOCK'
+          {"lockfileVersion":3,"requires":true,"packages":{
+           "":{"dependencies":{"cloc":"2.10.0-cloc","jscpd":"5.4.3"}},
+           "node_modules/cloc":{"version":"2.10.0-cloc","resolved":"https://registry.npmjs.org/cloc/-/cloc-2.10.0-cloc.tgz","integrity":"sha512-d3zSfLQYQa2+hoOs/Jzdr0/3EIArRl2wKjeazkBvMw7n1XcOfkyKi9Xxv9uj76TNgLbq3E2gY/Xbskl7VUT26w==","bin":{"cloc":"lib/cloc"}},
+           "node_modules/jscpd":{"version":"5.4.3","resolved":"https://registry.npmjs.org/jscpd/-/jscpd-5.4.3.tgz","integrity":"sha512-2Ult/j407sgAx4Z8kW4nOB3wfGwvtyKyPN9XE+tbvNEP/QemBN8pijKtG6zC+8nfMuIiiWjNcez7VZo5ZjJRtA==","bin":{"jscpd":"run-jscpd.js"},"optionalDependencies":{"jscpd-darwin-arm64":"5.4.3","jscpd-darwin-x64":"5.4.3","jscpd-linux-arm64-gnu":"5.4.3","jscpd-linux-arm64-musl":"5.4.3","jscpd-linux-x64-gnu":"5.4.3","jscpd-linux-x64-musl":"5.4.3","jscpd-windows-arm64-msvc":"5.4.3","jscpd-windows-x64-msvc":"5.4.3"}},
+           "node_modules/jscpd-darwin-arm64":{"version":"5.4.3","resolved":"https://registry.npmjs.org/jscpd-darwin-arm64/-/jscpd-darwin-arm64-5.4.3.tgz","integrity":"sha512-2Zu6FrML6exhznj4hryUrnfVRM6dmfH0N7nldeY09cs7fA2TRQD+xzo5wA7SIqzhRDaUo0CBPBNVJz/XFmUEbg==","cpu":["arm64"],"optional":true,"os":["darwin"]},
+           "node_modules/jscpd-darwin-x64":{"version":"5.4.3","resolved":"https://registry.npmjs.org/jscpd-darwin-x64/-/jscpd-darwin-x64-5.4.3.tgz","integrity":"sha512-Y4KykQqxMtVEV3pdjtfYbzONCmLOEgAyX8d2fUbwLW+uH/IZqUVCIwB3LrgCVv4Y+b/7mbOsdrGuIragTGpC/Q==","cpu":["x64"],"optional":true,"os":["darwin"]},
+           "node_modules/jscpd-linux-arm64-gnu":{"version":"5.4.3","resolved":"https://registry.npmjs.org/jscpd-linux-arm64-gnu/-/jscpd-linux-arm64-gnu-5.4.3.tgz","integrity":"sha512-08d2DKt9BELglfZj0ZfhEs7I4gxiAk9Iflgjnsd0z4pB1OjWA4+DGDbfWmGOf6W2sVMDpwkVoa5Q5DWaOMPyoA==","cpu":["arm64"],"optional":true,"os":["linux"]},
+           "node_modules/jscpd-linux-arm64-musl":{"version":"5.4.3","resolved":"https://registry.npmjs.org/jscpd-linux-arm64-musl/-/jscpd-linux-arm64-musl-5.4.3.tgz","integrity":"sha512-YbgJ7tQzztL441UCKX6UVN6n8zXc7eEwuJ4MHCdFtTf5w6EGpfFDi7+lgBi+MtwampG2k1PoltCYYiRZyPg4/g==","cpu":["arm64"],"optional":true,"os":["linux"]},
+           "node_modules/jscpd-linux-x64-gnu":{"version":"5.4.3","resolved":"https://registry.npmjs.org/jscpd-linux-x64-gnu/-/jscpd-linux-x64-gnu-5.4.3.tgz","integrity":"sha512-BbL0HypadbjpxNfK/KY4CfpD4sCd2zf9HpFnGwwOjdryjdTG098isft/95BiS/XvZjVT3p6lwLf5ToI97OoqCg==","cpu":["x64"],"optional":true,"os":["linux"]},
+           "node_modules/jscpd-linux-x64-musl":{"version":"5.4.3","resolved":"https://registry.npmjs.org/jscpd-linux-x64-musl/-/jscpd-linux-x64-musl-5.4.3.tgz","integrity":"sha512-0DlkzVDuuZ83JRZMOc4Fd2tBFKIrtXDHkHvxdF6d4HK+b954PZxuKhwBMArg76CtVSOQcuiICd/zxU9HtdT+mg==","cpu":["x64"],"optional":true,"os":["linux"]},
+           "node_modules/jscpd-windows-arm64-msvc":{"version":"5.4.3","resolved":"https://registry.npmjs.org/jscpd-windows-arm64-msvc/-/jscpd-windows-arm64-msvc-5.4.3.tgz","integrity":"sha512-BUD8kCzLyXUomw3vWRDbaBcIPByX6yU3VyqsKSf7/sjzr8y9ZmTRcn0cwmCV2WChrzD5JF4HeQl+hZlb7+s8lg==","cpu":["arm64"],"optional":true,"os":["win32"]},
+           "node_modules/jscpd-windows-x64-msvc":{"version":"5.4.3","resolved":"https://registry.npmjs.org/jscpd-windows-x64-msvc/-/jscpd-windows-x64-msvc-5.4.3.tgz","integrity":"sha512-qYSVGZE2WP0NNdZU1S8DsfcCDpjwKSExvsUd86c4Vx9eWwZdw1i+V7h/9FWazo3PxEa+FzPLsCD5YjVawaarRA==","cpu":["x64"],"optional":true,"os":["win32"]}
+          }}
+          LOCK
+          (cd "$tools/node" && npm ci --ignore-scripts --no-audit --no-fund)
+          echo "RATCHET_PYTHONPATH=$tools/pylib" >> "$GITHUB_ENV"
+          echo "$tools/node/node_modules/.bin" >> "$GITHUB_PATH"
+          # --- end quality-ratchet-install
+
+      - name: Gate the code this pull request adds
+        env:
+          # RENDERED by `/coord:update` area 3 from `branch_model` — the release branches of this
+          # repository's lines, minus any that is also an integration branch. Never hand-edited.
+          RATCHET_REPORT_BASES: "main"
+        run: |
+          # --- quality-ratchet-run
+          set -euo pipefail
+          "$RATCHET_PYTHON" -I -X utf8 - "$@" <<'QUALITY_RATCHET_PY'
+          import csv
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+          from fractions import Fraction
+
+          # LF on stdout on every runner OS, before the first line is written.
+          sys.stdout.reconfigure(newline="\n", errors="backslashreplace")
+
+          # VENDOR-BEGIN(quality-ratchet)
+          # GENERATED — do not edit; source: plugins/coord/_vendor/quality-ratchet.py.txt; regenerate (framework repo only): python3 tools/gen-vendored.py; fragment-sha256: 0b26138b4fc9adeb
+          # jscpd:ignore-start
+          """THE QUALITY RATCHET (card#12586 Layer A): code a pull request ADDS must meet the bar; existing
+          code is reported, never gated.
+
+          What a function IS to this rule is read from git's hunks alone — no function is ever matched to a
+          prior version of itself. The hunk read is ONE command (`hunk_read` with `PRIMARY_HUNK_FLAGS`):
+          exact whitespace, `--ignore-cr-at-eol`, the diff algorithm and indent heuristic pinned, renames
+          paired at git's default similarity with no rename limit and no copy detection.
+
+            own(F)      the lines of lizard row F that hold a letter, digit or `_`, minus the lines of any
+                        row nested strictly inside F
+            ALL-ADDED   own(F) is non-empty and every line of it is an ADDED line of its file
+            TOUCHED     a line of own(F) is ADDED, or lines were deleted at a position inside F
+            RED         ALL-ADDED and (CCN or NLOC over its limit) — unless a second, whitespace-ignoring
+                        read of the same diff shows NO added line in own(F): then the function was
+                        re-added with whitespace-only changes and is a warning (the `-w` read decides
+                        nothing else)
+                        a NEW file (status A) over the code-line limit, or at the comment-line floor or
+                        more with a comment ratio over its limit
+                        a NEW clone (absent from the base tree) of at least the copy limits, one of whose
+                        two fragments lies wholly inside the PR's added lines
+            WARNING     TOUCHED, not ALL-ADDED, over a function limit (the share of own(F) added is
+                        printed); an existing file over a limit that the PR made larger; any other new clone
+          Everything else prints nothing. A base listed in RATCHET_REPORT_BASES runs in REPORT mode: the
+          same findings print and every rule red is a warning. A measurement that could not be made — a
+          missing tool, a checkout that is not the PR's merge commit, a dirty workspace, a file with no text
+          diff, an extensionless file whose interpreter the language table lacks, a file a tool did not
+          measure — is red in both modes."""
+
+          SIGNIFICANT = re.compile(r"[A-Za-z0-9_]")
+          HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+          VERSION_SUFFIX = re.compile(r"[0-9.]+$")
+          GIT_PINS = ("-c", "diff.algorithm=myers", "-c", "diff.indentHeuristic=true",
+                      "-c", "core.quotePath=false")
+          DIFF_SHAPE = ("--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "--no-textconv")
+          PRIMARY_HUNK_FLAGS = ("-U0", "-M", "-l0", "--ignore-cr-at-eol")
+          WHITESPACE_HUNK_FLAGS = PRIMARY_HUNK_FLAGS + ("-w",)
+          # `T` is a type change (a symlink replaced by a file): its content is new, so it is read as `A`.
+          NAME_STATUS_FLAGS = ("--name-status", "-z", "--diff-filter=AMRT", "-M", "-l0")
+
+          # language -> (suffix an extensionless copy gets, measured by lizard?)
+          LANGUAGES = {
+              "python": (".py", True), "javascript": (".js", True), "typescript": (".ts", True),
+              "csharp": (".cs", True), "php": (".php", True), "blade": (".blade.php", False),
+              "xaml": (".xaml", False), "bash": (".sh", False), "powershell": (".ps1", False),
+          }
+          # Longest suffix first: `.blade.php` is Blade, never PHP.
+          EXTENSIONS = (
+              (".blade.php", "blade"), (".py", "python"), (".js", "javascript"), (".cjs", "javascript"),
+              (".mjs", "javascript"), (".jsx", "javascript"), (".ts", "typescript"),
+              (".tsx", "typescript"), (".cs", "csharp"), (".php", "php"), (".xaml", "xaml"),
+              (".sh", "bash"), (".bash", "bash"), (".ps1", "powershell"), (".psm1", "powershell"),
+          )
+          # Shebang interpreter basename, its trailing version stripped -> language.
+          INTERPRETERS = {
+              "python": "python", "bash": "bash", "sh": "bash", "dash": "bash", "node": "javascript",
+              "pwsh": "powershell", "powershell": "powershell", "php": "php",
+          }
+          # jscpd format -> the extensions it reads (measured on jscpd 5.4.3); `markup` is extended by
+          # RATCHET_JSCPD_FORMATS_EXTS, which is how XAML joins it.
+          JSCPD_FORMAT_EXTS = {
+              "python": (".py",), "csharp": (".cs",), "php": (".php",),
+              "javascript": (".js", ".cjs", ".mjs"), "jsx": (".jsx",), "typescript": (".ts",),
+              "tsx": (".tsx",), "bash": (".sh", ".bash"), "powershell": (".ps1", ".psm1"),
+              "markup": (".html", ".htm", ".xml", ".svg"),
+          }
+          JSCPD_COVERAGE_MIN_BYTES = 2048
+          # The interpreter that runs lizard is this one, isolated (`-I -S`: no current directory, no
+          # PYTHONPATH and no site-packages on its path, so neither a file the pull request adds nor a copy
+          # installed elsewhere stands in for the pinned tool), with RATCHET_PYTHONPATH prepended by hand.
+          LIZARD_PATH = ("import os, sys; sys.path[:0] = [p for p in sys.argv.pop(1).split(os.pathsep) "
+                         "if p]; ")
+          LIZARD_PROGRAM = LIZARD_PATH + "from lizard_core.cli import main; sys.exit(main())"
+          LIZARD_PROBE = LIZARD_PATH + "import lizard_core.cli"
+          THRESHOLD_ENV = (
+              ("max_ccn", "RATCHET_MAX_CCN", "15", int),
+              ("max_nloc", "RATCHET_MAX_FUNCTION_NLOC", "80", int),
+              ("max_new_file_code", "RATCHET_MAX_NEW_FILE_CODE_LINES", "800", int),
+              ("max_comment_ratio", "RATCHET_MAX_NEW_FILE_COMMENT_RATIO", "0.40", Fraction),
+              ("comment_floor", "RATCHET_COMMENT_RATIO_MIN_CODE_LINES", "20", int),
+              ("copy_min_lines", "RATCHET_COPY_MIN_LINES", "10", int),
+              ("copy_min_tokens", "RATCHET_COPY_MIN_TOKENS", "100", int),
+          )
+
+
+          class Refusal(Exception):
+              """A measurement that could not be made. Red in every mode; the message names the cause."""
+
+
+          def esc_data(text):
+              return str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+          def esc_prop(text):
+              return esc_data(text).replace(":", "%3A").replace(",", "%2C")
+
+
+          def annotate(level, message, path=None, line=None):
+              props = []
+              if path:
+                  props.append("file=" + esc_prop(path))
+                  if line:
+                      props.append("line=%d" % line)
+              props.append("title=quality-ratchet")
+              print("::%s %s::%s" % (level, ",".join(props), esc_data(message)))
+
+
+          def split_list(raw):
+              return [item for item in re.split(r"[\s,]+", raw or "") if item]
+
+
+          def glob_regex(pattern):
+              """`**/` is zero or more directories, `**` anything, `*` and `?` stop at `/`."""
+              out, i = [], 0
+              while i < len(pattern):
+                  if pattern.startswith("**/", i):
+                      out.append("(?:.*/)?")
+                      i += 3
+                  elif pattern.startswith("**", i):
+                      out.append(".*")
+                      i += 2
+                  elif pattern[i] == "*":
+                      out.append("[^/]*")
+                      i += 1
+                  elif pattern[i] == "?":
+                      out.append("[^/]")
+                      i += 1
+                  else:
+                      out.append(re.escape(pattern[i]))
+                      i += 1
+              return re.compile("^" + "".join(out) + "$")
+
+
+          def matches_any(path, regexes):
+              return any(rx.match(path) for rx in regexes)
+
+
+          def config_from_env(env):
+              cfg = {}
+              for key, name, default, kind in THRESHOLD_ENV:
+                  raw = (env.get(name) or "").strip() or default
+                  shape = r"[0-9]+" if kind is int else r"[0-9]+(\.[0-9]+)?"
+                  if not re.fullmatch(shape, raw):
+                      raise Refusal("%s=%r is not a non-negative %s" % (
+                          name, raw, "whole number" if kind is int else "decimal number"))
+                  cfg[key] = kind(raw)
+              cfg["exclude"] = [glob_regex(g) for g in split_list(env.get("RATCHET_EXCLUDE"))]
+              cfg["jscpd_ignore"] = split_list(env.get("RATCHET_EXCLUDE")) + split_list(
+                  env.get("RATCHET_JSCPD_IGNORE"))
+              cfg["jscpd_formats"] = split_list(env.get("RATCHET_JSCPD_FORMATS"))
+              cfg["jscpd_formats_exts"] = (env.get("RATCHET_JSCPD_FORMATS_EXTS") or "").strip()
+              unknown = [f for f in cfg["jscpd_formats"] if f not in JSCPD_FORMAT_EXTS]
+              if unknown:
+                  raise Refusal("RATCHET_JSCPD_FORMATS names %s, which this check has no extension map for "
+                                "(known: %s)" % (", ".join(unknown), ", ".join(sorted(JSCPD_FORMAT_EXTS))))
+              cfg["report_bases"] = split_list(env.get("RATCHET_REPORT_BASES"))
+              cfg["pythonpath"] = env.get("RATCHET_PYTHONPATH") or ""
+              return cfg
+
+
+          def git_env(base=None, **overrides):
+              """The environment with every inherited `GIT_*` variable dropped, then `overrides` layered
+              on: a `GIT_DIR` a git hook exports would otherwise outrank the checkout this program reads.
+              A hand copy of the shared `git_env` (`_vendor/git-env.py.txt` in the framework repo), whose
+              column-0 region cannot be spliced into this ten-space host; the framework's
+              `quality-ratchet.selftest.py` holds this copy to the shared one's behaviour."""
+              env = {k: v for k, v in (os.environ if base is None else base).items()
+                     if not k.startswith("GIT_")}
+              env.update(overrides)
+              return env
+
+
+          def git(*args, binary=False):
+              """Run git in the checkout this program runs in: its stdout, as text unless `binary`. A
+              failure is a Refusal naming the command."""
+              proc = subprocess.run(["git", *args], capture_output=True, env=git_env())
+              if proc.returncode != 0:
+                  raise Refusal("git %s failed (exit %d): %s" % (" ".join(args[:4]), proc.returncode,
+                                                               proc.stderr.decode("utf-8", "replace")
+                                                               .strip()[:400]))
+              return proc.stdout if binary else proc.stdout.decode("utf-8", "surrogateescape")
+
+
+          def git_blob(rev, path):
+              return git("cat-file", "blob", "%s:%s" % (rev, path), binary=True)
+
+
+          def shebang_language(first_line):
+              """(language or None, the shebang line) for a file whose first line starts `#!`."""
+              text = first_line.decode("utf-8", "replace").rstrip("\r")
+              tokens = text[2:].split()
+              interp = os.path.basename(tokens[0]) if tokens else ""
+              if interp == "env":
+                  rest = [t for t in tokens[1:] if not t.startswith("-") and "=" not in t]
+                  interp = os.path.basename(rest[0]) if rest else ""
+              return INTERPRETERS.get(VERSION_SUFFIX.sub("", interp)), text
+
+
+          def extension_language(path):
+              name = path.rsplit("/", 1)[-1]
+              for ext, lang in EXTENSIONS:
+                  if name.endswith(ext) and len(name) > len(ext):
+                      return lang
+              return None
+
+
+          class Entry:
+              __slots__ = ("path", "old", "status", "lang", "copy", "base_copy", "added", "deleted_at",
+                           "text_lines")
+
+              def __init__(self, path, old, status, lang):
+                  self.path, self.old, self.status, self.lang = path, old, status, lang
+                  self.copy = self.base_copy = None
+                  self.added, self.deleted_at, self.text_lines = set(), set(), []
+
+
+          def population(base, head, cfg, refusals, skipped):
+              fields = git("diff", *NAME_STATUS_FLAGS, base, head).split("\0")
+              entries, i = [], 0
+              while i < len(fields) and fields[i]:
+                  status = "A" if fields[i][0] == "T" else fields[i][0]
+                  if status == "R":
+                      old, path, i = fields[i + 1], fields[i + 2], i + 3
+                  else:
+                      old = path = fields[i + 1]
+                      i += 2
+                  if matches_any(path, cfg["exclude"]):
+                      continue
+                  lang = extension_language(path)
+                  if lang is None and "." not in path.rsplit("/", 1)[-1]:
+                      first = git_blob(head, path).split(b"\n", 1)[0]
+                      if not first.startswith(b"#!"):
+                          skipped.append({"file": path, "reason": "no shebang"})
+                          continue
+                      lang, line = shebang_language(first)
+                      if lang is None:
+                          refusals.append(("unclassified interpreter %s: %s — no tool in this check reads "
+                                           "that language, so the file cannot be measured; add the "
+                                           "language or an exclusion glob" % (path, line), path))
+                          continue
+                  if lang is None:
+                      skipped.append({"file": path, "reason": "not a language this check measures"})
+                  else:
+                      entries.append(Entry(path, old, status, lang))
+              return entries
+
+
+          def unquote_git_path(text):
+              if not text.startswith('"'):
+                  return text
+              body, out, i = text[1:-1], bytearray(), 0
+              simple = {"n": b"\n", "t": b"\t", '"': b'"', "\\": b"\\", "a": b"\a", "b": b"\b",
+                        "f": b"\f", "r": b"\r", "v": b"\v"}
+              while i < len(body):
+                  ch = body[i]
+                  if ch == "\\" and i + 1 < len(body):
+                      nxt = body[i + 1]
+                      if nxt in simple:
+                          out += simple[nxt]
+                          i += 2
+                          continue
+                      if nxt.isdigit():
+                          out.append(int(body[i + 1:i + 4], 8))
+                          i += 4
+                          continue
+                  out += ch.encode("utf-8", "surrogateescape")
+                  i += 1
+              return out.decode("utf-8", "surrogateescape")
+
+
+          def header_path(line):
+              """The b-side path of a `diff --git a/<p> b/<q>` header (renames are corrected later by the
+              `rename to` line)."""
+              rest = line[len("diff --git "):]
+              if rest.startswith('"'):
+                  end = rest.index('"', 1)
+                  while rest[end - 1] == "\\":
+                      end = rest.index('"', end + 1)
+                  return unquote_git_path(rest[end + 2:])[2:]
+              body = rest[2:]
+              n = (len(body) - 3) // 2
+              if body[n:n + 3] == " b/" and body[:n] == body[n + 3:]:
+                  return body[:n]
+              return body.rsplit(" b/", 1)[-1]
+
+
+          def hunk_read(base, head, flags):
+              """{b-side path: [added head lines, head positions of deletion-only hunks, binary?]}."""
+              text = git(*GIT_PINS, "diff", *DIFF_SHAPE, *flags, base, head)
+              files, cur = {}, None
+              for line in text.split("\n"):
+                  if line.startswith("diff --git "):
+                      cur = [set(), set(), False]
+                      files[header_path(line)] = cur
+                  elif cur is not None:
+                      read_patch_line(files, cur, line)
+              return files
+
+
+          def read_patch_line(files, cur, line):
+              """Fold one line of a file's patch into `cur`; a rename re-keys it under the new path."""
+              if line.startswith(("rename to ", "+++ b/", '+++ "b/')):
+                  new = (unquote_git_path(line[len("rename to "):]) if line.startswith("rename to ")
+                         else unquote_git_path(line[4:])[2:])
+                  for key in [k for k, v in files.items() if v is cur]:
+                      del files[key]
+                  files[new] = cur
+              elif line.startswith("Binary files "):
+                  cur[2] = True
+              else:
+                  m = HUNK_HEADER.match(line)
+                  if m:
+                      bn = 1 if m.group(2) is None else int(m.group(2))
+                      h = int(m.group(3))
+                      hn = 1 if m.group(4) is None else int(m.group(4))
+                      if hn:
+                          cur[0].update(range(h, h + hn))
+                      elif bn:
+                          cur[1].add(h)
+
+
+          def run_tool(argv, what, cwd=None):
+              try:
+                  proc = subprocess.run(argv, capture_output=True, cwd=cwd)
+              except OSError as exc:
+                  raise Refusal("%s could not be started: %s" % (what, exc))
+              if proc.returncode != 0:
+                  raise Refusal("%s exited %d: %s" % (what, proc.returncode,
+                                                      proc.stderr.decode("utf-8", "replace").strip()[-600:]))
+              return proc.stdout.decode("utf-8", "replace")
+
+
+          def run_cloc(paths, scratch, name):
+              if not paths:
+                  return {}
+              listing = os.path.join(scratch, name + ".list")
+              with open(listing, "w", encoding="utf-8", newline="\n") as fh:
+                  fh.write("".join(p + "\n" for p in paths))
+              # --skip-uniqueness: without it cloc counts only the first of two byte-identical files.
+              out = run_tool(["cloc", "--by-file", "--json", "--quiet", "--skip-uniqueness",
+                              "--list-file=" + listing], "cloc", cwd=scratch)
+              if not out.strip():
+                  return {}
+              data = json.loads(out)
+              data.pop("header", None)
+              data.pop("SUM", None)
+              return data
+
+
+          class Function:
+              __slots__ = ("entry", "name", "start", "end", "ccn", "nloc", "own")
+
+              def __init__(self, entry, name, start, end, ccn, nloc):
+                  self.entry, self.name, self.start, self.end = entry, name, start, end
+                  self.ccn, self.nloc, self.own = ccn, nloc, set()
+
+
+          def run_lizard(entries, cfg, scratch):
+              targets = {e.copy: e for e in entries if LANGUAGES[e.lang][1] and e.copy}
+              if not targets:
+                  return []
+              out = run_tool([sys.executable, "-I", "-S", "-c", LIZARD_PROGRAM, cfg["pythonpath"], "--csv",
+                              *targets], "lizard", cwd=scratch)
+              rows = []
+              for row in csv.reader(out.splitlines()):
+                  if len(row) < 11 or row[6] not in targets:
+                      continue
+                  rows.append(Function(targets[row[6]], row[7], int(row[9]), int(row[10]), int(row[1]),
+                                       int(row[0])))
+              return rows
+
+
+          def assign_own_lines(functions):
+              """own(F): F's significant lines minus those of rows nested inside it (outer first, so an
+              inner row's claim overwrites its outer's)."""
+              by_entry = {}
+              for f in functions:
+                  by_entry.setdefault(id(f.entry), []).append(f)
+              for fns in by_entry.values():
+                  lines = fns[0].entry.text_lines
+                  owner = {}
+                  for f in sorted(fns, key=lambda f: f.end - f.start, reverse=True):
+                      for n in range(f.start, f.end + 1):
+                          if n - 1 < len(lines) and SIGNIFICANT.search(lines[n - 1]):
+                              owner[n] = f
+                  for n, f in owner.items():
+                      f.own.add(n)
+
+
+          def measure(base, head, cfg, scratch):
+              """Everything the rules read, for one base..head range. Never decides a verdict."""
+              refusals, skipped = [], []
+              entries = population(base, head, cfg, refusals, skipped)
+              result = {"entries": entries, "functions": [], "files": [], "refusals": refusals,
+                        "skipped": skipped}
+              if entries:
+                  measured = copy_entries(base, head, entries, scratch, refusals)
+                  result["files"] = measure_files(measured, scratch, refusals)
+                  result["functions"] = measure_functions(measured, cfg, scratch)
+              return result
+
+
+          def copy_entries(base, head, entries, scratch, refusals):
+              """Attach each entry's hunks, and write the head side (and the M/R base side) to `scratch`
+              with its language's extension; return the entries the tools can measure."""
+              hunks = hunk_read(base, head, PRIMARY_HUNK_FLAGS)
+              measured = []
+              for e in entries:
+                  added, deleted_at, binary = hunks.get(e.path, (set(), set(), False))
+                  e.added, e.deleted_at = added, deleted_at
+                  if binary:
+                      refusals.append(("no text diff for %s (binary content or a -diff attribute) — "
+                                       "nothing can say which of its lines this PR added" % e.path, e.path))
+                      continue
+                  blob = git_blob(head, e.path)
+                  e.copy = write_copy(os.path.join(scratch, "head"), e.path, e.lang, blob)
+                  e.text_lines = blob.decode("utf-8", "replace").split("\n")
+                  if e.status in "MR":
+                      e.base_copy = write_copy(os.path.join(scratch, "base"), e.old, e.lang,
+                                               git_blob(base, e.old))
+                  measured.append(e)
+              return measured
+
+
+          def measure_files(measured, scratch, refusals):
+              head_rows = run_cloc([e.copy for e in measured], scratch, "head")
+              base_rows = run_cloc([e.base_copy for e in measured if e.base_copy], scratch, "base")
+              files = []
+              for e in measured:
+                  row = head_rows.get(e.copy)
+                  if row is None:
+                      if os.path.getsize(e.copy):
+                          refusals.append(("unmeasured %s by cloc — cloc printed no row for it, so its "
+                                           "size and comment ratio are unknown" % e.path, e.path))
+                      continue
+                  base_row = base_rows.get(e.base_copy) or {}
+                  files.append({"entry": e, "code": row["code"], "comment": row["comment"],
+                                "base_code": base_row.get("code"), "base_comment": base_row.get("comment")})
+              return files
+
+
+          def measure_functions(measured, cfg, scratch):
+              functions = run_lizard(measured, cfg, scratch)
+              assign_own_lines(functions)
+              out = []
+              for f in functions:
+                  if not f.own:
+                      continue
+                  added = f.own & f.entry.added
+                  out.append({"fn": f, "added": len(added), "own": len(f.own),
+                              "all_added": len(added) == len(f.own),
+                              "touched": bool(added) or any(f.start <= p < f.end for p in f.entry.deleted_at)})
+              return out
+
+
+          def write_copy(root, path, lang, blob):
+              suffix = "" if extension_language(path) else LANGUAGES[lang][0]
+              dest = os.path.join(root, *path.split("/")) + suffix
+              os.makedirs(os.path.dirname(dest), exist_ok=True)
+              with open(dest, "wb") as fh:
+                  fh.write(blob)
+              return dest
+
+
+          def ratio(comment, code):
+              return Fraction(comment, comment + code) if comment + code else Fraction(0)
+
+
+          def pct(fr):
+              return "%.0f%%" % (100 * fr)
+
+
+          def finding(kind, verdict, path, line, message, **fields):
+              """One judged unit: what the JSON report records and, unless `verdict` is "ok", one
+              annotation."""
+              return dict(kind=kind, verdict=verdict, file=path, line=line, message=message, **fields)
+
+
+          def function_findings(result, cfg, base, head):
+              """A finding for every function the PR touched; untouched functions print nothing."""
+              out, whitespace = [], None
+              for rec in result["functions"]:
+                  f = rec["fn"]
+                  if not rec["touched"]:
+                      continue
+                  over = f.ccn > cfg["max_ccn"] or f.nloc > cfg["max_nloc"]
+                  figures = "CCN %d (limit %d), NLOC %d (limit %d)" % (f.ccn, cfg["max_ccn"], f.nloc,
+                                                                      cfg["max_nloc"])
+                  verdict, message, whitespace_only = "ok", None, False
+                  if over and rec["all_added"]:
+                      if whitespace is None:
+                          whitespace = hunk_read(base, head, WHITESPACE_HUNK_FLAGS)
+                      whitespace_only = not (f.own & whitespace.get(f.entry.path, (set(),))[0])
+                      if whitespace_only:
+                          verdict = "warning"
+                          message = ("%s in %s: %s — re-added with whitespace-only changes (it differs "
+                                     "from the base only in whitespace), so it is reported, not gated"
+                                     % (f.name, f.entry.path, figures))
+                      else:
+                          verdict = "red"
+                          message = ("%s in %s is code this PR adds, and it is over the limit: %s. Split "
+                                     "it — a function moved or copied into a file counts as added code"
+                                     % (f.name, f.entry.path, figures))
+                  elif over:
+                      verdict = "warning"
+                      message = ("%s in %s: %s — %d of %d lines added by this PR; growth of existing code "
+                                 "is reported, not gated" % (f.name, f.entry.path, figures, rec["added"],
+                                                             rec["own"]))
+                  out.append(finding("function", verdict, f.entry.path, f.start, message, name=f.name,
+                                     ccn=f.ccn, nloc=f.nloc, ccn_limit=cfg["max_ccn"],
+                                     nloc_limit=cfg["max_nloc"], all_added=rec["all_added"],
+                                     added_lines=rec["added"], own_lines=rec["own"],
+                                     whitespace_only=whitespace_only))
+              return out
+
+
+          def file_findings(result, cfg):
+              """Two findings — code lines, comment ratio — for every measured population file."""
+              out = []
+              for rec in result["files"]:
+                  out.append(code_lines_finding(rec, cfg))
+                  out.append(comment_ratio_finding(rec, cfg))
+              return out
+
+
+          def code_lines_finding(rec, cfg):
+              e, code, base_code, lim = rec["entry"], rec["code"], rec["base_code"], cfg["max_new_file_code"]
+              verdict, message = "ok", None
+              if e.status == "A" and code > lim:
+                  verdict, message = "red", "%s is a new file of %d code lines (limit %d) — split it" % (
+                      e.path, code, lim)
+              elif e.status != "A" and code > lim and (base_code is None or code > base_code):
+                  verdict, message = "warning", ("%s grew from %s to %d code lines (limit %d for a new "
+                                                 "file); reported, not gated" % (e.path, base_code, code, lim))
+              return finding("file-code-lines", verdict, e.path, None, message, status=e.status, head=code,
+                             base=base_code, limit=lim)
+
+
+          def comment_ratio_finding(rec, cfg):
+              e, code, base_code = rec["entry"], rec["code"], rec["base_code"]
+              lim, floor = cfg["max_comment_ratio"], cfg["comment_floor"]
+              r = ratio(rec["comment"], code)
+              base_r = None if base_code is None else ratio(rec["base_comment"], base_code)
+              over = code >= floor and r > lim
+              verdict, message = "ok", None
+              if over and e.status == "A":
+                  verdict, message = "red", ("%s is a new file whose comments are %s of its comment and "
+                                             "code lines (limit %s at %d or more code lines) — keep comments "
+                                             "to what the code does not say, and move history to commits"
+                                             % (e.path, pct(r), pct(lim), floor))
+              elif over and (base_r is None or r > base_r):
+                  hint = ("; the PR deleted code — delete the comments that described it"
+                          if base_code is not None and code < base_code else "")
+                  verdict, message = "warning", ("%s comment ratio rose from %s to %s (limit %s for a new "
+                                                 "file); reported, not gated%s"
+                                                 % (e.path, "n/a" if base_r is None else pct(base_r),
+                                                    pct(r), pct(lim), hint))
+              return finding("file-comment-ratio", verdict, e.path, None, message, status=e.status,
+                             head=float(r), base=None if base_r is None else float(base_r),
+                             limit=float(lim), floor=floor)
+
+
+          def workspace_clean():
+              status = git("status", "--porcelain", "--ignored", "--untracked-files=all")
+              if status.strip():
+                  first = status.splitlines()[0][3:]
+                  raise Refusal("workspace not clean: %s — jscpd scans the whole checkout without "
+                                ".gitignore, so anything not committed would be measured as if the PR "
+                                "added it" % first)
+
+
+          def copy_findings(base, entries, cfg, scratch):
+              """A finding for every clone jscpd reports as absent from the base tree. Code between
+              `jscpd:ignore-start` and `jscpd:ignore-end` comments is never part of one: jscpd skips it."""
+              data = run_jscpd(base, cfg, scratch)
+              jscpd_coverage(data, cfg)
+              by_path = {e.path: e for e in entries}
+              return [clone_finding(clone, by_path, cfg) for clone in data.get("duplicates") or []
+                      if clone.get("isNew")]
+
+
+          def run_jscpd(base, cfg, scratch):
+              if not cfg["jscpd_formats"]:
+                  raise Refusal("RATCHET_JSCPD_FORMATS is empty, so no copy could be found")
+              workspace_clean()
+              out_dir = os.path.join(scratch, "jscpd")
+              argv = ["jscpd", ".", "--baseline-from-ref", base,
+                      "--format", ",".join(cfg["jscpd_formats"]),
+                      "--reporters", "json", "--output", out_dir, "--max-size", "100gb", "--no-gitignore",
+                      "--min-lines", "5", "--min-tokens", "50"]
+              if cfg["jscpd_formats_exts"]:
+                  argv += ["--formats-exts", cfg["jscpd_formats_exts"]]
+              if cfg["jscpd_ignore"]:
+                  argv += ["--ignore", ",".join(cfg["jscpd_ignore"])]
+              run_tool(argv, "jscpd")
+              report = os.path.join(out_dir, "jscpd-report.json")
+              if not os.path.isfile(report):
+                  raise Refusal("jscpd wrote no report at %s" % report)
+              with open(report, encoding="utf-8") as fh:
+                  return json.load(fh)
+
+
+          def clone_side(side, by_path):
+              path = os.path.normpath(side.get("name", "")).replace(os.sep, "/")
+              start, end = int(side.get("start", 0)), int(side.get("end", 0))
+              entry = by_path.get(path)
+              wholly = bool(entry) and start > 0 and all(n in entry.added for n in range(start, end + 1))
+              return {"file": path, "start": start, "end": end, "wholly_added": wholly}
+
+
+          def clone_finding(clone, by_path, cfg):
+              sides = [clone_side(clone.get(key) or {}, by_path) for key in ("firstFile", "secondFile")]
+              lines, tokens = int(clone.get("lines", 0)), int(clone.get("tokens", 0))
+              where = " and ".join("%s:%d-%d" % (s["file"], s["start"], s["end"]) for s in sides)
+              added_side = next((s for s in sides if s["wholly_added"]), None)
+              at = added_side or sides[0]
+              if lines >= cfg["copy_min_lines"] and tokens >= cfg["copy_min_tokens"] and added_side:
+                  verdict = "red"
+                  message = ("a new copy of %d lines / %d tokens (limit %d / %d): %s — call the code that "
+                             "exists instead of copying it" % (lines, tokens, cfg["copy_min_lines"],
+                                                               cfg["copy_min_tokens"], where))
+              else:
+                  verdict = "warning"
+                  message = "a new clone of %d lines / %d tokens: %s; reported, not gated" % (
+                      lines, tokens, where)
+              return finding("copy", verdict, at["file"], at["start"] or None, message, fragments=sides,
+                             lines=lines, tokens=tokens, min_lines=cfg["copy_min_lines"],
+                             min_tokens=cfg["copy_min_tokens"])
+
+
+          def jscpd_coverage(data, cfg):
+              """Refuse when a listed format jscpd counted no source of holds a file large enough to
+              hold a clone (jscpd drops files silently: size, ignore files, token floor, empty files)."""
+              formats = (data.get("statistics") or {}).get("formats") or {}
+              ignore = [glob_regex(g) for g in cfg["jscpd_ignore"]]
+              tracked = [p for p in git("ls-files", "-z").split("\0") if p]
+              for fmt, suffixes in format_extensions(cfg).items():
+                  due = [p for p in tracked if p.endswith(suffixes) and not matches_any(p, ignore)
+                         and coverage_sized(p)]
+                  if due and not (formats.get(fmt) or {}).get("sources"):
+                      raise Refusal("jscpd saw no %s source, though the checkout holds %d such file(s) of "
+                                    "%d bytes or more (first: %s)" % (fmt, len(due),
+                                                                      JSCPD_COVERAGE_MIN_BYTES, due[0]))
+
+
+          def format_extensions(cfg):
+              exts = {f: list(JSCPD_FORMAT_EXTS[f]) for f in cfg["jscpd_formats"]}
+              for group in filter(None, cfg["jscpd_formats_exts"].split(";")):
+                  fmt, _, listed = group.partition(":")
+                  if fmt.strip() in exts:
+                      exts[fmt.strip()] += ["." + x.strip() for x in listed.split(",") if x.strip()]
+              return {f: tuple(v) for f, v in exts.items()}
+
+
+          def coverage_sized(path):
+              return os.path.isfile(path) and os.path.getsize(path) >= JSCPD_COVERAGE_MIN_BYTES
+
+
+          def prerequisites(cfg):
+              missing = [tool for tool in ("jscpd", "cloc", "perl", "node") if not shutil.which(tool)]
+              probe = subprocess.run([sys.executable, "-I", "-S", "-c", LIZARD_PROBE, cfg["pythonpath"]],
+                                     capture_output=True)
+              if probe.returncode != 0:
+                  missing.insert(0, "lizard (not importable by %s with RATCHET_PYTHONPATH=%r)"
+                                 % (sys.executable, cfg["pythonpath"]))
+              if missing:
+                  raise Refusal("prerequisite missing: %s — the workflow's install step provides them; "
+                                "nothing is measured without them" % ", ".join(missing))
+
+
+          def resolve_range(base_arg):
+              if base_arg:
+                  return base_arg, "HEAD"
+              head, *parents = git("rev-list", "--parents", "-n", "1", "HEAD").split()
+              if len(parents) != 2:
+                  raise Refusal("not a merge commit: %s has %d parent(s); a pull_request run checks out "
+                                "the PR's merge commit, so this range is not the PR's change — run with "
+                                "--base <ref> for a local check" % (head, len(parents)))
+              return "HEAD^1", "HEAD"
+
+
+          def parse_args(argv):
+              """(base ref or None, JSON report path or None); a usage error raises SystemExit(2)."""
+              opts, args = {"--base": None, "--json": None}, list(argv)
+              while args:
+                  flag = args.pop(0)
+                  if flag not in opts or not args:
+                      print("usage: quality-ratchet [--base <ref>] [--json <path>]", file=sys.stderr)
+                      raise SystemExit(2)
+                  opts[flag] = args.pop(0)
+              return opts["--base"], opts["--json"]
+
+
+          def judge(env, base_arg, report, scratch):
+              """(findings, refusals) for one run; `report` gains the mode and the skipped files."""
+              findings, refusals = [], []
+              try:
+                  cfg = config_from_env(env)
+                  if report["base_ref"] and report["base_ref"] in cfg["report_bases"]:
+                      report["mode"] = "report"
+                  prerequisites(cfg)
+                  base, head = resolve_range(base_arg)
+                  cfg["head"] = head
+                  result = measure(base, head, cfg, scratch)
+                  report["skipped"] = result["skipped"]
+                  for message, path in result["refusals"]:
+                      refusals.append(message)
+                      annotate("error", message, path)
+                  if not result["entries"]:
+                      print("quality-ratchet: no measured file touched — a measurement of zero files")
+                      return findings, refusals
+                  findings += function_findings(result, cfg, base, head)
+                  findings += file_findings(result, cfg)
+                  findings += copy_findings(base, result["entries"], cfg, scratch)
+              except Refusal as exc:
+                  refusals.append(str(exc))
+                  annotate("error", str(exc))
+              return findings, refusals
+
+
+          def emit(findings, mode):
+              """Print one annotation per finding that is not "ok"; (reds, warnings) as printed."""
+              reds = warnings = 0
+              for item in findings:
+                  if item["verdict"] == "ok":
+                      continue
+                  level, message = ("error" if item["verdict"] == "red" else "warning"), item["message"]
+                  if level == "error" and mode == "report":
+                      level, message = "warning", "REPORT mode (not gated): " + message
+                  reds += level == "error"
+                  warnings += level == "warning"
+                  annotate(level, message, item["file"], item["line"])
+              return reds, warnings
+
+
+          def main(argv):
+              base_arg, json_path = parse_args(argv)
+              env = os.environ
+              report = {"mode": "gate", "base_ref": env.get("GITHUB_BASE_REF") or "", "skipped": []}
+              scratch = tempfile.mkdtemp(prefix="quality-ratchet-", dir=env.get("RUNNER_TEMP") or None)
+              try:
+                  findings, refusals = judge(env, base_arg, report, scratch)
+              finally:
+                  shutil.rmtree(scratch, ignore_errors=True)
+              reds, warnings = emit(findings, report["mode"])
+              report.update(findings=findings, refusals=refusals)
+              summary = summary_lines(report, env, refusals, reds, warnings)
+              print("\n".join(summary))
+              if env.get("GITHUB_STEP_SUMMARY"):
+                  with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8", newline="") as fh:
+                      fh.write("\n".join(summary) + "\n")
+              if json_path:
+                  with open(json_path, "w", encoding="utf-8", newline="") as fh:
+                      json.dump(report, fh, indent=1, sort_keys=True)
+              return 1 if refusals or reds else 0
+
+
+          def summary_lines(report, env, refusals, reds, warnings):
+              if report["mode"] == "report":
+                  first = ("REPORT mode: base %s is a release branch (RATCHET_REPORT_BASES: %s)"
+                           % (report["base_ref"], env.get("RATCHET_REPORT_BASES", "").strip()))
+              else:
+                  first = ("GATE mode: base %s is not listed in RATCHET_REPORT_BASES (%s)"
+                           % (report["base_ref"] or "(local run)",
+                              env.get("RATCHET_REPORT_BASES", "").strip() or "empty"))
+              lines = [first, "quality-ratchet: judged against " + ", ".join(
+                  "%s=%s" % (name, (env.get(name) or "").strip() or default)
+                  for _, name, default, _ in THRESHOLD_ENV)]
+              if refusals:
+                  lines.append("quality-ratchet: RED — %d measurement(s) could not be made; nothing is "
+                               "passed over an unmeasured population" % len(refusals))
+              elif reds:
+                  lines.append("quality-ratchet: RED — %d finding(s) in code this PR adds; each `::error` "
+                               "line names the unit and the limit" % reds)
+              else:
+                  lines.append("quality-ratchet: clean — %d warning(s) for the reviewer" % warnings)
+              return lines
+          # jscpd:ignore-end
+          # VENDOR-END(quality-ratchet)
+
+
+          sys.exit(main(sys.argv[1:]))
+          QUALITY_RATCHET_PY
+          # --- end quality-ratchet-run
