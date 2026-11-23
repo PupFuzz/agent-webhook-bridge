@@ -181,6 +181,28 @@ class ReleaseTagGateTest extends TestCase
     }
 
     /**
+     * The completeness gate refuses to promote a card while a PR this release does not contain
+     * still names it. Deleting the input, or spelling it other than `'true'`, turns the gate off
+     * with no output saying so. The gate reads PRs with the job token, so the workflow must also
+     * grant `pull-requests: read`; without it every matched card is refused as UNMEASURED.
+     */
+    public function test_the_promote_step_runs_the_completeness_gate_with_the_token_it_reads(): void
+    {
+        $steps = $this->steps();
+        $promote = $this->indexOfStepUsing($steps, self::PROMOTE_ACTION);
+        $this->assertNotNull($promote, sprintf('no step in %s uses %s@…', self::WORKFLOW, self::PROMOTE_ACTION));
+
+        $this->assertSame('true', $steps[$promote]['with']['require-complete'] ?? null,
+            "the promote step does not pass require-complete: 'true', so a card whose work is still in an open "
+            .'or unreleased PR is promoted to Released');
+
+        $workflow = Yaml::parseFile(base_path(self::WORKFLOW));
+        $permissions = $workflow['jobs']['promote']['permissions'] ?? $workflow['permissions'] ?? [];
+        $this->assertContains($permissions['pull-requests'] ?? null, ['read', 'write'],
+            'the promote job cannot read pull requests, so the completeness gate refuses every matched card as UNMEASURED');
+    }
+
+    /**
      * The gate DECLARES which tag it waits for; this CHECKS that declaration is
      * true of this repo's own tagger. Without it the declaration is a comment.
      *
