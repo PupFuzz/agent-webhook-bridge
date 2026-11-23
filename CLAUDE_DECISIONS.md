@@ -9203,6 +9203,8 @@ diagnostic on the failure path.
 
 - **Consequences.** New: `app/Bridge/Support/GitHubRequestLog.php`, `tests/Feature/Support/GitHubRequestLogTest.php`, `tests/Feature/Support/GitHubRequestLogIsolationTest.php`, the `github_requests` channel. Changed: `app/Bridge/Writeback/GitHubApi.php`; `tests/TestCase.php` points the channel at a per-test temp dir, so the suite never writes the checkout's request log. Docs: `CLAUDE_DEPLOYMENT.md`, `CLAUDE_TESTING.md` § Temporary config dirs, `docs/CHANGELOG.md`.
 
+
+*[Annotation, 2026-11-23 (card#12251) — SUPERSEDED, nothing above removed; DL-493 stays frozen as written.]* ⛔ **The bump job, its findings output and `bin/advisory-bump.py` are removed (DL-505, operator ruling 2026-11-23).** No PR is opened against this repo without an agent evaluating it first. Nothing above, nor in the two annotations before this one, describes current code.
 ---
 
 ## DL-495 — Correction to DL-493: the dependency audit's bump job is given the findings of BOTH sources, in one `affected` output, and a global advisory's fix is read from its OSV record (card#12309)
@@ -9224,6 +9226,8 @@ diagnostic on the failure path.
 
 - **Consequences.** Changed: `.github/workflows/dependency-audit.yml` (the `affected` output, written in the `dep-audit-source1`, `dep-audit-source2` and `dep-audit-report` blocks; the `bump` job's plan step), `bin/advisory-bump.py`, `bin/test_advisory_bump.py`, `.github/dependency-audit/dependency-audit.selftest.sh`. New: `.github/dependency-audit/fixtures/osv/` (the live scanner output, field-projected, and one synthetic file). Docs: `CLAUDE_TESTING.md` § CI, `.github/dependency-audit/fixtures/README.md`, `docs/CHANGELOG.md`.
 
+
+*[Annotation, 2026-11-23 (card#12251) — SUPERSEDED, nothing above removed.]* ⛔ **The `affected` output, its rows and the bump job that read them are removed with DL-493 (DL-505).** The `osv/` fixtures and the selftest rows for the export went with them; the audit's verdict, which never read the export (Decision 4), is unchanged.
 ---
 
 ## DL-496 — Correction to DL-493: a bump PR's body carries the `Built:` and `Coordinated in:` lines (card#12309)
@@ -9239,6 +9243,8 @@ diagnostic on the failure path.
 
 - **Consequences.** Changed: `bin/advisory-bump.py`, `bin/test_advisory_bump.py`, `.github/pull_request_template.md` (its comment no longer restates when `unattestable` applies). Docs: `docs/CHANGELOG.md`.
 
+
+*[Annotation, 2026-11-23 (card#12251) — SUPERSEDED, nothing above removed.]* ⛔ **There are no generated bump PRs any more (DL-505), so no bump body to carry these lines.** The `.github/pull_request_template.md` comment change stands on its own.
 ---
 ## DL-497 — cancelling a `ci_await` stops the per-head aggregate for that seat and head until it registers again, and every `ci_settled` names its sender in `source` (card#12430; supersedes DL-482 bound 4's last sentence as to a cancelled await)
 
@@ -9357,3 +9363,18 @@ diagnostic on the failure path.
 - **Alternatives rejected.** (a) Refuse by an open-ended pattern (`*-ip`, every `x-` header carrying an address): a seat's own client could send such a header for an unrelated reason, and the approved scope is these three. (b) Print the probe's 403 body: it is Laravel's HTML error page (the route is outside `shouldRenderJsonWhen`'s `api/*`), with the message near its end, so the probe's 200-byte body echo would still not say which.
 - **Bound.** The gate still refuses only a proxy that announces itself with a refused header. A stock nginx `proxy_pass` adds none (DL-503's Bound), and a vendor header not listed (for example `True-Client-IP`, `Fastly-Client-IP`) is not refused.
 - **Consequences.** **Behaviour change — CHANGES WHAT THE APP ACCEPTS:** a request to `/agent-tools/call` or `/agent-tools/client` carrying `Via`, `X-Real-IP` or `CF-Connecting-IP` is refused 403, even from a loopback peer; a seat reaching those paths through a same-box proxy that adds one must call Apache directly first. Changed: `app/Http/Middleware/LoopbackOnly.php`, `app/Bridge/Check/Checks/BoardToolsHttpProbeCheck.php`, `routes/agent-tools.php` (comment), `tests/Feature/AgentTools/AgentToolsCallTest.php`, `tests/Unit/Bridge/Check/Checks/BoardToolsHttpProbeCheckTest.php`, `README.md`, `CLAUDE_ARCHITECTURE.md`, `docs/board-tools.md`, `docs/CHANGELOG.md`, and an additive annotation on DL-503.
+
+---
+
+## DL-505 — The dependency audit opens no PRs: the bump job DL-493 added is removed, and an agent evaluates every advisory fix before a PR exists (card#12251)
+
+- **Date:** 2026-11-23
+- **Status:** implemented (card#12251; operator directive). Repository CI only: no runtime, config or client change. Supersedes DL-493 and its corrections DL-495 and DL-496.
+- **Ruling (operator, 2026-11-23, verbatim).** "The behavior I want is for the AI agent responsible for the repo to become aware when a security advisory is released. The agent should then create the PR to resolve the advisory. I don't want PRs auto created against the repo without an agent evaluating whether the change would break the existing code or cause an unintended side effect."
+- **Decision 1 — the bump path is removed whole.** `dependency-audit.yml` loses the `bump` job and the `affected` output with the rows the `dep-audit-source1`, `dep-audit-source2` and `dep-audit-report` blocks wrote for it; nothing else read them. `dependency-ref-matrix.yml` no longer passes `bump_prs` or `ADVISORY_BUMP_TOKEN`. `bin/advisory-bump.py`, `bin/test_advisory_bump.py`, the `fixtures/osv/` scanner outputs and the selftest rows that asserted the export are deleted. The callee, the caller, the selftest and its fixtures README are back to their content before card#12198 (`git diff 4f13b284^ -- .github/dependency-audit/ .github/workflows/` shows only Decision 2's inert declarations and the callee's header lines naming them).
+- **Decision 2 — the callee keeps `bump_prs` and `ADVISORY_BUMP_TOKEN` declared, inert, until a release carries the new caller to `main`.** The scheduled matrix runs the caller on `main`, which passes both, against the callee on `dev`. A `workflow_call` caller that passes an input or secret its callee does not declare fails the run, so removing the declarations on `dev` first would error both legs of the daily audit until the next release. Nothing reads either. Once `main`'s caller no longer passes them, delete both declarations.
+- **The audit itself is unchanged.** Both legs still run both sources, export `population`, `findings` and `status`, and go RED on a finding or an unreadable source. The selftest is the template's again and asserts that.
+- **How the agent becomes aware is not built here.** The framework FR agent-roundtable#685 carries the notify-only advisory flow under the same ruling. Until it lands, the red scheduled run of the "Dependency advisory ref matrix" is the signal, as it was before card#12198, and the fix is a PR an agent cuts by hand.
+- **Alternatives rejected.** (a) *Keep the job and open the PR as a draft, or label it for review.* The PR still exists before any agent has evaluated the change, which is what the ruling refuses. (b) *Keep the `affected` output for the future notify flow.* No consumer exists, and the flow's design is the framework's (agent-roundtable#685); an output kept for a reader that may never take that shape is code nothing reaches. (c) *Remove the inert declarations in this change.* See Decision 2.
+- **Template refresh.** The coord plugin's current `templates/security/` ships the bump path. A refresh of the audit from that template must leave it out here, and `CLAUDE_TESTING.md` § CI says so.
+- **Consequences.** Removed: `bin/advisory-bump.py`, `bin/test_advisory_bump.py`, `.github/dependency-audit/fixtures/osv/`. Changed: `.github/workflows/dependency-audit.yml`, `.github/workflows/dependency-ref-matrix.yml`, `.github/dependency-audit/dependency-audit.selftest.sh`, `.github/dependency-audit/fixtures/README.md`. Docs: `CLAUDE_TESTING.md` § CI, `docs/CHANGELOG.md`, superseding annotations on DL-493, DL-495 and DL-496. Operator action after merge: delete the `ADVISORY_BUMP_TOKEN` repository secret and revoke the PAT behind it. Neither blocks the audit: the inert secret is optional and read by nothing.
