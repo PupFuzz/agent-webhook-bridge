@@ -16,6 +16,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#12616** — The release card promotion (`release-promote-cards.yml`) now runs the toolkit `promote` action's completeness gate (`require-complete: 'true'`), and its token may read pull requests. On a release merge, a tracking card is no longer moved to Released while a PR the release does not contain still names it on its head branch (open, or merged to `dev` after the release was cut), or when those PRs cannot be read. The refused card is named and the job fails. To clear it, close or release that PR and re-run the job. The toolkit pin is unchanged (v0.53.1). Repository CI only; no migration, no config key.
 
+### Removed
+
+- **card#12251 (DL-505)** — **The daily dependency advisory ref matrix no longer opens lockfile bump PRs.** The `bump` job card#12198 added, its findings output and `bin/advisory-bump.py` are removed, by operator ruling: the dependency audit no longer opens PRs; an agent evaluates whether an advisory fix breaks existing code or has an unintended side effect, then opens the PR itself. The audit itself is unchanged: both legs still run both advisory sources and go red on a finding or an unreadable source. A red run now leaves the fix to an agent, who opens the PR by hand. Repository CI only; nothing at runtime changes.
+
 ### Fixed
 
 - **npm/@hono/node-server 2.1.7 → 2.1.11 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk; repository advisories GHSA-8wcc-wqxr-28qp (medium, range `>= 2.0.0, < 2.1.10`, patched in 2.1.10); GHSA-qhm2-7mpr-ghjp (medium, range `>= 2.0.0, < 2.1.11`, patched in 2.1.11) on honojs/node-server). Opened by the daily dependency advisory ref matrix: 2.1.11 is in range for @modelcontextprotocol/sdk@1.32.2's `^1.19.9 || ^2.0.5`, so `npm update @hono/node-server` sufficed and no override was added. Channel-server snapshot 0.9.83 → 0.9.84.
@@ -28,6 +32,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
+- **card#12251** — Installers no longer need the `ADVISORY_BUMP_TOKEN` repository secret: nothing reads it. The operator should delete that secret from the repository and revoke the personal access token behind it. Deleting it does not affect the audit.
 - Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.84. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.7.2 and @hono/node-server 2.1.7, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.109.3] - 2026-11-19
