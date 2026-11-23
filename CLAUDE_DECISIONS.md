@@ -9180,6 +9180,8 @@ diagnostic on the failure path.
 
 *[Annotation, 2026-11-11 (card#13185) — CORRECTING, nothing above removed; this entry stays frozen as written.]* Bound (c) of *What is NOT closed* is closed for every upgrade line the job can read: an existing client-pack upgrade line in `[Unreleased]` now also gets the bumped package and its old version added to its `whose lockfile pins` list (a package already listed keeps the version it names, the one the released client pins). A line carrying no such list (a hand-written one) still gets only its snapshot changed. The bump still opens, and its PR body warns, naming the line and the package and version to add by hand. Failing the bump there was rejected: any hand-written client line would then block every npm security bump until the next release. The miss it closes: v0.109.2's line named @hono/node-server 2.1.6 and not hono 4.13.16. `bin/advisory-bump.py` `add_pin` owns the shape.
 
+*[Annotation, 2026-11-23 (card#12251) — SUPERSEDED, nothing above removed; DL-493 stays frozen as written.]* ⛔ **The bump job, its findings output and `bin/advisory-bump.py` are removed (DL-505, operator ruling 2026-11-23).** The dependency audit opens no PR; an agent evaluates each advisory fix and opens the PR itself. Nothing above, nor in the two annotations before this one, describes current code.
+
 ## DL-494 — The bridge writes one line per GitHub REST request to its own daily log, on by default with no switch, so an install's share of the account's API use can be counted per path (card#12286)
 
 - **Date:** 2026-10-24
@@ -9203,8 +9205,6 @@ diagnostic on the failure path.
 
 - **Consequences.** New: `app/Bridge/Support/GitHubRequestLog.php`, `tests/Feature/Support/GitHubRequestLogTest.php`, `tests/Feature/Support/GitHubRequestLogIsolationTest.php`, the `github_requests` channel. Changed: `app/Bridge/Writeback/GitHubApi.php`; `tests/TestCase.php` points the channel at a per-test temp dir, so the suite never writes the checkout's request log. Docs: `CLAUDE_DEPLOYMENT.md`, `CLAUDE_TESTING.md` § Temporary config dirs, `docs/CHANGELOG.md`.
 
-
-*[Annotation, 2026-11-23 (card#12251) — SUPERSEDED, nothing above removed; DL-493 stays frozen as written.]* ⛔ **The bump job, its findings output and `bin/advisory-bump.py` are removed (DL-505, operator ruling 2026-11-23).** No PR is opened against this repo without an agent evaluating it first. Nothing above, nor in the two annotations before this one, describes current code.
 ---
 
 ## DL-495 — Correction to DL-493: the dependency audit's bump job is given the findings of BOTH sources, in one `affected` output, and a global advisory's fix is read from its OSV record (card#12309)

@@ -18,7 +18,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Removed
 
-- **card#12251 (DL-505)** — **The daily dependency advisory ref matrix no longer opens lockfile bump PRs.** The `bump` job card#12198 added, its findings output and `bin/advisory-bump.py` are removed, by operator ruling: no PR is opened against this repo before an agent has evaluated whether the change breaks existing code or has an unintended side effect. The audit itself is unchanged: both legs still run both advisory sources and go red on a finding or an unreadable source. A red run now leaves the fix to an agent, who opens the PR by hand. Repository CI only; nothing at runtime changes.
+- **card#12251 (DL-505)** — **The daily dependency advisory ref matrix no longer opens lockfile bump PRs.** The `bump` job card#12198 added, its findings output and `bin/advisory-bump.py` are removed, by operator ruling: the dependency audit no longer opens PRs; an agent evaluates whether an advisory fix breaks existing code or has an unintended side effect, then opens the PR itself. The audit itself is unchanged: both legs still run both advisory sources and go red on a finding or an unreadable source. A red run now leaves the fix to an agent, who opens the PR by hand. Repository CI only; nothing at runtime changes.
 
 ### Fixed
 
