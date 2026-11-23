@@ -8,7 +8,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
-## [0.109.4] - 2026-11-21
+## [0.109.4] - 2026-11-23
 
 ### Added
 
