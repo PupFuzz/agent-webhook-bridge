@@ -11,6 +11,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\CheckGolden\BootsGoldenInstall;
 use Tests\Support\CheckGolden\GoldenInstall;
@@ -813,11 +814,12 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
      *
      * @param  list<array<string, mixed>>  $hooks
      */
-    private function bootWithHooks(array $hooks, bool $ciServed = true): void
+    private function bootWithHooks(array $hooks, bool $ciServed = true, string $classifier = ''): void
     {
-        $this->bootGoldenInstall('github-webhook-subscription', function (GoldenInstall $i) use ($hooks, $ciServed) {
+        $this->bootGoldenInstall('github-webhook-subscription', function (GoldenInstall $i) use ($hooks, $ciServed, $classifier) {
             $i->boot()->agent('gh-agent', "identity:\n  github_user_id: 555\n"
                 ."subscriptions:\n  - provider: github\n    scopes: [\"".self::SCOPE."\"]\n"
+                .$classifier
                 .($ciServed ? "board_tools:\n  enabled: true\n  transport: ssh\n" : ''));
             $i->secret('github/token', 'gh-token');
             // An agent served ci_await makes `ci_await.awaits` read the repo's workflow runs once (card#11600).
@@ -942,6 +944,51 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
 
         $this->assertSame(0, $exit);
         $this->assertSame('ok', $this->onlyFinding($doc)['severity']);
+    }
+
+    // ---- card#13823: a hook without `issues` on a repo whose agents consume issues events ----
+
+    private const ADVISORY_SEAT = "classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n  config:\n    families: [impl-ci-wake]\n";
+
+    /** An impl seat takes issues only for the default-ON advisory wake, and the hook sends none. */
+    public function test_a_hook_without_issues_warns_when_an_agent_here_consumes_them(): void
+    {
+        $this->bootWithHooks([self::hook(true, ['push', 'workflow_run'])], ciServed: false, classifier: self::ADVISORY_SEAT);
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $findings = $this->legFindings($doc);
+        $this->assertSame(['ok', 'warn'], array_column($findings, 'severity'));
+        $this->assertStringContainsString('does not send "Issues" (issues), and agent(s) gh-agent consume issues events', $findings[1]['message']);
+        $this->assertStringContainsString('advisory_wake', $findings[1]['message']);
+    }
+
+    /** Control: the same seat opted out consumes no issues event, so the same hook is one ok line. */
+    public function test_a_hook_without_issues_is_silent_when_no_agent_here_consumes_them(): void
+    {
+        $this->bootWithHooks([self::hook(true, ['push', 'workflow_run'])], ciServed: false, classifier: self::ADVISORY_SEAT."    advisory_wake: false\n");
+
+        [, $doc] = $this->runJson();
+
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
+    }
+
+    /** @return array<string, array{list<string>}> */
+    public static function eventListsSendingIssues(): array
+    {
+        return ['by name' => [['issues', 'workflow_run']], 'every event' => [['*']]];
+    }
+
+    /** @param  list<string>  $events */
+    #[DataProvider('eventListsSendingIssues')]
+    public function test_a_hook_sending_issues_satisfies_an_issues_consumer(array $events): void
+    {
+        $this->bootWithHooks([self::hook(true, $events)], ciServed: false, classifier: self::ADVISORY_SEAT);
+
+        [, $doc] = $this->runJson();
+
+        $this->assertSame(['ok'], array_column($this->legFindings($doc), 'severity'));
     }
 
     // ---- card#11579: the content type and the last delivery of the hooks delivering here ----

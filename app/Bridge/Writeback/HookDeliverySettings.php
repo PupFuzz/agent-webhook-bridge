@@ -16,6 +16,8 @@ namespace App\Bridge\Writeback;
  *  - `workflowRun`: does at least one ACTIVE matching hook send `workflow_run` — subscribed to it
  *    by name, or to every event (`*`)? That event is what settles a seat's `ci_await` without a
  *    poll.
+ *  - `issues`: does at least one ACTIVE matching hook send `issues` (by name or `*`)? A repo whose
+ *    hook does not sends no dependency-advisory notice, nor any coordination issue (DL-506).
  *  - `json`: does at least one ACTIVE matching hook send `config.content_type` `json`? The receiver
  *    parses the body as JSON, so a `form` hook's every delivery is refused (`invalid_envelope`).
  *  - `lastDelivery2xx`: did at least one ACTIVE matching hook's MOST RECENT delivery get a 2xx
@@ -36,6 +38,7 @@ final class HookDeliverySettings
     private function __construct(
         public readonly ?bool $active,
         public readonly ?bool $workflowRun,
+        public readonly ?bool $issues,
         public readonly ?bool $json,
         public readonly ?bool $lastDelivery2xx,
     ) {}
@@ -48,7 +51,7 @@ final class HookDeliverySettings
         $active = is_array($hook) && is_bool($hook['active'] ?? null) ? $hook['active'] : null;
         $events = is_array($hook) ? ($hook['events'] ?? null) : null;
         $events = is_array($events) && array_is_list($events) ? $events : null;
-        $sendsRun = $events === null ? null : (in_array('*', $events, true) || in_array('workflow_run', $events, true));
+        $sends = static fn (string $event): ?bool => $events === null ? null : (in_array('*', $events, true) || in_array($event, $events, true));
         $config = is_array($hook) ? ($hook['config'] ?? null) : null;
         $contentType = is_array($config) && is_string($config['content_type'] ?? null) ? $config['content_type'] : null;
         $sendsJson = $contentType === null ? null : $contentType === 'json';
@@ -61,7 +64,8 @@ final class HookDeliverySettings
 
         return new self(
             self::any($seen?->active, $active, $had),
-            self::any($seen?->workflowRun, $ifActive($sendsRun), $had),
+            self::any($seen?->workflowRun, $ifActive($sends('workflow_run')), $had),
+            self::any($seen?->issues, $ifActive($sends('issues')), $had),
             self::any($seen?->json, $ifActive($sendsJson), $had),
             self::any($seen?->lastDelivery2xx, $ifActive($delivered2xx), $had),
         );
