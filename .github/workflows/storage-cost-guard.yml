@@ -1,0 +1,475 @@
+# storage-cost-guard.yml — red when a workflow in this repository stores files on GitHub without a
+# short retention and a reason, or caches under a key that never changes (card#12391).
+#
+# WHY IT EXISTS. GitHub bills Actions artifact storage per account, by the hour, above the plan's
+# included amount (500 MB on Free, 1 GB on Pro, 2 GB on Team; it is shared with GitHub Packages),
+# and an `actions/upload-artifact` step with no `retention-days` keeps every upload for the
+# repository default, 90 days unless changed. One repository on a Pro plan held about 9 GB that
+# way: screenshots uploaded on every PR run and test results kept for 90 days, billed daily, and
+# nobody saw it until the bill. The rule: store nothing in CI you will not read; every upload has a
+# retention under 3 days and a reason.
+#
+# WHAT IT REQUIRES, per step:
+#   * `actions/upload-artifact` (and `actions/upload-artifact/merge`): `retention-days` written as a
+#     whole number from 1 to the ceiling (default 2; `RETENTION_CEILING_DAYS` below may LOWER it,
+#     and a value of 3 or more fails this check rather than being accepted). And an upload
+#     condition: an `if:` with `failure()` as one of its `&&` terms (no `||`), or, for an upload
+#     you read on success too, a comment naming why, on the step's `- uses:` line, inside the
+#     step before its last line, or on the comment lines directly above it. It clears that one
+#     step only: a comment trailing a step belongs to the step below it, never to the one above.
+#         # upload-reason: the release job attaches this build to the GitHub release
+#   * `actions/cache` and `actions/cache/save`: a `key:` that can change. A key with no `${{ }}`
+#     expression, or one built only from `runner.os` / `runner.arch`, is the same on every run, so
+#     the cache is never refreshed and stays alive while it is hit.
+#
+# WHAT IT READS. Every `.yml` / `.yaml` directly in `.github/workflows/` (the files GitHub runs as
+# workflows), and every LOCAL composite action those workflows reach through a `uses: ./<dir>`
+# step, followed through composites that name other local composites. A workflow file that does
+# not parse FAILS the check, because it cannot be read and "could not tell" is not a pass.
+# ⚠ WHAT IT CANNOT READ, BY NAME: a REMOTE action or reusable workflow (`uses: owner/repo@ref`),
+# whose steps live in another repository; an upload made any other way (a third-party upload
+# action, `gh`, or the REST API from a `run:` script); and a cache key whose expression reads
+# anything besides `runner.os` / `runner.arch` — such a key may still be constant (an `env.` value
+# that never changes), and this check does not decide it.
+#
+# HOW TO FIX A RED. Add `retention-days: 1` (or 2), and either `if: failure()` (the upload exists
+# for debugging a failure) or an `# upload-reason:` comment (the upload is read on success: a
+# release asset, a report a later job downloads). Delete an upload nobody reads. For a cache, add
+# `hashFiles('<your lockfile>')` to the key.
+#
+# THE PREDICATE IS NOT WRITTEN HERE. The two regions below are GENERATED from
+# `plugins/coord/_vendor/` in the framework repo — the same code that repo runs over its own tree
+# — and carry a stamp naming their source and revision. Do not edit between the markers; a copy
+# of this file refreshed by `/coord:update` replaces them.
+#
+# ⚠ RUNNER PREREQUISITE. This workflow requires an Actions runner that supports node24 (its action
+# references are SHA pins at majors that declare `runs.using: node24`) and network access to PyPI
+# for the one pinned dependency, PyYAML. Do NOT unpin an action to get node20 back: a tag can be
+# repointed and a SHA cannot. If your runner is too old for node24, pin instead to a SHA you have
+# READ as node20 — read the object id itself, never infer the runtime from the major:
+#     curl -sS https://raw.githubusercontent.com/<owner>/<action>/<sha>/action.yml | grep using
+# Run it on your self-hosted runner where you have one (set `runs-on:` to its labels): GitHub-hosted
+# minutes are billed too.
+
+name: storage cost guard
+
+on:
+  pull_request:
+    # `edited` because the checkout below is the PR's MERGE commit, and a retargeted base arrives
+    # as `pull_request.edited` — without it the verdict would describe a merge into the old base.
+    types: [opened, edited, reopened, synchronize]
+
+# SUPERSEDED PR RUNS ARE CANCELLED; NOTHING ELSE EVER IS (card#11008) — KEEP IT when you copy this
+# file. A newer `pull_request` run for the same PR cancels this workflow's older run for it; every
+# other event gets a group of its own (`github.run_id`), so no push run is cancelled or evicted.
+# `plugins/coord/docs/CUSTOMIZING.md § Superseded PR runs are cancelled in the shipped workflows`
+# (in your coord install) OWNS the rule, the exemption and why the group is not just `github.ref`.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # UTF-8 stdio pinned at WORKFLOW scope (card#7869) — KEEP IT when you copy this file.
+  # `plugins/coord/docs/CUSTOMIZING.md § UTF-8 stdio in the shipped workflows` (in your coord
+  # install) OWNS the argument and the measurement — deliberately not restated.
+  PYTHONUTF8: "1"
+  # ⛔ CUSTOMIZE: the longest `retention-days` this repository accepts. Empty means 2. You may set
+  # 1; a value of 3 or more fails this check (the framework holds uploads under 3 days).
+  RETENTION_CEILING_DAYS: ""
+
+jobs:
+  storage-cost-guard:
+    name: storage-cost-guard
+    # edited-reads: base — the checkout below is the PR's MERGE commit, which a retarget moves
+    # (card#11683: a job that runs on `edited` must read something `edited` changes).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - name: Install the one dependency, pinned
+        run: python3 -I -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
+
+      - name: Refuse uploads without a short retention and a reason, and caches that never change
+        run: |
+          set -euo pipefail
+          python3 -I -X utf8 - <<'STORAGE_GUARD_PY'
+          import os
+          import posixpath
+          import re
+          import sys
+          from pathlib import Path
+
+          # LF on stdout on every runner OS, before the first line is written: a `windows-*` runner's
+          # text-mode stdout would otherwise emit CRLF into the annotation lines.
+          sys.stdout.reconfigure(newline="\n", errors="backslashreplace")
+
+          try:
+              import yaml
+          except ImportError:
+              print("::error::storage-cost-guard: PyYAML is not importable, so no workflow can be "
+                    "parsed and this check would pass over an EMPTY population. Refusing.")
+              sys.exit(1)
+
+          ROOT = Path.cwd()
+          WORKFLOW_DIR = ".github/workflows"
+          ACTION_METADATA = ("action.yml", "action.yaml")
+
+          # VENDOR-BEGIN(workflow-discovery)
+          # GENERATED — do not edit; source: plugins/coord/_vendor/workflow-discovery.py.txt; regenerate (framework repo only): python3 tools/gen-vendored.py; fragment-sha256: 862dae9c00bca867
+          # jscpd:ignore-start
+          PARSE_FAIL = "PARSE_FAIL"
+
+
+          def load(path):
+              """Parsed YAML, or the sentinel tuple `(PARSE_FAIL, detail)` — never a silent None.
+
+              A caller that treats an unparseable file as "no findings here" has a hole in its
+              measurement, not a clean file; the sentinel forces the distinction to be handled.
+              A file that is not UTF-8 (Latin-1, UTF-16) is one of those: it cannot be read as
+              the text it is parsed from, so it takes the sentinel like a syntax error rather
+              than escaping as an uncaught `UnicodeDecodeError` that names no file."""
+              try:
+                  return yaml.safe_load(path.read_text(encoding="utf-8"))
+              except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+                  return (PARSE_FAIL, f"{type(exc).__name__}: {exc}")
+
+
+          def is_parse_fail(doc):
+              """True for the `load()` sentinel. One spelling, so no caller re-invents the tuple."""
+              return isinstance(doc, tuple) and bool(doc) and doc[0] == PARSE_FAIL
+
+
+          def trigger_block(doc):
+              """The workflow's `on:` mapping, or None if this document has no resolvable one.
+
+              Resolves BOTH spellings. YAML 1.1 folds an unquoted `on:` key to the BOOLEAN `True`,
+              so a reader asking for `doc["on"]` classifies EVERY workflow as not-a-workflow and
+              a scan built on it reports a clean zero over an empty population."""
+              if not isinstance(doc, dict):
+                  return None
+              for key, value in doc.items():
+                  if key is True or (isinstance(key, str) and key.lower() == "on"):
+                      return value
+              return None
+
+
+          def is_workflow(doc):
+              """A GitHub Actions workflow: a mapping with a trigger block AND a `jobs:` mapping.
+
+              Decided BY CONTENT, never by path: a workflow in a directory nobody listed must
+              still join the population."""
+              return (isinstance(doc, dict)
+                      and trigger_block(doc) is not None
+                      and isinstance(doc.get("jobs"), dict))
+          # jscpd:ignore-end
+          # VENDOR-END(workflow-discovery)
+
+          # VENDOR-BEGIN(storage-cost)
+          # GENERATED — do not edit; source: plugins/coord/_vendor/storage-cost.py.txt; regenerate (framework repo only): python3 tools/gen-vendored.py; fragment-sha256: 4913f9c9f1535ff3
+          # jscpd:ignore-start
+          # THE STORAGE-COST RULE (card#12391). Every `actions/upload-artifact` step declares a
+          # `retention-days` at or below the ceiling, and an upload condition: an `if:` that limits
+          # it to a failure, or a named reason in an `# upload-reason: <why>` comment inside the step
+          # (or directly above it). Every `actions/cache` (and `actions/cache/save`) step has a key
+          # that can change. The operator ruled the ceiling "<3" days, default 2, lowerable only.
+          RETENTION_CEILING_MAX = 2
+          UPLOAD_ACTION = "actions/upload-artifact"
+          CACHE_ACTIONS = ("actions/cache", "actions/cache/save")
+          REASON_RE = re.compile(r"#\s*upload-reason:\s*(\S.*)$")
+          # A key built only from these contexts is the same on every run of one runner image, so
+          # it is as constant as a literal. Anything else in an expression may change, and is NOT
+          # judged here (a value drawn from `env.`, `vars.`, `inputs.`, `matrix.` or a step output
+          # can still be constant; deciding that needs the run, not the file).
+          CONSTANT_KEY_CONTEXTS = ("runner.os", "runner.arch")
+          # This fragment is spliced into a workflow `run:` block, where Actions evaluates every
+          # literal expression opener, comments included; spell it only as this escaped regex
+          # (the framework repo's workflow-expression-syntax scan reds on a bare one).
+          _EXPR_RE = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+
+
+          def retention_ceiling(raw):
+              """(ceiling, error) from the configured value. Absent or empty is the default; a value
+              that is not a whole number from 1 to RETENTION_CEILING_MAX is refused, never clamped:
+              a ceiling configured to 3 or more is the setting the operator ruled out."""
+              if raw is None or str(raw).strip() == "":
+                  return RETENTION_CEILING_MAX, ""
+              text = str(raw).strip()
+              if not re.fullmatch(r"[0-9]+", text):
+                  return None, f"the retention ceiling {text!r} is not a whole number of days"
+              days = int(text)
+              if days < 1 or days > RETENTION_CEILING_MAX:
+                  return None, (f"the retention ceiling is {days}; it may be lowered to 1 but never "
+                                f"set above {RETENTION_CEILING_MAX} (uploads are kept under 3 days)")
+              return days, ""
+
+
+          def action_name(uses):
+              """`owner/repo[/path]` of a `uses:` value, lower-cased (GitHub resolves owner and repo
+              in any letter case), or "" for a non-string value."""
+              if not isinstance(uses, str):
+                  return ""
+              return uses.split("@", 1)[0].strip().lower()
+
+
+          def _strip_expr(text):
+              text = text.strip()
+              whole = _EXPR_RE.fullmatch(text)
+              if whole:
+                  text = whole.group(1)
+              return text.strip()
+
+
+          def limited_to_failure(cond):
+              """True when a step's `if:` runs it only after a failure: `failure()` is one of its
+              top-level `&&` terms, and no `||` can widen it. Anything else needs a reason."""
+              if not isinstance(cond, str):
+                  return False
+              expr = _strip_expr(cond)
+              if "||" in expr:
+                  return False
+              for term in expr.split("&&"):
+                  term = re.sub(r"\s+", "", term)
+                  while term.startswith("(") and term.endswith(")"):
+                      term = term[1:-1]
+                  if term == "failure()":
+                      return True
+              return False
+
+
+          def constant_key(key):
+              """True when a cache key can never change: no expression at all, or expressions that
+              read only CONSTANT_KEY_CONTEXTS."""
+              if not isinstance(key, str):
+                  return False
+              for expr in _EXPR_RE.findall(key):
+                  if re.sub(r"\s+", "", expr) not in CONSTANT_KEY_CONTEXTS:
+                      return False
+              return True
+
+
+          def _comment_only(line):
+              return line.strip().startswith("#")
+
+
+          def step_windows(text):
+              """{(container, index): [source lines]} for every step mapping in `text`, read from
+              the composed YAML so a marker comment (which the parsed document drops) is found in
+              the step it belongs to. A window is the step's own lines, plus the comment-only lines
+              directly above it. Comment-only lines trailing a step belong to the step below when
+              they sit directly above it, and to NO step otherwise — never to the step above."""
+              lines = text.splitlines()
+              root = yaml.compose(text, Loader=yaml.SafeLoader)
+              windows = {}
+
+              def mapping_get(node, name):
+                  if isinstance(node, yaml.MappingNode):
+                      for key, value in node.value:
+                          if isinstance(key, yaml.ScalarNode) and key.value == name:
+                              return value
+                  return None
+
+              def take(container, seq):
+                  if not isinstance(seq, yaml.SequenceNode):
+                      return
+                  for idx, item in enumerate(seq.value):
+                      first = item.start_mark.line
+                      # A block node's end mark sits at the START of the token after it: the next
+                      # item's `-`, the next key, or end of file. When only indentation precedes
+                      # the mark, its line belongs to what follows, so the step ends a line above.
+                      end = item.end_mark
+                      head = lines[end.line][:end.column] if end.line < len(lines) else ""
+                      last = end.line if head.strip() else end.line - 1
+                      while last > first and (not lines[last].strip() or _comment_only(lines[last])):
+                          last -= 1
+                      while first > 0 and _comment_only(lines[first - 1]):
+                          first -= 1
+                      windows[(container, idx)] = lines[first:last + 1]
+
+              jobs = mapping_get(root, "jobs")
+              if isinstance(jobs, yaml.MappingNode):
+                  for key, job in jobs.value:
+                      take(f"jobs.{key.value}.steps", mapping_get(job, "steps"))
+              take("runs.steps", mapping_get(mapping_get(root, "runs"), "steps"))
+              return windows
+
+
+          def step_lists(doc):
+              """(container, steps) for each step list a workflow or a composite action holds."""
+              out = []
+              if not isinstance(doc, dict):
+                  return out
+              jobs = doc.get("jobs")
+              if isinstance(jobs, dict):
+                  for job_id, job in jobs.items():
+                      if isinstance(job, dict) and isinstance(job.get("steps"), list):
+                          out.append((f"jobs.{job_id}.steps", job["steps"]))
+              runs = doc.get("runs")
+              if isinstance(runs, dict) and isinstance(runs.get("steps"), list):
+                  out.append(("runs.steps", runs["steps"]))
+              return out
+
+
+          def storage_findings(doc, text, ceiling):
+              """(findings, judged): `findings` is [(where, message)] for every upload or cache step
+              in a parsed workflow or composite action that breaks the rule; `judged` counts the
+              upload and cache steps read, so a caller can tell "clean" from "none seen"."""
+              findings, judged = [], 0
+              windows = None
+              for container, steps in step_lists(doc):
+                  for idx, step in enumerate(steps):
+                      if not isinstance(step, dict):
+                          continue
+                      name = action_name(step.get("uses"))
+                      where = f"{container}[{idx}]"
+                      inputs = step.get("with") if isinstance(step.get("with"), dict) else {}
+                      if name == UPLOAD_ACTION or name.startswith(UPLOAD_ACTION + "/"):
+                          judged += 1
+                          days = inputs.get("retention-days")
+                          if days is None:
+                              findings.append((where, f"`{step['uses']}` declares no "
+                                               f"`retention-days`, so GitHub keeps it for the "
+                                               f"repository default (90 days unless changed); set "
+                                               f"`retention-days: {ceiling}` or less"))
+                          elif (isinstance(days, bool)
+                                or not re.fullmatch(r"[0-9]+", str(days).strip())):
+                              findings.append((where, f"`retention-days: {days}` is not a literal "
+                                               f"whole number, so it cannot be checked; write "
+                                               f"1 to {ceiling}"))
+                          elif not 1 <= int(str(days).strip()) <= ceiling:
+                              findings.append((where, f"`retention-days: {days}` is outside 1 to "
+                                               f"{ceiling} (0 means the repository default)"))
+                          if not limited_to_failure(step.get("if")):
+                              if windows is None:
+                                  windows = step_windows(text)
+                              window = windows.get((container, idx), [])
+                              if not any(REASON_RE.search(line) for line in window):
+                                  findings.append((where, "the upload runs on every run: limit it "
+                                                   "with `if: failure()` (alone, or joined with "
+                                                   "`&&`), or name why it is kept in an "
+                                                   "`# upload-reason: <why>` comment on the step"))
+                      elif name in CACHE_ACTIONS:
+                          judged += 1
+                          key = inputs.get("key")
+                          if constant_key(key):
+                              findings.append((where, f"`{step['uses']}` key {key!r} never changes, "
+                                               f"so the cache is never refreshed and never expires "
+                                               f"while it is hit; build the key from what the cache "
+                                               f"holds, e.g. `hashFiles('<lockfile>')`"))
+              return findings, judged
+          # jscpd:ignore-end
+          # VENDOR-END(storage-cost)
+
+
+          def local_action_dir(uses):
+              """The checkout-relative directory a LOCAL `uses:` names (`./<dir>`, `.\\<dir>`), or
+              None for anything else."""
+              if isinstance(uses, str) and uses.startswith(("./", ".\\")):
+                  return posixpath.normpath(uses.replace("\\", "/"))
+              return None
+
+
+          def local_edges(doc):
+              return [d for _, steps in step_lists(doc) for step in steps
+                      if isinstance(step, dict) for d in [local_action_dir(step.get("uses"))] if d]
+
+
+          def main():
+              ceiling, why = retention_ceiling(os.environ.get("RETENTION_CEILING_DAYS"))
+              if ceiling is None:
+                  print(f"::error::storage-cost-guard: RETENTION_CEILING_DAYS is misconfigured — "
+                        f"{why}. Refusing.")
+                  return 1
+              failed, judged, workflows, actions = False, 0, [], []
+              queue = []
+              wf_dir = ROOT / WORKFLOW_DIR
+              files = []
+              if wf_dir.is_dir():
+                  files = sorted(p for p in wf_dir.iterdir()
+                                 if p.is_file() and p.name.lower().endswith((".yml", ".yaml")))
+              for path in files:
+                  rel = path.relative_to(ROOT).as_posix()
+                  doc = load(path)
+                  if is_parse_fail(doc):
+                      print(f"::error file={rel}::{rel} is under {WORKFLOW_DIR}, which GitHub runs, "
+                            f"and it does not parse ({doc[1]}) — this check cannot read it, so it "
+                            f"cannot pass it.")
+                      failed = True
+                      continue
+                  if not is_workflow(doc):
+                      continue
+                  workflows.append((rel, doc, path.read_text(encoding="utf-8")))
+                  queue += local_edges(doc)
+              seen = set()
+              while queue:
+                  rel_dir = queue.pop(0)
+                  if rel_dir in seen:
+                      continue
+                  seen.add(rel_dir)
+                  if rel_dir == ".." or rel_dir.startswith("../"):
+                      print(f"storage-cost-guard: NOTE — `uses: ./{rel_dir}` leaves this checkout; "
+                            f"its steps are not read.")
+                      continue
+                  for meta in ACTION_METADATA:
+                      path = ROOT / rel_dir / meta
+                      if path.is_file():
+                          break
+                  else:
+                      # Not judged here: a local Docker or JavaScript action has no steps, and a
+                      # missing directory is the runner's error. Named, never silently passed.
+                      print(f"storage-cost-guard: NOTE — `uses: ./{rel_dir}` has no action.yml / "
+                            f"action.yaml here; its steps (if any) are not read.")
+                      continue
+                  rel = path.relative_to(ROOT).as_posix()
+                  doc = load(path)
+                  if is_parse_fail(doc):
+                      print(f"::error file={rel}::{rel} is a local action a workflow uses, and it "
+                            f"does not parse ({doc[1]}) — refusing.")
+                      failed = True
+                      continue
+                  runs = doc.get("runs") if isinstance(doc, dict) else None
+                  if isinstance(runs, dict) and str(runs.get("using", "")).lower() == "composite":
+                      actions.append((rel, doc, path.read_text(encoding="utf-8")))
+                      queue += local_edges(doc)
+
+              for rel, doc, text in workflows + actions:
+                  findings, count = storage_findings(doc, text, ceiling)
+                  judged += count
+                  for where, message in findings:
+                      print(f"::error file={rel}::{where}: {message}")
+                      failed = True
+
+              # NON-VACUITY. Zero findings is the passing value AND what a discovery that found
+              # nothing prints, so the population must hold this workflow's own file.
+              own = os.environ.get("GITHUB_WORKFLOW_REF", "").split("@", 1)[0]
+              own = own.split("/", 2)[2] if own.count("/") >= 2 else ""
+              if own and own not in [rel for rel, _, _ in workflows]:
+                  print(f"::error::storage-cost-guard: this workflow's own file ({own}) was NOT "
+                        f"read, so the walk is not reaching the files GitHub runs. Refusing.")
+                  failed = True
+              if not workflows:
+                  print(f"::error::storage-cost-guard: NO workflow under {WORKFLOW_DIR} was read — "
+                        f"at the very least this one should be. Refusing.")
+                  failed = True
+              if failed:
+                  print("storage-cost-guard: RED — fix each line above. Store nothing in CI you "
+                        "will not read; every upload has a retention under 3 days and a reason.")
+                  return 1
+              print(f"storage-cost-guard: clean — {len(workflows)} workflow(s) and {len(actions)} "
+                    f"local composite action(s) read; {judged} upload / cache step(s) judged "
+                    f"against a {ceiling}-day ceiling. Not read: remote actions and reusable "
+                    f"workflows, uploads made without actions/upload-artifact, and cache keys "
+                    f"whose expressions read more than runner.os / runner.arch.")
+              return 0
+
+
+          sys.exit(main())
+          STORAGE_GUARD_PY
