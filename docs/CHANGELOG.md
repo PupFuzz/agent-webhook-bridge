@@ -16,6 +16,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#13823** — Add the **Issues** event to the webhook of every GitHub repo a seat serves (repo Settings → Webhooks → the hook delivering to this bridge → *Let me select individual events* → *Issues*). Impl-repo hooks have sent only *Pull requests*, *Pushes* and *Workflow runs*; without *Issues* no dependency-advisory notice reaches the bridge, and `bridge:check` warns for each such repo. The advisory wake is **on by default** for every `CoordinationClassifier` agent: to opt an agent out, set `advisory_wake: false` under its `classifier.config`.
 
+### Security
+
+- **card#13844** — 🔒 **composer/league/commonmark 2.10.7 → 2.10.8** (`composer.lock` only; repository advisories GHSA-8q9g-2c37-97xp (medium, excessive regex backtracking in `AttributesExtension` on untrusted Markdown with many `{` that open no attribute list; range `>= 2.0.0, < 2.10.8`, patched in 2.10.8) and GHSA-h4px-59g8-q37c (low, `max_delimiters_per_line` counted a run of delimiter characters as one, so long `_`/`*` runs nested emphasis deeply enough to render in quadratic time; range `>= 2.6.0, < 2.10.8`, patched in 2.10.8)). CommonMark is transitive (via `laravel/framework`, whose `^2.8.1` already admits 2.10.8). The bridge renders no Markdown to HTML: its code never calls `Str::markdown`, `Str::inlineMarkdown` or a CommonMark converter and sends no Markdown mail, and neither it nor Laravel registers `AttributesExtension` or sets `max_delimiters_per_line`, so neither vulnerable path is reachable from a request and the 2.10.8 behaviour changes (attribute-list parsing, delimiter counting, link reference definitions) reach no bridge output. Only the `league/commonmark` version moved; Composer 2.11 also wrote `published-time` metadata into the lock entries of `dflydev/dot-access-data`, `league/config`, `nette/schema`, `nette/utils` and `psr/event-dispatcher`, whose versions are unchanged. Run `composer install` on deploy as usual. No migration, no config key.
+
 ## [0.109.4] - 2026-11-23
 
 ### Added
