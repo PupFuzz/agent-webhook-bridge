@@ -328,11 +328,11 @@ class CoordinationCardRelaneClassifierTest extends TestCase
         // that acts on an action it never declared cannot exist.
         $this->assertSame(
             ['issues.labeled'],
-            (new CoordinationClassifier)->consumedEventTypes(ClassifierConfig::fromClassifierSection(['class' => CoordinationClassifier::class, 'config' => ['families' => ['coord-card-relane']]])),
+            (new CoordinationClassifier)->consumedEventTypes(ClassifierConfig::fromClassifierSection(['class' => CoordinationClassifier::class, 'config' => ['advisory_wake' => false, 'families' => ['coord-card-relane']]])),
         );
         $this->assertNotContains(
             'issues.labeled',
-            (new CoordinationClassifier)->consumedEventTypes(ClassifierConfig::fromClassifierSection(['class' => CoordinationClassifier::class, 'config' => ['families' => ['coord-card-create', 'coord-card-move']]])),
+            (new CoordinationClassifier)->consumedEventTypes(ClassifierConfig::fromClassifierSection(['class' => CoordinationClassifier::class, 'config' => ['advisory_wake' => false, 'families' => ['coord-card-create', 'coord-card-move']]])),
         );
     }
 }

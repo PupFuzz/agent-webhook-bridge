@@ -55,10 +55,27 @@ class CoordinationClassifierTest extends TestCase
 
     // ---- consumedEventTypes (card#4183 / DL-196) ----
 
-    /** @param array<mixed> $config */
+    /**
+     * The FAMILY declarations, with the family-independent advisory wake opted out so each test
+     * reads exactly what its families declare; the advisory's own declaration is tested below.
+     *
+     * @param  array<mixed>  $config
+     */
     private function config(array $config = []): ClassifierConfig
     {
-        return ClassifierConfig::fromClassifierSection($config === [] ? [] : ['config' => $config]);
+        return ClassifierConfig::fromClassifierSection(['config' => ['advisory_wake' => false] + $config]);
+    }
+
+    public function test_consumed_event_types_add_the_advisory_notice_unless_opted_out(): void
+    {
+        $advisory = ['issues.labeled', 'issues.opened', 'issues.reopened'];
+
+        foreach ([$this->classifier, new KanbanTriageClassifier] as $classifier) {
+            $events = $classifier->consumedEventTypes(ClassifierConfig::fromClassifierSection(['config' => ['families' => ['kanban-triage']]]));
+            sort($events);
+            $this->assertSame($advisory, $events, $classifier::class.': the advisory wake runs whatever the families');
+        }
+        $this->assertSame([], $this->classifier->consumedEventTypes($this->config(['families' => ['kanban-triage']])));
     }
 
     public function test_consumed_event_types_default_families_are_coord_message(): void

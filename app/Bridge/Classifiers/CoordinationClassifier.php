@@ -14,6 +14,7 @@ use App\Bridge\Dispatch\OnceLedger;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\CiHeadAggregateHandler;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
+use App\Bridge\Support\AdvisoryNotice;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
 use App\Bridge\Support\SubscriptionRegistry;
@@ -127,6 +128,10 @@ use App\Bridge\Writeback\WritebackMapping;
  *     Opt-in (not a default) and additionally gated on `move_coord_cards` AND a
  *     configured `coord_card_lane_stage_ids` (with no lane model there is no lane
  *     to write).
+ *
+ * Outside the families, on every agent: a dependency-advisory notice issue wakes the agent with an
+ * `impl_advisory` intent unless `advisory_wake: false` ({@see self::advisoryNotice()}, DL-506), and a
+ * kanban card comment wakes its assignee ({@see self::cardCommentWake()}).
  *
  * SCOPE-AGNOSTIC: never branches on `$ctx->scopeId` for routing — it keys on the
  * addressing labels + `$agent->agentName` — so the same instance serves a coord
@@ -293,7 +298,22 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $reattributed = $base->reattributedActor;
         $dropReason = $base->dropReason;
         $once = $base->once;
+
+        // An advisory notice wakes whatever families are enabled, and it is that issue's only
+        // agent surface: coord-message would otherwise stage a second intent for it under
+        // `inbox_stage` or a `to:` label, and its `scope_author_map` attribution would name the
+        // serving agent as the author of a bot's issue and have the dispatcher drop it as an echo.
+        $advisory = $this->advisoryNotice($ctx);
+        if ($advisory !== null) {
+            $intents = [...$intents, ...$advisory->intents];
+            $targets = [...$targets, ...$advisory->targets];
+            $once ??= $advisory->once;
+        }
+
         foreach ($families as $family) {
+            if ($advisory !== null && $family === 'coord-message') {
+                continue;
+            }
             $result = match ($family) {
                 'coord-message' => $this->coordMessageFamily($ctx, $cfg),
                 'impl-ci-wake' => $this->implCiWakeFamily($ctx, $cfg),
@@ -337,6 +357,47 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /**
+     * The `impl_advisory` wake for a dependency-advisory notice issue ({@see AdvisoryNotice},
+     * DL-506), or null when this event is not one for this agent. The issue's opening can arrive
+     * as both `issues.opened` and `issues.labeled` — GitHub sends a `labeled` for each label an
+     * issue is created with — so those two share a once key and wake the agent once. A reopen
+     * carries none: a notice the producer closed and reopened is news again.
+     */
+    private function advisoryNotice(ClassifyContext $ctx): ?ClassifyResult
+    {
+        $notice = AdvisoryNotice::of($ctx->agent, $ctx->provider, $ctx->scopeId, $ctx->eventType, $ctx->payload);
+        if ($notice === null) {
+            return null;
+        }
+
+        $intent = new Intent(
+            kind: AdvisoryNotice::KIND,
+            subjectId: $notice->subjectId,
+            provider: $ctx->provider,
+            actor: $ctx->actor,
+            summary: sprintf('dependency advisory %s on %s #%d: %s', $notice->action, $ctx->scopeId, $notice->number, $this->oneLine($notice->title)),
+            payload: [
+                'repo' => $ctx->scopeId,
+                'event' => $ctx->eventType,
+                'action' => $notice->action,
+                'number' => $notice->number,
+                'url' => $notice->url,
+                'title' => $notice->title,
+                'label' => $ctx->agent->classifierConfig->advisoryLabel,
+            ],
+        );
+
+        $once = $notice->action === 'reopened' ? null : new OnceKey(
+            key: AdvisoryNotice::KIND.':'.strtolower($notice->subjectId),
+            holder: $notice->action,
+            subjectId: $notice->subjectId,
+            lostReason: AdvisoryNotice::ALREADY_CARRIED,
+        );
+
+        return new ClassifyResult(intents: [$intent], targets: $this->wakePush($intent, $ctx), once: $once);
+    }
+
+    /**
      * The families run when `classifier.config.families` is unset. The base default
      * is the pre-#8 coord-message-only behavior; a subclass overrides this to pin a
      * different default (e.g. the {@see KanbanTriageClassifier} shim → kanban-triage).
@@ -355,7 +416,8 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * source of truth the classify pipeline uses so the two can't drift:
      * coord-message from {@see HANDLED}, impl-ci-wake from
      * {@see IMPL_CI_WAKE_EVENT_TYPES}, coord-card-create → `issues` (DL-198),
-     * coord-card-move → `issues` (DL-200), coord-card-relane → `issues` (card#6393).
+     * coord-card-move → `issues` (DL-200), coord-card-relane → `issues` (card#6393),
+     * plus the family-independent advisory notice's `issues.*` actions while it is on (DL-506).
      * kanban-triage (and any unknown family) is a kanban-provider family that
      * consumes NO GitHub event type → contributes nothing. Pure `$cfg` → map, no
      * class-loading (the HARD CONTRACT on {@see DeclaresConsumedEvents}).
@@ -366,7 +428,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     {
         $families = $cfg->enabledFamilies !== [] ? $cfg->enabledFamilies : $this->defaultFamilies();
 
-        $events = [];
+        $events = AdvisoryNotice::eventTypes($cfg);
         foreach ($families as $family) {
             $events = [...$events, ...match ($family) {
                 'coord-message' => self::coordMessageEventTypes($cfg),

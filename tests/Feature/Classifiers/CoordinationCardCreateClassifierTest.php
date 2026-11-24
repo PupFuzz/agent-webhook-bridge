@@ -316,13 +316,13 @@ class CoordinationCardCreateClassifierTest extends TestCase
         // family that acts on an action it never declared cannot exist. `issues.edited` is
         // the retitle arm's, and it must not appear for a family that does not carry it.
         $types = (new CoordinationClassifier)->consumedEventTypes(ClassifierConfig::fromClassifierSection(
-            ['class' => CoordinationClassifier::class, 'config' => ['families' => ['coord-card-create']]],
+            ['class' => CoordinationClassifier::class, 'config' => ['advisory_wake' => false, 'families' => ['coord-card-create']]],
         ));
         sort($types);
         $this->assertSame(['issues.edited', 'issues.opened', 'issues.reopened'], $types);
 
         $this->assertNotContains('issues.edited', (new CoordinationClassifier)->consumedEventTypes(ClassifierConfig::fromClassifierSection(
-            ['class' => CoordinationClassifier::class, 'config' => ['families' => ['coord-card-move', 'coord-card-relane']]],
+            ['class' => CoordinationClassifier::class, 'config' => ['advisory_wake' => false, 'families' => ['coord-card-move', 'coord-card-relane']]],
         )));
     }
 
