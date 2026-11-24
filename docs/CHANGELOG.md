@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.109.4] - 2026-11-23
+
 ### Added
 
 - **card#12616** — Two pull-request checks from the coord plugin v0.77.0. `storage cost guard` fails a PR whose workflows upload an artifact without a short `retention-days` and a reason, or cache under a key that never changes (no workflow here does either today). `quality ratchet` fails a PR that adds a function over the complexity or length limit, a new over-size or mostly-comment file, or a new copied block; growth of existing code is a warning only. On a PR to `main` its rule findings become warnings; a measurement failure still fails. Each workflow's header owns its rules and how to fix a red. Repository CI only; no migration, no config key.
@@ -32,8 +34,9 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
+- Before updating the bridge, check each seat's channel-server `BRIDGE_TOOLS_ENDPOINT`. If it reaches `/agent-tools/*` through a reverse proxy or tunnel on the bridge's box that adds a `Via`, `X-Real-IP` or `CF-Connecting-IP` header (nginx, Cloudflare), point it at the bridge's own web server on loopback (`docs/board-tools.md` § Same-box enablement, step 1) and restart that seat's session. Do this first: once the bridge is updated, such a seat has every board-tool call refused 403.
 - **card#12251** — Installers no longer need the `ADVISORY_BUMP_TOKEN` repository secret: nothing reads it. The operator should delete that secret from the repository and revoke the personal access token behind it. Deleting it does not affect the audit.
-- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.84. Until you do, seats stay on the client they have, whose lockfile pins express-rate-limit 8.7.2 and @hono/node-server 2.1.7, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.84. Until you do, seats stay on the client they have (snapshot 0.9.83 from v0.109.3), whose lockfile pins @hono/node-server 2.1.7 and express-rate-limit 8.7.5, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
 
 ## [0.109.3] - 2026-11-19
 
