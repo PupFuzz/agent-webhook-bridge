@@ -39,6 +39,7 @@ final class ClassifierConfig
      * @param  string  $implCiDelivery  `impl_ci_delivery` — {@see IMPL_CI_AGGREGATE} (default) or {@see IMPL_CI_PER_RUN}
      * @param  bool  $advisoryWake  `advisory_wake` — wake on a dependency-advisory notice issue ({@see AdvisoryNotice}); default ON, `false` opts out
      * @param  string  $advisoryLabel  `advisory_label` — the label that marks such an issue, lowercased
+     * @param  list<string>  $advisoryActors  `advisory_actors` — the accounts whose issue IS a notice ({@see GithubAccountList})
      */
     private function __construct(
         public readonly array $scopeAuthorMap,
@@ -47,6 +48,7 @@ final class ClassifierConfig
         public readonly string $implCiDelivery = self::IMPL_CI_AGGREGATE,
         public readonly bool $advisoryWake = true,
         public readonly string $advisoryLabel = self::ADVISORY_LABEL_DEFAULT,
+        public readonly array $advisoryActors = self::ADVISORY_ACTORS_DEFAULT,
     ) {}
 
     /**
@@ -54,6 +56,12 @@ final class ClassifierConfig
      * opens. The label name is the contract between that producer and this consumer.
      */
     public const ADVISORY_LABEL_DEFAULT = 'dependency-advisory';
+
+    /**
+     * The producer's account: that workflow acts with its `GITHUB_TOKEN`, so its sender is
+     * `github-actions[bot]`, whose account id is 41898282. Both forms, so a rename cannot unbind it.
+     */
+    public const ADVISORY_ACTORS_DEFAULT = ['github-actions[bot]', '41898282'];
 
     /**
      * `impl_ci_delivery: aggregate` (the default, card#11667): the `impl-ci-wake` family stages no
@@ -95,6 +103,7 @@ final class ClassifierConfig
             implCiDelivery: self::parseImplCiDelivery($config),
             advisoryWake: self::parseAdvisoryWake($config),
             advisoryLabel: self::parseAdvisoryLabel($config),
+            advisoryActors: array_key_exists('advisory_actors', $config) ? self::parseStringList($config, 'advisory_actors') : self::ADVISORY_ACTORS_DEFAULT,
         );
     }
 

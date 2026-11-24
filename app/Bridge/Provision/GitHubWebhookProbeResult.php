@@ -57,7 +57,7 @@ final class GitHubWebhookProbeResult
         public readonly ?bool $lastDelivery2xx = null,
     ) {}
 
-    public static function present(string $source, ?bool $active = null, ?bool $workflowRun = null, ?bool $json = null, ?bool $lastDelivery2xx = null, ?bool $issues = null): self
+    public static function present(string $source, ?bool $active = null, ?bool $workflowRun = null, ?bool $issues = null, ?bool $json = null, ?bool $lastDelivery2xx = null): self
     {
         return new self(GitHubWebhookProbeKind::Present, source: $source, active: $active, workflowRun: $workflowRun, issues: $issues, json: $json, lastDelivery2xx: $lastDelivery2xx);
     }

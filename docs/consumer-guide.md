@@ -90,9 +90,9 @@ A comment posted on a kanban card reaches **the seat the card is assigned to**, 
 
 ### Dependency advisory notices: `impl_advisory`
 
-A GitHub issue carrying the advisory label (`classifier.config.advisory_label`, default `dependency-advisory`) — what the framework's `Dependency advisory notices` workflow opens per (advisory, package) on a repo — wakes **every seat subscribed to that repo** whose classifier is `CoordinationClassifier`, whatever `families` it lists, unless the seat set `advisory_wake: false` (DL-506, [`config-schema.md`](config-schema.md)). It is sent on `issues.opened` and `issues.reopened` of a labelled issue and on `issues.labeled` adding the label; an opening reaches you once even though GitHub sends both an `opened` and a `labeled` for it (twice at worst, on the residuals `App\Bridge\Dispatch\OnceLedger` names), and a reopen reaches you again. The notice is that issue's only intent: `coord-message` does not also surface it as a `coord_issue`.
+A GitHub issue carrying the advisory label (`classifier.config.advisory_label`, default `dependency-advisory`), sent by an `advisory_actors` account (default `github-actions[bot]`) — what the framework's `Dependency advisory notices` workflow opens per (advisory, package) on a repo — wakes **every seat subscribed to that repo** whose classifier is `CoordinationClassifier`, whatever `families` it lists, unless the seat set `advisory_wake: false` (DL-506, [`config-schema.md`](config-schema.md)). It is sent on `issues.opened` and `issues.reopened` of a labelled issue and on `issues.labeled` adding the label; an opening reaches you once even though GitHub sends both an `opened` and a `labeled` for it (twice at worst, on the residuals `App\Bridge\Dispatch\OnceLedger` names), and a reopen reaches you again. The notice is that issue's only intent: `coord-message` does not also surface it as a `coord_issue`.
 
-`subject_id` is `<repo>#<issue number>`. `actor` is whoever acted — the producer's `github-actions[bot]`. `payload`:
+`subject_id` is `<repo>#<issue number>`. `actor` is the producer's account (`github-actions[bot]` by default) — an issue any other account labels or reopens is not a notice, and arrives, if at all, as an ordinary coordination issue. `payload`:
 
 | key | meaning |
 |---|---|
@@ -453,7 +453,7 @@ Source of truth for "what agents exist + how to address them." Read-on-startup i
 
 > **Bound under a SHARED upstream identity (DL-253).** When several agents post as one account, suppression depends on the classifier recovering **who performed the event**, and some events carry no evidence of that — a bodyless `reopened` / `closed` names nobody. Those are **delivered**, including the ones the agent itself performed: the alternative is dropping a counterparty's action on the same evidence, which is what the bridge did until DL-253 (it suppressed every counterparty action on a thread the agent had opened, because the thread's `from:` label named that agent). So on a shared account, **"my own write never reaches my inbox" holds for what the agent WRITES — text it authored — and not for evidence-free actions it takes.** Loop-avoidance is unaffected: a coordination intent triggers a wake, not a write.
 
-`SignalAllowlist` further filters when `treat_as_signal` is set to a non-empty list in the operator config — only events from named agents reach the inbox.
+`SignalAllowlist` further filters when `treat_as_signal` is set to a non-empty list in the operator config — only events from named agents reach the inbox, except a dependency-advisory notice from an `advisory_actors` account (§ *Dependency advisory notices*; [`config-schema.md`](config-schema.md) `advisory_actors`).
 
 Both filters happen **before** `inbox.jsonl` writes. Consumers do not need to re-implement them.
 

@@ -16,6 +16,7 @@ use App\Bridge\Handlers\CiHeadAggregateHandler;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\AdvisoryNotice;
 use App\Bridge\Support\ClassifierConfig;
+use App\Bridge\Support\GithubAccountList;
 use App\Bridge\Support\RecipientAddressing;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TitleChangeEvidence;
@@ -800,9 +801,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * triggered the ORIGINAL run) would wrongly suppress. A `push` has no such split, so
      * it keys on `sender`.
      *
-     * Each list entry matches EITHER the login (case-insensitive — `dependabot[bot]`) OR
-     * the numeric account id (exact — `49699333`). Ids are immutable where logins rename,
-     * so an operator can pin the durable one; logins are what they actually know. It is a
+     * Entries match as {@see GithubAccountList} states (login or numeric id). It is a
      * general deny-list, not a Dependabot special case — renovate/mergify//own automation
      * cost the same to express and need no second knob.
      *
@@ -835,20 +834,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             $who = is_array($payload['sender'] ?? null) ? $payload['sender'] : [];
         }
 
-        $login = is_scalar($who['login'] ?? null) ? strtolower(trim((string) $who['login'])) : '';
-        $id = is_scalar($who['id'] ?? null) ? trim((string) $who['id']) : '';
-
-        foreach ($deny as $entry) {
-            $e = trim((string) $entry);
-            if ($e === '') {
-                continue;
-            }
-            if (($login !== '' && strtolower($e) === $login) || ($id !== '' && $e === $id)) {
-                return true;
-            }
-        }
-
-        return false;
+        return GithubAccountList::matches($deny, $who);
     }
 
     private function implCiWakeFamily(ClassifyContext $ctx, ClassifierConfig $cfg): ?ClassifyResult

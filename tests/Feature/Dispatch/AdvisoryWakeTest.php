@@ -33,6 +33,9 @@ class AdvisoryWakeTest extends TestCase
     /** github-actions[bot], the account a workflow's GITHUB_TOKEN acts as. */
     private const BOT = ['login' => 'github-actions[bot]', 'id' => 41898282];
 
+    /** Any other account that can label or reopen an issue: a triage collaborator, another App. */
+    private const COLLABORATOR = ['login' => 'some-collaborator', 'id' => 777001];
+
     private string $dir;
 
     private int $delivery = 0;
@@ -75,7 +78,7 @@ class AdvisoryWakeTest extends TestCase
      * @param  list<string>  $labels
      * @param  array<string, mixed>  $extra  top-level payload keys (e.g. `label` on a `labeled`)
      */
-    private function issueEvent(string $action, array $labels = ['dependency-advisory'], array $extra = [], int $number = 17): void
+    private function issueEvent(string $action, array $labels = ['dependency-advisory'], array $extra = [], int $number = 17, array $sender = self::BOT): void
     {
         $subs = new SubscriptionRegistry($this->dir);
         $dispatcher = new DispatchService(
@@ -94,10 +97,10 @@ class AdvisoryWakeTest extends TestCase
                 'labels' => array_map(static fn (string $l): array => ['name' => $l], $labels),
             ],
             'repository' => ['full_name' => 'org/impl'],
-            'sender' => self::BOT,
+            'sender' => $sender,
         ] + $extra;
         $dispatcher->dispatch('github', 'org/impl', new EventDto(
-            deliveryId: 'd-'.(++$this->delivery), scopeId: 'org/impl', eventType: "issues.{$action}", actorId: (string) self::BOT['id'],
+            deliveryId: 'd-'.(++$this->delivery), scopeId: 'org/impl', eventType: "issues.{$action}", actorId: (string) $sender['id'],
         ), $payload);
     }
 
@@ -233,6 +236,48 @@ class AdvisoryWakeTest extends TestCase
 
         Http::assertNothingSent();
         $this->assertSame('actor is not a signal', AgentDispatch::value('reason'));
+    }
+
+    /**
+     * Only the producer's issue is a notice. Anyone else labelling or reopening an issue must not
+     * get past the allowlist, nor re-wake the seat each time they toggle the label.
+     */
+    public function test_a_non_producer_labelling_or_reopening_on_an_allowlisted_seat_is_dropped(): void
+    {
+        File::put($this->dir.'/pm.yml', "subscriptions: []\n");
+        $this->writeSeat(extra: "echo_suppression:\n  treat_as_signal: [pm]\n");
+
+        $this->issueEvent('labeled', extra: ['label' => ['name' => 'dependency-advisory']], sender: self::COLLABORATOR);
+        $this->issueEvent('reopened', sender: self::COLLABORATOR);
+        $this->issueEvent('labeled', extra: ['label' => ['name' => 'dependency-advisory']], sender: self::COLLABORATOR);
+        $this->issueEvent('reopened', sender: self::COLLABORATOR);
+
+        Http::assertNothingSent();
+        $this->assertSame(['actor is not a signal'], AgentDispatch::distinct()->pluck('reason')->all());
+    }
+
+    /** On a seat with no allowlist, a non-producer's labelled issue is coord-message's, as before. */
+    public function test_a_non_producer_labelled_issue_is_an_ordinary_coordination_issue(): void
+    {
+        $this->writeSeat(['wake_membership: [to_all]']);
+
+        $this->issueEvent('opened', labels: ['dependency-advisory', 'to:all'], sender: self::COLLABORATOR);
+        $this->issueEvent('opened', labels: ['dependency-advisory'], number: 18, sender: self::COLLABORATOR);
+
+        $pushed = $this->pushedIntents();
+        $this->assertSame(['coord_issue'], array_column($pushed, 'kind'));
+        $this->assertSame('17', $pushed[0]['subject_id']);
+    }
+
+    /** `advisory_actors` names the producer by login (any case) or by numeric id. */
+    public function test_a_configured_producer_replaces_the_default(): void
+    {
+        $this->writeSeat(["families: ['impl-ci-wake']", "advisory_actors: ['Some-Collaborator']"]);
+
+        $this->issueEvent('opened', sender: self::BOT);
+        $this->issueEvent('opened', number: 18, sender: self::COLLABORATOR);
+
+        $this->assertSame(['org/impl#18'], array_column($this->pushedIntents(), 'subject_id'));
     }
 
     /**

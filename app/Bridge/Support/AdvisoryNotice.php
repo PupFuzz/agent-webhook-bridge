@@ -38,7 +38,8 @@ final class AdvisoryNotice
 
     /**
      * The notice this event announces to `$agent`, or null when it is not one — not an `issues`
-     * event of {@see ACTIONS}, not carrying the agent's advisory label, or the agent opted out.
+     * event of {@see ACTIONS}, not sent by one of the agent's `advisory_actors`, not carrying its
+     * advisory label, or the agent opted out.
      * The subject id is `<repo>#<number>`, unique across the repos one agent serves.
      *
      * @param  array<mixed>  $payload
@@ -51,6 +52,11 @@ final class AdvisoryNotice
         }
         $action = substr($eventType, strlen('issues.'));
         if (! in_array($action, self::ACTIONS, true)) {
+            return null;
+        }
+        // Bound to the producer: anyone else who can label or reopen an issue would otherwise pass
+        // the `treat_as_signal` gate and re-wake every seat at will.
+        if (! GithubAccountList::matches($cfg->advisoryActors, is_array($payload['sender'] ?? null) ? $payload['sender'] : [])) {
             return null;
         }
 
