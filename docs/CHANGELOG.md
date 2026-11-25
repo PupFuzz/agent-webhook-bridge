@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Security
+
+- **card#13866** — 🔒 **PHPStan no longer copies the caller's environment into its cache.** PHPStan writes every environment variable of the shell that runs it into its compiled container under the cache directory, so a run from a shell that exported an access token left that token in a cache file. `bin/phpstan.sh` is now the one way to run it, locally and in CI: it runs `phpstan analyse -c phpstan-laravel.neon` with only `PATH` in the environment, and passes any other arguments through. The cache stays in the repo's gitignored `.phpstan-cache-laravel`. Run `bin/phpstan.sh` instead of `vendor/bin/phpstan`, and delete any PHPStan cache an earlier run left (`.phpstan-cache-laravel/`, and a system temp `phpstan/` directory from a run without `-c`). Development tooling only; nothing at runtime changes.
+
 ## [0.110.0] - 2026-11-24
 
 ### Added

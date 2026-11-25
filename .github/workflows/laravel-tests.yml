@@ -69,7 +69,7 @@ jobs:
         run: vendor/bin/pint --test
 
       - name: PHPStan (level 7; scope is phpstan-laravel.neon's own `paths`)
-        run: vendor/bin/phpstan analyse -c phpstan-laravel.neon --no-progress
+        run: bin/phpstan.sh --no-progress
 
       - name: Doc-sync (the run prints each rule's own surface)
         run: php bin/check-doc-refs.php
