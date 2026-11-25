@@ -35,7 +35,7 @@
 <!-- Bullets covering what was tested. Acceptable items:
      - `vendor/bin/phpunit` (full suite green; cite count)
      - `vendor/bin/pint --test` clean
-     - `vendor/bin/phpstan analyse -c phpstan-laravel.neon` clean
+     - `bin/phpstan.sh` clean
      - Manual smoke-test against a live install (cite which install)
      - Senior-dev review-agent loop CLEAN
      - CI on this PR (green required for auto-merge per feedback-git-workflow) -->

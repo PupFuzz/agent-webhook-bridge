@@ -15,7 +15,7 @@ php artisan test                                # same as phpunit, with pretty o
 Static analysis and style:
 
 ```bash
-vendor/bin/phpstan analyse -c phpstan-laravel.neon   # level 7 — app/Bridge + the files that config names
+bin/phpstan.sh                                       # level 7 — app/Bridge + the files phpstan-laravel.neon names
 vendor/bin/pint --test                               # style check (Laravel preset; --test = dry-run)
 vendor/bin/pint                                      # fix in place
 ```
@@ -413,7 +413,7 @@ read first, means a value edited on the `<env>` line alone would be silently ign
 - Push to `main`/`dev`; pull requests to `main`/`dev`
 - Runs on the PHP and Node versions `.github/actions/setup-app` pins (Node because PHPUnit runs `bin/gen-client-capabilities.mjs`), `pdo_sqlite` + `pdo_mysql` extensions installed. The job **label** carries no version on purpose — it's a required-status-check identifier pinned in `dev`/`main` branch protection, so renaming it must be done together with a `gh api` branch-protection contexts update (see DL-040), not in a routine PR.
 - Checks out the **whole history** (`fetch-depth: 0`) and first runs `node bin/gen-client-capabilities.mjs --check` — is `resources/client-capabilities.json` what the history of `examples/channel-servers/` derives (DL-425)? It lives in this job, and not in the path-filtered channel-server workflow, so a PR touching only the table or the generator is checked too, and a red blocks the merge.
-- Pint style check, PHPStan level 7 on `app/Bridge` **plus `app/Console/Commands/Bridge/CheckCommand.php`** (the finding renderer — added by DL-238 so an unhandled `Severity` case is a CI error, not a runtime `UnhandledMatchError`; the rest of `app/Console` is still unanalysed), the doc-sync gate (`bin/check-doc-refs.php` — each run prints the surface every rule actually read, and that is deliberately not copied here: every rule's surface is narrower than its name, so a restatement drifts), then PHPUnit against SQLite `:memory:`
+- Pint style check, PHPStan level 7 through `bin/phpstan.sh` (its scope is `phpstan-laravel.neon`'s own `paths`, which say why each file is there), the doc-sync gate (`bin/check-doc-refs.php` — each run prints the surface every rule actually read, and that is deliberately not copied here: every rule's surface is narrower than its name, so a restatement drifts), then PHPUnit against SQLite `:memory:`
 
 **Job 2 — `PHPUnit (MariaDB ${{ matrix.mariadb }})` (matrix: `["10.6", "11"]`):**
 - Spins up a `mariadb:<version>` service container matching the production driver versions

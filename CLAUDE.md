@@ -12,8 +12,10 @@ A webhook receiver, classifier framework, and CLI for AI agents (or operators) i
 composer install
 vendor/bin/phpunit                                  # full test suite (SQLite in-memory)
 vendor/bin/pint --test                              # code style (Laravel preset)
-vendor/bin/phpstan analyse -c phpstan-laravel.neon  # static analysis (level 7; app/Bridge + the individual
-                                                    # files that config names — read it, don't restate it)
+bin/phpstan.sh                                      # static analysis (level 7; app/Bridge + the individual
+                                                    # files phpstan-laravel.neon names — read it, don't restate
+                                                    # it). Never call vendor/bin/phpstan directly: the script
+                                                    # empties the environment, which PHPStan copies into its cache
 python3 bin/check-doc-secret-fences.py .            # CI gate: do any *.md SHELL FENCES resolve a secret
                                                     # VALUE onto stdout / an argv / a log / shell history?
                                                     # ⚠ a BACKSTOP under docs/config-schema.md § Handling a
