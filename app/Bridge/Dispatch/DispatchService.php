@@ -9,6 +9,7 @@ use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\IdleNudge\IdleNudgeConfig;
+use App\Bridge\Support\AdvisoryNotice;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ClassifierResolver;
@@ -157,11 +158,19 @@ final class DispatchService
 
             // Filtered out before classify → a gate-drop, not a delivery (DL-036).
             $gateReason = null;
+            // A dependency-advisory notice is opened by an automation account no `treat_as_signal`
+            // list names, and its wake is default-ON (DL-506). It rides the DL-203 strip below
+            // past the SIGNAL gate only — never the echo gate — and keeps nothing but its own
+            // subject, so every other surface of a non-signal event stays suppressed.
+            $advisorySubject = null;
             if ($this->isEcho($provider, $agent, $actor)) {
                 $gateReason = 'echo: own write';
                 $this->warnAccountEchoUnderReattribution($provider, $agent, $classifier, $actor, $event);
             } elseif (! $this->isSignal($agent, $actor)) {
                 $gateReason = 'actor is not a signal';
+                $advisorySubject = $stripToMachine
+                    ? AdvisoryNotice::of($agent, $provider, $scopeId, $dto->eventType, $payload)?->subjectId
+                    : null;
             }
             if ($gateReason !== null && ! $stripToMachine) {
                 $this->markDropped($dispatch, $gateReason);
@@ -214,23 +223,33 @@ final class DispatchService
             // so a classifier bug can't leak an own-write wake/spawn). Nothing
             // machine-facing left → the gate wins whole, recorded under its
             // ORIGINAL reason (never 'classifier emitted no reactions' — the
-            // classifier may well have emitted; the gate ate it).
+            // classifier may well have emitted; the gate ate it). The one agent
+            // surface it keeps is a non-signal advisory notice's (DL-506).
             if ($gateReason !== null) {
                 $machineTargets = array_values(array_filter(
                     $result->targets,
                     fn (ReactionTarget $t): bool => $this->handlers->resolve($t->handler) instanceof DurableReaction,
                 ));
-                if ($machineTargets === []) {
+                $advisory = $advisorySubject === null ? null : $this->onlyAdvisory($result, $advisorySubject);
+                if ($machineTargets === [] && $advisory === null) {
                     $this->markDropped($dispatch, $gateReason);
 
                     continue;
                 }
-                $result = new ClassifyResult(targets: $machineTargets);
+                $result = new ClassifyResult(
+                    targets: [...$machineTargets, ...($advisory->targets ?? [])],
+                    intents: $advisory->intents ?? [],
+                    once: $advisory?->once,
+                );
+                if ($advisory !== null) {
+                    $gateReason = null;   // the notice IS this event's agent surface: delivered, not suppressed
+                }
             }
 
             // Once keys (card#12576): claimed HERE, past every gate above that can still
             // suppress this delivery and before anything is staged, so a claim means this
-            // delivery is delivering. A gate-stripped result carries no key. Losing removes
+            // delivery is delivering. A gate-stripped result carries no key but an
+            // advisory notice's, which governs the one subject the strip kept. Losing removes
             // only the subject the key governs; the rest of the result is delivered.
             $once = $result->once;
             if ($once !== null && ! OnceLedger::claim($agent->agentName, $once, (int) $event->id)) {
@@ -254,6 +273,26 @@ final class DispatchService
                 throw $e;
             }
         }
+    }
+
+    /**
+     * The `impl_advisory` intent for `$subjectId` in `$result`, its `channel_push` targets and its
+     * once key — what a non-signal advisory notice keeps through the strip (DL-506) — or null when
+     * the classifier emitted no such intent. Keyed on the KIND as well as the subject, so no other
+     * classifier's intent rides the bypass by sharing a subject id.
+     */
+    private function onlyAdvisory(ClassifyResult $result, string $subjectId): ?ClassifyResult
+    {
+        $intents = array_values(array_filter($result->intents, static fn (Intent $i): bool => $i->kind === AdvisoryNotice::KIND && $i->subjectId === $subjectId));
+        if ($intents === []) {
+            return null;
+        }
+
+        return new ClassifyResult(
+            targets: array_values(array_filter($result->targets, static fn (ReactionTarget $t): bool => $t->handler === HandlerRegistry::CHANNEL_PUSH && $t->targetId === $subjectId)),
+            intents: $intents,
+            once: $result->once?->subjectId === $subjectId ? $result->once : null,
+        );
     }
 
     /**

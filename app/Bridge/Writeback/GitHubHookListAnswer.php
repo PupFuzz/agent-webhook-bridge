@@ -50,6 +50,8 @@ final class GitHubHookListAnswer
          * the walk past the match was cut short — and on every other verdict.
          */
         public readonly ?bool $workflowRun = null,
+        /** card#13823, set on {@see found()} only: {@see HookDeliverySettings::$issues}. */
+        public readonly ?bool $issues = null,
         /** card#11579, set on {@see found()} only: {@see HookDeliverySettings::$json}. */
         public readonly ?bool $json = null,
         /** card#11579, set on {@see found()} only: {@see HookDeliverySettings::$lastDelivery2xx}. */
@@ -64,7 +66,7 @@ final class GitHubHookListAnswer
      */
     public static function found(?HookDeliverySettings $settings = null): self
     {
-        return new self(true, null, $settings?->active, $settings?->workflowRun, $settings?->json, $settings?->lastDelivery2xx);
+        return new self(true, null, $settings?->active, $settings?->workflowRun, $settings?->issues, $settings?->json, $settings?->lastDelivery2xx);
     }
 
     /**

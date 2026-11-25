@@ -255,6 +255,11 @@ final class GitHubWebhookSubscriptionCheck implements Check
      *    tools ⇒ a seat's `ci_await` settles only through the ci-await-sweep's own reads, at
      *    least one sweep interval late — the polling the tool exists to remove. Not said of a
      *    repo declared in `BRIDGE_CI_AWAIT_NO_CI_REPOS` (card#11696): it has no runs to send;
+     *  - no ACTIVE matching hook sends `issues` while some agent subscribed here declares it consumes
+     *    an `issues` event ({@see CheckContext::$githubScopeConsumers}) ⇒ that agent never sees one —
+     *    a dependency-advisory notice (default-ON, DL-506) or a coordination issue. Keyed on the
+     *    declaration rather than a classifier name, so a classifier that declares nothing is not
+     *    counted, and an agent this run could not read is not either;
      *  - no ACTIVE matching hook's most recent delivery got a 2xx ⇒ GitHub's own record says this
      *    receiver refused or failed it. A hook with no delivery in GitHub's 30-day window reports
      *    no code, which is an unknown and prints nothing ({@see HookDeliverySettings}).
@@ -274,8 +279,30 @@ final class GitHubWebhookSubscriptionCheck implements Check
         if ($result->workflowRun === false) {
             yield from $this->workflowRunWarning($ctx, $scope);
         }
+        if ($result->issues === false) {
+            yield from $this->issuesWarning($ctx, $scope);
+        }
         if ($result->lastDelivery2xx === false) {
             yield Finding::warn("github webhook: {$scope} — the most recent delivery GitHub records on the repo webhook delivering here did not get a 2xx from this install. Open the hook's Recent Deliveries in the repo's webhook settings (someone with admin:repo_hook on {$scope}): a 4xx response body there is this receiver's refusal reason (sig_mismatch, unknown_scope, scope_mismatch, invalid_envelope, …), a 5xx a failure this install's log names. Fix the cause, redeliver, and re-run bridge:check.");
+        }
+    }
+
+    /**
+     * @return iterable<Finding>
+     */
+    private function issuesWarning(CheckContext $ctx, string $scope): iterable
+    {
+        $consumers = [];
+        foreach ($ctx->githubScopeConsumers[$scope] ?? [] as $consumer) {
+            foreach ($consumer['consumed'] as $type) {
+                if ($type === 'issues' || str_starts_with($type, 'issues.')) {
+                    $consumers[] = $consumer['agent'];
+                    break;
+                }
+            }
+        }
+        if ($consumers !== []) {
+            yield Finding::warn("github webhook: {$scope} — the repo webhook delivering here does not send \"Issues\" (issues), and agent(s) ".implode(', ', array_unique($consumers))." consume issues events: none reaches them from {$scope}, so a dependency-advisory notice (classifier.config.advisory_wake, on by default) never wakes them there. Add the event on the repo webhook (someone with admin:repo_hook on {$scope}). An agent that takes issues only for advisory notices and should not can set classifier.config.advisory_wake: false instead.");
         }
     }
 

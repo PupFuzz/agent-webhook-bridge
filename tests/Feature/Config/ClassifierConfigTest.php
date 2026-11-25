@@ -65,6 +65,39 @@ class ClassifierConfigTest extends TestCase
         ClassifierConfig::fromClassifierSection(['config' => ['impl_ci_delivery' => 'per-run']]);
     }
 
+    public function test_the_advisory_wake_is_on_with_the_framework_label_unless_configured(): void
+    {
+        $this->assertTrue(ClassifierConfig::empty()->advisoryWake);
+        $this->assertSame('dependency-advisory', ClassifierConfig::empty()->advisoryLabel);
+
+        $cfg = ClassifierConfig::fromClassifierSection(['config' => ['advisory_wake' => false, 'advisory_label' => ' Security-Notice ']]);
+        $this->assertFalse($cfg->advisoryWake);
+        $this->assertSame('security-notice', $cfg->advisoryLabel);
+    }
+
+    public function test_the_advisory_producer_defaults_to_the_actions_bot_and_is_replaceable(): void
+    {
+        $this->assertSame(['github-actions[bot]', '41898282'], ClassifierConfig::empty()->advisoryActors);
+        $this->assertSame(ClassifierConfig::ADVISORY_ACTORS_DEFAULT, ClassifierConfig::fromClassifierSection(['config' => ['families' => ['impl-ci-wake']]])->advisoryActors);
+        $this->assertSame(['my-app[bot]', '123'], ClassifierConfig::fromClassifierSection(['config' => ['advisory_actors' => ['My-App[bot]', 123]]])->advisoryActors);
+        $this->assertSame([], ClassifierConfig::fromClassifierSection(['config' => ['advisory_actors' => []]])->advisoryActors);
+    }
+
+    /** A quoted `'false'` must not read as either state of a default-ON wake. */
+    public function test_a_non_boolean_advisory_wake_is_refused_where_the_config_loads(): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("classifier.config.advisory_wake is 'false' — it must be true (the default) or false");
+        ClassifierConfig::fromClassifierSection(['config' => ['advisory_wake' => 'false']]);
+    }
+
+    public function test_a_blank_advisory_label_is_refused_where_the_config_loads(): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('classifier.config.advisory_label must be a non-empty string');
+        ClassifierConfig::fromClassifierSection(['config' => ['advisory_label' => ' ']]);
+    }
+
     public function test_section_non_mapping_throws_with_the_prefixed_label(): void
     {
         $cfg = ClassifierConfig::fromClassifierSection(['config' => ['impl_ci_wake' => 'scalar']]);
