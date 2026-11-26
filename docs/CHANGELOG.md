@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.110.1] - 2026-11-26
+
 ### Security
 
 - **card#13872** — 🔒 **composer/laravel/framework 13.43.0 → 13.44.1** (`composer.lock` only; repository advisory GHSA-c25c-x5r7-2v5m (high, the `multiple_of` validation rule, and `gt` / `gte` / `lt` / `lte` when compared against another numeric field, expand scientific-notation input without bounding its exponent, so one value can exhaust memory and CPU; range `< 13.44.1`, patched in 13.44.1)). Flagged by the daily dependency advisory ref matrix on `dev` and `main`. The bridge uses none of Laravel's validation: no `Validator`, `validate()`, `FormRequest` or `Rule`, and no `multiple_of` or field-comparison rule anywhere in `app/`, `routes/`, `config/`, `bootstrap/`, `database/` or `resources/`, so the vulnerable path is not reachable from a request and this is preventive. The `composer.json` constraint already admits 13.44.1, and 13.44.1 requires no newer version of any dependency, so `composer update laravel/framework` moved no other package; `--with-dependencies` would also have taken `guzzlehttp/guzzle` 8.5.5 → 8.6.0, `guzzlehttp/psr7` 3.5.1 → 3.6.0, `laravel/prompts` v0.3.27 → v0.3.28 and `symfony/*` patch releases (v8.1.10 or v8.1.11 → v8.1.12), none of which the framework requires or an advisory needs, so they were left out. Run `composer install` on deploy as usual. No migration, no config key.
