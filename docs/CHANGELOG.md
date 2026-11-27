@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.110.1] - 2026-11-26
+
 ### Security
 
 - **card#13909** — 🔒 **composer/symfony/http-kernel, http-foundation and routing v8.1.11 → v8.1.12, symfony/mailer v8.1.10 → v8.1.12, league/commonmark 2.10.8 → 2.10.9** (`composer.lock` only). Symfony advisories CVE-2026-133743 (`http-kernel`: an inline fragment lets untrusted forwarded headers change the URLs `asset()` and `absolute_url()` produce), CVE-2026-133746 and CVE-2026-133754 (`routing`: the `UrlGenerator` can still produce a URL to another host, including through a host placeholder value), and CVE-2026-133751 and CVE-2026-133755 (`mailer`: a man in the middle can bypass `require_tls`, or inject SMTP replies right after `STARTTLS`); all patched in v8.1.12. Repository advisory GHSA-jj45-w5cj-2hc8 (medium, `<= 2.10.8`, patched in 2.10.9): inline HTML, autolink and footnote parsing can take quadratic time or more on crafted Markdown, a denial of service. `composer audit` reported the Symfony advisories; the daily dependency advisory ref matrix reports the CommonMark one. None of these paths is reached by the bridge: Laravel renders no Symfony inline fragments and generates URLs with its own generator, no route declares a host, the app sends no mail (the default mailer is `log`), and no bridge code renders Markdown, so this is preventive. `symfony/http-foundation` moved because `http-kernel` v8.1.12 requires `^8.1.12`; no other package moved, and `guzzlehttp/guzzle` stays at 8.5.5. `--with-dependencies` would also have taken `symfony/mime` and `symfony/var-dumper` v8.1.10 → v8.1.12, which nothing requires, so they were left out. Run `composer install` on deploy as usual. No migration, no config key.
