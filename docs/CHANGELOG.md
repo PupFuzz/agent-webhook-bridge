@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Security
+
+- **card#13923** — 🔒 **npm/hono 4.13.18 → 4.13.23 in examples/channel-servers** (`package-lock.json` only; transitive via @modelcontextprotocol/sdk and @hono/node-server). Repository advisories on honojs/hono, all medium and patched in 4.13.23: GHSA-586x-c76g-h528 (`TrieRouter` lets a request skip middleware registered through `except()`; range `>= 4.5.0, < 4.13.23`), GHSA-656w-x92q-369m (`TrieRouter` treats `__proto__` as an HTTP method, polluting `Object.prototype`; range `>= 4.8.0, < 4.13.23`) and GHSA-mhwf-w6q6-q58w (`getPath()` drops the first path segment of a scheme-less request URL, a path confusion on Bun; range `< 4.13.23`). Flagged by the daily dependency advisory ref matrix on `dev` and `main`. The channel server never loads hono: it imports only the SDK's stdio server, `Server` and types, none of which imports hono, and serves its local HTTP door with `node:http` under Node, not Bun, so this is preventive. 4.13.23 is in range for @modelcontextprotocol/sdk@1.32.2's `^4.11.4` and @hono/node-server@2.1.11's `^4 || ^5.0.0-0`, so `npm update hono --package-lock-only` sufficed, no other lockfile entry moved and @hono/node-server stays at 2.1.11. Channel-server snapshot 0.9.84 → 0.9.85.
+
+### Upgrade warnings
+
+- Run `php artisan bridge:client-pack:install` as the receiver's user to publish client snapshot 0.9.85. Until you do, seats stay on the client they have, whose lockfile pins hono 4.13.18, and `bridge:check` fails its `board_tools.client_pack_source` leg, naming that command.
+
 ## [0.110.1] - 2026-11-26
 
 ### Security
